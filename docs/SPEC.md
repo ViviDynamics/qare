@@ -247,6 +247,33 @@ with no checks; QARE opens them with the App or the token instead. And the
 identity only ever exists in the plan and judge steps, never in the step that
 executes pull request code.
 
+## Two things to check in a deployed environment
+
+A pull request check asks whether a change works. A deployed environment raises
+a second question that has nothing to do with any change: is this environment
+correctly put together? The two fail for different reasons and deserve
+different outcomes, so QARE keeps them apart.
+
+| | The process | The environment |
+| --- | --- | --- |
+| Asks | does the product behave as the criteria say | is this deployment wired up correctly |
+| Example | a new operator is invited, receives the mail, follows the link, signs in | the sender domain's records align, the relay accepts credentials, the queue drains |
+| Triggered by | a change, a subset, or a sweep | a deploy, a schedule, or before a process run on that environment |
+| A failure means | the code is wrong | the environment is wrong, and process results that depend on it are `unverified` |
+| Reported as | a criterion verdict | an environment finding, never a criterion failure |
+
+An environment check that fails does not make a criterion fail. It makes every
+criterion that depends on it `unverified`, and raises a finding of its own. That
+is the same rule as a missing stub: QARE refuses to turn "we could not check"
+into "the change is broken".
+
+Environment checks are also how a stack that is only assembled in a real
+deployment gets tested at all. Locally a mail sink stands in for a provider, and
+a process check against the sink proves the app composes and sends the right
+message. Only a real provider proves the message leaves, lands, and passes
+authentication, so those checks belong to an environment, run there, and are
+never part of a sandboxed pull request run.
+
 ## Triggers
 
 - CI completes green on a PR (`workflow_run`), once per head SHA.
