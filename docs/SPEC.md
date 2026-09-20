@@ -371,9 +371,11 @@ generator, Argos for visual review, API before/after on Go services.
 - **Agent harness:** nare, by constitution.
 - **Ledger storage:** both backends, `branch` by default, with export and
   migration so neither is a trap.
+  ([ADR-0004](./decisions/adr-0004-ledger-authority.md))
 - **GitHub identity:** App or personal access token, chosen per install.
   ([ADR-0003](./decisions/adr-0003-posting-identity.md))
 - **Unsettled conflicts:** hold only the affected criteria, never the run.
+  ([ADR-0004](./decisions/adr-0004-ledger-authority.md))
 - **Plan approval:** review with the pull request; the plan is locked before
   implementation. ([ADR-0001](./decisions/adr-0001-plan-approval.md))
 - **Screenshot storage:** Action artifacts carry the run; an orphan
