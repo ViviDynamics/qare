@@ -11,6 +11,9 @@ project family: an orchestrator calls nare to develop and qare to QA. Other
 agent harnesses can call qare the same way, through its CLI, GitHub Action, or
 MCP server.
 
+Every model call qare makes goes through nare. That rule, and the others that
+hold for every change here, are in [CONSTITUTION.md](CONSTITUTION.md).
+
 Status: design. See [docs/SPEC.md](docs/SPEC.md).
 
 ## Licensing

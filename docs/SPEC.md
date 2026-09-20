@@ -16,6 +16,10 @@ OpenCode) can call QARE the same way.
 
 ## Principles
 
+0. **nare is the agent harness.** Every model call goes through
+   [nare](https://github.com/ViviDynamics/nare); qare never calls a provider
+   SDK. A gap in nare becomes an issue on nare, never a workaround here. See
+   [CONSTITUTION.md](../CONSTITUTION.md).
 1. **The model plans and witnesses; code decides.** A model writes the check
    plan and acts as an independent verifier. The harness runs every command,
    takes every screenshot, and computes every verdict.
@@ -142,7 +146,14 @@ One TypeScript codebase, one core, thin adapters:
 | `@qare/mcp` | MCP server so orchestrators, Codex, OpenCode and others can call it |
 | `plugin/claude-code` | skill, verifier subagent, Stop hook for local runs |
 
-Model: Claude through a small provider interface, Claude only at first.
+Model access: qare shells out to `nare run` and consumes its typed JSONL
+events and session files. Model, provider and sampling flags are nare's
+concern. Claude only at first, because model variance is what makes verdicts
+unstable.
+
+Capabilities qare needs from nare, each an issue on nare when it is missing:
+schema-constrained output for `plan.json`, a read-only tool set for the
+verifier step, and a per-step token budget with a retry on truncation.
 
 ## Repo conventions
 
