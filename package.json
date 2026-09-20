@@ -1,0 +1,22 @@
+{
+  "name": "qare",
+  "version": "0.0.0-dev",
+  "private": true,
+  "description": "QA agent harness: plans checks, runs evidence, decides verdicts in code",
+  "license": "Elastic-2.0",
+  "type": "module",
+  "packageManager": "pnpm@12.5.1",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "eslint": "^10.11.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.0"
+  }
+}
