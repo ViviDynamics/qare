@@ -114,17 +114,17 @@ export async function loadProfile(dir: string): Promise<QaProfile> {
       `config.yml is not valid YAML (${error instanceof Error ? error.message : String(error)})`,
     )
   }
-  return parseProfile(input)
+  return validateProfileConfig(input)
 }
 
-function parseProfile(input: unknown): QaProfile {
-  if (!isRecord(input))
+export function validateProfileConfig(config: unknown): QaProfile {
+  if (!isRecord(config))
     fail('config.yml', 'config.yml must be a YAML object with app, stubs, visual and suites')
   return {
-    app: parseApp(input.app),
-    stubs: parseStubs(input.stubs),
-    visual: parseVisual(input.visual),
-    suites: parseSuites(input.suites),
+    app: parseApp(config.app),
+    stubs: parseStubs(config.stubs),
+    visual: parseVisual(config.visual),
+    suites: parseSuites(config.suites),
   }
 }
 

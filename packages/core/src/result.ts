@@ -29,6 +29,7 @@ export interface RunResult {
   schemaVersion: string
   verdict: RunVerdict
   criteria: CriterionResult[]
+  job?: { id: string }
 }
 
 const CRITERION_OUTCOMES: CriterionOutcome[] = ['proven', 'failed', 'unverified']
@@ -107,11 +108,20 @@ export function parseResult(input: unknown): RunResult {
 
   if (!Array.isArray(input.criteria)) fail('criteria', 'result.json must carry a criteria array')
 
+  const job = parseJobSummary(input.job)
+
   return {
     schemaVersion,
     verdict: verdict as RunVerdict,
     criteria: input.criteria.map((entry, index) => parseCriterionResult(entry, index)),
+    ...(job === undefined ? {} : { job }),
   }
+}
+
+function parseJobSummary(value: unknown): { id: string } | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) fail('job', 'result.json job must be a JSON object carrying an id')
+  return { id: nonEmptyString(value.id, 'job.id', 'job id') }
 }
 
 function parseCriterionResult(value: unknown, index: number): CriterionResult {

@@ -22,7 +22,7 @@ export {
   loadResult,
   parseResult,
 } from './result.js'
-export { ProfileValidationError, loadProfile } from './profile.js'
+export { ProfileValidationError, loadProfile, validateProfileConfig } from './profile.js'
 export type {
   QaProfile,
   ProfileApp,
@@ -55,3 +55,4 @@ export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from '
 export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobPostTarget } from './job.js'
 export { bootApp, stopApp } from './boot.js'
 export type { BootOutcome, BootOpts } from './boot.js'
+export { runJob } from './run.js'
