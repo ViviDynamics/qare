@@ -31,7 +31,7 @@ export type {
   CriterionResult,
   RunResult,
 } from './result.js'
-export { FakeAgentRunner, FakeAgentRunnerError } from './runner.js'
+export { FakeAgentRunner, FakeAgentRunnerError, NareAgentRunner, NotImplemented } from './runner.js'
 export type {
   AgentBudget,
   AgentRunRequest,

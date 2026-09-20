@@ -5,6 +5,8 @@ import { expect, test } from 'vitest'
 import {
   FakeAgentRunner,
   FakeAgentRunnerError,
+  NareAgentRunner,
+  NotImplemented,
   type AgentRunRequest,
   type AgentRunResult,
 } from '../src/index.js'
@@ -58,6 +60,23 @@ test('a scripted failure result is surfaced as-is, not converted to a pass', asy
   const failed = result({ status: 'failed', stopReason: 'error', output: null })
   const fake = new FakeAgentRunner([failed])
   await expect(fake.run(request())).resolves.toBe(failed)
+})
+
+test('NareAgentRunner throws NotImplemented on construction, pointing at the deferred nare integration', () => {
+  expect(() => new NareAgentRunner()).toThrow(NotImplemented)
+  try {
+    new NareAgentRunner()
+  } catch (error) {
+    expect(error).toBeInstanceOf(NotImplemented)
+    expect(error.name).toBe('NotImplemented')
+    expect(error.message).toMatch(/nare/i)
+    expect(error.message).toMatch(/not versioned/)
+  }
+})
+
+test('NareAgentRunner throws NotImplemented on call, even when construction is bypassed', async () => {
+  const stub = Object.create(NareAgentRunner.prototype) as NareAgentRunner
+  await expect(stub.run()).rejects.toThrow(NotImplemented)
 })
 
 const NETWORK_MARKERS = [

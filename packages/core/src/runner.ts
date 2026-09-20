@@ -60,3 +60,23 @@ export class FakeAgentRunner implements AgentRunner {
     return this.script.shift()!
   }
 }
+
+export class NotImplemented extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'NotImplemented'
+  }
+}
+
+const NARE_NOT_IMPLEMENTED =
+  "NareAgentRunner is a named placeholder: nare's machine contract (nare issues #9-#11) is not versioned yet, so no model call can originate from qare. When the contract lands, this seam invokes the nare process and consumes its typed JSONL events, session files and exit codes. Until then, qare shells out to nothing and parses no prose."
+
+export class NareAgentRunner implements AgentRunner {
+  constructor() {
+    throw new NotImplemented(NARE_NOT_IMPLEMENTED)
+  }
+
+  async run(): Promise<AgentRunResult> {
+    throw new NotImplemented(NARE_NOT_IMPLEMENTED)
+  }
+}
