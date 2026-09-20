@@ -71,6 +71,62 @@ test('compose failure blocks with the exit code and captured logs', async () => 
   expect(outcome.logs).toContain('compose boom')
 })
 
+test('watchdog blocks compose up that outlives the health deadline and attempts a down', async () => {
+  const profile = await profileWith({ app: { health: { timeout: '1s' } } })
+  const composeArgs: string[][] = []
+
+  const outcome = await bootApp(profile, {
+    runCompose: async (args) => {
+      composeArgs.push(args)
+      return new Promise<{ code: number; stdout: string; stderr: string }>(() => {})
+    },
+    pollIntervalMs: 1,
+  })
+
+  expect(outcome).toEqual({
+    kind: 'blocked',
+    reason: 'boot watchdog: compose up exceeded the health deadline',
+    logs: '',
+  })
+  expect(composeArgs).toEqual([
+    ['-f', 'compose.qa.yaml', 'up', '-d', '--wait', 'admin'],
+    ['-f', 'compose.qa.yaml', 'down'],
+  ])
+})
+
+test('probe errors keep polling until the deadline', async () => {
+  const profile = await profileWith({ app: { health: { timeout: '30ms' } } })
+  let probes = 0
+
+  const outcome = await bootApp(profile, {
+    runCompose: async () => ({ code: 0, stdout: 'up out', stderr: '' }),
+    probe: async () => {
+      probes += 1
+      throw new Error('probe exploded')
+    },
+    pollIntervalMs: 1,
+  })
+
+  expect(outcome.kind).toBe('blocked')
+  expect(outcome.reason).toContain('did not pass within')
+  expect(outcome.reason).toContain('30ms')
+  expect(probes).toBeGreaterThan(1)
+  expect(outcome.logs).toBe('up out')
+})
+
+test('malformed health timeout blocks instead of crashing the boot', async () => {
+  const profile = await profileWith({ app: { health: { timeout: 'bogus' } } })
+
+  const outcome = await bootApp(profile, {
+    runCompose: async () => ({ code: 0, stdout: 'up out', stderr: '' }),
+  })
+
+  expect(outcome.kind).toBe('blocked')
+  expect(outcome.reason).toContain('app.health.timeout')
+  expect(outcome.reason).toContain('bogus')
+  expect(outcome.logs).toBe('')
+})
+
 test('stopApp brings the compose service down', async () => {
   const profile = await profileWith({ app: { health: { timeout: '1s' } } })
   const composeArgs: string[][] = []

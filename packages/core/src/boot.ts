@@ -10,12 +10,13 @@ export interface BootOutcome {
 }
 
 export interface BootOpts {
-  runCompose?: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>
+  runCompose?: (args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>
   probe?: (url: string) => Promise<{ ok: boolean }>
   pollIntervalMs?: number
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 500
+const NO_DEADLINE_MS = 0
 
 function parseTimeoutMs(timeout: string): number {
   const match = /^(\d+)(ms|s|m)$/.exec(timeout.trim())
@@ -28,7 +29,8 @@ function parseTimeoutMs(timeout: string): number {
   return value * 60000
 }
 
-function defaultRunCompose(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+function defaultRunCompose(args: string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
+  void timeoutMs
   return new Promise((resolve) => {
     const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
@@ -74,7 +76,10 @@ function defaultProbe(url: string, timeoutMs: number): Promise<{ ok: boolean }> 
 
 async function captureComposeLogs(profile: QaProfile, opts: BootOpts): Promise<string> {
   const runCompose = opts.runCompose ?? defaultRunCompose
-  const logs = await runCompose(['-f', profile.app.boot.compose, 'logs', '--no-color', profile.app.boot.service])
+  const logs = await runCompose(
+    ['-f', profile.app.boot.compose, 'logs', '--no-color', profile.app.boot.service],
+    NO_DEADLINE_MS,
+  )
   return logs.stdout + logs.stderr
 }
 
@@ -82,13 +87,39 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   const runCompose = opts.runCompose ?? defaultRunCompose
   const probe = opts.probe ?? ((url: string) => defaultProbe(url, 1000))
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
-  const timeoutMs = parseTimeoutMs(profile.app.health.timeout)
-
-  let up: { code: number; stdout: string; stderr: string }
+  let timeoutMs: number
   try {
-    up = await runCompose(['-f', profile.app.boot.compose, 'up', '-d', '--wait', profile.app.boot.service])
+    timeoutMs = parseTimeoutMs(profile.app.health.timeout)
   } catch (error) {
+    return {
+      kind: 'blocked',
+      reason: error instanceof Error ? error.message : String(error),
+      logs: '',
+    }
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const watchdog = new Promise<'watchdog'>((resolve) => {
+    timer = setTimeout(() => resolve('watchdog'), timeoutMs)
+  })
+  let up: { code: number; stdout: string; stderr: string } | 'watchdog'
+  try {
+    up = await Promise.race([
+      watchdog,
+      runCompose(
+        ['-f', profile.app.boot.compose, 'up', '-d', '--wait', profile.app.boot.service],
+        timeoutMs,
+      ),
+    ])
+  } catch (error) {
+    clearTimeout(timer)
     return { kind: 'blocked', reason: `boot command failed to start: ${String(error)}`, logs: '' }
+  }
+  clearTimeout(timer)
+
+  if (up === 'watchdog') {
+    void stopApp(profile, opts)
+    return { kind: 'blocked', reason: 'boot watchdog: compose up exceeded the health deadline', logs: '' }
   }
 
   if (up.code !== 0) {
@@ -126,7 +157,7 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
 export async function stopApp(profile: QaProfile, opts: BootOpts = {}): Promise<void> {
   const runCompose = opts.runCompose ?? defaultRunCompose
   try {
-    await runCompose(['-f', profile.app.boot.compose, 'down'])
+    await runCompose(['-f', profile.app.boot.compose, 'down'], NO_DEADLINE_MS)
   } catch (error) {
     console.error(`compose down failed: ${String(error)}`)
   }
