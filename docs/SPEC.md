@@ -118,8 +118,8 @@ case is a repo whose criteria accumulate: hundreds of statements about how the
 product behaves, written at different times by different people, some of them
 now contradicting each other. QARE maintains that ledger.
 
-The ledger lives in the repo under `.qa/criteria/`, one versioned file per
-area, so it is reviewed like code and diffed like code. Sketch of an entry:
+The ledger is one schema behind a storage interface, with two backends. Sketch
+of an entry, identical either way:
 
 ```yaml
 - id: BIL-014
@@ -132,6 +132,26 @@ area, so it is reviewed like code and diffed like code. Sketch of an entry:
   last_verified: { sha: 9f3c1ab, run: 812, at: 2026-09-18, verdict: proven }
 ```
 
+### Where the ledger lives
+
+Both backends hold the same entries and are readable by the same commands, and
+`qare ledger migrate` moves a ledger between them without losing history.
+
+| Backend | Where | Good for |
+| --- | --- | --- |
+| `branch` (default) | an orphan `qa-ledger` branch in the same repo | keeping criteria out of the working tree while staying versioned, diffable and reviewable, with nothing to host |
+| `files` | `.qa/criteria/*.yml` on the working branch | small repos and teams that want criteria in front of them next to the code |
+
+A separate store only earns its keep if it stays legible, so transparency is a
+requirement of the backend, not a feature on top:
+
+- Every change records who made it, when, and why, and history is never rewritten.
+- `qare ledger` reads either backend the same way.
+- `qare ledger export` writes the whole ledger as plain files at any time, so
+  nobody is locked in.
+- The current state is published where the team already looks, not only in the
+  store.
+
 Lifecycle:
 
 - **Ingest.** QARE reads acceptance criteria from an issue or PR and proposes
@@ -143,8 +163,10 @@ Lifecycle:
   intends to replace is proposed as `superseded` with the replacement linked; a
   criterion that fails without any intent to change it is a regression.
 - **Ask, rarely.** When evidence cannot settle whether a conflict is intended,
-  QARE asks one question in one place, with its own recommendation attached,
-  and holds only the affected criteria as `unverified`.
+  QARE asks one question in one place, with its own recommendation attached.
+  Only the affected criteria are held as `unverified`; the rest of the run
+  reports normally, and an unanswered question never blocks a whole pull
+  request.
 - **Retire.** Criteria for removed features are retired with a reason and stay
   in history.
 
@@ -170,6 +192,22 @@ ledger:
 
 Selection, caching, sharding and budgets are what make the large case possible;
 they never change what a verdict means.
+
+## GitHub identity
+
+QARE posts comments, checks and pull requests, so it needs an identity. Both
+are supported and the choice is per install:
+
+| Option | Notes |
+| --- | --- |
+| GitHub App (preferred for an org) | its own actor, per-repo installation, scoped permissions, and a far higher rate limit |
+| Personal access token | one file, nothing to host; work appears as that user, and the limit is shared with everything else that user runs |
+
+Two constraints hold either way. A pull request opened with the default
+Actions token does not trigger workflows, so criteria proposals would arrive
+with no checks; QARE opens them with the App or the token instead. And the
+identity only ever exists in the plan and judge steps, never in the step that
+executes pull request code.
 
 ## Triggers
 
@@ -272,8 +310,18 @@ generator, Argos for visual review, API before/after on Go services.
 - Recording production traffic.
 - Replacing unit and integration suites; QARE runs them, it does not own them.
 
+## Decisions made
+
+- **Language:** TypeScript, because Playwright's runner, screenshot comparison
+  and trace viewer are native there, and the design is what carries over from
+  earlier work rather than the code.
+- **Agent harness:** nare, by constitution.
+- **Ledger storage:** both backends, `branch` by default, with export and
+  migration so neither is a trap.
+- **GitHub identity:** App or personal access token, chosen per install.
+- **Unsettled conflicts:** hold only the affected criteria, never the run.
+
 ## Open questions
 
 1. Should a human approve the plan before implementation, or only review it with the PR?
 2. Where do screenshots live long-term: Action artifacts (90 days) or a `qa-assets` branch?
-3. GitHub App for posting, or a bot token to start?
