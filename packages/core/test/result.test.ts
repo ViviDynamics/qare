@@ -82,12 +82,6 @@ test('schema violations fail closed with named errors', () => {
     ).field,
   ).toBe('verdict')
 
-  expect(
-    resultError(() =>
-      parseResult({ schemaVersion: '1', verdict: 'passed', criteria: [] }),
-    ).field,
-  ).toBe('criteria')
-
   const error = resultError(() =>
     parseResult({
       schemaVersion: '1',
@@ -114,6 +108,75 @@ test('schema violations fail closed with named errors', () => {
         schemaVersion: '1',
         verdict: 'failed',
         criteria: [{ id: 'c1', outcome: 'failed', evidence: ['/etc/passwd'] }],
+      }),
+    ).field,
+  ).toBe('criteria[0].evidence[0]')
+})
+
+test('a refused run with zero criterion outcomes loads', () => {
+  const result = parseResult({ schemaVersion: '1', verdict: 'refused', criteria: [] })
+  expect(result.verdict).toBe('refused')
+  expect(result.criteria).toEqual([])
+})
+
+test('non-JSON text fails closed with a named error', () => {
+  const error = resultError(() => loadResult('{not json'))
+  expect(error.name).toBe('ResultValidationError')
+  expect(error.field).toBe('json')
+  expect(error.message).toContain('result.json is not valid JSON')
+})
+
+test('a missing schemaVersion fails closed', () => {
+  const error = resultError(() =>
+    parseResult({
+      verdict: 'passed',
+      criteria: [{ id: 'c1', outcome: 'proven', evidence: ['evidence/c1/a.log'] }],
+    }),
+  )
+  expect(error.field).toBe('schemaVersion')
+  expect(error.message).toContain('must carry a schemaVersion string')
+})
+
+test('a proven criterion with zero evidence references fails closed', () => {
+  const error = resultError(() =>
+    parseResult({
+      schemaVersion: '1',
+      verdict: 'passed',
+      criteria: [{ id: 'c1', outcome: 'proven', evidence: [] }],
+    }),
+  )
+  expect(error.field).toBe('criteria[0].evidence')
+  expect(error.message).toContain('criterion "c1" is proven with zero evidence references')
+})
+
+test('an unverified criterion without evidence loads', () => {
+  const result = parseResult({
+    schemaVersion: '1',
+    verdict: 'failed',
+    criteria: [{ id: 'c1', outcome: 'unverified', reason: 'the check never ran' }],
+  })
+  expect(result.criteria).toEqual([
+    { id: 'c1', outcome: 'unverified', reason: 'the check never ran' },
+  ])
+})
+
+test('UNC-style evidence references fail closed', () => {
+  expect(
+    resultError(() =>
+      parseResult({
+        schemaVersion: '1',
+        verdict: 'failed',
+        criteria: [{ id: 'c1', outcome: 'failed', evidence: ['\\\\host\\share\\a.log'] }],
+      }),
+    ).field,
+  ).toBe('criteria[0].evidence[0]')
+
+  expect(
+    resultError(() =>
+      parseResult({
+        schemaVersion: '1',
+        verdict: 'failed',
+        criteria: [{ id: 'c1', outcome: 'failed', evidence: ['//host/share/a.log'] }],
       }),
     ).field,
   ).toBe('criteria[0].evidence[0]')

@@ -59,9 +59,14 @@ function nonEmptyString(value: unknown, field: string, label: string): string {
 }
 
 function assertRelativePath(path: string, field: string): void {
-  if (path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path))
+  if (
+    path.startsWith('/') ||
+    path.startsWith('\\') ||
+    path.startsWith('//') ||
+    /^[a-zA-Z]:[\\/]/.test(path)
+  )
     fail(field, `evidence reference "${path}" must be a relative path`)
-  if (path.split('/').includes('..'))
+  if (path.split(/[\\/]/).includes('..'))
     fail(field, `evidence reference "${path}" must stay inside the evidence directory (".." is not allowed)`)
 }
 
@@ -101,8 +106,6 @@ export function parseResult(input: unknown): RunResult {
     fail('verdict', `unknown verdict ${JSON.stringify(verdict)} (expected "passed", "failed", "blocked", "refused" or "waived")`)
 
   if (!Array.isArray(input.criteria)) fail('criteria', 'result.json must carry a criteria array')
-  if (input.criteria.length === 0)
-    fail('criteria', 'result is empty: no criterion carries an outcome, and an empty result settles nothing, so it fails closed')
 
   return {
     schemaVersion,

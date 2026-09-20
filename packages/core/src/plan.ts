@@ -89,7 +89,7 @@ function numberArray(value: unknown, field: string, label: string): number[] {
   })
 }
 
-export function parsePlanJson(text: string): Plan {
+export function loadPlan(text: string): Plan {
   let input: unknown
   try {
     input = JSON.parse(text)

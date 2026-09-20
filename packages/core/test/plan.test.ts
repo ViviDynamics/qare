@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
-import { PLAN_SCHEMA_VERSION, PlanValidationError, parsePlan, parsePlanJson } from '../src/index.js'
+import { PLAN_SCHEMA_VERSION, PlanValidationError, parsePlan, loadPlan } from '../src/index.js'
 
 const fixture = (name: string) =>
   readFileSync(fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url)), 'utf8')
@@ -28,7 +28,7 @@ const valid = {
 }
 
 test('plan.valid.json loads and keeps every check as planned', () => {
-  const plan = parsePlanJson(fixture('plan.valid.json'))
+  const plan = loadPlan(fixture('plan.valid.json'))
   expect(plan.schemaVersion).toBe(PLAN_SCHEMA_VERSION)
   expect(plan.criteria).toHaveLength(3)
 
@@ -44,7 +44,7 @@ test('plan.valid.json loads and keeps every check as planned', () => {
 })
 
 test('plan.valid.json carries the inferred-check marker and an unplannable criterion', () => {
-  const plan = parsePlanJson(fixture('plan.valid.json'))
+  const plan = loadPlan(fixture('plan.valid.json'))
 
   expect(plan.criteria[1]).toEqual({
     id: 'ledger-export-csv',
@@ -60,9 +60,9 @@ test('plan.valid.json carries the inferred-check marker and an unplannable crite
 
 test('plan.invalid.json fails closed with a named error on the offending field', () => {
   const text = fixture('plan.invalid.json')
-  expect(() => parsePlanJson(text)).toThrow(PlanValidationError)
+  expect(() => loadPlan(text)).toThrow(PlanValidationError)
 
-  const error = planError(() => parsePlanJson(text))
+  const error = planError(() => loadPlan(text))
   expect(error.name).toBe('PlanValidationError')
   expect(error.field).toBe('criteria[0].checks[0].kind')
   expect(error.message).toContain('unknown check kind "screenshot"')
@@ -86,7 +86,7 @@ test('a missing schemaVersion fails closed', () => {
 })
 
 test('text that is not JSON at all fails closed with a named error', () => {
-  const error = planError(() => parsePlanJson('{not json'))
+  const error = planError(() => loadPlan('{not json'))
   expect(error.field).toBe('json')
   expect(error.message).toContain('not valid JSON')
 })

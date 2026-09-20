@@ -2,8 +2,8 @@ export { VERSION } from './version.js'
 export {
   PLAN_SCHEMA_VERSION,
   PlanValidationError,
+  loadPlan,
   parsePlan,
-  parsePlanJson,
 } from './plan.js'
 export type {
   CheckKind,
@@ -16,3 +16,18 @@ export type {
   FlowCheck,
   VisualCheck,
 } from './plan.js'
+export {
+  RESULT_SCHEMA_VERSION,
+  ResultValidationError,
+  loadResult,
+  parseResult,
+} from './result.js'
+export type {
+  CriterionOutcome,
+  RunVerdict,
+  ProvenCriterionResult,
+  FailedCriterionResult,
+  UnverifiedCriterionResult,
+  CriterionResult,
+  RunResult,
+} from './result.js'
