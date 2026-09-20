@@ -51,3 +51,5 @@ export type {
   AgentUsage,
   ToolPolicy,
 } from './runner.js'
+export { bootApp, stopApp } from './boot.js'
+export type { BootOutcome, BootOpts } from './boot.js'
