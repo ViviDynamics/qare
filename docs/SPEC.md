@@ -175,11 +175,49 @@ and every run's evidence names any ledger change that landed with it. This is
 the same defense as locking checks before code: without it, the cheapest way to
 go green is to edit the requirement.
 
+### A job handed in
+
+The smallest possible input, and the one an orchestrator uses. Everything QARE
+needs arrives in one file:
+
+```yaml
+job:
+  id: card-4821                     # caller's own id, echoed back
+  repo:
+    path: /work/repo                # a checkout the caller already has
+    base: origin/main               # what "before" means
+    head: HEAD                      # what "after" means
+  profile: .qa/config.yml           # or the profile inline
+  post: none                        # none, or a pull request to comment on
+  criteria:
+    - id: card-4821-1
+      text: A host paid over the threshold sees the 1099 notice on the payouts page.
+      proof: flow
+    - id: card-4821-2
+      text: bin/rails test test/payout_tax_test.rb passes.
+      proof: command
+      check: { command: "bin/rails test test/payout_tax_test.rb" }
+```
+
+Rules for this mode:
+
+- Nothing is read from a ledger and nothing is written to one. Job criteria
+  live and die with the job unless the caller asks for them to be recorded.
+- Job criterion ids are the caller's, namespaced so they can never be confused
+  with ledger ids or inherit another criterion's verification history.
+- No GitHub is required. With `post: none` the result is `result.json` and an
+  exit code; evidence is written to a directory the caller names.
+- Every other rule still holds: the plan is fixed before execution, the harness
+  runs the checks, code decides the verdict, missing stubs refuse the run.
+
 ### Working small and working large
 
 The same engine serves both ends, and nothing in the pipeline assumes the whole
-ledger:
+ledger, a pull request, or GitHub at all:
 
+- **A job handed in.** A caller supplies the criteria itself, in a job file, and
+  gets a verdict back. No ledger, no pull request, no issue. This is how an
+  orchestrator asks for one specific QA check.
 - **A few criteria.** Given one issue, QARE plans and checks only those
   criteria. No ledger is required to run at all.
 - **A named subset.** An orchestrator hands QARE a set of criterion ids for one
@@ -239,7 +277,7 @@ One TypeScript codebase, one core, thin adapters:
 | Package | Purpose |
 | --- | --- |
 | `@qare/core` | plan, execute, judge, report; provider interface; `result.json` schema |
-| `@qare/cli` | `qare init`, `qare readiness`, `qare run`, `qare judge`, `qare ledger`, `qare sweep` |
+| `@qare/cli` | `qare init`, `qare readiness`, `qare run`, `qare run --job`, `qare judge`, `qare ledger`, `qare sweep` |
 | `@qare/action` | GitHub Action wrapping the three jobs |
 | `@qare/mcp` | MCP server so orchestrators, Codex, OpenCode and others can call it |
 | `plugin/claude-code` | skill, verifier subagent, Stop hook for local runs |
