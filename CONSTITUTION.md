@@ -11,8 +11,10 @@ provider SDK, and does not embed a second agent loop.
 
 qare owns QA: profiles, booting, checks, evidence, verdicts, and the GitHub
 surfaces. nare owns talking to models: the loop, tools, approval, events,
-sessions, and transports. When a change would teach qare about providers,
-tokens, retries, or tool protocols, it belongs in nare instead.
+sessions, and transports. nare must stay generic enough that a caller with
+nothing to do with QA would want it, so nothing qare-shaped may land there,
+including a flag named for a qare concept. When a change would teach qare about
+providers, tokens, retries, or tool protocols, it belongs in nare instead.
 
 nare is a separate process. qare invokes it and consumes its typed JSONL
 events and session files.
@@ -29,8 +31,13 @@ work around it inside qare. Specifically, never:
 
 Do this instead:
 
-1. Open an issue on `ViviDynamics/nare` describing the capability qare needs,
-   in terms of nare's own vocabulary, with the qare issue linked as the caller.
+1. Open an issue on `ViviDynamics/nare` describing the capability in nare's own
+   vocabulary: a caller, a session, a tool, a transport, a contract. Never
+   qare's: no criteria, no evidence, no verdicts, no pull requests. Ask for the
+   general capability that qare happens to need, so any caller can use it, and
+   link the qare issue at the bottom as provenance rather than as the rationale.
+   If a request cannot be stated without qare's words, it is a qare feature
+   wearing nare's clothes, and it stays here.
 2. Link that nare issue from the blocked qare issue, and set the qare issue to
    Blocked on the board.
 3. If qare can make progress behind an interface while the nare work lands, do
