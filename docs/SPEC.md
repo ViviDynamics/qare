@@ -65,7 +65,7 @@ Execute stages, per side (base, head):
 
 1. Boot from the `.qa/` recipe (compose, command, or preview URL); prove the app is up with a health check the harness runs.
 2. Seed fixtures, log in test accounts.
-3. Run `command` checks (exit code and output), `flow` checks (Playwright from a fixed action set, or existing suites such as cucumber-js), and `visual` checks (named screenshots at named widths and themes).
+3. Run `command` checks (exit code and output), `flow` checks (a fixed action set driven by a client driver, or existing suites), `visual` checks (named screenshots at named widths and themes), and `mail` checks (a message waited for and read).
 4. Record every outbound connection attempt. Anything outside the stub map is a `refused: missing stub` finding.
 
 Judge:
@@ -246,6 +246,26 @@ Actions token does not trigger workflows, so criteria proposals would arrive
 with no checks; QARE opens them with the App or the token instead. And the
 identity only ever exists in the plan and judge steps, never in the step that
 executes pull request code.
+
+## Clients
+
+A flow says what a person does: open this, type that, expect to see the other.
+Which software performs those actions is a driver's business. Actions are named
+for intent rather than for a library, a driver declares which actions and which
+evidence kinds it supports, and a plan asking for something its target cannot do
+is rejected before anything boots rather than failing halfway through.
+
+The browser is the first driver. A desktop shell, a phone and a native
+application are the same vocabulary against a different tree, and every one of
+those platforms exposes an accessibility tree, so element references stay
+semantic on all of them: a role and an accessible name, never a coordinate and
+never a label a model invented.
+
+Two things do differ by client and belong in the profile rather than in a check.
+Getting the application in front of the driver means starting a server for one
+client, installing an artefact for another, and launching a binary for a third.
+And some clients can only run in certain places, so a target declares what it
+requires and a run refuses to start where that is unmet, naming what is missing.
 
 ## Running against a deployed environment
 
