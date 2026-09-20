@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "1",
+  "verdict": "failed",
+  "criteria": [
+    {
+      "id": "payout-1099-notice",
+      "outcome": "proven",
+      "evidence": ["evidence/payout-1099-notice/payout-tax-spec.log", "evidence/payout-1099-notice/payouts-page-1440-light.png"]
+    },
+    {
+      "id": "ledger-export-csv",
+      "outcome": "failed",
+      "evidence": ["evidence/ledger-export-csv/ledger-export-actions.log"]
+    },
+    {
+      "id": "multi-currency-totals",
+      "outcome": "unverified",
+      "reason": "the staging environment with multi-currency data was unreachable from the sandbox",
+      "evidence": ["evidence/multi-currency-totals/attempt.log"]
+    }
+  ]
+}
