@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate the tag is CalVer (YYYY.M.PATCH)
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^20[0-9]{2}\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag '$GITHUB_REF_NAME' is not CalVer YYYY.M.PATCH (e.g. 2026.9.0)" >&2
+            exit 1
+          fi
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Stamp the version from the tag
+        run: node scripts/sync-version.mjs "$GITHUB_REF_NAME"
+      - run: pnpm build
+      - name: Verify the CLI --version matches the tag
+        run: |
+          version="$(node packages/cli/dist/index.js --version)"
+          if [[ "$version" != "$GITHUB_REF_NAME" ]]; then
+            echo "cli --version printed '$version', expected '$GITHUB_REF_NAME'" >&2
+            exit 1
+          fi
+      - name: Create the GitHub release
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,6 +1,6 @@
 {
   "name": "@qare/core",
-  "version": "0.0.0-dev",
+  "version": "2026.9.0",
   "description": "QARE core: plan, execute, judge, report",
   "license": "Elastic-2.0",
   "type": "module",

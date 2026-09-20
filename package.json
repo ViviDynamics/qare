@@ -1,6 +1,6 @@
 {
   "name": "qare",
-  "version": "0.0.0-dev",
+  "version": "2026.9.0",
   "private": true,
   "description": "QA agent harness: plans checks, runs evidence, decides verdicts in code",
   "license": "Elastic-2.0",
