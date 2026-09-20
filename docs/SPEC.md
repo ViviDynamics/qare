@@ -372,6 +372,7 @@ generator, Argos for visual review, API before/after on Go services.
 - **Ledger storage:** both backends, `branch` by default, with export and
   migration so neither is a trap.
 - **GitHub identity:** App or personal access token, chosen per install.
+  ([ADR-0003](./decisions/adr-0003-posting-identity.md))
 - **Unsettled conflicts:** hold only the affected criteria, never the run.
 - **Plan approval:** review with the pull request; the plan is locked before
   implementation. ([ADR-0001](./decisions/adr-0001-plan-approval.md))
