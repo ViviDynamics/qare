@@ -51,5 +51,7 @@ export type {
   AgentUsage,
   ToolPolicy,
 } from './runner.js'
+export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'
+export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobPostTarget } from './job.js'
 export { bootApp, stopApp } from './boot.js'
 export type { BootOutcome, BootOpts } from './boot.js'
