@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1",
+  "criteria": [
+    {
+      "id": "payout-1099-notice",
+      "text": "A host paid over the threshold sees the 1099 notice on the payouts page.",
+      "checks": [
+        { "kind": "screenshot", "name": "payouts-page" }
+      ]
+    }
+  ]
+}

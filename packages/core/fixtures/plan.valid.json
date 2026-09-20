@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "1",
+  "criteria": [
+    {
+      "id": "payout-1099-notice",
+      "text": "A host paid over the threshold sees the 1099 notice on the payouts page.",
+      "checks": [
+        { "kind": "command", "name": "payout-tax-spec", "command": "bin/rails test test/payout_tax_test.rb" },
+        { "kind": "flow", "name": "payouts-notice-flow", "suite": "browser-e2e" },
+        { "kind": "visual", "name": "payouts-page-1440-light", "screenshot": "payouts", "widths": [1440, 390], "themes": ["light", "dark"] }
+      ]
+    },
+    {
+      "id": "ledger-export-csv",
+      "text": "The ledger exports to CSV.",
+      "checks": [
+        { "kind": "flow", "name": "ledger-export-actions", "actions": ["open the ledger", "click export"], "inferred": true }
+      ]
+    },
+    {
+      "id": "multi-currency-totals",
+      "text": "Totals convert to the viewer currency.",
+      "unplannable": "no staging environment with multi-currency data is reachable from the sandbox"
+    }
+  ]
+}
