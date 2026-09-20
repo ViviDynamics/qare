@@ -6,9 +6,10 @@ acceptance criterion, and posts the evidence on the pull request: a
 per-criterion table with screenshots, logs and traces, and a verdict decided by
 code rather than by a model.
 
-qare sits beside [nare](https://github.com/ViviDynamics/nare). Conductor calls
-nare to develop and qare to QA, and other agent harnesses can call qare the same
-way through its CLI, GitHub Action, or MCP server.
+qare sits beside [nare](https://github.com/ViviDynamics/nare) in the Coordinare
+project family: an orchestrator calls nare to develop and qare to QA. Other
+agent harnesses can call qare the same way, through its CLI, GitHub Action, or
+MCP server.
 
 Status: design. See [docs/SPEC.md](docs/SPEC.md).
 

@@ -10,8 +10,9 @@ runs the app before and after the change, checks every acceptance criterion,
 and posts evidence on the PR: a per-criterion table with screenshots, logs and
 traces, and a verdict that code decided, not a model.
 
-It sits beside NARE. Conductor calls NARE to develop and QARE to QA, and any
-other harness (Claude Code, Codex, OpenCode) can call QARE the same way.
+It sits beside NARE in the Coordinare project family. An orchestrator calls
+NARE to develop and QARE to QA, and any other harness (Claude Code, Codex,
+OpenCode) can call QARE the same way.
 
 ## Principles
 
@@ -89,9 +90,9 @@ app:
   seed: { command: "bin/rails db:seed:qa" }
   login: { fixture: fixtures/users.yml, role: admin }
 stubs:
-  - service: maxio
-    hosts: ["*.chargify.com", "*.maxio.com"]
-    provided_by: { compose_service: maxio-mock }
+  - service: billing
+    hosts: ["api.billing-vendor.example"]
+    provided_by: { compose_service: billing-stub }
   - service: mail
     hosts: ["api.mailgun.net"]
     provided_by: { compose_service: mailpit }
@@ -99,7 +100,7 @@ visual:
   widths: [1440, 390]
   themes: [light, dark]
 suites:
-  - { name: console-e2e, command: "npm --prefix console-e2e test", kind: flow }
+  - { name: browser-e2e, command: "npm --prefix e2e test", kind: flow }
 ```
 
 Agent-written stubs are allowed only when flagged: any check that depends on a
@@ -138,14 +139,14 @@ One TypeScript codebase, one core, thin adapters:
 | `@qare/core` | plan, execute, judge, report; provider interface; `result.json` schema |
 | `@qare/cli` | `qare init`, `qare readiness`, `qare run`, `qare judge` |
 | `@qare/action` | GitHub Action wrapping the three jobs |
-| `@qare/mcp` | MCP server so Conductor, Codex, OpenCode and others can call it |
+| `@qare/mcp` | MCP server so orchestrators, Codex, OpenCode and others can call it |
 | `plugin/claude-code` | skill, verifier subagent, Stop hook for local runs |
 
 Model: Claude through a small provider interface, Claude only at first.
 
 ## Repo conventions
 
-Matches NARE, Conductor and Coordinare: public, Elastic License 2.0 (LICENSE
+Matches NARE and the rest of the Coordinare family: public, Elastic License 2.0 (LICENSE
 and NOTICE copied from NARE), issues yes and pull requests no (CONTRIBUTING.md
 and SECURITY.md adapted from NARE), CalVer. Node LTS, TypeScript strict, Playwright Test, pnpm workspaces, vitest.
 
@@ -153,7 +154,8 @@ and SECURITY.md adapted from NARE), CalVer. Node LTS, TypeScript strict, Playwri
 
 **M0: skeleton.** Repo, license, CI, packages, `result.json` schema, CalVer.
 
-**M1: core loop on one repo (pilot: ELM admin, Active Admin 4 epic #3002).**
+**M1: core loop on one repo (pilot: an internal Rails admin console, during a
+framework upgrade that changes most of its screens).**
 1. `.qa/` profile schema and loader with validation errors that name the field.
 2. Boot and health check from compose, harness-run, with a timeout and logs.
 3. Plan step: issue plus diff plus profile to `plan.json`; empty plan fails closed.
@@ -163,7 +165,7 @@ and SECURITY.md adapted from NARE), CalVer. Node LTS, TypeScript strict, Playwri
 7. Egress recording and `refused: missing stub`.
 8. Judge: verdicts in code, regressions against base, `blocked` vs `failed`.
 9. Evidence comment and check run.
-10. ELM `.qa/` profile for the admin console.
+10. First real `.qa/` profile, for the pilot app.
 
 **M2: automation.** GitHub Action with the three-job split, `workflow_run`,
 `/qa`, label triggers, once-per-SHA memory, fork refusal, `qa-waived`.
@@ -171,11 +173,11 @@ and SECURITY.md adapted from NARE), CalVer. Node LTS, TypeScript strict, Playwri
 **M3: guards.** Plan locked before implementation (plan commit first, guard on
 edits to locked checks), verifier model step, agent-written stub flagging.
 
-**M4: harness integration.** MCP server, Claude Code plugin, Conductor calling
-QARE through `result.json`.
+**M4: harness integration.** MCP server, Claude Code plugin, an orchestrator
+calling QARE through `result.json`.
 
-**M5: readiness and second repo.** `qare readiness`, stub issue filing,
-Dettmore platform profile with cucumber and MaxioMock.
+**M5: readiness and second repo.** `qare readiness`, stub issue filing, and a
+profile for a second Rails app whose flow checks come from its Cucumber suite.
 
 Later: per-PR preview namespaces via the Argo CD ApplicationSet pull request
 generator, Argos for visual review, API before/after on Go services.
