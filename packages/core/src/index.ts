@@ -31,3 +31,14 @@ export type {
   CriterionResult,
   RunResult,
 } from './result.js'
+export { FakeAgentRunner, FakeAgentRunnerError } from './runner.js'
+export type {
+  AgentBudget,
+  AgentRunRequest,
+  AgentRunner,
+  AgentRunResult,
+  AgentRunStatus,
+  AgentStopReason,
+  AgentUsage,
+  ToolPolicy,
+} from './runner.js'
