@@ -53,13 +53,21 @@ it saved, traces it recorded. A claim from a model that is not backed by an
 executed check is not evidence, and links are only ever written for files that
 were actually uploaded.
 
-## 5. Fail closed
+## 5. Criteria change only through review
+
+qare proposes criteria; people approve them. A criterion is never weakened,
+superseded or retired by the same run that needs it to pass, proposals arrive
+as pull requests, and any ledger change that lands with a change is named in
+that run's evidence. Editing the requirement is the cheapest way to go green,
+so it is the path that stays closed.
+
+## 6. Fail closed
 
 An empty plan, a missing stub, a boot failure, a truncated model response, or a
 schema violation stops the run with a named outcome. None of them fall through
 to a pass.
 
-## 6. Secrets never share a machine with pull request code
+## 7. Secrets never share a machine with pull request code
 
 The step that executes pull request code holds no model key and no GitHub
 token, and reaches nothing outside the declared stubs. Planning and judging run

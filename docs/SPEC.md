@@ -111,6 +111,66 @@ Agent-written stubs are allowed only when flagged: any check that depends on a
 stub QARE wrote itself is shown as such and cannot count as `proven` without a
 human note.
 
+## The criteria ledger
+
+A single pull request's acceptance criteria are the small case. The general
+case is a repo whose criteria accumulate: hundreds of statements about how the
+product behaves, written at different times by different people, some of them
+now contradicting each other. QARE maintains that ledger.
+
+The ledger lives in the repo under `.qa/criteria/`, one versioned file per
+area, so it is reviewed like code and diffed like code. Sketch of an entry:
+
+```yaml
+- id: BIL-014
+  text: A host paid more than the annual threshold gets a 1099 in January.
+  proof: command
+  status: active          # proposed | active | superseded | retired
+  source: { issue: 2988, pr: 3011 }
+  supersedes: [BIL-009]
+  checks: [billing/spec/payout_tax_spec.rb:1099_threshold]
+  last_verified: { sha: 9f3c1ab, run: 812, at: 2026-09-18, verdict: proven }
+```
+
+Lifecycle:
+
+- **Ingest.** QARE reads acceptance criteria from an issue or PR and proposes
+  ledger entries. Proposals arrive as a pull request, never as a silent edit.
+- **Verify.** Every run records its verdict against the criteria it covered, so
+  the ledger always knows when each statement was last proven and by what.
+- **Contradict.** A change can put a new criterion at odds with an old one, or
+  make an old one fail on purpose. QARE separates the two: a criterion the diff
+  intends to replace is proposed as `superseded` with the replacement linked; a
+  criterion that fails without any intent to change it is a regression.
+- **Ask, rarely.** When evidence cannot settle whether a conflict is intended,
+  QARE asks one question in one place, with its own recommendation attached,
+  and holds only the affected criteria as `unverified`.
+- **Retire.** Criteria for removed features are retired with a reason and stay
+  in history.
+
+Criteria can only be weakened, superseded or retired through a reviewed change,
+and every run's evidence names any ledger change that landed with it. This is
+the same defense as locking checks before code: without it, the cheapest way to
+go green is to edit the requirement.
+
+### Working small and working large
+
+The same engine serves both ends, and nothing in the pipeline assumes the whole
+ledger:
+
+- **A few criteria.** Given one issue, QARE plans and checks only those
+  criteria. No ledger is required to run at all.
+- **A named subset.** An orchestrator hands QARE a set of criterion ids for one
+  card and gets back a verdict for exactly those.
+- **The whole ledger.** For a diff, QARE selects the criteria the change could
+  affect, plus a standing smoke set, within a time budget. What it did not run
+  is reported as not selected, never as passed.
+- **A sweep.** On a schedule, QARE works through the ledger to refresh staleness
+  and catch drift that no pull request would have touched.
+
+Selection, caching, sharding and budgets are what make the large case possible;
+they never change what a verdict means.
+
 ## Triggers
 
 - CI completes green on a PR (`workflow_run`), once per head SHA.
@@ -141,7 +201,7 @@ One TypeScript codebase, one core, thin adapters:
 | Package | Purpose |
 | --- | --- |
 | `@qare/core` | plan, execute, judge, report; provider interface; `result.json` schema |
-| `@qare/cli` | `qare init`, `qare readiness`, `qare run`, `qare judge` |
+| `@qare/cli` | `qare init`, `qare readiness`, `qare run`, `qare judge`, `qare ledger`, `qare sweep` |
 | `@qare/action` | GitHub Action wrapping the three jobs |
 | `@qare/mcp` | MCP server so orchestrators, Codex, OpenCode and others can call it |
 | `plugin/claude-code` | skill, verifier subagent, Stop hook for local runs |
@@ -189,6 +249,18 @@ calling QARE through `result.json`.
 
 **M5: readiness and second repo.** `qare readiness`, stub issue filing, and a
 profile for a second Rails app whose flow checks come from its Cucumber suite.
+
+**M6: criteria ledger.** Ledger format, ingest as proposals, identity across
+rewording, verification records, contradiction detection, the resolution
+protocol, the integrity guard, and `qare ledger`.
+
+**M7: scale and steady state.** Impact selection with a budget, subset runs by
+criterion id, caching and skip-unchanged, parallel execution, scheduled sweeps,
+flake quarantine, and the measures that say whether any of this is working.
+
+Intended order: M0, M1, M2, M3, M6, M4, M5, M7. The ledger comes before the
+harness integrations, because an orchestrator asking for a subset of criteria
+needs the ledger to exist.
 
 Later: per-PR preview namespaces via the Argo CD ApplicationSet pull request
 generator, Argos for visual review, API before/after on Go services.
