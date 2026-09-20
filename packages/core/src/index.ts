@@ -22,6 +22,15 @@ export {
   loadResult,
   parseResult,
 } from './result.js'
+export { ProfileValidationError, loadProfile } from './profile.js'
+export type {
+  QaProfile,
+  ProfileApp,
+  ProfileStub,
+  ProfileVisual,
+  ProfileSuite,
+  ProfileSuiteKind,
+} from './profile.js'
 export type {
   CriterionOutcome,
   RunVerdict,

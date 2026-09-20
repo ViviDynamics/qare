@@ -17,6 +17,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
+  "dependencies": {
+    "yaml": "^2.9.1"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.9.3",

@@ -1,0 +1,17 @@
+app:
+  boot: { compose: compose.qa.yaml, service: admin }
+  health: { http: "http://localhost:3000/up", timeout: 120s }
+  seed: { command: "bin/rails db:seed:qa" }
+  login: { fixture: fixtures/users.yml, role: admin }
+stubs:
+  - service: billing
+    hosts: ["api.billing-vendor.example"]
+    provided_by: { compose_service: billing-stub }
+  - service: mail
+    hosts: ["api.mailgun.net"]
+    provided_by: { compose_service: mailpit }
+visual:
+  widths: [1440, 390]
+  themes: [light, dark]
+suites:
+  - { name: browser-e2e, command: "npm --prefix e2e test", kind: flow }
