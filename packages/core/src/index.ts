@@ -69,6 +69,8 @@ export {
 export { makePlaywrightFlowSession, PlaywrightFlowSessionError } from './flow-playwright.js'
 export { matchesStub, summarizeEgress, mergeVerdicts } from './egress.js'
 export type { EgressAttempt, EgressFinding, EgressStub } from './egress.js'
+export { diffStubs, flagAddedStubs } from './stub-diff.js'
+export type { StubDiff } from './stub-diff.js'
 export {
   consumeVerifierFindings,
   detectRegressions,
