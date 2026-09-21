@@ -59,7 +59,10 @@ test('waived never rescues a failure', () => {
   const failed: RunResult = {
     ...allProven,
     verdict: 'failed',
-    criteria: [{ id: 'payouts', outcome: 'failed', evidence: [] }],
+    criteria: [
+      { id: 'payouts', outcome: 'failed', evidence: [] },
+      { id: 'ledger', outcome: 'proven', evidence: ['checks/ledger/1/stdout.txt'] },
+    ],
   }
   const result = recordWaiver(failed, { criterionIds: ['ledger'], by: 'hana' })
   expect(result.verdict).toBe('failed')
@@ -85,4 +88,20 @@ test('the result loader round-trips a waived field and rejects malformed ones', 
   const empty = JSON.parse(text)
   empty.waived = []
   expect(() => loadResult(JSON.stringify(empty))).toThrow(/must not be empty/)
+})
+
+test('waiving a nonexistent or empty id list is a no-op, never a verdict flip', () => {
+  const noop = recordWaiver(allProven, { criterionIds: ['typo-id'], by: 'hana' })
+  expect(noop.verdict).toBe('passed')
+  expect(noop.waived).toBeUndefined()
+  const empty = recordWaiver(allProven, { criterionIds: [], by: 'hana' })
+  expect(empty.verdict).toBe('passed')
+  expect(empty.waived).toBeUndefined()
+  const blankActor = recordWaiver(allProven, { criterionIds: ['payouts'], by: '   ' })
+  expect(blankActor.verdict).toBe('passed')
+  expect(blankActor.waived).toBeUndefined()
+})
+
+test('parseWaiver deduplicates repeated ids', () => {
+  expect(parseWaiver({ body: '/qa-waive c1, c1' })).toEqual({ criterionIds: ['c1'] })
 })

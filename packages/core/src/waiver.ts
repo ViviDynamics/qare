@@ -45,10 +45,9 @@ export function parseWaiver(input: { body?: string; label?: string }): ParsedWai
       return { rejected: 'qa-waived label names no criteria; comment /qa-waive <ids> instead' }
     return { rejected: 'not a /qa-waive command' }
   }
-  const ids = raw
-    .split(/[,\s]+/)
-    .filter((id) => id !== '')
-    .filter((id) => isWaivableId(id))
+  const ids = [...new Set(raw.split(/[,\s]+/).filter((id) => id !== ''))].filter((id) =>
+    isWaivableId(id),
+  )
   if (ids.length === 0) return { rejected: 'no valid criterion ids' }
   return { criterionIds: ids }
 }
@@ -68,7 +67,15 @@ export function recordWaiver(
 ): RunResult {
   if (result.verdict === 'refused') return result
   const by = sanitizeActor(waiver.by)
-  const named = new Set(waiver.criterionIds)
+  // only ids naming a criterion on this run count (judge.ts precedent: a
+  // nonexistent waived id is a no-op); empty actor or empty intersection is a
+  // no-op so the output always round-trips through the result loader
+  const named = new Set(
+    result.criteria
+      .filter((criterion) => waiver.criterionIds.includes(criterion.id))
+      .map((criterion) => criterion.id),
+  )
+  if (named.size === 0 || by === '') return result
   const criteria: CriterionResult[] = result.criteria.map((criterion) =>
     named.has(criterion.id)
       ? { id: criterion.id, outcome: 'unverified', reason: `waived by ${by}` }
@@ -76,26 +83,22 @@ export function recordWaiver(
   )
   return {
     ...result,
-    verdict: deriveWaivedVerdict(result.verdict, criteria, named.size > 0),
+    verdict: deriveWaivedVerdict(result.verdict, criteria),
     criteria,
     waived: [...named].map((criterionId) => ({ criterionId, by })),
   }
 }
 
-function deriveWaivedVerdict(
-  current: RunVerdict,
-  criteria: CriterionResult[],
-  anyWaived: boolean,
-): RunVerdict {
+function deriveWaivedVerdict(current: RunVerdict, criteria: CriterionResult[]): RunVerdict {
   if (criteria.some((criterion) => criterion.outcome === 'failed')) return 'failed'
-  if (!anyWaived) return current
-  if (criteria.some((criterion) => criterion.outcome === 'unverified')) return 'waived'
   if (criteria.length === 0) return 'blocked'
+  if (criteria.some((criterion) => criterion.outcome === 'unverified')) return 'waived'
   return 'waived'
 }
 
 function sanitizeActor(by: string): string {
   return String(by ?? '')
+    .replace(/[\u202A-\u202E\u2066-\u2069]/g, '')
     .replace(/[\x00-\x1f\x7f]+/g, ' ')
     .trim()
 }
