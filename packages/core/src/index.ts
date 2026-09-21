@@ -56,3 +56,4 @@ export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobPostTarget }
 export { bootApp, stopApp } from './boot.js'
 export type { BootOutcome, BootOpts } from './boot.js'
 export { runJob } from './run.js'
+export { runVisualCheck, type VisualRevision, type VisualCheckOpts, type VisualScreenshot, type VisualDiff, type VisualCheckResult } from './visual.js'
