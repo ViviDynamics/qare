@@ -1,0 +1,17 @@
+app:
+  boot: { compose: compose.qa.yaml, service: admin }
+  health: { http: "http://localhost:3000/up", timeout: 120s }
+  seed: { command: "bin/rails db:seed:qa" }
+  login: { fixture: fixtures/users.yml, role: admin }
+stubs:
+  - service: billing
+    hosts: ["api.stripe.example", "files.stripe.example"]
+    provided_by: { compose_service: billing-stub }
+  - service: mail
+    hosts: ["smtp.postmark.example"]
+    provided_by: { compose_service: mailpit }
+visual:
+  widths: [1440, 390]
+  themes: [light, dark]
+suites:
+  - { name: rails-system, command: "bin/rails test:system", kind: command }

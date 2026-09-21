@@ -1,0 +1,7 @@
+# Seed users for the pilot admin console (see app.login in config.yml).
+admin:
+  email: admin@pilot.example
+  role: admin
+analyst:
+  email: analyst@pilot.example
+  role: analyst
