@@ -72,11 +72,19 @@ export function renderComment(result: RunResult): string {
   ]
   const details = detailLinks(result.criteria)
   if (details.length > 0) lines.push('', 'Details:', '', ...details)
-  if (result.criteria.some(criterion => criterion.outcome === 'unverified'))
-    lines.push(
-      '',
-      'Unverified criteria could not verify (environment) — that is not a code defect.',
-    )
+  const unverified = result.criteria.filter(criterion => criterion.outcome === 'unverified')
+  if (unverified.length > 0) {
+    if (unverified.every(criterion => typeof criterion.reason === 'string' && criterion.reason.startsWith('waived by ')))
+      lines.push(
+        '',
+        'Waived criteria are recorded as waived (human) — a waiver is not a pass and needs out-of-band confirmation.',
+      )
+    else
+      lines.push(
+        '',
+        'Unverified criteria could not verify (environment) — that is not a code defect.',
+      )
+  }
   return lines.join('\n')
 }
 
