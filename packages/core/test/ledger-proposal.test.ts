@@ -79,7 +79,7 @@ describe('parseVerificationRecord', () => {
     bad(recordFixture({ extra: 1 }), /extra: unknown field in verification record/)
     bad(recordFixture({ criteria: [{ criterionId: 'a', outcome: 'pass', extra: 1 }] }), /criteria\[0\].extra: unknown field in verification criterion/)
     bad(recordFixture({ criteria: [{ criterionId: 'a', outcome: 'promoted' }] }), /criteria\[0\].outcome: unknown outcome "promoted"/)
-    bad(recordFixture({ criteria: [{ criterionId: 'a:b', outcome: 'pass' }] }), /criteria\[0\].criterionId: criterion id "a:b" contains ":"/)
+    bad(recordFixture({ criteria: [{ criterionId: 'a:b', outcome: 'pass' }] }), /criteria\[0\].criterionId: unknown namespace in criterion id "a:b"/)
     bad(recordFixture({ criteria: [{ criterionId: '../escape', outcome: 'pass' }] }), /path separators, "\.\." or control characters/)
     bad(recordFixture({ criteria: [{ criterionId: 'a\u0000b', outcome: 'pass' }] }), /path separators, "\.\." or control characters/)
     bad(recordFixture({ criteria: [{ criterionId: '', outcome: 'pass' }] }), /criteria\[0\].criterionId: criterion id must be a non-empty string/)

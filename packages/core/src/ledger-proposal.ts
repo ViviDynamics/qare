@@ -88,14 +88,22 @@ function parseEvidence(value: unknown, field: string): string[] {
   })
 }
 
+export const JOB_CRITERION_NAMESPACE = 'job'
+
 function validateCriterionId(id: string, field: string): string {
-  if (id.includes(':'))
-    fail(field, `criterion id "${id}" contains ":"; ":" is reserved for namespace prefixes`)
   if (/[/\\]|\.\./.test(id) || /[\x00-\x1f\x7f]/.test(id))
     fail(
       field,
       `criterion id ${JSON.stringify(id)} must not contain path separators, ".." or control characters`,
     )
+  if (id.includes(':')) {
+    const namespacePrefix = `${JOB_CRITERION_NAMESPACE}:`
+    if (!id.startsWith(namespacePrefix))
+      fail(field, `unknown namespace in criterion id ${JSON.stringify(id)}; only "${namespacePrefix}" is valid`)
+    const rest = id.slice(namespacePrefix.length)
+    if (rest === '' || rest.includes(':'))
+      fail(field, `criterion id ${JSON.stringify(id)} must use at most one namespace component`)
+  }
   return id
 }
 

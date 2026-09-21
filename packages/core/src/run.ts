@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { bootApp, type BootOpts } from './boot.js'
 import { judgeRun, toSideResults } from './judge.js'
+import { feedRunLedger } from './ledger-feed.js'
 import type { Job, JobCommandCheck, JobCriterion } from './job.js'
 import { loadProfile, validateProfileConfig } from './profile.js'
 import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult } from './result.js'
@@ -25,7 +26,10 @@ const NO_CHECKS_REASON = 'no checks: model planning lands when nare integration 
  * The booted app is intentionally left up after the checks so evidence (logs) can
  * be inspected; teardown is the caller's job (stopApp).
  */
-export async function runJob(job: Job, opts: BootOpts = {}): Promise<{ result: RunResult }> {
+export async function runJob(
+  job: Job,
+  opts: BootOpts & { ledgerFeed?: { dir: string } } = {},
+): Promise<{ result: RunResult }> {
   const profile = await resolveProfile(job)
   const boot = await bootApp(profile, opts)
   if (boot.kind === 'blocked') {
@@ -34,7 +38,9 @@ export async function runJob(job: Job, opts: BootOpts = {}): Promise<{ result: R
       outcome: 'unverified',
       reason: boot.reason ?? 'boot did not come up',
     }))
-    return finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria })
+    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria })
+    await feedIfOptedIn(opts, job, finished.result)
+    return finished
   }
 
   const criteria: CriterionResult[] = []
@@ -42,7 +48,22 @@ export async function runJob(job: Job, opts: BootOpts = {}): Promise<{ result: R
   // The judge is the verdict decision. Base execution and egress interception
   // land with the orchestrator; today the head side is the whole picture.
   const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: 'allowed' })
-  return finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria })
+  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria })
+  await feedIfOptedIn(opts, job, finished.result)
+  return finished
+}
+
+async function feedIfOptedIn(
+  opts: { ledgerFeed?: { dir: string } },
+  job: Job,
+  result: RunResult,
+): Promise<void> {
+  if (!opts.ledgerFeed) return
+  await feedRunLedger(
+    opts.ledgerFeed.dir,
+    { id: job.id, headRef: job.headRef },
+    result.criteria.map((criterion) => ({ criterionId: criterion.id, outcome: criterion.outcome })),
+  )
 }
 
 async function resolveProfile(job: Job) {
