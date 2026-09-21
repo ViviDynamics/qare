@@ -57,3 +57,8 @@ export { bootApp, stopApp } from './boot.js'
 export type { BootOutcome, BootOpts } from './boot.js'
 export { runJob } from './run.js'
 export { runVisualCheck, type VisualRevision, type VisualCheckOpts, type VisualScreenshot, type VisualDiff, type VisualCheckResult } from './visual.js'
+export {
+  makePlaywrightScreenshot,
+  disposeBrowser,
+  PlaywrightScreenshotBackendError,
+} from './visual-playwright.js'
