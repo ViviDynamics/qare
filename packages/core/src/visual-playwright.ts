@@ -2,6 +2,10 @@ import type { VisualCheckOpts } from './visual.js'
 
 const NOT_INSTALLED_MESSAGE =
   'playwright-core is not installed; visual checks are unverified without a screenshot backend'
+const LOAD_FAILED_MESSAGE =
+  'playwright-core failed to load; visual checks are unverified without a working backend'
+
+type PlaywrightModule = typeof import('playwright-core')
 
 export class PlaywrightScreenshotBackendError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -13,13 +17,21 @@ export class PlaywrightScreenshotBackendError extends Error {
 type ScreenshotFn = NonNullable<VisualCheckOpts['screenshot']>
 
 export async function makePlaywrightScreenshot(
-  opts: { browserExecutablePath?: string } = {},
+  opts: {
+    browserExecutablePath?: string
+    loadPlaywright?: () => Promise<PlaywrightModule>
+  } = {},
 ): Promise<ScreenshotFn> {
-  let playwright: typeof import('playwright-core')
+  const loadPlaywright =
+    opts.loadPlaywright ?? ((): Promise<PlaywrightModule> => import('playwright-core'))
+  let playwright: PlaywrightModule
   try {
-    playwright = await import('playwright-core')
+    playwright = await loadPlaywright()
   } catch (error) {
-    throw new PlaywrightScreenshotBackendError(NOT_INSTALLED_MESSAGE, { cause: error })
+    const code = (error as NodeJS.ErrnoException | null)?.code
+    if (code === 'ERR_MODULE_NOT_FOUND')
+      throw new PlaywrightScreenshotBackendError(NOT_INSTALLED_MESSAGE, { cause: error })
+    throw new PlaywrightScreenshotBackendError(LOAD_FAILED_MESSAGE, { cause: error })
   }
   const chromium = playwright.chromium
 
@@ -28,14 +40,21 @@ export async function makePlaywrightScreenshot(
   let launching: Promise<Browser> | null = null
 
   const launch = (): Promise<Browser> => {
-    launching ??= chromium.launch({ headless: true, executablePath: opts.browserExecutablePath })
+    launching ??= chromium
+      .launch({ headless: true, executablePath: opts.browserExecutablePath })
+      .catch((error: unknown) => {
+        // a failed launch must not poison the cached promise: the next capture retries
+        launching = null
+        throw error
+      })
     return launching
   }
 
   const dispose = async (): Promise<void> => {
     if (launching !== null) {
-      const instance = await launching
+      const pending = launching
       launching = null
+      const instance = await pending
       await instance.close()
     }
   }
