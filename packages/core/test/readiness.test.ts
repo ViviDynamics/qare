@@ -1,4 +1,4 @@
-import { cp, mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { cp, chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -154,6 +154,75 @@ test('stub coverage compares reached origins against profile stub hosts', async 
   expect(inventory.profile.healthUrl).toBe(['http:', '//localhost:3000/up'].join(''))
   expect(inventory.coverage).toEqual([{ origin: url('api.billing-vendor.example'), coveredBy: 'billing' }])
   expect(inventory.gaps).toEqual(['stub "mail" lists host "api.mailgun.net" that the scan never observed'])
+})
+
+test('stub matching strips ports from reached origins', async () => {
+  const dir = await repoWith({
+    'docker-compose.yml': 'services:\n  admin:\n    image: admin\n    healthcheck: {}\n',
+    'a.md': `calls ${url('api.billing-vendor.example', ':8443/v1')}`,
+  })
+  await withProfile(dir)
+  const inventory = await readinessInventory(dir)
+  expect(inventory.coverage).toEqual([{ origin: url('api.billing-vendor.example:8443'), coveredBy: 'billing' }])
+  expect(inventory.gaps).toEqual(['stub "mail" lists host "api.mailgun.net" that the scan never observed'])
+})
+
+test('wildcard stub hosts match observed origins in both directions', async () => {
+  const config = [
+    'app:',
+    '  boot: { compose: compose.qa.yaml, service: admin }',
+    `  health: { http: ${JSON.stringify(['http:', '//localhost:3000/up'].join(''))}, timeout: 120s }`,
+    '  seed: { command: "bin/rails db:seed:qa" }',
+    '  login: { fixture: fixtures/users.yml, role: admin }',
+    'stubs:',
+    '  - service: cdn',
+    '    hosts: ["*.cdn.example"]',
+    '    provided_by: { compose_service: cdn-stub }',
+    'visual:',
+    '  widths: [1440, 390]',
+    '  themes: [light, dark]',
+    'suites:',
+    '  - { name: browser-e2e, command: "npm --prefix e2e test", kind: flow }',
+  ].join('\n')
+  const dir = await repoWith({
+    'docker-compose.yml': 'services:\n  admin:\n    image: admin\n    healthcheck: {}\n',
+    'a.md': `calls ${url('a.cdn.example', '/static')}`,
+  })
+  await withProfile(dir, config)
+  const inventory = await readinessInventory(dir)
+  expect(inventory.coverage).toEqual([{ origin: url('a.cdn.example'), coveredBy: 'cdn' }])
+  expect(inventory.gaps).toEqual([])
+})
+
+test('userinfo URLs normalize to the bare host', async () => {
+  const dir = await repoWith({ 'a.md': `db at ${['http:', '//user:pass@db.example.net/db'].join('')}` })
+  const inventory = await readinessInventory(dir)
+  expect(inventory.origins).toEqual([
+    { origin: url('db.example.net'), totalHits: 1, files: [{ file: './a.md', count: 1 }] },
+  ])
+})
+
+test('skipped files do not consume the cap budget', async () => {
+  const dir = await repoWith({ 'a.md': url('a.example.com') })
+  await writeFile(join(dir, 'big.md'), `x${'y'.repeat(1024 * 1024)}\n`)
+  const inventory = await readinessInventory(dir, { maxFiles: 2 })
+  expect(inventory.scan.capped).toBe(false)
+  expect(inventory.scan.skippedOversized).toBe(1)
+  expect(inventory.scan.filesScanned).toBe(1)
+  expect(inventory.origins.map((hit) => hit.origin)).toEqual([url('a.example.com')])
+})
+
+test('unreadable files are counted, not silent', async () => {
+  const dir = await repoWith({ 'a.md': url('a.example.com'), 'locked.md': url('locked.example.com') })
+  await chmod(join(dir, 'locked.md'), 0o000)
+  try {
+    const inventory = await readinessInventory(dir)
+    expect(inventory.scan.skippedUnreadable).toBe(1)
+    expect(inventory.scan.filesScanned).toBe(1)
+    expect(inventory.origins.map((hit) => hit.origin)).toEqual([url('a.example.com')])
+  } finally {
+    await chmod(join(dir, 'locked.md'), 0o644)
+  }
 })
 
 test('uncovered reached origin is a named gap when a profile exists', async () => {

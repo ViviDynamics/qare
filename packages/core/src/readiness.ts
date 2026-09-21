@@ -39,7 +39,9 @@ export interface ReadinessScanStats {
   filesScanned: number
   skippedOversized: number
   skippedBinary: number
+  skippedUnreadable: number
   capped: boolean
+  maxFiles: number
 }
 
 export interface ReadinessInventory {
@@ -61,9 +63,17 @@ export async function readinessInventory(
   if (!info) throw new Error(`readiness: repo path ${JSON.stringify(repo)} does not exist`)
   if (!info.isDirectory()) throw new Error(`readiness: repo path ${JSON.stringify(repo)} is not a directory`)
 
+  const maxFiles = opts.maxFiles ?? READINESS_MAX_FILES
   const boot = await inventoryBoot(repo)
-  const scan: ReadinessScanStats = { filesScanned: 0, skippedOversized: 0, skippedBinary: 0, capped: false }
-  const origins = await scanOrigins(repo, opts.maxFiles ?? READINESS_MAX_FILES, scan)
+  const scan: ReadinessScanStats = {
+    filesScanned: 0,
+    skippedOversized: 0,
+    skippedBinary: 0,
+    skippedUnreadable: 0,
+    capped: false,
+    maxFiles,
+  }
+  const origins = await scanOrigins(repo, maxFiles, scan)
   const profile = await loadProfileInfo(repo)
   const coverage = coverageOf(origins, profile)
 
@@ -76,6 +86,10 @@ export async function readinessInventory(
     scan,
     gaps: gapsOf(boot, profile, coverage),
   }
+}
+
+function originHost(origin: string): string {
+  return origin.slice(origin.indexOf('://') + 3).replace(/:\d+$/, '')
 }
 
 function normalizeDir(dir: string): string {
@@ -101,11 +115,15 @@ async function inventoryBoot(repo: string): Promise<ReadinessComposeFile[]> {
 async function immediateSubdirectories(repo: string): Promise<string[]> {
   const entries = await readdir(repo, { withFileTypes: true })
   const dirs: string[] = []
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+  for (const entry of entries.sort((a, b) => compareStrings(a.name, b.name))) {
     if (!entry.isDirectory() || SKIP_DIRS.has(entry.name)) continue
     dirs.push(join(repo, entry.name))
   }
   return dirs
+}
+
+function compareStrings(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
 }
 
 async function isFile(path: string): Promise<boolean> {
@@ -141,7 +159,7 @@ export function parseComposeServices(path: string, text: string): ReadinessCompo
       command: command === undefined ? undefined : command,
     })
   }
-  return out.sort((a, b) => a.name.localeCompare(b.name))
+  return out.sort((a, b) => compareStrings(a.name, b.name))
 }
 
 function commandOf(record: Record<string, unknown>): string | undefined {
@@ -152,17 +170,13 @@ function commandOf(record: Record<string, unknown>): string | undefined {
   return undefined
 }
 
-const ORIGIN_PATTERN = /https?:\/\/[a-z0-9][a-z0-9._-]*(?::\d+)?/gi
-
 async function scanOrigins(repo: string, maxFiles: number, scan: ReadinessScanStats): Promise<ReadinessOriginHit[]> {
   const byOrigin = new Map<string, Map<string, number>>()
-  let visited = 0
   await walk(repo, repo, async (path, rel) => {
-    if (visited >= maxFiles) {
+    if (scan.filesScanned >= maxFiles) {
       scan.capped = true
       return
     }
-    visited += 1
     const info = await lstat(path)
     if (!info.isFile()) return
     if (info.size > READINESS_MAX_FILE_BYTES) {
@@ -170,7 +184,10 @@ async function scanOrigins(repo: string, maxFiles: number, scan: ReadinessScanSt
       return
     }
     const text = await readFile(path, 'utf8').catch(() => undefined)
-    if (text === undefined) return
+    if (text === undefined) {
+      scan.skippedUnreadable += 1
+      return
+    }
     if (text.slice(0, 1024).includes('\u0000')) {
       scan.skippedBinary += 1
       return
@@ -185,8 +202,8 @@ async function scanOrigins(repo: string, maxFiles: number, scan: ReadinessScanSt
     }
   })
   const hits: ReadinessOriginHit[] = []
-  for (const [origin, perFile] of [...byOrigin.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-    const files = [...perFile.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+  for (const [origin, perFile] of [...byOrigin.entries()].sort((a, b) => compareStrings(a[0], b[0]))) {
+    const files = [...perFile.entries()].sort((a, b) => compareStrings(a[0], b[0]))
     hits.push({
       origin,
       totalHits: files.reduce((sum, [, count]) => sum + count, 0),
@@ -196,17 +213,22 @@ async function scanOrigins(repo: string, maxFiles: number, scan: ReadinessScanSt
   return hits
 }
 
+const ORIGIN_PATTERN = /https?:\/\/(?:[a-z0-9._~\-]+(?::[a-z0-9._~\-]*)?@)?[a-z0-9][a-z0-9._-]*(?::\d+)?/gi
+
 export function normalizeOrigin(match: string): string {
   const schemeSplit = match.indexOf('://')
   if (schemeSplit !== 4 && schemeSplit !== 5) return ''
-  const host = match.slice(schemeSplit + 3).replace(/[.\-:]+$/, '').toLowerCase()
+  let rest = match.slice(schemeSplit + 3)
+  const at = rest.lastIndexOf('@')
+  if (at !== -1) rest = rest.slice(at + 1)
+  const host = rest.replace(/[.\-:]+$/, '').toLowerCase()
   if (host === '') return ''
   return `${match.slice(0, schemeSplit).toLowerCase()}://${host}`
 }
 
 async function walk(dir: string, repo: string, visit: (path: string, rel: string) => Promise<void>): Promise<void> {
   const entries = await readdir(dir, { withFileTypes: true })
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+  for (const entry of entries.sort((a, b) => compareStrings(a.name, b.name))) {
     const path = join(dir, entry.name)
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) continue
@@ -253,8 +275,7 @@ function coverageOf(
   const egressStubs = profile.stubs.map((stub) => ({ hosts: stub.hosts }))
   const cover: Array<{ origin: string; coveredBy?: string }> = []
   for (const hit of origins) {
-    const host = hit.origin.slice(hit.origin.indexOf('://') + 3)
-    const covered = egressStubs.length > 0 ? profile.stubs.find((stub) => matchesStub(host, [{ hosts: stub.hosts }])) : undefined
+    const covered = egressStubs.length > 0 ? profile.stubs.find((stub) => matchesStub(originHost(hit.origin), [{ hosts: stub.hosts }])) : undefined
     cover.push({ origin: hit.origin, coveredBy: covered?.service })
   }
   return cover
@@ -286,10 +307,7 @@ function gapsOf(
     }
     for (const stub of profile.stubs) {
       for (const host of stub.hosts) {
-        const observed = coverage.some((entry) => {
-          const hitHost = entry.origin.slice(entry.origin.indexOf('://') + 3)
-          return matchesStub(host, [{ hosts: [hitHost] }])
-        })
+        const observed = coverage.some((entry) => matchesStub(originHost(entry.origin), [{ hosts: [host] }]))
         if (!observed) {
           gaps.push(`stub ${JSON.stringify(stub.service)} lists host ${JSON.stringify(host)} that the scan never observed`)
         }
@@ -344,9 +362,10 @@ export function buildReadinessReport(inventory: ReadinessInventory): string {
   lines.push('## Scan')
   lines.push(
     `- ${inventory.scan.filesScanned} file(s) scanned` +
-      (inventory.scan.capped ? ` (scan capped at ${READINESS_MAX_FILES} files)` : '') +
+      (inventory.scan.capped ? ` (scan capped at ${inventory.scan.maxFiles} files)` : '') +
       (inventory.scan.skippedOversized > 0 ? `, ${inventory.scan.skippedOversized} skipped over 1 MB` : '') +
-      (inventory.scan.skippedBinary > 0 ? `, ${inventory.scan.skippedBinary} skipped as binary` : ''),
+      (inventory.scan.skippedBinary > 0 ? `, ${inventory.scan.skippedBinary} skipped as binary` : '') +
+      (inventory.scan.skippedUnreadable > 0 ? `, ${inventory.scan.skippedUnreadable} skipped unreadable` : ''),
   )
   lines.push('')
   lines.push('## Gaps')
