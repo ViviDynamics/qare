@@ -177,6 +177,13 @@ function parseCheck(value: unknown, base: string): PlanCheck {
       const screenshot = nonEmptyString(value.screenshot, `${base}.screenshot`, 'screenshot')
       const widths = value.widths === undefined ? undefined : numberArray(value.widths, `${base}.widths`, 'widths')
       const themes = value.themes === undefined ? undefined : stringArray(value.themes, `${base}.themes`, 'themes')
+      if (themes !== undefined)
+        for (const [index, theme] of themes.entries())
+          if (/[/\\]|\.\.|[\x00-\x1f\x7f]/.test(theme))
+            fail(
+              `${base}.themes[${index}]`,
+              `theme ${JSON.stringify(theme)} must not contain path separators, ".." or control characters; themes become evidence file names`,
+            )
       return finish({ kind: 'visual', name, screenshot, ...(widths !== undefined ? { widths } : {}), ...(themes !== undefined ? { themes } : {}) }, inferred)
     }
   }

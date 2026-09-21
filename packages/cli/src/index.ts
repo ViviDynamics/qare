@@ -63,7 +63,11 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     const resultPath = resolve(resultSpec)
     const outDir = outDirSpec === undefined ? dirname(resultPath) : resolve(outDirSpec)
     const loaded = loadResult(await readFile(resultPath, 'utf8'))
-    const judged = judgeRun({ base: [], head: toSideResults(loaded) })
+    const judged = judgeRun({
+      base: [],
+      head: toSideResults(loaded),
+      waived: loaded.waived?.map((entry) => entry.criterionId),
+    })
     if (runnerSpec === 'nare') {
       try {
         const runner = new NareAgentRunner()
@@ -209,6 +213,7 @@ function mergeJudged(loaded: RunResult, verdict: RunVerdict, criteria: Criterion
       return { id: criterion.criterionId, outcome: criterion.outcome, evidence }
     }),
     ...(loaded.job === undefined ? {} : { job: { id: loaded.job.id } }),
+    ...(loaded.waived === undefined ? {} : { waived: loaded.waived }),
   }
 }
 

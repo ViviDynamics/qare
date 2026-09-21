@@ -34,7 +34,11 @@ function failedReason(criterion: CriterionResult): string {
 }
 
 function reasonCell(criterion: CriterionResult): string {
-  if (criterion.outcome === 'unverified') return `could not verify (environment): ${criterion.reason}`
+  if (criterion.outcome === 'unverified') {
+    if (typeof criterion.reason === 'string' && criterion.reason.startsWith('waived by '))
+      return `waived (human): ${criterion.reason}`
+    return `could not verify (environment): ${criterion.reason}`
+  }
   return failedReason(criterion)
 }
 

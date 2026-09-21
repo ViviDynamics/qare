@@ -150,6 +150,32 @@ test('judge writes judged-result.json, comment.md and checkrun.json next to the 
   expect(await readFile(resultPath, 'utf8')).toBe(resultText)
 })
 
+test('judge of a waived result keeps the waived verdict and the waiver record', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-cli-'))
+  const resultPath = join(dir, 'result.json')
+  await writeFile(
+    resultPath,
+    `${JSON.stringify({
+      schemaVersion: RESULT_SCHEMA_VERSION,
+      verdict: 'waived',
+      criteria: [{ id: 'criterion-1', outcome: 'unverified', reason: 'waived by hana' }],
+      job: { id: 'job-cli' },
+      waived: [{ criterionId: 'criterion-1', by: 'hana' }],
+    }, null, 2)}\n`,
+    'utf8',
+  )
+  const { lines, writer } = capture()
+  const code = await main(['judge', '--result', resultPath], writer, NO_OUT)
+  expect(code).toBe(0)
+  expect(lines.join('')).toContain('verdict waived')
+  const judged = JSON.parse(await readFile(join(dir, 'judged-result.json'), 'utf8'))
+  expect(judged.verdict).toBe('waived')
+  expect(judged.waived).toEqual([{ criterionId: 'criterion-1', by: 'hana' }])
+  expect(judged.criteria).toEqual([
+    { id: 'criterion-1', outcome: 'unverified', reason: 'waived by human' },
+  ])
+})
+
 test('judge --runner nare skips the verifier and still writes all three artifacts', async () => {
   const { resultPath } = await writeResultFile()
   const outDir = join(await mkdtemp(join(tmpdir(), 'qare-cli-')), 'artifacts')

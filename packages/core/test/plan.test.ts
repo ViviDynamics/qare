@@ -110,6 +110,19 @@ test('schema violations name the field', () => {
   expect(planError(() => parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, unplannable: '' }] })).field).toBe('criteria[0].unplannable')
 })
 
+test('visual check themes become evidence file names, so they cannot escape the evidence dir', () => {
+  const check = { kind: 'visual', name: 'n', screenshot: 'shot', themes: ['../../escape'] }
+  const error = planError(() =>
+    parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [check] }] }),
+  )
+  expect(error.field).toBe('criteria[0].checks[0].themes[0]')
+  expect(error.message).toContain('themes become evidence file names')
+  expect(planError(() =>
+    parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ ...check, themes: ['dark\u0000'] }] }] }),
+  ).field).toBe('criteria[0].checks[0].themes[0]')
+  expect(parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ ...check, themes: ['light', 'dark'] }] }] }).criteria[0].checks[0].themes).toEqual(['light', 'dark'])
+})
+
 test('a valid inline plan round-trips with inferred omitted when absent', () => {
   const plan = parsePlan(valid)
   expect(plan.criteria[0]).toEqual({
