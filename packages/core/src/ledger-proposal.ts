@@ -64,16 +64,18 @@ function parseTimestamp(value: unknown, field: string): string {
       `timestamp ${JSON.stringify(text)} must be a strict ISO-8601 instant (e.g. "2026-09-21T00:00:00.000Z")`,
     )
   const parsed = new Date(text)
-  const canonical = parsed.toISOString()
-  if (
-    Number.isNaN(parsed.getTime()) ||
-    (canonical !== text && canonical !== `${text.slice(0, -1)}.000Z`)
-  )
+  if (Number.isNaN(parsed.getTime()))
     fail(
       field,
       `timestamp ${JSON.stringify(text)} must be a strict ISO-8601 instant (e.g. "2026-09-21T00:00:00.000Z")`,
     )
-  return text
+  const canonical = parsed.toISOString()
+  if (canonical !== text && canonical !== `${text.slice(0, -1)}.000Z`)
+    fail(
+      field,
+      `timestamp ${JSON.stringify(text)} must be a strict ISO-8601 instant (e.g. "2026-09-21T00:00:00.000Z")`,
+    )
+  return canonical
 }
 
 function parseEvidence(value: unknown, field: string): string[] {
@@ -128,7 +130,14 @@ export function parseVerificationRecord(input: unknown): VerificationRecord {
 
 function parseCriteria(value: unknown, field: string): VerificationCriterion[] {
   if (!Array.isArray(value)) fail(field, 'must be an array of criterion outcomes')
-  return value.map((entry, index) => parseCriterionOutcome(entry, index))
+  const seen = new Set<string>()
+  const parsed = value.map((entry, index) => parseCriterionOutcome(entry, index))
+  for (const criterion of parsed) {
+    if (seen.has(criterion.criterionId))
+      fail(field, `duplicate criterion "${criterion.criterionId}" in verification record`)
+    seen.add(criterion.criterionId)
+  }
+  return parsed
 }
 
 export interface LedgerProposalChange {

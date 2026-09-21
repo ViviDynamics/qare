@@ -49,7 +49,7 @@ describe('parseVerificationRecord', () => {
 
   test('accepts a seconds-precision UTC instant', () => {
     const parsed = parseVerificationRecord(recordFixture({ timestamp: '2026-09-21T12:34:56Z' }))
-    expect(parsed.timestamp).toBe('2026-09-21T12:34:56Z')
+    expect(parsed.timestamp).toBe('2026-09-21T12:34:56.000Z')
   })
 
   test('rejects malformed values with named errors', () => {
@@ -180,4 +180,25 @@ describe('buildLedgerProposal', () => {
     const proposal = buildLedgerProposal(parsed, current, baseFingerprint)
     expect(JSON.parse(JSON.stringify(proposal))).toEqual(proposal)
   })
+})
+
+test('duplicate criterion ids in the record fail closed', () => {
+  expect(() =>
+    parseVerificationRecord(
+      recordFixture({
+        criteria: [
+          { criterionId: 'spec-up-200', outcome: 'pass' },
+          { criterionId: 'spec-up-200', outcome: 'fail' },
+        ],
+      }),
+    ),
+  ).toThrow(/duplicate criterion "spec-up-200"/)
+})
+
+test('timestamp is normalized to canonical millisecond precision', () => {
+  const parsed = parseVerificationRecord(recordFixture({ timestamp: '2026-09-21T12:34:56Z' }))
+  expect(parsed.timestamp).toBe('2026-09-21T12:34:56.000Z')
+  expect(() => parseVerificationRecord(recordFixture({ timestamp: '2026-02-31T00:00:00.000Z' }))).toThrow(
+    /strict ISO-8601 instant/,
+  )
 })
