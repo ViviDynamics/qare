@@ -101,14 +101,14 @@ describe('flagAddedStubs', () => {
     const result = flagAddedStubs(diff, { requiredServices: ['payments'] })
     expect(diff.removed).toEqual([stub('payments', ['api.payments.example'])])
     expect(diff.added).toEqual([stub('payments', ['api.payments-v2.example'])])
-    expect(result.findings).toEqual(['stub-added-in-change: payments (hosts: api.payments-v2.example)'])
+    expect(result.findings).toEqual(['stub-modified-in-change: payments (hosts: api.payments-v2.example)'])
     expect(result.verdict).toBe('refused')
   })
 
   test('a modified non-required stub is flagged but allowed', () => {
     const diff = diffStubs([stub('mail', ['api.mail.example'])], [stub('mail', ['api.mail-v2.example'])])
     const result = flagAddedStubs(diff, { requiredServices: ['payments'] })
-    expect(result.findings).toEqual(['stub-added-in-change: mail (hosts: api.mail-v2.example)'])
+    expect(result.findings).toEqual(['stub-modified-in-change: mail (hosts: api.mail-v2.example)'])
     expect(result.verdict).toBe('allowed')
   })
 
@@ -138,4 +138,25 @@ describe('flagAddedStubs', () => {
     expect(result.findings).toEqual(['stub-added-in-change: sms (hosts: api.sms-gateway.example)'])
     expect(result.verdict).toBe('allowed')
   })
+})
+
+test('a renamed required stub keeps its refusal via host overlap', () => {
+  const base = [{ service: 'payments', hosts: ['api.pay.example'], provided_by: { compose_service: 'payments-stub' } }]
+  const head = [{ service: 'payments-legacy', hosts: ['api.pay.example'], provided_by: { compose_service: 'payments-stub' } }]
+  const diff = diffStubs(base, head)
+  expect(flagAddedStubs(diff, { requiredServices: ['payments'] })).toEqual({
+    findings: ['stub-added-in-change: payments-legacy (hosts: api.pay.example)'],
+    verdict: 'refused',
+  })
+  expect(diff.removed).toEqual(base)
+})
+
+test('finding messages sanitize newlines from hostile service names', () => {
+  const diff = diffStubs(
+    [],
+    [{ service: 'evil\nGET /admin', hosts: ['h.example'], provided_by: { compose_service: 'x' } }],
+  )
+  const { findings } = flagAddedStubs(diff, { requiredServices: [] })
+  expect(findings).toHaveLength(1)
+  expect(findings[0]).not.toContain('\n')
 })

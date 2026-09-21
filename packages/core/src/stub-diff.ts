@@ -45,10 +45,32 @@ export function flagAddedStubs(
   const findings: string[] = []
   const verdicts: Array<'refused' | 'allowed'> = []
   for (const stub of diff?.added ?? []) {
-    findings.push(`stub-added-in-change: ${stub.service} (hosts: ${(stub.hosts ?? []).join(', ')})`)
-    verdicts.push(required.has(stub.service) ? 'refused' : 'allowed')
+    const hosts = (stub.hosts ?? []).map((host) => sanitize(host))
+    // host-overlap rule: a rename that keeps a required service's hosts cannot
+    // dodge stubs-merge-first — the added stub inherits required-ness from any
+    // base stub (removed or modified) whose hosts it shares
+    const modifiedBase = diff?.removed?.find((base) => base.service === stub.service)
+    const inheritedRequired =
+      modifiedBase !== undefined && hostsOverlap(modifiedBase, stub) && required.has(modifiedBase.service) ||
+      diff?.removed?.some((base) => required.has(base.service) && hostsOverlap(base, stub)) === true
+    const label = modifiedBase !== undefined ? 'stub-modified-in-change' : 'stub-added-in-change'
+    findings.push(
+      `${label}: ${sanitize(stub.service)} (hosts: ${hosts.join(', ')})`,
+    )
+    verdicts.push(required.has(stub.service) || inheritedRequired ? 'refused' : 'allowed')
   }
   return { findings, verdict: mergeVerdicts(verdicts) === 'refused' ? 'refused' : 'allowed' }
+}
+
+function hostsOverlap(base: ProfileStub, head: ProfileStub): boolean {
+  const baseHosts = new Set((base.hosts ?? []).map((host) => host.toLowerCase()))
+  return (head.hosts ?? []).some((host) => baseHosts.has(host.toLowerCase()))
+}
+
+function sanitize(text: string): string {
+  return String(text ?? '')
+    .replace(/[\r\n]+/g, ' ')
+    .trim()
 }
 
 function stubsByService(stubs: ProfileStub[]): Map<string, ProfileStub> {
