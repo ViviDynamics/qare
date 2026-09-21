@@ -64,8 +64,8 @@ export function summarizeEgress(
   for (const attempt of attempts ?? []) {
     if (matchesStub(attempt?.host, stubs ?? [])) continue
     const host = sanitize(normalizeHost(attempt?.host) || 'unknown')
-    const port = reasonPart(attempt?.port)
-    const protocol = reasonPart(attempt?.protocol)
+    const port = sanitize(reasonPart(attempt?.port))
+    const protocol = sanitize(reasonPart(attempt?.protocol))
     const key = `${host}:${port} (${protocol})`
     const existing = seen.get(key)
     if (existing !== undefined) {
