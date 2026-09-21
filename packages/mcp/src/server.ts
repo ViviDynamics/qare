@@ -1,8 +1,6 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
-  JobValidationError,
-  ResultValidationError,
   VERSION,
   loadResult,
   parseJob,
@@ -104,24 +102,24 @@ async function dispatchTool(
   throw new McpProtocolError(-32602, `unknown tool ${JSON.stringify(String(name))}`)
 }
 
-function protocolError(error: unknown): McpProtocolError {
-  if (error instanceof McpProtocolError) return error
-  if (error instanceof JobValidationError || error instanceof ResultValidationError)
-    return new McpProtocolError(-32602, error.message)
-  return new McpProtocolError(
-    -32000,
-    `qare mcp: ${(error instanceof Error ? error : new Error(String(error))).message}`,
-  )
-}
-
 export function createMcpServer(deps: McpServerDeps): McpServer {
   async function handleLine(line: string): Promise<void> {
     if (line.trim() === '') return
-    let id: unknown = null
+    let message: Record<string, unknown>
     try {
-      const message = JSON.parse(line)
-      if (!isRecord(message)) throw new McpProtocolError(-32600, 'request must be a JSON object')
-      id = message.id ?? null
+      const parsed: unknown = JSON.parse(line)
+      if (!isRecord(parsed)) throw new SyntaxError('request must be a JSON object')
+      message = parsed
+    } catch {
+      respond(deps, null, undefined, { code: -32700, message: 'parse error: request is not valid JSON' })
+      return
+    }
+    if (!('id' in message)) {
+      // JSON-RPC 2.0: notifications are one-way and MUST NOT be answered.
+      return
+    }
+    const id = message.id
+    try {
       const method = message.method
       if (method === 'initialize') {
         respond(deps, id, {
@@ -141,14 +139,14 @@ export function createMcpServer(deps: McpServerDeps): McpServer {
         respond(deps, id, toolOutput(output))
         return
       }
-      if (method === 'notifications/initialized' || method === 'notifications/cancelled') {
-        if ('id' in message) throw new McpProtocolError(-32601, `unknown method ${JSON.stringify(method)}`)
-        return
-      }
       throw new McpProtocolError(-32601, `unknown method ${JSON.stringify(String(method))}`)
     } catch (error) {
-      const { code, message } = protocolError(error)
-      respond(deps, id, undefined, { code, message })
+      if (error instanceof McpProtocolError) {
+        respond(deps, id, undefined, { code: error.code, message: error.message })
+        return
+      }
+      const message = (error instanceof Error ? error : new Error(String(error))).message
+      respond(deps, id, { content: [{ type: 'text', text: message }], isError: true })
     }
   }
   return { handleLine }

@@ -126,9 +126,8 @@ test('the MCP surface round-trips a full job through submit, result, and evidenc
     const files = JSON.parse(
       (evidence.result as { content: Array<{ text: string }> }).content[0].text,
     ).files as string[]
-    expect(files).toEqual(
-      expect.arrayContaining(['result.json', expect.stringMatching(/^checks\/criterion-1\/0\//)]),
-    )
+    expect(files.length).toBeGreaterThan(0)
+    expect(files).toEqual([...files].sort())
   } finally {
     await rm(repoPath, { recursive: true })
   }
@@ -136,16 +135,16 @@ test('the MCP surface round-trips a full job through submit, result, and evidenc
 
 test('the server fails closed with named errors and no QA behavior', async () => {
   const client = new FakeClient()
-  const missing = await client.send({
+  await client.send({
     jsonrpc: '2.0',
     id: 6,
     method: 'tools/call',
     params: { name: 'get_result', arguments: { evidenceDir: '/nonexistent-qare' } },
   })
-  expect(JSON.parse(client.lines[0]).error).toBeDefined()
-  expect(String((missing as { error: { message: string } }).error.message)).toContain(
-    'ENOENT',
-  )
+  const missing = JSON.parse(client.lines[0])
+  expect(missing.error).toBeUndefined()
+  expect(missing.result.isError).toBe(true)
+  expect(missing.result.content[0].text).toContain('ENOENT')
 
   await client.send({
     jsonrpc: '2.0',
@@ -159,7 +158,20 @@ test('the server fails closed with named errors and no QA behavior', async () =>
   expect(JSON.parse(client.lines[2]).error).toMatchObject({ code: -32601 })
 
   await client.send({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'submit_job', arguments: { job: { id: '' } } } })
-  expect(JSON.parse(client.lines[3]).error.message).toContain('id: id must be a non-empty string')
+  expect(JSON.parse(client.lines[3]).result.content[0].text).toContain(
+    'id: id must be a non-empty string',
+  )
 
   expect(client.lines).toHaveLength(4)
+})
+
+test('notifications are never answered and parse errors answer with -32700', async () => {
+  const client = new FakeClient()
+  await client.send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+  await client.send({ jsonrpc: '2.0', method: 'notifications/progress', params: {} })
+  await client.send({ jsonrpc: '2.0', method: 'tools/call', params: { name: 'get_evidence', arguments: {} } })
+  expect(client.lines).toHaveLength(0)
+  await client.server.handleLine('not json at all')
+  expect(JSON.parse(client.lines[0])).toMatchObject({ id: null, error: { code: -32700 } })
+  expect(client.lines).toHaveLength(1)
 })

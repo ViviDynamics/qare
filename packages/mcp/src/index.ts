@@ -21,8 +21,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (process.argv[2] === '--serve') {
     const server = stdioServer()
     process.stdin.setEncoding('utf8')
+    let buffered = ''
     process.stdin.on('data', (chunk: string) => {
-      for (const line of chunk.split('\n')) void server.handleLine(line)
+      buffered += chunk
+      const lines = buffered.split('\n')
+      buffered = lines.pop() ?? ''
+      for (const line of lines) void server.handleLine(line)
     })
   } else {
     entry()
