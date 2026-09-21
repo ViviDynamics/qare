@@ -100,3 +100,19 @@ export {
 export type { SeenShas, TriggerDecision, TriggerEvent } from './triggers.js'
 export { isFork, refuseFork, parseWaiver, recordWaiver } from './waiver.js'
 export type { ForkContext, ForkRefusal, ParsedWaiver, WaiverRecord } from './waiver.js'
+export {
+  BranchLedgerStore,
+  FileLedgerStore,
+  LEDGER_FILE,
+  LEDGER_SCHEMA_VERSION,
+  LEDGER_STATUSES,
+  parseLedgerEntries,
+  serializeLedger,
+} from './ledger.js'
+export type {
+  LedgerEntry,
+  LedgerStatus,
+  LedgerStore,
+  GitRun,
+  GitRunResult,
+} from './ledger.js'
