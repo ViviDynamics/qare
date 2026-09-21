@@ -62,6 +62,7 @@ async function feedIfOptedIn(
   await feedRunLedger(
     opts.ledgerFeed.dir,
     { id: job.id, headRef: job.headRef },
+    result.verdict,
     result.criteria.map((criterion) => ({ criterionId: criterion.id, outcome: criterion.outcome })),
   )
 }

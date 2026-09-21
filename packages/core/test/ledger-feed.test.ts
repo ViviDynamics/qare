@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 import { FileLedgerStore, parseLedgerEntries, serializeLedger, type LedgerEntry } from '../src/ledger.js'
 import { parseVerificationRecord } from '../src/ledger-proposal.js'
-import { feedJobProposals } from '../src/ledger-feed.js'
+import { feedJobProposals, feedRunLedger } from '../src/ledger-feed.js'
 import { runJob, type Job, type JobCriterion, type QaProfile } from '../src/index.js'
 import { existsSync } from 'node:fs'
 
@@ -35,6 +35,7 @@ function feedInput(overrides: Partial<Parameters<typeof feedJobProposals>[0]> = 
     runId: 'run-42',
     sha: SHA,
     timestamp: '2026-09-21T00:00:00.000Z',
+    outcome: 'pass' as const,
     criteria: [
       { criterionId: 'spec-up-200', outcome: 'proven' as const },
       { criterionId: 'extra-0', outcome: 'failed' as const },
@@ -92,9 +93,33 @@ describe('feedJobProposals', () => {
     ).toThrow(/duplicate job criterion "spec-up-200"/)
   })
 
-  test('the namespaced record survives parseVerificationRecord', () => {
-    const record = feedJobProposals(feedInput(), [])
+  test('the emitted record round-trips through the strict loader', () => {
+    const record = feedJobProposals(feedInput())
     expect(parseVerificationRecord(JSON.parse(JSON.stringify(record)))).toEqual(record)
+  })
+
+  test('hostile raw job criterion ids fail closed before namespacing', () => {
+    expect(() => feedJobProposals(feedInput({ criteria: [{ criterionId: 'a:b', outcome: 'proven' }] }))).toThrow(
+      /must not contain ":"; namespaces are applied by the feed/,
+    )
+    expect(() => feedJobProposals(feedInput({ criteria: [{ criterionId: '../escape', outcome: 'proven' }] }))).toThrow(
+      /path separators/,
+    )
+    expect(() => feedJobProposals(feedInput({ criteria: [{ criterionId: 'job:x:y', outcome: 'proven' }] }))).toThrow(
+      /must not contain ":"/,
+    )
+  })
+
+  test('run verdict blocked or refused refuses the feed', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qare-ledger-feed-'))
+    try {
+      await expect(feedRunLedger(dir, { id: 'job-x', headRef: SHA }, 'blocked', [
+        { criterionId: 'c1', outcome: 'unverified' },
+      ])).rejects.toThrow(/is not a verification outcome/)
+      expect(existsSync(join(dir, 'ledger-proposal-job-x.json'))).toBe(false)
+    } finally {
+      await rm(dir, { recursive: true })
+    }
   })
 })
 
