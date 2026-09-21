@@ -278,6 +278,105 @@ test('a criterion id with a path separator fails job loading', () => {
   expect(error.message).toContain('path separators')
 })
 
+test('a check whose binary is missing leaves the criterion unverified and the run blocked', async () => {
+  const job = await makeJob({
+    criteria: commandCriteria('definitely-not-a-binary-xyz'),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('blocked')
+  expect(result.criteria).toEqual([
+    {
+      id: 'criterion-1',
+      outcome: 'unverified',
+      reason: expect.stringContaining('could not start'),
+    },
+  ])
+})
+
+test('a check with env opts into the minimal environment and sees its marker', async () => {
+  const job = await makeJob({
+    criteria: [
+      {
+        id: 'env-marker',
+        text: 'sees the marker it was handed',
+        checks: [{ kind: 'command', run: './marker.sh', env: { QA_MARKER: 'present' } }],
+      },
+    ],
+    profile: { inline: INLINE_PROFILE },
+  })
+  await writeFile(join(job.repoPath, 'marker.sh'), '#!/bin/sh\necho "$QA_MARKER"\n', { mode: 0o755 })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('passed')
+  expect(
+    await readFile(join(job.evidenceDir, 'checks', 'env-marker', '0', 'stdout.txt'), 'utf8'),
+  ).toContain('present')
+})
+
+test('a check with env does not inherit the harness environment', async () => {
+  process.env.QA_SHOULD_NOT_EXIST = 'harness-secret'
+  const job = await makeJob({
+    criteria: [
+      {
+        id: 'env-minimal',
+        text: 'runs with only the minimal deterministic environment',
+        checks: [{ kind: 'command', run: './minimal.sh', env: { QA_MARKER: 'present' } }],
+      },
+    ],
+    profile: { inline: INLINE_PROFILE },
+  })
+  await writeFile(
+    join(job.repoPath, 'minimal.sh'),
+    [
+      '#!/bin/sh',
+      'echo "marker=$QA_MARKER"',
+      'echo "missing=$QA_SHOULD_NOT_EXIST"',
+      'echo "home=$HOME"',
+    ].join('\n'),
+    { mode: 0o755 },
+  )
+
+  try {
+    const { result } = await runJob(job, HEALTHY_BOOT)
+
+    expect(result.verdict).toBe('passed')
+    const stdout = await readFile(join(job.evidenceDir, 'checks', 'env-minimal', '0', 'stdout.txt'), 'utf8')
+    expect(stdout).toContain('marker=present')
+    expect(stdout).not.toContain('harness-secret')
+    expect(stdout).toContain('missing=')
+    expect(stdout).toMatch(/home=.+/)
+  } finally {
+    delete process.env.QA_SHOULD_NOT_EXIST
+  }
+})
+
+test('a check env with a non-string value fails job loading', () => {
+  const text = [
+    'id: job-env',
+    'repoPath: .',
+    'baseRef: main',
+    'headRef: HEAD~1',
+    'profile: { path: .qa }',
+    'criteria:',
+    '  - id: env-check',
+    '    text: env',
+    '    checks:',
+    '      - { kind: command, run: echo ok, env: { QA_MARKER: 7 } }',
+    'evidenceDir: evidence',
+    'post: none',
+  ].join('\n')
+
+  const error = jobError(() => loadJobFromText(text))
+
+  expect(error.name).toBe('JobValidationError')
+  expect(error.field).toBe('criteria[0].checks[0].env')
+  expect(error.message).toContain('must be a string')
+})
+
 test('a check whose grandchild holds the stdio pipes still settles unverified', async () => {
   const job = await makeJob({
     criteria: [

@@ -9,6 +9,7 @@ export interface JobCommandCheck {
   run: string
   cwd?: string
   timeoutMs?: number
+  env?: Record<string, string>
 }
 
 export interface JobCriterion {
@@ -152,12 +153,27 @@ function parseCheck(value: unknown, base: string): JobCommandCheck {
   const run = nonEmptyString(value.run, `${base}.run`, 'run command')
   const cwd = value.cwd === undefined ? undefined : nonEmptyString(value.cwd, `${base}.cwd`, 'working directory')
   const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
+  const env = value.env === undefined ? undefined : parseCheckEnv(value.env, `${base}.env`)
   return {
     kind: 'command',
     run,
     ...(cwd !== undefined ? { cwd } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(env !== undefined ? { env } : {}),
   }
+}
+
+function parseCheckEnv(value: unknown, field: string): Record<string, string> {
+  if (!isRecord(value)) fail(field, 'env must be a YAML map of string to string')
+  const env: Record<string, string> = {}
+  for (const [key, val] of Object.entries(value)) {
+    if (typeof key !== 'string')
+      fail(field, `env keys must be strings (got ${JSON.stringify(key)})`)
+    if (typeof val !== 'string')
+      fail(field, `env value for ${JSON.stringify(key)} must be a string (got ${typeof val})`)
+    env[key] = val
+  }
+  return env
 }
 
 function parseTimeoutMs(value: unknown, field: string): number | undefined {

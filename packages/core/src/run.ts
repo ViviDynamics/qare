@@ -17,6 +17,10 @@ const NO_CHECKS_REASON = 'no checks: model planning lands when nare integration 
  * with Task 14), and each check's `run` string is split on whitespace and spawned
  * directly without a shell, so quoting, pipes and shell syntax are not interpreted.
  *
+ * A check without `env` inherits the harness environment unchanged. A check that
+ * carries `env` opts into a minimal deterministic environment (PATH, HOME and the
+ * check's own entries), so its checks do not inherit harness secrets.
+ *
  * The booted app is intentionally left up after the checks so evidence (logs) can
  * be inspected; teardown is the caller's job (stopApp).
  */
@@ -135,6 +139,9 @@ function runCommandCheck(check: JobCommandCheck, cwd: string, timeoutMs: number)
     // reaches grandchildren that inherited the stdio pipes.
     const child = spawn(tokens[0] ?? '', tokens.slice(1), {
       cwd,
+      ...(check.env === undefined
+        ? {}
+        : { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '', ...check.env } }),
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
     })
