@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 export const LEDGER_SCHEMA_VERSION = '1'
@@ -51,40 +51,58 @@ function sourceLinks(value: unknown, field: string): string[] {
   })
 }
 
-export function parseLedgerEntries(input: unknown): LedgerEntry[] {
-  if (!Array.isArray(input)) fail('entries', 'ledger must be a JSON array')
-  return input.map((entry, index) => {
-    const field = `entries[${index}]`
-    if (!isRecord(entry)) fail(field, 'ledger entry must be a JSON object')
-    const allowed = new Set(['criterion', 'status', 'source', 'proof', 'note'])
-    for (const key of Object.keys(entry)) {
-      if (!allowed.has(key)) fail(`${field}.${key}`, 'unknown field in ledger entry')
-    }
-    const criterion = validateCriterionId(
-      nonEmptyString(entry.criterion, `${field}.criterion`, 'criterion id'),
-      `${field}.criterion`,
+function parseEntry(entry: unknown, field: string): LedgerEntry {
+  if (!isRecord(entry)) fail(field, 'ledger entry must be a JSON object')
+  const allowed = new Set(['criterion', 'status', 'source', 'proof', 'note'])
+  for (const key of Object.keys(entry)) {
+    if (!allowed.has(key)) fail(`${field}.${key}`, 'unknown field in ledger entry')
+  }
+  const criterion = validateCriterionId(
+    nonEmptyString(entry.criterion, `${field}.criterion`, 'criterion id'),
+    `${field}.criterion`,
+  )
+  const status = entry.status
+  if (typeof status !== 'string' || !LEDGER_STATUSES.includes(status as LedgerStatus))
+    fail(
+      `${field}.status`,
+      `unknown status ${JSON.stringify(status)} (expected "proposed", "active", "superseded" or "retired")`,
     )
-    const status = entry.status
-    if (typeof status !== 'string' || !LEDGER_STATUSES.includes(status as LedgerStatus))
-      fail(
-        `${field}.status`,
-        `unknown status ${JSON.stringify(status)} (expected "proposed", "active", "superseded" or "retired")`,
-      )
-    const proof = nonEmptyString(entry.proof, `${field}.proof`, 'proof type')
-    if (/[\r\n]/.test(proof)) fail(`${field}.proof`, 'proof must not contain newlines')
-    const parsed: LedgerEntry = {
-      criterion,
-      status: status as LedgerStatus,
-      source: sourceLinks(entry.source, `${field}.source`),
-      proof,
-    }
-    if (entry.note !== undefined) {
-      const note = nonEmptyString(entry.note, `${field}.note`, 'note')
-      if (/[\r\n]/.test(note)) fail(`${field}.note`, 'note must not contain newlines')
-      parsed.note = note
-    }
-    return parsed
-  })
+  const proof = nonEmptyString(entry.proof, `${field}.proof`, 'proof type')
+  if (/[\r\n]/.test(proof)) fail(`${field}.proof`, 'proof must not contain newlines')
+  const parsed: LedgerEntry = {
+    criterion,
+    status: status as LedgerStatus,
+    source: sourceLinks(entry.source, `${field}.source`),
+    proof,
+  }
+  if (entry.note !== undefined) {
+    const note = nonEmptyString(entry.note, `${field}.note`, 'note')
+    if (/[\r\n]/.test(note)) fail(`${field}.note`, 'note must not contain newlines')
+    parsed.note = note
+  }
+  return parsed
+}
+
+export function parseLedgerEntries(input: unknown): LedgerEntry[] {
+  if (!isRecord(input)) fail('document', 'ledger must be a JSON object with a "entries" array')
+  for (const key of Object.keys(input)) {
+    if (key !== 'entries' && key !== 'schemaVersion')
+      fail(`document.${key}`, 'unknown field in ledger document')
+  }
+  if (input.schemaVersion !== LEDGER_SCHEMA_VERSION)
+    fail(
+      'document.schemaVersion',
+      `unsupported ledger schema version ${JSON.stringify(input.schemaVersion)} (expected "${LEDGER_SCHEMA_VERSION}")`,
+    )
+  if (!Array.isArray(input.entries)) fail('document.entries', 'entries must be a JSON array')
+  const entries = input.entries.map((entry, index) => parseEntry(entry, `entries[${index}]`))
+  const seen = new Set<string>()
+  for (const entry of entries) {
+    if (seen.has(entry.criterion))
+      fail('document.entries', `duplicate criterion "${entry.criterion}" in ledger`)
+    seen.add(entry.criterion)
+  }
+  return entries
 }
 
 export function serializeLedger(entries: LedgerEntry[]): string {
@@ -97,7 +115,11 @@ export function serializeLedger(entries: LedgerEntry[]): string {
       }
       return sorted
     })
-  return `${JSON.stringify(canonical, null, 2)}\n`
+  return `${JSON.stringify({ entries: canonical, schemaVersion: LEDGER_SCHEMA_VERSION }, null, 2)}\n`
+}
+
+function validated(entries: LedgerEntry[]): LedgerEntry[] {
+  return parseLedgerEntries(JSON.parse(serializeLedger(entries)))
 }
 
 export interface LedgerStore {
@@ -116,16 +138,26 @@ export class FileLedgerStore implements LedgerStore {
     let text: string
     try {
       text = await readFile(this.file, 'utf8')
-    } catch {
-      return []
+    } catch (error) {
+      if (isErrno(error, 'ENOENT')) return []
+      throw error
     }
     return parseLedgerEntries(JSON.parse(text))
   }
 
   async save(entries: LedgerEntry[]): Promise<void> {
+    const text = serializeLedger(validated(entries))
     await mkdir(join(this.file, '..'), { recursive: true })
-    await writeFile(this.file, serializeLedger(entries))
+    const tmp = `${this.file}.tmp`
+    await writeFile(tmp, text)
+    await rename(tmp, this.file)
   }
+}
+
+function isErrno(error: unknown, code: string): boolean {
+  return (
+    typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === code
+  )
 }
 
 export interface GitRunResult {
@@ -158,29 +190,38 @@ export class BranchLedgerStore implements LedgerStore {
   }
 
   async load(): Promise<LedgerEntry[]> {
+    try {
+      await this.run(['rev-parse', '--verify', `refs/heads/${this.branch}`])
+    } catch {
+      return []
+    }
     let text: string
     try {
       text = (await this.run(['show', `${this.branch}:${LEDGER_FILE}`])).stdout
-    } catch {
-      return []
+    } catch (error) {
+      throw new Error(`ledger: branch exists but ${LEDGER_FILE} is unreadable: ${String(error)}`)
     }
     return parseLedgerEntries(JSON.parse(text))
   }
 
   async save(entries: LedgerEntry[]): Promise<void> {
     const blob = (
-      await this.run(['hash-object', '-w', '--stdin'], serializeLedger(entries))
+      await this.run(['hash-object', '-w', '--stdin'], serializeLedger(validated(entries)))
     ).stdout.trim()
-    const tree = (
-      await this.run(['mktree'], `100644 blob ${blob}\t${LEDGER_FILE}`)
-    ).stdout.trim()
-    let commit: string
+    const tree = (await this.run(['mktree'], `100644 blob ${blob}\t${LEDGER_FILE}`)).stdout.trim()
+    let parent: string | undefined
     try {
-      const parent = (await this.run(['rev-parse', '--verify', `refs/heads/${this.branch}`])).stdout.trim()
-      commit = (await this.run(['commit-tree', tree, '-p', parent, '-m', 'criteria ledger update'])).stdout.trim()
+      parent = (await this.run(['rev-parse', '--verify', `refs/heads/${this.branch}`])).stdout.trim()
     } catch {
-      commit = (await this.run(['commit-tree', tree, '-m', 'criteria ledger update'])).stdout.trim()
+      parent = undefined
     }
+    const commit = (
+      await this.run(
+        parent === undefined
+          ? ['commit-tree', tree, '-m', 'criteria ledger update']
+          : ['commit-tree', tree, '-p', parent, '-m', 'criteria ledger update'],
+      )
+    ).stdout.trim()
     await this.run(['update-ref', `refs/heads/${this.branch}`, commit])
   }
 }
