@@ -2,9 +2,10 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { bootApp, type BootOpts } from './boot.js'
+import { judgeRun, toSideResults } from './judge.js'
 import type { Job, JobCommandCheck, JobCriterion } from './job.js'
 import { loadProfile, validateProfileConfig } from './profile.js'
-import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult, type RunVerdict } from './result.js'
+import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult } from './result.js'
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 60000
 const NO_CHECKS_REASON = 'no checks: model planning lands when nare integration ships'
@@ -38,9 +39,9 @@ export async function runJob(job: Job, opts: BootOpts = {}): Promise<{ result: R
 
   const criteria: CriterionResult[] = []
   for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job))
-  const anyFailed = criteria.some((criterion) => criterion.outcome === 'failed')
-  const allProven = criteria.length > 0 && criteria.every((criterion) => criterion.outcome === 'proven')
-  const verdict: RunVerdict = anyFailed ? 'failed' : allProven ? 'passed' : 'blocked'
+  // The judge is the verdict decision. Base execution and egress interception
+  // land with the orchestrator; today the head side is the whole picture.
+  const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: 'allowed' })
   return finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria })
 }
 

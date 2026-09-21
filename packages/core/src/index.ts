@@ -67,5 +67,20 @@ export {
 export { makePlaywrightFlowSession, PlaywrightFlowSessionError } from './flow-playwright.js'
 export { matchesStub, summarizeEgress, mergeVerdicts } from './egress.js'
 export type { EgressAttempt, EgressFinding, EgressStub } from './egress.js'
-export { detectRegressions, judgeRun } from './judge.js'
-export type { SideResult, Regression, CriterionVerdict, JudgeRunInput, JudgeRunResult } from './judge.js'
+export {
+  consumeVerifierFindings,
+  detectRegressions,
+  judgeRun,
+  prepareVerifierInputs,
+  runVerifier,
+  toSideResults,
+} from './judge.js'
+export type {
+  CriterionVerdict,
+  JudgeRunInput,
+  JudgeRunResult,
+  Regression,
+  SideResult,
+  VerifierFinding,
+  VerifierInputs,
+} from './judge.js'

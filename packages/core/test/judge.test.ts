@@ -1,5 +1,19 @@
 import { describe, expect, test } from 'vitest'
-import { detectRegressions, judgeRun, type CriterionOutcome, type RunVerdict, type SideResult } from '../src/index.js'
+import {
+  consumeVerifierFindings,
+  detectRegressions,
+  judgeRun,
+  prepareVerifierInputs,
+  runVerifier,
+  toSideResults,
+  FakeAgentRunner,
+  type CriterionOutcome,
+  type CriterionVerdict,
+  type RunResult,
+  type RunVerdict,
+  type SideResult,
+  type VerifierInputs,
+} from '../src/index.js'
 
 const side = (criterionId: string, outcome: CriterionOutcome, detail?: string): SideResult =>
   detail === undefined ? { criterionId, outcome } : { criterionId, outcome, detail }
@@ -140,5 +154,119 @@ describe('detectRegressions', () => {
     const base = [side('a', 'failed'), side('b', 'proven')]
     const head = [side('a', 'failed'), side('b', 'unverified')]
     expect(detectRegressions(base, head)).toEqual([])
+  })
+})
+
+describe('toSideResults', () => {
+  test('maps executed criteria onto side results, with reason becoming detail', () => {
+    const result: RunResult = {
+      schemaVersion: '1',
+      verdict: 'failed',
+      criteria: [
+        { id: 'c1', outcome: 'proven', evidence: ['checks/c1/0/stdout.txt'] },
+        { id: 'c2', outcome: 'failed', evidence: ['checks/c2/0/stdout.txt'] },
+        { id: 'c3', outcome: 'unverified', reason: 'check timed out after 50ms' },
+      ],
+    }
+    expect(toSideResults(result)).toEqual([
+      { criterionId: 'c1', outcome: 'proven' },
+      { criterionId: 'c2', outcome: 'failed' },
+      { criterionId: 'c3', outcome: 'unverified', detail: 'check timed out after 50ms' },
+    ])
+  })
+})
+
+describe('consumeVerifierFindings', () => {
+  const proven: CriterionVerdict = { criterionId: 'c1', outcome: 'proven', regression: false, reason: 'proven at head' }
+  const failed: CriterionVerdict = { criterionId: 'c2', outcome: 'failed', regression: true, reason: 'broke at head' }
+  const unverified: CriterionVerdict = { criterionId: 'c3', outcome: 'unverified', regression: false, reason: 'no checks' }
+
+  test('a finding against a proven criterion downgrades it to failed with a verifier reason', () => {
+    const result = consumeVerifierFindings([proven], [{ criterionId: 'c1', problem: 'evidence contradicts the claim' }])
+    expect(result).toEqual([
+      { criterionId: 'c1', outcome: 'failed', regression: false, reason: 'verifier: evidence contradicts the claim' },
+    ])
+  })
+
+  test('findings against failed and unverified criteria cannot upgrade or rewrite reasons', () => {
+    const result = consumeVerifierFindings([failed, unverified], [
+      { criterionId: 'c2', problem: 'actually fine' },
+      { criterionId: 'c3', problem: 'actually fine' },
+    ])
+    expect(result).toEqual([failed, unverified])
+  })
+
+  test('findings naming criterion ids that were not given are dropped', () => {
+    const result = consumeVerifierFindings([proven], [{ criterionId: 'ghost', problem: 'not a criterion' }])
+    expect(result).toEqual([proven])
+  })
+})
+
+const verifierInputs = (): VerifierInputs =>
+  prepareVerifierInputs({
+    criteria: [{ criterionId: 'c1', outcome: 'proven', regression: false, reason: 'proven at head' }],
+    diff: 'diff --git a/x b/x',
+    evidence: ['checks/c1/0/stdout.txt'],
+  })
+
+const scriptedVerifier = (output: string): FakeAgentRunner =>
+  new FakeAgentRunner([
+    { status: 'completed', stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 }, output },
+  ])
+
+describe('runVerifier', () => {
+  test('applies findings JSON from the runner as downgrades', async () => {
+    const runner = scriptedVerifier(JSON.stringify([{ criterionId: 'c1', problem: 'evidence contradicts the claim' }]))
+    const inputs = verifierInputs()
+
+    const result = await runVerifier(runner, inputs)
+
+    expect(result).toEqual([
+      { criterionId: 'c1', outcome: 'failed', regression: false, reason: 'verifier: evidence contradicts the claim' },
+    ])
+    const request = runner.requests[0]
+    expect(request.prompt).toContain(inputs.instructions)
+    expect(request.prompt).toContain('"outcome":"proven"')
+    expect(request.prompt).toContain('diff --git a/x b/x')
+    expect(request.prompt).toContain('checks/c1/0/stdout.txt')
+  })
+
+  test('tolerates a {"findings": [...]} wrapper object', async () => {
+    const runner = scriptedVerifier(JSON.stringify({ findings: [{ criterionId: 'c1', problem: 'the claim is unbacked' }] }))
+
+    const result = await runVerifier(runner, verifierInputs())
+
+    expect(result).toEqual([
+      { criterionId: 'c1', outcome: 'failed', regression: false, reason: 'verifier: the claim is unbacked' },
+    ])
+  })
+
+  test('non-JSON output fails closed to unchanged criteria', async () => {
+    const runner = scriptedVerifier('I looked at it and everything seems fine')
+    const criteria = verifierInputs().criteria
+
+    const result = await runVerifier(runner, verifierInputs())
+
+    expect(result).toEqual(criteria)
+  })
+
+  test('malformed findings JSON fails closed to unchanged criteria', async () => {
+    const runner = scriptedVerifier(JSON.stringify({ findings: [{ criterion: 'c1', why: 'no id' }] }))
+    const criteria = verifierInputs().criteria
+
+    const result = await runVerifier(runner, verifierInputs())
+
+    expect(result).toEqual(criteria)
+  })
+
+  test('a verifier that approves everything cannot upgrade a failed criterion', async () => {
+    const runner = scriptedVerifier('[]')
+    const criteria: CriterionVerdict[] = [
+      { criterionId: 'c1', outcome: 'failed', regression: true, reason: 'broke at head' },
+    ]
+
+    const result = await runVerifier(runner, prepareVerifierInputs({ criteria, diff: '', evidence: [] }))
+
+    expect(result).toEqual(criteria)
   })
 })
