@@ -84,3 +84,5 @@ export type {
   VerifierFinding,
   VerifierInputs,
 } from './judge.js'
+export { renderComment, renderCheckRun } from './evidence.js'
+export type { CheckRunPayload, EvidencePoster } from './evidence.js'
