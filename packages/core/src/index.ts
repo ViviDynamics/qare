@@ -131,3 +131,4 @@ export type {
   LedgerProposal,
   LedgerProposalChange,
 } from './ledger-proposal.js'
+export { applyLedgerProposal } from './ledger-apply.js'

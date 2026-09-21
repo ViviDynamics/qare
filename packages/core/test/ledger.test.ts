@@ -9,6 +9,7 @@ import {
   LEDGER_SCHEMA_VERSION,
   LEDGER_STATUSES,
   LEDGER_FILE,
+  integrityOf,
   parseLedgerEntries,
   serializeLedger,
   type LedgerEntry,
@@ -27,7 +28,7 @@ function entry(overrides: Partial<LedgerEntry> = {}): LedgerEntry {
 }
 
 function doc(entries: LedgerEntry[] | unknown, schemaVersion = LEDGER_SCHEMA_VERSION) {
-  return { entries, schemaVersion }
+  return { entries, schemaVersion, integrity: integrityOf(entries as LedgerEntry[]) }
 }
 
 describe('ledger schema', () => {

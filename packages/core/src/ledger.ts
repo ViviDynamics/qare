@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -83,10 +84,26 @@ function parseEntry(entry: unknown, field: string): LedgerEntry {
   return parsed
 }
 
+function canonicalEntries(entries: LedgerEntry[]): Record<string, unknown>[] {
+  return [...entries]
+    .sort((a, b) => (a.criterion < b.criterion ? -1 : a.criterion > b.criterion ? 1 : 0))
+    .map((entry) => {
+      const sorted: Record<string, unknown> = {}
+      for (const key of ['criterion', 'status', 'source', 'proof', 'note'].sort()) {
+        if (entry[key as keyof LedgerEntry] !== undefined) sorted[key] = entry[key as keyof LedgerEntry]
+      }
+      return sorted
+    })
+}
+
+export function integrityOf(entries: LedgerEntry[]): string {
+  return `sha256:${createHash('sha256').update(JSON.stringify(canonicalEntries(entries)), 'utf8').digest('hex')}`
+}
+
 export function parseLedgerEntries(input: unknown): LedgerEntry[] {
   if (!isRecord(input)) fail('document', 'ledger must be a JSON object with a "entries" array')
   for (const key of Object.keys(input)) {
-    if (key !== 'entries' && key !== 'schemaVersion')
+    if (key !== 'entries' && key !== 'schemaVersion' && key !== 'integrity')
       fail(`document.${key}`, 'unknown field in ledger document')
   }
   if (input.schemaVersion !== LEDGER_SCHEMA_VERSION)
@@ -102,20 +119,22 @@ export function parseLedgerEntries(input: unknown): LedgerEntry[] {
       fail('document.entries', `duplicate criterion "${entry.criterion}" in ledger`)
     seen.add(entry.criterion)
   }
+  const expected = integrityOf(entries)
+  if (input.integrity !== expected)
+    fail(
+      'document.integrity',
+      `ledger integrity check failed: expected ${expected}, got ${JSON.stringify(input.integrity)}`,
+    )
   return entries
 }
 
 export function serializeLedger(entries: LedgerEntry[]): string {
-  const canonical = [...entries]
-    .sort((a, b) => (a.criterion < b.criterion ? -1 : a.criterion > b.criterion ? 1 : 0))
-    .map((entry) => {
-      const sorted: Record<string, unknown> = {}
-      for (const key of ['criterion', 'status', 'source', 'proof', 'note'].sort()) {
-        if (entry[key as keyof LedgerEntry] !== undefined) sorted[key] = entry[key as keyof LedgerEntry]
-      }
-      return sorted
-    })
-  return `${JSON.stringify({ entries: canonical, schemaVersion: LEDGER_SCHEMA_VERSION }, null, 2)}\n`
+  const canonical = canonicalEntries(entries)
+  return `${JSON.stringify(
+    { entries: canonical, schemaVersion: LEDGER_SCHEMA_VERSION, integrity: integrityOf(entries) },
+    null,
+    2,
+  )}\n`
 }
 
 function validated(entries: LedgerEntry[]): LedgerEntry[] {
