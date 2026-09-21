@@ -93,11 +93,11 @@ test('blocked, refused and waived map to neutral check runs', () => {
 test('evidence links reference only files from the evidence arrays', () => {
   const body = renderComment(mixed)
   expect(body).toContain(
-    '- payout-1099-notice: [stdout.txt](checks/payout-1099-notice/1/stdout.txt)',
+    '- payout-1099-notice: [stdout.txt](<checks/payout-1099-notice/1/stdout.txt>)',
   )
-  expect(body).toContain('- ledger-export-csv: [stdout.txt](checks/ledger-export-csv/1/stdout.txt)')
+  expect(body).toContain('- ledger-export-csv: [stdout.txt](<checks/ledger-export-csv/1/stdout.txt>)')
   expect(body).toContain(
-    '- multi-currency-totals: [attempt.log](checks/multi-currency-totals/1/attempt.log)',
+    '- multi-currency-totals: [attempt.log](<checks/multi-currency-totals/1/attempt.log>)',
   )
   const links = [...body.matchAll(/\]\(([^)]+)\)/g)].map(match => match[1])
   expect(links).toEqual([
