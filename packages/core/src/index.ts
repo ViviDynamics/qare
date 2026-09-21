@@ -18,6 +18,8 @@ export type {
 } from './plan.js'
 export { fingerprintPlan, comparePlan, lockPlan } from './plan-lock.js'
 export type { PlanComparison } from './plan-lock.js'
+export { mintCriterionId, normalizeWording, resolveCriterion } from './criterion-identity.js'
+export type { CriterionRevision, CriterionResolution } from './criterion-identity.js'
 export {
   RESULT_SCHEMA_VERSION,
   ResultValidationError,
