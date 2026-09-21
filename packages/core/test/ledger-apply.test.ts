@@ -71,6 +71,27 @@ describe('applyLedgerProposal', () => {
     expect(() => applyLedgerProposal(forged, rec, current)).toThrow(/proposal does not match its verification record/)
   })
 
+  test('every proposal field is constrained by re-derivation', () => {
+    const current = [ledgerEntry()]
+    const rec = record()
+    const proposal = buildLedgerProposal(rec, current, integrityOf(current))
+    expect(() => applyLedgerProposal({ ...proposal, runId: 'other-run' }, rec, current)).toThrow(
+      /proposal does not match its verification record/,
+    )
+    expect(() => applyLedgerProposal({ ...proposal, proposedAt: '2026-09-21T00:00:01.000Z' }, rec, current)).toThrow(
+      /proposal does not match its verification record/,
+    )
+    expect(() => applyLedgerProposal({ ...proposal, baseSha: 'b'.repeat(40) }, rec, current)).toThrow(
+      /proposal does not match its verification record/,
+    )
+    expect(() => applyLedgerProposal({ ...proposal, ledgerText: serializeLedger([]) }, rec, current)).toThrow(
+      /proposal does not match its verification record/,
+    )
+    expect(() =>
+      applyLedgerProposal({ ...proposal, body: { summary: 'other', changes: proposal.body.changes } }, rec, current),
+    ).toThrow(/proposal does not match its verification record/)
+  })
+
   test('a demotion is refused by the weaken guard naming the criterion', () => {
     const current = [ledgerEntry({ status: 'active' })]
     const rec = record({ outcome: 'fail', criteria: [{ criterionId: 'spec-up-200', outcome: 'fail' }] })

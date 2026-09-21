@@ -132,3 +132,4 @@ export type {
   LedgerProposalChange,
 } from './ledger-proposal.js'
 export { applyLedgerProposal } from './ledger-apply.js'
+export { integrityOf } from './ledger.js'
