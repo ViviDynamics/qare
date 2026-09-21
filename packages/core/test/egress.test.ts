@@ -78,7 +78,7 @@ describe('summarizeEgress', () => {
 })
 
 test('hostile and malformed attempt records become refused findings, never crashes', () => {
-  const { findings, verdict } = summarizeEgress(
+  const { findings } = summarizeEgress(
     [
       { host: null, port: 443, protocol: 'https' },
       { host: 'api.example.com\nGET /admin', port: 80, protocol: 'http' },
