@@ -109,3 +109,25 @@ describe('resolveCriterion', () => {
     expect(resolution.reworded).toBe(true)
   })
 })
+
+test('mint passthrough is honored on the fresh path', () => {
+  const a = resolveCriterion([], 'first', { mint: () => 'seed-s' })
+  const b = resolveCriterion([], 'second', { mint: () => 'seed-s' })
+  expect(a.id).toBe('c-0310fb25083652910310fb2508365291')
+  expect(b.id).toBe(a.id)
+})
+
+test('empty and punctuation-only wording never matches and always mints fresh', () => {
+  const existing = [{ id: 'c-existing', revision: 3, text: '!!!' }]
+  const r = resolveCriterion(existing, ' ??? ', { mint: () => 'seed-s' })
+  expect(r).toEqual({ id: 'c-0310fb25083652910310fb2508365291', revision: 1, reworded: false })
+})
+
+test('NFC/NFD wording differences normalize to the same criterion', () => {
+  const nfc = 'café latte criterion'
+  const nfd = 'cafe\u0301 latte criterion'
+  expect(normalizeWording(nfc)).toBe(normalizeWording(nfd))
+  const r = resolveCriterion([{ id: 'c-keep', revision: 1, text: nfc }], nfd)
+  expect(r.id).toBe('c-keep')
+  expect(r.reworded).toBe(true)
+})

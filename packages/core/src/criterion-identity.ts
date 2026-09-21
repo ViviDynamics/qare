@@ -21,6 +21,7 @@ export function mintCriterionId(random: () => string = randomUUID): string {
 
 export function normalizeWording(text: string): string {
   return String(text ?? '')
+    .normalize('NFC')
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]+/gu, '')
     .replace(/\s+/gu, ' ')
@@ -33,6 +34,8 @@ export function resolveCriterion(
   opts?: { mint?: () => string },
 ): CriterionResolution {
   const normalized = normalizeWording(newText)
+  if (normalized === '')
+    return { id: mintCriterionId(opts?.mint), revision: 1, reworded: false }
   const matched = (existing ?? []).find((entry) => normalizeWording(entry.text) === normalized)
   if (matched !== undefined) {
     const reworded = matched.text !== newText
