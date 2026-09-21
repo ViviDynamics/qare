@@ -277,7 +277,9 @@ Fork PRs are refused outright in the Action.
 - A `qare` check run with the state from the table above.
 - Artifacts: screenshots, traces, logs, `plan.json`, `result.json`.
 - `result.json` is the machine contract other harnesses consume.
-- Both artifact schemas are documented in [schemas.md](./schemas.md).
+- Both artifact schemas are documented in [schemas.md](./schemas.md); the
+  orchestrator contract — invocation, exit codes and reaction per verdict — in
+  [orchestrator.md](./orchestrator.md).
 
 ## Readiness report
 

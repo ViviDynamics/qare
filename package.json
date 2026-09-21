@@ -12,7 +12,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test && node --test \"plugin/claude-code/test/**/*.test.mjs\"",
+    "test": "pnpm -r test && node --test \"plugin/claude-code/test/**/*.test.mjs\" \"examples/test/*.test.mjs\"",
     "lint": "eslint ."
   },
   "devDependencies": {

@@ -239,7 +239,7 @@ async function runCommand(
   }
 }
 
-function exitCodeFor(verdict: RunVerdict): number {
+export function exitCodeFor(verdict: RunVerdict): number {
   switch (verdict) {
     case 'passed':
       return 0
@@ -249,6 +249,8 @@ function exitCodeFor(verdict: RunVerdict): number {
       return 2
     case 'refused':
       return 3
+    case 'waived':
+      return 5
     default:
       throw new Error(`verdict ${JSON.stringify(verdict)} has no exit code mapping`)
   }

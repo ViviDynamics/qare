@@ -84,6 +84,8 @@ The run's output and the machine contract other harnesses consume.
 | `evidence` | proven / failed | required, non-empty array of relative paths — a criterion is proven or failed only by evidence |
 | `reason` | unverified | required, non-empty string — why no check ran |
 | `evidence` | unverified | optional array of relative paths |
+| `job` | document | optional; when present `job.id` is required non-empty — the caller's job id, echoed back |
+| `waived` | document | optional non-empty array of `{ criterionId, by }` — the human waiver record a `waived` run carries |
 
 ## Fail-closed rules shared by both loaders
 
