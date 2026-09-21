@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path'
 import {
   FileLedgerStore,
   RESULT_SCHEMA_VERSION,
+  buildReadinessReport,
   loadJobFromFile,
   loadJobFromText,
   judgeRun,
@@ -14,6 +15,7 @@ import {
   prepareVerifierInputs,
   renderCheckRun,
   renderComment,
+  readinessInventory,
   runJob,
   runVerifier,
   toSideResults,
@@ -39,10 +41,46 @@ export async function main(
   if (argv[0] === 'run') return runCommand(argv.slice(1), out, err, boot, stdin)
   if (argv[0] === 'judge') return judgeCommand(argv.slice(1), out, err)
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
+  if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare run --job <path|-> | qare judge --result <path> | qare ledger <list|show|diff|status> [--ledger <dir>]\n`,
+    `qare ${VERSION}\nusage: qare --version | qare run --job <path|-> | qare judge --result <path> | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>]\n`,
   )
   return 0
+}
+
+async function readinessCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
+  try {
+    let path: string | undefined
+    let outSpec: string | undefined
+    for (let i = 0; i < argv.length; i += 1) {
+      if (argv[i] === '--out') {
+        outSpec = argv[i + 1]
+        if (outSpec === undefined) throw new Error('qare readiness requires a file value after --out')
+        i += 1
+        continue
+      }
+      if (argv[i] === '--help' || argv[i] === '-h') {
+        out.write(`qare readiness [path] [--out <file>]\n  inventory a repo for QA readiness; never runs checks, never writes a result\n`)
+        return 0
+      }
+      if (argv[i]!.startsWith('-')) throw new Error(`unknown readiness flag ${JSON.stringify(argv[i])}`)
+      if (path !== undefined) throw new Error('qare readiness accepts at most one path argument')
+      path = argv[i]
+    }
+    const repoPath = path === undefined ? process.cwd() : resolve(path)
+    const inventory = await readinessInventory(repoPath)
+    const report = buildReadinessReport(inventory)
+    out.write(report)
+    if (outSpec !== undefined) {
+      await mkdir(dirname(outSpec), { recursive: true })
+      await writeFile(outSpec, report, 'utf8')
+      out.write(`report ${outSpec}\n`)
+    }
+    return 0
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 4
+  }
 }
 
 async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<number> {

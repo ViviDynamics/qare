@@ -133,3 +133,11 @@ export type {
 } from './ledger-proposal.js'
 export { applyLedgerProposal } from './ledger-apply.js'
 export { integrityOf } from './ledger.js'
+export { readinessInventory, buildReadinessReport, normalizeOrigin, parseComposeServices, READINESS_MAX_FILES } from './readiness.js'
+export type {
+  ReadinessInventory,
+  ReadinessComposeFile,
+  ReadinessOriginHit,
+  ReadinessProfileInfo,
+  ReadinessScanStats,
+} from './readiness.js'
