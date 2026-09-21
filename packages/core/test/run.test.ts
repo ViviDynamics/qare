@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
@@ -208,7 +208,8 @@ test('a check that outlives its timeoutMs times out to unverified', async () => 
   ])
 })
 
-test('duplicate criterion ids fail job loading', () => {  const text = [
+test('duplicate criterion ids fail job loading', () => {
+  const text = [
     'id: job-dup',
     'repoPath: .',
     'baseRef: main',
@@ -276,3 +277,33 @@ test('a criterion id with a path separator fails job loading', () => {
   expect(error.field).toBe('criteria[0].id')
   expect(error.message).toContain('path separators')
 })
+
+test('a check whose grandchild holds the stdio pipes still settles unverified', async () => {
+  const job = await makeJob({
+    criteria: [
+      {
+        id: 'forks-daemon',
+        text: 'forks a child that inherits the pipes',
+        checks: [{ kind: 'command', run: './forks.sh', timeoutMs: 50 }],
+      },
+    ],
+    profile: { inline: INLINE_PROFILE },
+  })
+  // no shell: the script itself must fork a pipe-holding grandchild
+  await writeFile(
+    join(job.repoPath, 'forks.sh'),
+    '#!/bin/sh\n( sleep 30 ) &\nexit 0\n',
+    { mode: 0o755 },
+  )
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('blocked')
+  expect(result.criteria).toEqual([
+    {
+      id: 'forks-daemon',
+      outcome: 'unverified',
+      reason: expect.stringContaining('check timed out after 50ms'),
+    },
+  ])
+}, 10000)

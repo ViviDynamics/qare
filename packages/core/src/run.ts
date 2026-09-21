@@ -1,6 +1,6 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { bootApp, type BootOpts } from './boot.js'
 import type { Job, JobCommandCheck, JobCriterion } from './job.js'
 import { loadProfile, validateProfileConfig } from './profile.js'
@@ -95,6 +95,7 @@ interface CheckOutcome {
 
 const MAX_CAPTURE_BYTES = 1024 * 1024
 const KILL_GRACE_MS = 500
+const HARD_SETTLE_GRACE_MS = 250
 
 /**
  * Resolve a check's cwd against the job's repoPath, refusing absolute paths and
@@ -105,30 +106,72 @@ function resolveCheckCwd(cwd: string | undefined, repoPath: string): string | un
   if (isAbsolute(cwd)) return undefined
   const full = resolve(repoPath, cwd)
   const rel = relative(repoPath, full)
-  if (rel.startsWith('..')) return undefined
+  if (rel === '..' || rel.startsWith(`..${sep}`)) return undefined
   return full
+}
+
+/**
+ * Kill the check's process group, not just the direct child: checks routinely
+ * fork children that inherit the stdio pipes, and killing only the parent would
+ * leave those grandchildren holding the pipes open, which stalls `close`.
+ */
+function killCheck(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (child.pid === undefined) return
+  if (process.platform === 'win32') {
+    child.kill(signal)
+    return
+  }
+  try {
+    process.kill(-child.pid, signal)
+  } catch {
+    child.kill(signal)
+  }
 }
 
 function runCommandCheck(check: JobCommandCheck, cwd: string, timeoutMs: number): Promise<CheckOutcome> {
   return new Promise((resolve) => {
     const tokens = check.run.split(/\s+/).filter((token) => token !== '')
-    const child = spawn(tokens[0] ?? '', tokens.slice(1), { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    // detached puts the check in its own process group so a group-wide kill also
+    // reaches grandchildren that inherited the stdio pipes.
+    const child = spawn(tokens[0] ?? '', tokens.slice(1), {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
+    })
     let stdout = ''
     let stderr = ''
     let stdoutTruncated = false
     let stderrTruncated = false
     let timedOut = false
+    let settled = false
     let killTimer: NodeJS.Timeout | undefined
-    const timer = setTimeout(() => {
-      timedOut = true
-      child.kill('SIGTERM')
-      killTimer = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS)
-    }, timeoutMs)
     const settle = (outcome: CheckOutcome) => {
+      if (settled) return
+      settled = true
       clearTimeout(timer)
+      clearTimeout(hardTimer)
       if (killTimer !== undefined) clearTimeout(killTimer)
       resolve(outcome)
     }
+    const timer = setTimeout(() => {
+      timedOut = true
+      killCheck(child, 'SIGTERM')
+      killTimer = setTimeout(() => killCheck(child, 'SIGKILL'), KILL_GRACE_MS)
+    }, timeoutMs)
+    // Last resort: a grandchild that inherited the stdio pipes can keep `close`
+    // from firing forever, so resolve hard at the deadline regardless.
+    const hardTimer = setTimeout(
+      () =>
+        settle({
+          status: 'unverified',
+          reason: `check timed out after ${timeoutMs}ms`,
+          stdout,
+          stderr,
+          stdoutTruncated,
+          stderrTruncated,
+        }),
+      timeoutMs + KILL_GRACE_MS + HARD_SETTLE_GRACE_MS,
+    )
     child.stdout?.on('data', (chunk) => {
       if (stdout.length < MAX_CAPTURE_BYTES) stdout += chunk
       else stdoutTruncated = true
