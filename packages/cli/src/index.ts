@@ -4,6 +4,7 @@ import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import {
+  FileLedgerStore,
   RESULT_SCHEMA_VERSION,
   loadJobFromFile,
   loadJobFromText,
@@ -18,7 +19,7 @@ import {
   toSideResults,
   VERSION,
 } from '@qare/core'
-import type { BootOpts, CriterionResult, CriterionVerdict, RunResult, RunVerdict } from '@qare/core'
+import type { BootOpts, CriterionResult, CriterionVerdict, LedgerEntry, RunResult, RunVerdict } from '@qare/core'
 
 export interface Writer {
   write(chunk: string): void
@@ -37,8 +38,9 @@ export async function main(
   }
   if (argv[0] === 'run') return runCommand(argv.slice(1), out, err, boot, stdin)
   if (argv[0] === 'judge') return judgeCommand(argv.slice(1), out, err)
+  if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare run --job <path|-> | qare judge --result <path>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare run --job <path|-> | qare judge --result <path> | qare ledger <list|show|diff|status> [--ledger <dir>]\n`,
   )
   return 0
 }
@@ -88,6 +90,106 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
 
 function evidencePaths(result: RunResult): string[] {
   return result.criteria.flatMap((criterion) => ('evidence' in criterion ? criterion.evidence ?? [] : []))
+}
+
+export async function runLedgerCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
+  try {
+    const ledgerFlag = argv.indexOf('--ledger')
+    const ledgerSpec = ledgerFlag === -1 ? undefined : argv[ledgerFlag + 1]
+    if (ledgerFlag !== -1 && ledgerSpec === undefined)
+      throw new Error('qare ledger requires a directory value after --ledger')
+    const rest =
+      ledgerFlag === -1 ? argv : [...argv.slice(0, ledgerFlag), ...argv.slice(ledgerFlag + 2)]
+    const [sub, ...subArgs] = rest
+    const dir = resolve(ledgerSpec ?? '.qa')
+    if (sub === undefined)
+      throw new Error('qare ledger requires a subcommand; usage: qare ledger <list|show|diff|status> [--ledger <dir>]')
+    if (sub === 'list') return await ledgerList(dir, out)
+    if (sub === 'show') return await ledgerShow(dir, subArgs[0], out)
+    if (sub === 'diff') return await ledgerDiff(dir, subArgs, out)
+    if (sub === 'status') return await ledgerStatus(dir, out, err)
+    throw new Error(
+      `unknown ledger subcommand ${JSON.stringify(sub)}; usage: qare ledger <list|show|diff|status> [--ledger <dir>]`,
+    )
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 1
+  }
+}
+
+function byCriterion(a: LedgerEntry, b: LedgerEntry): number {
+  return a.criterion < b.criterion ? -1 : a.criterion > b.criterion ? 1 : 0
+}
+
+async function ledgerList(dir: string, out: Writer): Promise<number> {
+  const entries = await new FileLedgerStore(dir).load()
+  for (const entry of [...entries].sort(byCriterion))
+    out.write(`${entry.criterion}  ${entry.status}  ${entry.proof}\n`)
+  return 0
+}
+
+async function ledgerShow(dir: string, criterion: string | undefined, out: Writer): Promise<number> {
+  if (criterion === undefined) throw new Error('qare ledger show requires a criterion id')
+  const entries = await new FileLedgerStore(dir).load()
+  const entry = entries.find((candidate) => candidate.criterion === criterion)
+  if (entry === undefined)
+    throw new Error(`ledger: show: no entry for criterion ${JSON.stringify(criterion)}`)
+  out.write(`criterion: ${entry.criterion}\n`)
+  out.write(`status: ${entry.status}\n`)
+  out.write(`proof: ${entry.proof}\n`)
+  for (const link of entry.source) out.write(`source: ${link}\n`)
+  if (entry.note !== undefined) out.write(`note: ${entry.note}\n`)
+  return 0
+}
+
+async function ledgerDiff(dir: string, subArgs: string[], out: Writer): Promise<number> {
+  const againstFlag = subArgs.indexOf('--against')
+  const againstSpec = againstFlag === -1 ? undefined : subArgs[againstFlag + 1]
+  if (againstSpec === undefined)
+    throw new Error('qare ledger diff requires --against <other-ledger-dir>')
+  const base = await new FileLedgerStore(dir).load()
+  const other = await new FileLedgerStore(resolve(againstSpec)).load()
+  const baseByCriterion = new Map(base.map((entry) => [entry.criterion, entry]))
+  const otherByCriterion = new Map(other.map((entry) => [entry.criterion, entry]))
+  const criteria = [...new Set([...baseByCriterion.keys(), ...otherByCriterion.keys()])]
+  criteria.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+  for (const criterion of criteria) {
+    const from = baseByCriterion.get(criterion)
+    const to = otherByCriterion.get(criterion)
+    if (from === undefined && to !== undefined) out.write(`+ ${criterion} ${to.status} ${to.proof}\n`)
+    else if (from !== undefined && to === undefined) out.write(`- ${criterion} ${from.status} ${from.proof}\n`)
+    else if (
+      from !== undefined &&
+      to !== undefined &&
+      (from.status !== to.status || from.proof !== to.proof || from.note !== to.note)
+    )
+      out.write(`~ ${criterion} ${changedEntry(from, to)} → ${changedEntry(to, from)}\n`)
+  }
+  return 0
+}
+
+function changedEntry(side: LedgerEntry, other: LedgerEntry): string {
+  let text = side.status
+  if (side.proof !== other.proof) text += ` proof=${side.proof}`
+  if (side.note !== undefined && side.note !== other.note) text += ` note="${side.note}"`
+  return text
+}
+
+async function ledgerStatus(dir: string, out: Writer, err: Writer): Promise<number> {
+  let entries
+  try {
+    entries = await new FileLedgerStore(dir).load()
+  } catch (error) {
+    err.write(`integrity: tampered (${formatError(error)})\n`)
+    return 1
+  }
+  const counts = { proposed: 0, active: 0, superseded: 0, retired: 0 }
+  for (const entry of entries) counts[entry.status] += 1
+  out.write(
+    `proposed: ${counts.proposed} active: ${counts.active} superseded: ${counts.superseded} retired: ${counts.retired} total: ${entries.length}\n`,
+  )
+  out.write('integrity: ok\n')
+  return 0
 }
 
 function mergeJudged(loaded: RunResult, verdict: RunVerdict, criteria: CriterionVerdict[]): RunResult {
