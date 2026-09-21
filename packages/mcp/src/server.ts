@@ -108,7 +108,10 @@ export function createMcpServer(deps: McpServerDeps): McpServer {
     let message: Record<string, unknown>
     try {
       const parsed: unknown = JSON.parse(line)
-      if (!isRecord(parsed)) throw new SyntaxError('request must be a JSON object')
+      if (!isRecord(parsed)) {
+        respond(deps, null, undefined, { code: -32600, message: 'invalid request: not a JSON-RPC request object' })
+        return
+      }
       message = parsed
     } catch {
       respond(deps, null, undefined, { code: -32700, message: 'parse error: request is not valid JSON' })
@@ -145,8 +148,8 @@ export function createMcpServer(deps: McpServerDeps): McpServer {
         respond(deps, id, undefined, { code: error.code, message: error.message })
         return
       }
-      const message = (error instanceof Error ? error : new Error(String(error))).message
-      respond(deps, id, { content: [{ type: 'text', text: message }], isError: true })
+      const text = (error instanceof Error ? error : new Error(String(error))).message
+      respond(deps, id, { content: [{ type: 'text', text }], isError: true })
     }
   }
   return { handleLine }

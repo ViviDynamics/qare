@@ -126,7 +126,8 @@ test('the MCP surface round-trips a full job through submit, result, and evidenc
     const files = JSON.parse(
       (evidence.result as { content: Array<{ text: string }> }).content[0].text,
     ).files as string[]
-    expect(files.length).toBeGreaterThan(0)
+    expect(files).toContain('result.json')
+    expect(files.some((file) => file.startsWith('checks/criterion-1/0/'))).toBe(true)
     expect(files).toEqual([...files].sort())
   } finally {
     await rm(repoPath, { recursive: true })
@@ -173,5 +174,7 @@ test('notifications are never answered and parse errors answer with -32700', asy
   expect(client.lines).toHaveLength(0)
   await client.server.handleLine('not json at all')
   expect(JSON.parse(client.lines[0])).toMatchObject({ id: null, error: { code: -32700 } })
-  expect(client.lines).toHaveLength(1)
+  await client.server.handleLine('42')
+  expect(JSON.parse(client.lines[1])).toMatchObject({ id: null, error: { code: -32600 } })
+  expect(client.lines).toHaveLength(2)
 })

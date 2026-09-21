@@ -28,6 +28,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       buffered = lines.pop() ?? ''
       for (const line of lines) void server.handleLine(line)
     })
+    process.stdin.on('end', () => {
+      if (buffered.trim() !== '') void server.handleLine(buffered)
+    })
   } else {
     entry()
   }
