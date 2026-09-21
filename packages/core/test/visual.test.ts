@@ -36,9 +36,9 @@ function fakeScreenshot(images: Map<string, Buffer[]>): {
 async function optsWith(
   images: Map<string, Buffer[]>,
   extra: Partial<VisualCheckOpts> = {},
-): Promise<VisualCheckOpts> {
+): Promise<VisualCheckOpts & { calls: string[] }> {
   const outDir = await mkdtemp(join(tmpdir(), 'qare-visual-'))
-  const { screenshot } = fakeScreenshot(images)
+  const { screenshot, calls } = fakeScreenshot(images)
   return {
     baseUrl: BASE_URL,
     outDir,
@@ -47,6 +47,7 @@ async function optsWith(
     revisions: ['base', 'head'],
     screenshot,
     ...extra,
+    calls,
   }
 }
 
@@ -64,6 +65,16 @@ test('captures screenshots for every revision, width and theme combination', asy
 
   expect(result.screenshots).toHaveLength(8)
   expect(result.screenshots.every((screenshot) => screenshot.outcome === 'captured')).toBe(true)
+  expect(opts.calls).toEqual([
+    '1440/light',
+    '1440/light',
+    '1440/dark',
+    '1440/dark',
+    '390/light',
+    '390/light',
+    '390/dark',
+    '390/dark',
+  ])
   for (const revision of ['base', 'head'] as const) {
     for (const [width, theme] of [[1440, 'light'], [1440, 'dark'], [390, 'light'], [390, 'dark']] as const) {
       const path = join(opts.outDir, revision, `${width}x${theme}.png`)
@@ -118,7 +129,9 @@ test('a rejected screenshot is unverified, leaves no artifact and no diff claim'
   expect(unverified[0]?.revision).toBe('head')
   expect(unverified[0]?.reason).toContain('no image for 1440/light')
   expect(existsSync(join(opts.outDir, 'head', '1440xlight.png'))).toBe(false)
-  expect(result.diffs).toEqual([])
+  expect(result.diffs).toEqual([
+    { width: 1440, theme: 'light', status: 'unavailable', reason: 'head screenshot not captured; no diff can be produced' },
+  ])
 })
 
 test('without a screenshot backend every capture is unverified with a named reason', async () => {

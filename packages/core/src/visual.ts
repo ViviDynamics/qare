@@ -9,7 +9,7 @@ export interface VisualCheckOpts {
   widths: number[]
   themes: string[]
   revisions: VisualRevision[]
-  screenshot?: (url: string, width: number, theme: string) => Promise<Buffer>
+  screenshot?: (url: string, width: number, theme: string, revision: VisualRevision) => Promise<Buffer>
   diffImages?: (basePng: Buffer, headPng: Buffer) => Promise<Buffer | null>
 }
 
@@ -41,8 +41,10 @@ export async function runVisualCheck(opts: VisualCheckOpts): Promise<VisualCheck
   const screenshots: VisualScreenshot[] = []
   const captured = new Map<string, Partial<Record<VisualRevision, Buffer>>>()
 
-  const buildUrl = (width: number, theme: string): string =>
-    baseUrl + '?theme=' + encodeURIComponent(theme) + '&width=' + String(width)
+  const buildUrl = (width: number, theme: string): string => {
+    const separator = baseUrl.includes('?') ? '&' : '?'
+    return baseUrl + separator + 'theme=' + encodeURIComponent(theme) + '&width=' + String(width)
+  }
 
   for (const revision of revisions) {
     for (const width of widths) {
@@ -52,11 +54,10 @@ export async function runVisualCheck(opts: VisualCheckOpts): Promise<VisualCheck
         const bucket = captured.get(key) ?? {}
         if (!screenshot) {
           screenshots.push({ revision, ...entry, outcome: 'unverified', reason: 'no screenshot backend' })
-          captured.set(key, bucket)
           continue
         }
         try {
-          const png = await screenshot(buildUrl(width, theme), width, theme)
+          const png = await screenshot(buildUrl(width, theme), width, theme, revision)
           const path = join(outDir, revision, `${width}x${theme}.png`)
           await mkdir(dirname(path), { recursive: true })
           await writeFile(path, png)
@@ -64,7 +65,6 @@ export async function runVisualCheck(opts: VisualCheckOpts): Promise<VisualCheck
           captured.set(key, bucket)
           screenshots.push({ revision, ...entry, path, outcome: 'captured' })
         } catch (error) {
-          captured.set(key, bucket)
           screenshots.push({ revision, ...entry, outcome: 'unverified', reason: String(error) })
         }
       }
@@ -78,6 +78,13 @@ export async function runVisualCheck(opts: VisualCheckOpts): Promise<VisualCheck
       const basePng = bucket['base']
       const headPng = bucket['head']
       if (!basePng || !headPng) {
+        const missing = basePng === undefined ? 'base' : 'head'
+        diffs.push({
+          width,
+          theme,
+          status: 'unavailable',
+          reason: `${missing} screenshot not captured; no diff can be produced`,
+        })
         continue
       }
       if (basePng.equals(headPng)) {
