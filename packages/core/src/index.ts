@@ -16,6 +16,8 @@ export type {
   FlowCheck,
   VisualCheck,
 } from './plan.js'
+export { fingerprintPlan, comparePlan, lockPlan } from './plan-lock.js'
+export type { PlanComparison } from './plan-lock.js'
 export {
   RESULT_SCHEMA_VERSION,
   ResultValidationError,
