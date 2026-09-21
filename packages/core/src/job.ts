@@ -130,6 +130,11 @@ function parseCriterion(value: unknown, index: number): JobCriterion {
   const id = nonEmptyString(value.id, `${base}.id`, 'id')
   if (id.includes(':'))
     fail(`${base}.id`, `criterion id "${id}" contains ":"; ":" is reserved for namespace prefixes, so it cannot appear in a criterion id`)
+  if (/[/\\]|\.\./.test(id) || /[\x00-\x1f\x7f]/.test(id))
+    fail(
+      `${base}.id`,
+      `criterion id ${JSON.stringify(id)} must not contain path separators, ".." or control characters; criterion ids become evidence directory names`,
+    )
   const text = nonEmptyString(value.text, `${base}.text`, 'text')
   const checks = value.checks === undefined ? undefined : parseChecks(value.checks, base)
   return checks === undefined ? { id, text } : { id, text, checks }

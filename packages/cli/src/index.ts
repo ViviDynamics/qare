@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { loadJobFromFile, loadJobFromText, runJob, VERSION } from '@qare/core'
 import type { BootOpts, RunVerdict } from '@qare/core'
@@ -12,23 +13,30 @@ export async function main(
   out: Writer = process.stdout,
   err: Writer = process.stderr,
   boot: BootOpts = {},
+  stdin: Readable = process.stdin,
 ): Promise<number> {
   if (argv.includes('--version') || argv.includes('-v')) {
     out.write(`${VERSION}\n`)
     return 0
   }
-  if (argv[0] === 'run') return runCommand(argv.slice(1), out, err, boot)
+  if (argv[0] === 'run') return runCommand(argv.slice(1), out, err, boot, stdin)
   out.write(`qare ${VERSION}\nusage: qare --version | qare run --job <path|->\n`)
   return 0
 }
 
-async function runCommand(argv: string[], out: Writer, err: Writer, boot: BootOpts): Promise<number> {
+async function runCommand(
+  argv: string[],
+  out: Writer,
+  err: Writer,
+  boot: BootOpts,
+  stdin: Readable,
+): Promise<number> {
   try {
     const jobFlag = argv.indexOf('--job')
     const jobSpec = jobFlag === -1 ? undefined : argv[jobFlag + 1]
     if (jobSpec === undefined)
       throw new Error('qare run requires --job <path|->; pass "-" to read the job from stdin')
-    const job = jobSpec === '-' ? loadJobFromText(await readStdin()) : await loadJobFromFile(jobSpec)
+    const job = jobSpec === '-' ? loadJobFromText(await readStdin(stdin)) : await loadJobFromFile(jobSpec)
     const { result } = await runJob(job, boot)
     const code = exitCodeFor(result.verdict)
     out.write(`verdict ${result.verdict}; evidence ${job.evidenceDir}\n`)
@@ -54,9 +62,9 @@ function exitCodeFor(verdict: RunVerdict): number {
   }
 }
 
-async function readStdin(): Promise<string> {
+async function readStdin(stdin: Readable = process.stdin): Promise<string> {
   const chunks: Buffer[] = []
-  for await (const chunk of process.stdin) chunks.push(chunk as Buffer)
+  for await (const chunk of stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string))
   return Buffer.concat(chunks).toString('utf8')
 }
 

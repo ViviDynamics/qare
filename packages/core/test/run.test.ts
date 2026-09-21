@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
@@ -208,8 +208,7 @@ test('a check that outlives its timeoutMs times out to unverified', async () => 
   ])
 })
 
-test('duplicate criterion ids fail job loading', () => {
-  const text = [
+test('duplicate criterion ids fail job loading', () => {  const text = [
     'id: job-dup',
     'repoPath: .',
     'baseRef: main',
@@ -227,4 +226,53 @@ test('duplicate criterion ids fail job loading', () => {
   expect(error.name).toBe('JobValidationError')
   expect(error.field).toBe('criteria')
   expect(error.message).toContain('duplicate criterion id "same"')
+})
+
+test('a check cwd resolves inside the repo and is honored', async () => {
+  const job = await makeJob({
+    criteria: [{ id: 'cwd-check', text: 'runs in a subdirectory', checks: [{ kind: 'command', run: 'echo ok', cwd: 'sub' }] }],
+    profile: { inline: INLINE_PROFILE },
+  })
+  await mkdir(join(job.repoPath, 'sub'), { recursive: true })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('passed')
+  expect(
+    await readFile(join(job.evidenceDir, 'checks', 'cwd-check', '0', 'stdout.txt'), 'utf8'),
+  ).toBe('ok\n')
+})
+
+test('a check cwd that escapes the repo is refused to unverified', async () => {
+  const job = await makeJob({
+    criteria: [{ id: 'escape', text: 'tries to escape', checks: [{ kind: 'command', run: 'echo ok', cwd: '..' }] }],
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('blocked')
+  expect(result.criteria).toEqual([
+    { id: 'escape', outcome: 'unverified', reason: expect.stringContaining('escapes the repository path') },
+  ])
+})
+
+test('a criterion id with a path separator fails job loading', () => {
+  const text = [
+    'id: job-traversal',
+    'repoPath: .',
+    'baseRef: main',
+    'headRef: HEAD~1',
+    'profile: { path: .qa }',
+    'criteria:',
+    '  - { id: ../escape, text: traversal }',
+    'evidenceDir: evidence',
+    'post: none',
+  ].join('\n')
+
+  const error = jobError(() => loadJobFromText(text))
+
+  expect(error.name).toBe('JobValidationError')
+  expect(error.field).toBe('criteria[0].id')
+  expect(error.message).toContain('path separators')
 })

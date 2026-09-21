@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { bootApp, type BootOpts } from './boot.js'
 import type { Job, JobCommandCheck, JobCriterion } from './job.js'
 import { loadProfile, validateProfileConfig } from './profile.js'
@@ -16,6 +16,9 @@ const NO_CHECKS_REASON = 'no checks: model planning lands when nare integration 
  * Limitations of this slice: checks are head commands only (base execution lands
  * with Task 14), and each check's `run` string is split on whitespace and spawned
  * directly without a shell, so quoting, pipes and shell syntax are not interpreted.
+ *
+ * The booted app is intentionally left up after the checks so evidence (logs) can
+ * be inspected; teardown is the caller's job (stopApp).
  */
 export async function runJob(job: Job, opts: BootOpts = {}): Promise<{ result: RunResult }> {
   const profile = await resolveProfile(job)
@@ -58,12 +61,18 @@ async function runCriterion(criterion: JobCriterion, job: Job): Promise<Criterio
   let failed = false
   let unverifiedReason: string | undefined
   for (const [index, check] of checks.entries()) {
+    const cwd = resolveCheckCwd(check.cwd, job.repoPath)
+    if (cwd === undefined) {
+      const reason = `check cwd ${JSON.stringify(check.cwd ?? '')} escapes the repository path; refusing to run it`
+      if (unverifiedReason === undefined) unverifiedReason = reason
+      continue
+    }
     const timeoutMs = check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
-    const outcome = await runCommandCheck(check, job.repoPath, timeoutMs)
+    const outcome = await runCommandCheck(check, cwd, timeoutMs)
     const checkDir = join('checks', criterion.id, String(index))
     await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
-    await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), outcome.stdout)
-    await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), outcome.stderr)
+    await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), truncationNote(outcome, 'stdout'))
+    await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), truncationNote(outcome, 'stderr'))
     evidence.push(`${checkDir}/stdout.txt`, `${checkDir}/stderr.txt`)
     if (outcome.status === 'failed') failed = true
     else if (outcome.status === 'unverified' && unverifiedReason === undefined)
@@ -80,6 +89,24 @@ interface CheckOutcome {
   reason?: string
   stdout: string
   stderr: string
+  stdoutTruncated?: boolean
+  stderrTruncated?: boolean
+}
+
+const MAX_CAPTURE_BYTES = 1024 * 1024
+const KILL_GRACE_MS = 500
+
+/**
+ * Resolve a check's cwd against the job's repoPath, refusing absolute paths and
+ * anything that escapes the repository. Returns undefined when refused.
+ */
+function resolveCheckCwd(cwd: string | undefined, repoPath: string): string | undefined {
+  if (cwd === undefined) return repoPath
+  if (isAbsolute(cwd)) return undefined
+  const full = resolve(repoPath, cwd)
+  const rel = relative(repoPath, full)
+  if (rel.startsWith('..')) return undefined
+  return full
 }
 
 function runCommandCheck(check: JobCommandCheck, cwd: string, timeoutMs: number): Promise<CheckOutcome> {
@@ -88,27 +115,50 @@ function runCommandCheck(check: JobCommandCheck, cwd: string, timeoutMs: number)
     const child = spawn(tokens[0] ?? '', tokens.slice(1), { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
+    let stdoutTruncated = false
+    let stderrTruncated = false
     let timedOut = false
+    let killTimer: NodeJS.Timeout | undefined
     const timer = setTimeout(() => {
       timedOut = true
       child.kill('SIGTERM')
+      killTimer = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS)
     }, timeoutMs)
+    const settle = (outcome: CheckOutcome) => {
+      clearTimeout(timer)
+      if (killTimer !== undefined) clearTimeout(killTimer)
+      resolve(outcome)
+    }
     child.stdout?.on('data', (chunk) => {
-      stdout += chunk
+      if (stdout.length < MAX_CAPTURE_BYTES) stdout += chunk
+      else stdoutTruncated = true
     })
     child.stderr?.on('data', (chunk) => {
-      stderr += chunk
+      if (stderr.length < MAX_CAPTURE_BYTES) stderr += chunk
+      else stderrTruncated = true
     })
     child.on('error', (error) => {
-      clearTimeout(timer)
-      resolve({ status: 'unverified', reason: `check could not start: ${String(error)}`, stdout, stderr })
+      settle({ status: 'unverified', reason: `check could not start: ${String(error)}`, stdout, stderr })
     })
     child.on('close', (code) => {
-      clearTimeout(timer)
       if (timedOut)
-        resolve({ status: 'unverified', reason: `check timed out after ${timeoutMs}ms`, stdout, stderr })
-      else if (code === 0) resolve({ status: 'passed', stdout, stderr })
-      else resolve({ status: 'failed', stdout, stderr })
+        settle({
+          status: 'unverified',
+          reason: `check timed out after ${timeoutMs}ms`,
+          stdout,
+          stderr,
+          stdoutTruncated,
+          stderrTruncated,
+        })
+      else if (code === 0)
+        settle({ status: 'passed', stdout, stderr, stdoutTruncated, stderrTruncated })
+      else settle({ status: 'failed', stdout, stderr, stdoutTruncated, stderrTruncated })
     })
   })
+}
+
+function truncationNote(outcome: CheckOutcome, stream: 'stdout' | 'stderr'): string {
+  const text = stream === 'stdout' ? outcome.stdout : outcome.stderr
+  const truncated = stream === 'stdout' ? outcome.stdoutTruncated : outcome.stderrTruncated
+  return truncated === true ? `${text}\n[truncated at 1 MiB]\n` : text
 }

@@ -3,6 +3,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
+import { Readable } from 'node:stream'
 import { VERSION } from '@qare/core'
 import { main } from '../src/index.js'
 import type { Writer } from '../src/index.js'
@@ -22,12 +23,11 @@ function capture(): { lines: string[]; writer: Writer } {
   return { lines, writer: { write: (chunk) => lines.push(chunk) } }
 }
 
-async function writeJobFile(check: string): Promise<{ jobPath: string; evidenceDir: string }> {
+async function writeJobFile(check: string): Promise<{ jobPath: string; evidenceDir: string; jobText: string }> {
   const repoPath = await mkdtemp(join(tmpdir(), 'qare-cli-'))
   const evidenceDir = join(repoPath, 'evidence')
   const jobPath = join(repoPath, 'job.yml')
-  await writeFile(
-    jobPath,
+  const jobText =
     [
       'id: job-cli',
       `repoPath: ${repoPath}`,
@@ -50,10 +50,9 @@ async function writeJobFile(check: string): Promise<{ jobPath: string; evidenceD
       `      - { kind: command, run: "${check}" }`,
       `evidenceDir: ${evidenceDir}`,
       'post: none',
-    ].join('\n') + '\n',
-    'utf8',
-  )
-  return { jobPath, evidenceDir }
+    ].join('\n') + '\n'
+  await writeFile(jobPath, jobText, 'utf8')
+  return { jobPath, evidenceDir, jobText }
 }
 
 test('--version prints the core version', async () => {
@@ -86,6 +85,15 @@ test('run --job on a failing job exits 1 and still writes result.json', async ()
   const code = await main(['run', '--job', jobPath], writer, NO_OUT, HEALTHY_BOOT)
   expect(code).toBe(1)
   expect(lines.join('')).toContain('verdict failed')
+  expect(existsSync(join(evidenceDir, 'result.json'))).toBe(true)
+})
+
+test('run --job - reads the job from stdin and exits 0', async () => {
+  const { jobText, evidenceDir } = await writeJobFile('echo ok')
+  const { lines, writer } = capture()
+  const code = await main(['run', '--job', '-'], writer, NO_OUT, HEALTHY_BOOT, Readable.from([jobText]))
+  expect(code).toBe(0)
+  expect(lines.join('')).toContain('verdict passed')
   expect(existsSync(join(evidenceDir, 'result.json'))).toBe(true)
 })
 
