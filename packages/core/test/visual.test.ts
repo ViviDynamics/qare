@@ -67,12 +67,12 @@ test('captures screenshots for every revision, width and theme combination', asy
   expect(result.screenshots.every((screenshot) => screenshot.outcome === 'captured')).toBe(true)
   expect(opts.calls).toEqual([
     '1440/light',
-    '1440/light',
     '1440/dark',
-    '1440/dark',
-    '390/light',
     '390/light',
     '390/dark',
+    '1440/light',
+    '1440/dark',
+    '390/light',
     '390/dark',
   ])
   for (const revision of ['base', 'head'] as const) {
