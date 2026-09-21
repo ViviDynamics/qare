@@ -56,7 +56,7 @@ function entry(overrides: Partial<LedgerEntry> = {}): LedgerEntry {
 
 describe('feedJobProposals', () => {
   test('namespaces job criteria with the job: prefix and maps outcomes', () => {
-    const record = feedJobProposals(feedInput(), [])
+    const record = feedJobProposals(feedInput())
     expect(record.criteria).toEqual([
       { criterionId: 'job:spec-up-200', outcome: 'pass' },
       { criterionId: 'job:extra-0', outcome: 'fail' },
@@ -75,7 +75,7 @@ describe('feedJobProposals', () => {
     )
     expect(mixed.criteria).toEqual([{ criterionId: 'job:b', outcome: 'pass' }])
     expect(() =>
-      feedJobProposals(feedInput({ criteria: [{ criterionId: 'a', outcome: 'unverified' }] }), []),
+      feedJobProposals(feedInput({ criteria: [{ criterionId: 'a', outcome: 'unverified' }] })),
     ).toThrow(/no verifiable job criteria to feed/)
   })
 
@@ -88,7 +88,6 @@ describe('feedJobProposals', () => {
             { criterionId: 'spec-up-200', outcome: 'failed' },
           ],
         }),
-        [],
       ),
     ).toThrow(/duplicate job criterion "spec-up-200"/)
   })
