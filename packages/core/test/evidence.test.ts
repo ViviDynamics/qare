@@ -147,6 +147,24 @@ test('nothing posts on its own; the fake poster records exactly the rendered out
   await poster.createCheckRun(payload)
   expect(poster.commentBodies).toEqual([body])
   expect(poster.payloads).toEqual([payload])
-  expect(poster.commentBodies).toEqual([renderComment(mixed)])
-  expect(poster.payloads).toEqual([renderCheckRun(mixed)])
+})
+
+test('the rendered comment is pinned in full: regressions to order or wording fail', () => {
+  expect(renderComment(mixed)).toBe(
+    '## QARE run: failed (job job-9)\n' +
+      '\n' +
+      '| criterion | outcome | reason |\n' +
+      '| --- | --- | --- |\n' +
+      '| payout-1099-notice | proven |  |\n' +
+      '| ledger-export-csv | failed | export wrote 0 rows \\| expected 3 |\n' +
+      '| multi-currency-totals | unverified | could not verify (environment): staging unreachable \\| no vpn |\n' +
+      '\n' +
+      'Details:\n' +
+      '\n' +
+      '- payout-1099-notice: [stdout.txt](<checks/payout-1099-notice/1/stdout.txt>)\n' +
+      '- ledger-export-csv: [stdout.txt](<checks/ledger-export-csv/1/stdout.txt>)\n' +
+      '- multi-currency-totals: [attempt.log](<checks/multi-currency-totals/1/attempt.log>)\n' +
+      '\n' +
+      'Unverified criteria could not verify (environment) — that is not a code defect.',
+  )
 })

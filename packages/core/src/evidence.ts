@@ -43,10 +43,15 @@ function detailLinks(criteria: CriterionResult[]): string[] {
   for (const criterion of criteria) {
     const links = (criterion.evidence ?? [])
       .filter(path => path !== '')
-      .map(path => `[${basename(path)}](${path})`)
-    if (links.length > 0) lines.push(`- ${criterion.id}: ${links.join(', ')}`)
+      // angle brackets keep destinations intact for paths with spaces or parens
+      .map(path => `[${escapeLinkText(basename(path))}](<${path}>)`)
+    if (links.length > 0) lines.push(`- ${escapeLinkText(criterion.id)}: ${links.join(', ')}`)
   }
   return lines
+}
+
+function escapeLinkText(text: string): string {
+  return text.replace(/[\[\]]/g, ' ')
 }
 
 export function renderComment(result: RunResult): string {
