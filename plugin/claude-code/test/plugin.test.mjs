@@ -125,7 +125,7 @@ test('hook blocks with distinct named messages per verdict', async () => {
     const messages = []
     for (const [name, pattern] of expectations) {
       const outcome = runHook(join(dir, `${name}.json`))
-      assert.equal(outcome.status, 1, `${name} must exit 1; stderr: ${outcome.stderr}`)
+      assert.equal(outcome.status, 2, `${name} must exit 2; stderr: ${outcome.stderr}`)
       assert.match(outcome.stderr, pattern)
       messages.push(outcome.stderr)
     }
@@ -139,13 +139,13 @@ test('hook fails closed with named errors for missing or malformed results', asy
   const dir = await mkdtemp(join(tmpdir(), 'qare-hook-'))
   try {
     const missing = runHook(join(dir, 'nope.json'))
-    assert.equal(missing.status, 1)
+    assert.equal(missing.status, 2)
     assert.match(missing.stderr, /QARE_RESULT_MISSING/)
 
     const broken = join(dir, 'broken.json')
     await writeFile(broken, '{"verdict": ', 'utf8')
     const invalid = runHook(broken)
-    assert.equal(invalid.status, 1)
+    assert.equal(invalid.status, 2)
     assert.match(invalid.stderr, /QARE_RESULT_INVALID_JSON/)
 
     await writeFile(broken, '{"schemaVersion":"1","verdict":"passed","criteria":[]}', 'utf8')
@@ -164,7 +164,7 @@ test('hook fails closed with named errors for missing or malformed results', asy
     for (const [name, body] of shapeCases) {
       await writeFile(broken, body, 'utf8')
       const outcome = runHook(broken)
-      assert.equal(outcome.status, 1, body)
+      assert.equal(outcome.status, 2, body)
       assert.match(outcome.stderr, new RegExp(name))
     }
   } finally {
@@ -189,7 +189,7 @@ test('hook takes the result path from stdin JSON or QARE_RESULT_PATH', async () 
       encoding: 'utf8',
       cwd: PLUGIN_ROOT,
     })
-    assert.equal(viaEnv.status, 1)
+    assert.equal(viaEnv.status, 2)
     assert.match(viaEnv.stderr, /QARE_FAILED/)
 
     const defaults = spawnSync(process.execPath, [HOOK], {
@@ -197,7 +197,7 @@ test('hook takes the result path from stdin JSON or QARE_RESULT_PATH', async () 
       encoding: 'utf8',
       cwd: dir,
     })
-    assert.equal(defaults.status, 1)
+    assert.equal(defaults.status, 2)
     assert.match(defaults.stderr, /QARE_RESULT_MISSING/)
     assert.match(defaults.stderr, /\.qare.result\.json/)
   } finally {

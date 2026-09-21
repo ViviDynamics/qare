@@ -12,13 +12,14 @@
 //   3. "result_path" field of the JSON on stdin
 //   4. default: <project>/.qare/result.json
 //
-// Exit semantics:
+// Exit semantics (exit 2 is the only code that blocks a Stop; exit 1 is a
+// non-blocking error, so a gate that meant to gate would not gate):
 //   verdict passed             -> exit 0 (stop proceeds)
-//   verdict failed             -> exit 1, QARE_FAILED
-//   verdict blocked            -> exit 1, QARE_BLOCKED
-//   verdict refused            -> exit 1, QARE_REFUSED
-//   verdict waived             -> exit 1, QARE_WAIVED (a waiver is not a pass)
-//   missing / malformed result -> exit 1 with a named QARE_RESULT_* error
+//   verdict failed             -> exit 2, QARE_FAILED
+//   verdict blocked            -> exit 2, QARE_BLOCKED
+//   verdict refused            -> exit 2, QARE_REFUSED
+//   verdict waived             -> exit 2, QARE_WAIVED (a waiver is not a pass)
+//   missing / malformed result -> exit 2 with a named QARE_RESULT_* error
 
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -48,7 +49,7 @@ async function readStdinText() {
 
 function block(name, detail) {
   process.stderr.write(`QARE_${name}: ${detail}\n`)
-  process.exit(1)
+  process.exit(2)
 }
 
 function isRecord(value) {
@@ -126,5 +127,5 @@ async function main() {
 
 main().catch((error) => {
   process.stderr.write(`QARE_HOOK_ERROR: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`)
-  process.exit(1)
+  process.exit(2)
 })

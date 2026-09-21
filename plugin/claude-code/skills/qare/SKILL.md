@@ -17,10 +17,10 @@ every path fails closed.
 All engine access goes through the CLI (or the MCP server, or the GitHub
 Action). From this plugin you only use the CLI:
 
-- `qare init` — prepare a repo's `.qa/` profile and readiness state.
+- `qare init` — prepare a repo's `.qa/` profile and readiness state (forthcoming; not in the CLI yet).
 - `qare run` — plan, execute and judge; writes evidence and `result.json`.
 - `qare judge` — re-judge from existing evidence.
-- `qare ledger` — inspect or apply the criteria ledger.
+- `qare ledger` — inspect the criteria ledger.
 
 If the CLI is not installed, say so and stop; do not approximate qare by
 writing checks or verdicts yourself.
@@ -46,14 +46,14 @@ conversation turn ends, the hook reads qare's result.json and maps the
 verdict to its exit code:
 
 - `passed` — exit 0, the stop proceeds.
-- `failed` — exit 1, named message `QARE_FAILED`; fix the change and
+- `failed` — exit 2, named message `QARE_FAILED`; fix the change and
   rerun qare.
-- `blocked` — exit 1, named message `QARE_BLOCKED`; fix the run setup.
-- `refused` — exit 1, named message `QARE_REFUSED`; read the named
+- `blocked` — exit 2, named message `QARE_BLOCKED`; fix the run setup.
+- `refused` — exit 2, named message `QARE_REFUSED`; read the named
   reason in result.json.
-- `waived` — exit 1, named message `QARE_WAIVED`; a human waiver is not
+- `waived` — exit 2, named message `QARE_WAIVED`; a human waiver is not
   a pass.
-- Missing or malformed result — exit 1 with a named `QARE_RESULT_*`
+- Missing or malformed result — exit 2 with a named `QARE_RESULT_*`
   error. Fail closed, always.
 
 The hook finds result.json in this order: first CLI argument, then the
@@ -70,7 +70,7 @@ result.json; it cannot compute or change a verdict.
 After a run, you may ask the read-only `qare-verifier` agent to review
 the evidence behind a verdict. Its only permitted outcome changes are
 confirmations and downgrades: it may argue that the evidence does not
-support a `proven` criterion, which turns that criterion `unverified`.
+support a `proven` criterion, which should be recorded as an outcome downgrade in qare's next run (never an upgrade).
 It never upgrades an outcome and never introduces a verdict; verdicts
 stay in qare's code. Criteria themselves change only through review, as
 pull requests against the ledger.
