@@ -30,6 +30,7 @@ export interface RunResult {
   verdict: RunVerdict
   criteria: CriterionResult[]
   job?: { id: string }
+  waived?: Array<{ criterionId: string; by: string }>
 }
 
 const CRITERION_OUTCOMES: CriterionOutcome[] = ['proven', 'failed', 'unverified']
@@ -109,13 +110,28 @@ export function parseResult(input: unknown): RunResult {
   if (!Array.isArray(input.criteria)) fail('criteria', 'result.json must carry a criteria array')
 
   const job = parseJobSummary(input.job)
+  const waived = parseWaived(input.waived)
 
   return {
     schemaVersion,
     verdict: verdict as RunVerdict,
     criteria: input.criteria.map((entry, index) => parseCriterionResult(entry, index)),
     ...(job === undefined ? {} : { job }),
+    ...(waived === undefined ? {} : { waived }),
   }
+}
+
+function parseWaived(value: unknown): Array<{ criterionId: string; by: string }> | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) fail('waived', 'result.json waived must be an array of { criterionId, by }')
+  if (value.length === 0) fail('waived', 'result.json waived must not be empty when present')
+  return value.map((entry, index) => {
+    if (!isRecord(entry)) fail(`waived[${index}]`, 'waiver entry must be a JSON object')
+    return {
+      criterionId: nonEmptyString(entry.criterionId, `waived[${index}].criterionId`, 'criterion id'),
+      by: nonEmptyString(entry.by, `waived[${index}].by`, 'waiver actor'),
+    }
+  })
 }
 
 function parseJobSummary(value: unknown): { id: string } | undefined {
