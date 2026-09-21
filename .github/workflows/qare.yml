@@ -1,0 +1,148 @@
+name: QARE
+
+# Three-job qare pipeline: plan -> execute -> judge, with artifact handoff.
+#
+# Secret-hygiene map (constitution: the three jobs never share a machine):
+#   - plan:    holds the model key only       (QARE_MODEL_KEY)
+#   - execute: holds no secrets at all        (stub containers only)
+#   - judge:   holds the model key + GitHub token only
+#     (QARE_MODEL_KEY for the verifier seam, GITHUB_TOKEN for the
+#     comment/check-run poster that lands with the orchestrator)
+# No secret values are written here; only names, resolved at runtime.
+#
+# nare-pending state: nare's machine contract (nare issues #9-#11) is not
+# versioned yet, so the plan job fails with a named, actionable message and
+# plan.json cannot be produced. The job is continue-on-error so the pipeline
+# shape stays visible; execute falls back to a documented job fixture and
+# judge consumes whatever result.json the execute slice produced.
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qare-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # label: plan (model key only)
+  plan:
+    name: plan (model key only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Plan the QA run
+        shell: bash
+        env:
+          QARE_MODEL_KEY: ${{ secrets.QARE_MODEL_KEY }}
+        run: |
+          node --input-type=module -e '
+            import { pathToFileURL } from "node:url"
+            import { join } from "node:path"
+            const seam = pathToFileURL(join(process.cwd(), "packages", "core", "dist", "index.js")).href
+            const { NareAgentRunner } = await import(seam)
+            try {
+              new NareAgentRunner()
+              process.stderr.write("plan job unavailable: nare integration pending (nare issues #9-#11); plan.json cannot be produced yet\n")
+              process.exit(3)
+            } catch (error) {
+              const name = error && typeof error === "object" ? error.name : String(error)
+              if (name !== "NotImplemented") throw error
+              process.stderr.write("NotImplemented: plan job unavailable: nare integration pending (nare issues #9-#11); plan.json cannot be produced yet\n")
+              process.exit(3)
+            }
+          '
+      - name: Upload plan.json (if produced)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan.json
+          path: plan.json
+          if-no-files-found: ignore
+
+  # label: execute (no secrets)
+  execute:
+    name: execute (no secrets)
+    needs: plan
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout checks out the PR merge ref on pull_request events
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Download plan.json (absent while nare is pending)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: plan.json
+          path: .
+      - name: Run the QA job (plan.json when present, documented fallback fixture otherwise)
+        shell: bash
+        run: |
+          if [ -f plan.json ]; then
+            node packages/cli/dist/index.js run --job plan.json
+          else
+            echo "plan.json absent: nare integration pending (nare issues #9-#11); running the documented fallback job fixture for the shape-visible slice"
+            node packages/cli/dist/index.js run --job .github/qare/fallback-job.yml
+          fi
+      - name: Upload evidence (raw results + result.json)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: execute-evidence
+          path: evidence/
+          if-no-files-found: ignore
+
+  # label: judge (model key + GitHub token only)
+  judge:
+    name: judge (model key + GitHub token only)
+    needs: [plan, execute]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Download execute evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: execute-evidence
+          path: .
+      - name: Judge the result
+        shell: bash
+        env:
+          QARE_MODEL_KEY: ${{ secrets.QARE_MODEL_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node packages/cli/dist/index.js judge --result result.json
+      - name: Upload judge artifacts (comment.md, checkrun.json, judged-result.json)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-artifacts
+          path: |
+            comment.md
+            checkrun.json
+            judged-result.json
+          if-no-files-found: ignore
