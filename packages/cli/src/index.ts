@@ -1,8 +1,24 @@
 #!/usr/bin/env node
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
-import { loadJobFromFile, loadJobFromText, runJob, VERSION } from '@qare/core'
-import type { BootOpts, RunVerdict } from '@qare/core'
+import { dirname, join, resolve } from 'node:path'
+import {
+  RESULT_SCHEMA_VERSION,
+  loadJobFromFile,
+  loadJobFromText,
+  judgeRun,
+  loadResult,
+  NareAgentRunner,
+  prepareVerifierInputs,
+  renderCheckRun,
+  renderComment,
+  runJob,
+  runVerifier,
+  toSideResults,
+  VERSION,
+} from '@qare/core'
+import type { BootOpts, CriterionResult, CriterionVerdict, RunResult, RunVerdict } from '@qare/core'
 
 export interface Writer {
   write(chunk: string): void
@@ -20,8 +36,82 @@ export async function main(
     return 0
   }
   if (argv[0] === 'run') return runCommand(argv.slice(1), out, err, boot, stdin)
-  out.write(`qare ${VERSION}\nusage: qare --version | qare run --job <path|->\n`)
+  if (argv[0] === 'judge') return judgeCommand(argv.slice(1), out, err)
+  out.write(
+    `qare ${VERSION}\nusage: qare --version | qare run --job <path|-> | qare judge --result <path>\n`,
+  )
   return 0
+}
+
+async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
+  try {
+    const resultFlag = argv.indexOf('--result')
+    const resultSpec = resultFlag === -1 ? undefined : argv[resultFlag + 1]
+    if (resultSpec === undefined)
+      throw new Error('qare judge requires --result <path> (the result.json written by qare run)')
+    const outDirFlag = argv.indexOf('--outDir')
+    const outDirSpec = outDirFlag === -1 ? undefined : argv[outDirFlag + 1]
+    if (outDirFlag !== -1 && outDirSpec === undefined)
+      throw new Error('qare judge requires a directory value after --outDir')
+    const runnerFlag = argv.indexOf('--runner')
+    const runnerSpec = runnerFlag === -1 ? 'nare' : argv[runnerFlag + 1]
+    if (runnerSpec !== 'nare' && runnerSpec !== 'none')
+      throw new Error(`unknown --runner ${JSON.stringify(runnerSpec)} (expected "nare" or "none")`)
+
+    const resultPath = resolve(resultSpec)
+    const outDir = outDirSpec === undefined ? dirname(resultPath) : resolve(outDirSpec)
+    const loaded = loadResult(await readFile(resultPath, 'utf8'))
+    const judged = judgeRun({ base: [], head: toSideResults(loaded) })
+    if (runnerSpec === 'nare') {
+      try {
+        const runner = new NareAgentRunner()
+        await runVerifier(
+          runner,
+          prepareVerifierInputs({ criteria: judged.criteria, diff: '', evidence: evidencePaths(loaded) }),
+        )
+      } catch (error) {
+        err.write(`verifier skipped: ${formatError(error)}\n`)
+      }
+    }
+    const result = mergeJudged(loaded, judged.verdict, judged.criteria)
+    await mkdir(outDir, { recursive: true })
+    await writeFile(join(outDir, 'judged-result.json'), `${JSON.stringify(result, null, 2)}\n`, 'utf8')
+    await writeFile(join(outDir, 'comment.md'), `${renderComment(result)}\n`, 'utf8')
+    await writeFile(join(outDir, 'checkrun.json'), `${JSON.stringify(renderCheckRun(result), null, 2)}\n`, 'utf8')
+    out.write(`verdict ${result.verdict}; artifacts ${outDir}\n`)
+    return 0
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 4
+  }
+}
+
+function evidencePaths(result: RunResult): string[] {
+  return result.criteria.flatMap((criterion) => ('evidence' in criterion ? criterion.evidence ?? [] : []))
+}
+
+function mergeJudged(loaded: RunResult, verdict: RunVerdict, criteria: CriterionVerdict[]): RunResult {
+  const evidenceById = new Map(loaded.criteria.map((criterion) => [criterion.id, evidenceOf(criterion)]))
+  return {
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict,
+    criteria: criteria.map((criterion) => {
+      const evidence = evidenceById.get(criterion.criterionId) ?? []
+      if (criterion.outcome === 'unverified')
+        return {
+          id: criterion.criterionId,
+          outcome: 'unverified',
+          reason: criterion.reason,
+          ...(evidence.length === 0 ? {} : { evidence }),
+        }
+      return { id: criterion.criterionId, outcome: criterion.outcome, evidence }
+    }),
+    ...(loaded.job === undefined ? {} : { job: { id: loaded.job.id } }),
+  }
+}
+
+function evidenceOf(criterion: CriterionResult): string[] {
+  return 'evidence' in criterion ? criterion.evidence ?? [] : []
 }
 
 async function runCommand(

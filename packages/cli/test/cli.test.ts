@@ -1,10 +1,10 @@
 import { existsSync } from 'node:fs'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
 import { Readable } from 'node:stream'
-import { VERSION } from '@qare/core'
+import { RESULT_SCHEMA_VERSION, VERSION } from '@qare/core'
 import { main } from '../src/index.js'
 import type { Writer } from '../src/index.js'
 
@@ -115,4 +115,68 @@ test('run without --job exits 4 with the usage error on stderr', async () => {
   const code = await main(['run'], out.writer, errors.writer, HEALTHY_BOOT)
   expect(code).toBe(4)
   expect(errors.lines.join('')).toContain('--job')
+})
+
+async function writeResultFile(): Promise<{ dir: string; resultPath: string; resultText: string }> {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-cli-'))
+  const resultText = `${JSON.stringify(
+    {
+      schemaVersion: RESULT_SCHEMA_VERSION,
+      verdict: 'passed',
+      criteria: [{ id: 'criterion-1', outcome: 'proven', evidence: ['checks/criterion-1/0/stdout.txt'] }],
+      job: { id: 'job-cli' },
+    },
+    null,
+    2,
+  )}\n`
+  const resultPath = join(dir, 'result.json')
+  await writeFile(resultPath, resultText, 'utf8')
+  return { dir, resultPath, resultText }
+}
+
+test('judge writes judged-result.json, comment.md and checkrun.json next to the result', async () => {
+  const { dir, resultPath, resultText } = await writeResultFile()
+  const { lines, writer } = capture()
+  const code = await main(['judge', '--result', resultPath], writer, NO_OUT)
+  expect(code).toBe(0)
+  expect(lines.join('')).toContain('verdict passed')
+  const judged = JSON.parse(await readFile(join(dir, 'judged-result.json'), 'utf8'))
+  expect(judged.verdict).toBe('passed')
+  expect(judged.schemaVersion).toBe(RESULT_SCHEMA_VERSION)
+  expect(await readFile(join(dir, 'comment.md'), 'utf8')).toContain('## QARE run: passed')
+  const checkRun = JSON.parse(await readFile(join(dir, 'checkrun.json'), 'utf8'))
+  expect(checkRun.title).toBe('QARE')
+  expect(checkRun.conclusion).toBe('success')
+  expect(await readFile(resultPath, 'utf8')).toBe(resultText)
+})
+
+test('judge --runner nare skips the verifier and still writes all three artifacts', async () => {
+  const { resultPath } = await writeResultFile()
+  const outDir = join(await mkdtemp(join(tmpdir(), 'qare-cli-')), 'artifacts')
+  const out = capture()
+  const errors = capture()
+  const code = await main(
+    ['judge', '--result', resultPath, '--outDir', outDir, '--runner', 'nare'],
+    out.writer,
+    errors.writer,
+  )
+  expect(code).toBe(0)
+  expect(errors.lines.join('')).toContain('verifier skipped:')
+  expect(errors.lines.join('')).toContain('NotImplemented')
+  for (const name of ['judged-result.json', 'comment.md', 'checkrun.json'])
+    expect(existsSync(join(outDir, name))).toBe(true)
+  const judged = JSON.parse(await readFile(join(outDir, 'judged-result.json'), 'utf8'))
+  expect(judged.verdict).toBe('passed')
+})
+
+test('judge on malformed result.json exits 4 with the named error on stderr', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-cli-'))
+  const resultPath = join(dir, 'result.json')
+  await writeFile(resultPath, 'not json at all {', 'utf8')
+  const out = capture()
+  const errors = capture()
+  const code = await main(['judge', '--result', resultPath], out.writer, errors.writer)
+  expect(code).toBe(4)
+  expect(errors.lines.join('')).toContain('ResultValidationError')
+  expect(existsSync(join(dir, 'judged-result.json'))).toBe(false)
 })
