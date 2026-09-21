@@ -118,3 +118,16 @@ export type {
   GitRun,
   GitRunResult,
 } from './ledger.js'
+export {
+  LEDGER_PROPOSAL_SCHEMA_VERSION,
+  VerificationRecordValidationError,
+  buildLedgerProposal,
+  parseVerificationRecord,
+} from './ledger-proposal.js'
+export type {
+  VerificationCriterion,
+  VerificationOutcome,
+  VerificationRecord,
+  LedgerProposal,
+  LedgerProposalChange,
+} from './ledger-proposal.js'
