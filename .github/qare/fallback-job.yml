@@ -1,0 +1,34 @@
+# Documented fallback job fixture for the shape-visible execute slice.
+#
+# .github/workflows/qare.yml runs this when the plan job could not produce
+# plan.json, which is the current state until nare lands (nare issues #9-#11):
+# the planner needs nare's machine contract, but the execute -> result.json ->
+# judge pipeline shape must stay exercisable in the meantime.
+#
+# Constitution secret hygiene: this fixture carries no secrets — the execute
+# job runs stub containers only, never a machine shared with plan or judge.
+#
+# The referenced compose file is intentionally absent from this repo, so the
+# boot blocks cleanly and the run still records a well-formed result.json
+# (verdict blocked) for the judge job to consume.
+id: qare-fallback
+repoPath: .
+baseRef: HEAD~1
+headRef: HEAD
+profile:
+  inline:
+    app:
+      boot: { compose: compose.qa.yaml, service: app }
+      health: { http: "http://localhost:3000/up", timeout: 120s }
+      seed: { command: bin/rails db:seed:qa }
+      login: { fixture: fixtures/users.yml, role: admin }
+    stubs: []
+    visual: { widths: [1440], themes: [light] }
+    suites: []
+criteria:
+  - id: fallback-shape
+    text: the execute slice produces result.json in the documented artifact shape
+    checks:
+      - { kind: command, run: "true" }
+evidenceDir: evidence
+post: none

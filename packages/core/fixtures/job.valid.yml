@@ -1,0 +1,21 @@
+id: qare-delivery-echo
+repoPath: .
+baseRef: main
+headRef: feature/echo
+profile:
+  path: .qa
+criteria:
+  - id: echo.hello
+    text: echo hello succeeds.
+    checks:
+      - kind: command
+        run: echo hello
+  - id: echo.world
+    text: echo world succeeds.
+    checks:
+      - kind: command
+        run: echo world
+        cwd: .
+        timeoutMs: 30000
+evidenceDir: .qa/evidence
+post: none

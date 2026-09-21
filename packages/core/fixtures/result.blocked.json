@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1",
+  "verdict": "blocked",
+  "criteria": [
+    {
+      "id": "payout-1099-notice",
+      "outcome": "unverified",
+      "reason": "the app never became healthy under the pinned compose profile, so no check ran",
+      "evidence": ["evidence/boot/compose.log"]
+    },
+    {
+      "id": "ledger-export-csv",
+      "outcome": "unverified",
+      "reason": "no check ran: boot failed before the browser suite started",
+      "evidence": ["evidence/boot/compose.log"]
+    }
+  ]
+}

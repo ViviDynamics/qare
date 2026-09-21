@@ -1,0 +1,5 @@
+{
+  "name": "qare",
+  "version": "2026.9.0",
+  "description": "QA agent harness: plans checks, runs evidence, decides verdicts in code"
+}

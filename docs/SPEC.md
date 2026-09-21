@@ -297,6 +297,9 @@ Fork PRs are refused outright in the Action.
 - A `qare` check run with the state from the table above.
 - Artifacts: screenshots, traces, logs, `plan.json`, `result.json`.
 - `result.json` is the machine contract other harnesses consume.
+- Both artifact schemas are documented in [schemas.md](./schemas.md); the
+  orchestrator contract — invocation, exit codes and reaction per verdict — in
+  [orchestrator.md](./orchestrator.md).
 
 ## Readiness report
 
@@ -390,10 +393,23 @@ generator, Argos for visual review, API before/after on Go services.
 - **Agent harness:** nare, by constitution.
 - **Ledger storage:** both backends, `branch` by default, with export and
   migration so neither is a trap.
+  ([ADR-0004](./decisions/adr-0004-ledger-authority.md))
 - **GitHub identity:** App or personal access token, chosen per install.
+  ([ADR-0003](./decisions/adr-0003-posting-identity.md))
 - **Unsettled conflicts:** hold only the affected criteria, never the run.
+  ([ADR-0004](./decisions/adr-0004-ledger-authority.md))
+- **Plan approval:** review with the pull request; the plan is locked before
+  implementation. ([ADR-0001](./decisions/adr-0001-plan-approval.md))
+- **Screenshot storage:** Action artifacts carry the run; an orphan
+  `qa-assets` branch is the long-term home.
+  ([ADR-0002](./decisions/adr-0002-screenshot-storage.md))
 
 ## Open questions
 
-1. Should a human approve the plan before implementation, or only review it with the PR?
-2. Where do screenshots live long-term: Action artifacts (90 days) or a `qa-assets` branch?
+None. Both questions from the draft are closed:
+
+1. Plan approval: review with the pull request, the plan locked before
+   implementation. ([ADR-0001](./decisions/adr-0001-plan-approval.md))
+2. Screenshot storage: Action artifacts carry the run, an orphan `qa-assets`
+   branch holds them for the long term.
+   ([ADR-0002](./decisions/adr-0002-screenshot-storage.md))

@@ -59,6 +59,18 @@ credit you for it. We just will not merge the branch.
 There is no contributor license agreement to sign, because there are no outside
 contributions to license.
 
+## Releasing
+
+Releases are CalVer and the tag is the version itself: `YYYY.M.PATCH`, like
+`2026.9.0`, matching nare. The root `package.json` version is the single
+source of truth; `scripts/sync-version.mjs` keeps the workspace packages and
+the CLI's version in step with it.
+
+To cut a release: run `node scripts/sync-version.mjs 2026.M.PATCH`, commit,
+tag the commit with the same version, and push the tag. The release workflow
+builds the workspace, verifies the CLI's `--version` matches the tag, and
+publishes a GitHub release. There is no npm publishing.
+
 ## Security issues
 
 Do not report a vulnerability in a public discussion. See
