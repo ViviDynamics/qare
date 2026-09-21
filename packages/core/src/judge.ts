@@ -137,6 +137,8 @@ export function judgeRun(input: JudgeRunInput): JudgeRunResult {
 
 function deriveVerdict(criteria: CriterionVerdict[], regressions: Regression[], anyWaived: boolean): RunVerdict {
   if (regressions.length > 0 || criteria.some((criterion) => criterion.outcome === 'failed')) return 'failed'
+  // An empty run proves nothing: fail closed rather than vacuously passing.
+  if (criteria.length === 0) return 'blocked'
   if (!criteria.some((criterion) => criterion.outcome === 'unverified')) return 'passed'
   return anyWaived ? 'waived' : 'blocked'
 }

@@ -270,3 +270,20 @@ describe('runVerifier', () => {
     expect(result).toEqual(criteria)
   })
 })
+
+test('an empty run fails closed to blocked, never a vacuous pass', () => {
+  expect(judgeRun({ base: [], head: [] }).verdict).toBe('blocked')
+})
+
+test('waived plus regressed: the regression still fails the run', () => {
+  const input = {
+    base: [{ criterionId: 'c1', outcome: 'proven' as const }],
+    head: [{ criterionId: 'c1', outcome: 'failed' as const }],
+    waived: ['c1'],
+  }
+  const result = judgeRun(input)
+  expect(result.regressions).toHaveLength(1)
+  expect(result.criteria[0]?.outcome).toBe('unverified')
+  expect(result.criteria[0]?.regression).toBe(true)
+  expect(result.verdict).toBe('failed')
+})
