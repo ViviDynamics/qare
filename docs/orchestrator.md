@@ -45,10 +45,10 @@ reading anything else out of the document; the worked example does.
 | 1 | verdict `failed` |
 | 2 | verdict `blocked` |
 | 3 | verdict `refused` |
-| 4 | the run itself failed: invalid job file, unreadable path, missing `--job`. No verdict was reached; do not treat it as one |
+| 4 | the harness never reached a verdict: invalid job file, unreadable path, missing `--job` from `qare run`, or a `qare judge` failure. Do not treat it as a verdict |
 | 5 | verdict `waived` |
 
-Exit codes 0–5 mean the harness ran and decided; 4 means the harness never
+Exit codes 0–3 and 5 mean the harness ran and decided; 4 means the harness never
 got to decide. Do not rely on the exit code alone: read result.json from the
 evidence directory and check its `schemaVersion`, then react to the verdict.
 
