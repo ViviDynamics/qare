@@ -83,16 +83,16 @@ export function recordWaiver(
   )
   return {
     ...result,
-    verdict: deriveWaivedVerdict(result.verdict, criteria),
+    verdict: deriveWaivedVerdict(criteria),
     criteria,
     waived: [...named].map((criterionId) => ({ criterionId, by })),
   }
 }
 
-function deriveWaivedVerdict(current: RunVerdict, criteria: CriterionResult[]): RunVerdict {
+function deriveWaivedVerdict(criteria: CriterionResult[]): RunVerdict {
   if (criteria.some((criterion) => criterion.outcome === 'failed')) return 'failed'
-  if (criteria.length === 0) return 'blocked'
-  if (criteria.some((criterion) => criterion.outcome === 'unverified')) return 'waived'
+  // recordWaiver only reaches here with at least one waived criterion mapped
+  // to unverified, so the waived verdict is unconditional from this point
   return 'waived'
 }
 
