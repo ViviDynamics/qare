@@ -86,3 +86,11 @@ export type {
 } from './judge.js'
 export { renderComment, renderCheckRun } from './evidence.js'
 export type { CheckRunPayload, EvidencePoster } from './evidence.js'
+export {
+  SetSeenShas,
+  decideTrigger,
+  handleTrigger,
+  makeSeenShas,
+  parseTrigger,
+} from './triggers.js'
+export type { SeenShas, TriggerDecision, TriggerEvent } from './triggers.js'
