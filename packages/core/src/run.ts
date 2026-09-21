@@ -6,7 +6,7 @@ import type { Job, JobCommandCheck, JobCriterion } from './job.js'
 import { loadProfile, validateProfileConfig } from './profile.js'
 import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult, type RunVerdict } from './result.js'
 
-const DEFAULT_CHECK_TIMEOUT_MS = 60000
+export const DEFAULT_CHECK_TIMEOUT_MS = 60000
 const NO_CHECKS_REASON = 'no checks: model planning lands when nare integration ships'
 
 /**
@@ -95,6 +95,7 @@ interface CheckOutcome {
   stderr: string
   stdoutTruncated?: boolean
   stderrTruncated?: boolean
+  code?: number
 }
 
 const MAX_CAPTURE_BYTES = 1024 * 1024
@@ -132,7 +133,7 @@ function killCheck(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
-function runCommandCheck(check: JobCommandCheck, cwd: string, timeoutMs: number): Promise<CheckOutcome> {
+export function runCommandCheck(check: JobCommandCheck, cwd: string, timeoutMs: number): Promise<CheckOutcome> {
   return new Promise((resolve) => {
     const tokens = check.run.split(/\s+/).filter((token) => token !== '')
     // detached puts the check in its own process group so a group-wide kill also
@@ -202,7 +203,15 @@ function runCommandCheck(check: JobCommandCheck, cwd: string, timeoutMs: number)
         })
       else if (code === 0)
         settle({ status: 'passed', stdout, stderr, stdoutTruncated, stderrTruncated })
-      else settle({ status: 'failed', stdout, stderr, stdoutTruncated, stderrTruncated })
+      else
+        settle({
+          status: 'failed',
+          code: code === null ? undefined : code,
+          stdout,
+          stderr,
+          stdoutTruncated,
+          stderrTruncated,
+        })
     })
   })
 }

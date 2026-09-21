@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { DEFAULT_CHECK_TIMEOUT_MS, runCommandCheck } from './run.js'
 
 export type FlowAction =
   | { action: 'navigate'; url: string }
@@ -122,4 +123,28 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   }
 
   return outcome === 'passed' ? { outcome, evidence } : { outcome, reason, evidence }
+}
+
+/**
+ * Run an existing suite (e.g. cucumber-js) and map its exit code onto a check
+ * outcome: exit 0 → passed, any other exit code → failed, and a suite that
+ * cannot start or outlives its timeout → unverified.
+ *
+ * Limitation carried over from the command executor: the suite's `command`
+ * string is split on whitespace and spawned directly without a shell, so
+ * quoting, pipes and shell syntax are not interpreted.
+ */
+export async function runSuiteCheck(
+  suite: { name: string; command: string },
+  opts: { cwd: string; timeoutMs?: number },
+): Promise<{ outcome: 'passed' | 'failed' | 'unverified'; reason?: string }> {
+  const outcome = await runCommandCheck(
+    { kind: 'command', run: suite.command },
+    opts.cwd,
+    opts.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
+  )
+  if (outcome.status === 'passed') return { outcome: 'passed' }
+  if (outcome.status === 'failed')
+    return { outcome: 'failed', reason: `suite ${suite.name} exited ${outcome.code ?? 'unknown'}` }
+  return { outcome: 'unverified', reason: outcome.reason }
 }

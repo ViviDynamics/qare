@@ -1,7 +1,10 @@
 import { join } from 'node:path'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { expect, test } from 'vitest'
 import {
   runFlowCheck,
+  runSuiteCheck,
   type FlowAction,
   type FlowCheckOpts,
   type FlowPage,
@@ -174,4 +177,35 @@ test('reports unverified without executing actions when trace start throws', asy
   expect(result.reason).toContain('recorder unavailable')
   expect(calls).toEqual([])
   expect(events).toEqual(['start'])
+})
+
+async function suiteCwd(): Promise<string> {
+  return mkdtemp(join(tmpdir(), 'qare-suite-'))
+}
+
+test('runSuiteCheck passes when the suite command exits zero', async () => {
+  const result = await runSuiteCheck({ name: 'unit', command: 'echo ok' }, { cwd: await suiteCwd() })
+
+  expect(result.outcome).toBe('passed')
+  expect(result.reason).toBeUndefined()
+})
+
+test('runSuiteCheck fails with the suite name and exit code when the suite fails', async () => {
+  const cwd = await suiteCwd()
+  await writeFile(join(cwd, 'failing.sh'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+
+  const result = await runSuiteCheck({ name: 'cucumber', command: './failing.sh' }, { cwd })
+
+  expect(result.outcome).toBe('failed')
+  expect(result.reason).toBe('suite cucumber exited 1')
+})
+
+test('runSuiteCheck stays unverified when the suite binary is missing', async () => {
+  const result = await runSuiteCheck(
+    { name: 'cucumber', command: 'definitely-not-a-binary-xyz' },
+    { cwd: await suiteCwd() },
+  )
+
+  expect(result.outcome).toBe('unverified')
+  expect(result.reason).toContain('could not start')
 })
