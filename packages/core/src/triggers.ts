@@ -24,21 +24,24 @@ export type ParsedTrigger = { accepted: TriggerEvent } | { rejected: string }
 const SHA_PATTERN = /^[0-9a-fA-F]{4,40}$/
 
 export function parseTrigger(input: TriggerInput): ParsedTrigger {
-  if (typeof input.sha !== 'string' || !SHA_PATTERN.test(input.sha)) {
+  const sha = typeof input.sha === 'string' ? input.sha.toLowerCase() : ''
+  if (!SHA_PATTERN.test(sha)) {
     return { rejected: 'invalid sha' }
   }
   switch (input.kind) {
     case 'comment': {
       const body = typeof input.body === 'string' ? input.body : ''
-      if (!body.trim().startsWith('/qa')) return { rejected: 'not a /qa command' }
-      return { accepted: { kind: 'comment', sha: input.sha, body } }
+      // word boundary: '/qa' alone or '/qa ' with args — '/qa-bot' is not a command
+      if (!/^\/qa(?:\s|$)/.test(body.trim())) return { rejected: 'not a /qa command' }
+      return { accepted: { kind: 'comment', sha, body } }
     }
     case 'label': {
       if (input.label !== 'qa') return { rejected: 'not the qa label' }
-      return { accepted: { kind: 'label', sha: input.sha, label: 'qa' } }
+      return { accepted: { kind: 'label', sha, label: 'qa' } }
     }
-    case 'ci':
-      return { accepted: { kind: 'ci', sha: input.sha } }
+    case 'ci': {
+      return { accepted: { kind: 'ci', sha } }
+    }
     default:
       return { rejected: 'unknown trigger kind' }
   }

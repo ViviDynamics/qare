@@ -166,3 +166,20 @@ function makeMemory(): SeenShas {
     },
   }
 }
+
+test('comments starting with /qa but not naming the command are rejected', () => {
+  expect(parseTrigger({ kind: 'comment', sha: 'abcd1234', body: '/qa-bot is broken' })).toEqual({
+    rejected: 'not a /qa command',
+  })
+  expect(parseTrigger({ kind: 'comment', sha: 'abcd1234', body: 'please /qa this' })).toEqual({
+    rejected: 'not a /qa command',
+  })
+})
+
+test('sha and label are case-exact where they must be, sha-normalized for dedup', () => {
+  const upper = parseTrigger({ kind: 'comment', sha: 'ABCD1234', body: '/qa' })
+  expect(upper).toEqual({ accepted: { kind: 'comment', sha: 'abcd1234', body: '/qa' } })
+  expect(parseTrigger({ kind: 'label', sha: 'abcd1234', label: 'QA' })).toEqual({
+    rejected: 'not the qa label',
+  })
+})
