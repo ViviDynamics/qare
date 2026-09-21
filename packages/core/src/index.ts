@@ -65,5 +65,5 @@ export {
   PlaywrightScreenshotBackendError,
 } from './visual-playwright.js'
 export { makePlaywrightFlowSession, PlaywrightFlowSessionError } from './flow-playwright.js'
-export { matchesStub, summarizeEgress } from './egress.js'
+export { matchesStub, summarizeEgress, mergeVerdicts } from './egress.js'
 export type { EgressAttempt, EgressFinding, EgressStub } from './egress.js'

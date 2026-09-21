@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { matchesStub, summarizeEgress, type EgressAttempt } from '../src/index.js'
+import { mergeVerdicts, matchesStub, summarizeEgress, type EgressAttempt } from '../src/index.js'
 
 const attempt = (host: string, port: number, protocol: string): EgressAttempt => ({
   host,
@@ -40,7 +40,7 @@ describe('summarizeEgress', () => {
     ])
     expect(result.verdict).toBe('refused')
     expect(result.findings).toEqual([
-      { kind: 'refused', reason: 'refused: missing stub: api.mailgun.net:443 (https)' },
+      { kind: 'refused', reason: 'refused: missing stub: api.mailgun.net:443 (https)', count: 1 },
     ])
   })
 
@@ -65,8 +65,8 @@ describe('summarizeEgress', () => {
     )
     expect(result.verdict).toBe('refused')
     expect(result.findings).toEqual([
-      { kind: 'refused', reason: 'refused: missing stub: api.mailgun.net:443 (https)' },
-      { kind: 'refused', reason: 'refused: missing stub: api.mailgun.net:25 (tcp)' },
+      { kind: 'refused', reason: 'refused: missing stub: api.mailgun.net:443 (https)', count: 2 },
+      { kind: 'refused', reason: 'refused: missing stub: api.mailgun.net:25 (tcp)', count: 1 },
     ])
   })
 
@@ -75,4 +75,32 @@ describe('summarizeEgress', () => {
     expect(result.verdict).toBe('refused')
     expect(result.findings).toHaveLength(1)
   })
+})
+
+test('hostile and malformed attempt records become refused findings, never crashes', () => {
+  const { findings, verdict } = summarizeEgress(
+    [
+      { host: null, port: 443, protocol: 'https' },
+      { host: 'api.example.com\nGET /admin', port: 80, protocol: 'http' },
+      { host: 42, port: Number.NaN, protocol: { evil: true } },
+    ],
+    [],
+  )
+  expect(findings).toHaveLength(3)
+  expect(findings.every((finding) => finding.kind === 'refused')).toBe(true)
+  expect(findings[0]?.reason).toContain('refused: missing stub: unknown:443 (https)')
+  expect(findings[1]?.reason).not.toContain('\n')
+  expect(findings[2]?.reason).toContain('object')
+})
+
+test('host comparison normalizes case and trailing dots', () => {
+  expect(matchesStub('API.Example.COM.', [{ hosts: ['*.example.com'] }])).toBe(true)
+  expect(matchesStub('api.example.com.', [{ hosts: ['api.example.com'] }])).toBe(true)
+})
+
+test('mergeVerdicts never downgrades refusal', () => {
+  expect(mergeVerdicts(['refused'])).toBe('refused')
+  expect(mergeVerdicts(['passed', 'failed', 'refused'])).toBe('refused')
+  expect(mergeVerdicts(['passed', 'failed'])).toBe('failed')
+  expect(mergeVerdicts(['passed'])).toBe('passed')
 })
