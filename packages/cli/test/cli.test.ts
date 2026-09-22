@@ -176,7 +176,10 @@ test('judge of a waived result keeps the waived verdict and the waiver record', 
   ])
 })
 
-test('judge --runner nare skips the verifier and still writes all three artifacts', async () => {
+// The verifier is downgrade-only, so a judge run whose verifier cannot start
+// still writes its artifacts and still reports the code-decided verdict. What
+// must never happen is silence: the reason reaches stderr.
+test('judge --runner nare reports why the verifier did not run, and still writes all three artifacts', async () => {
   const { resultPath } = await writeResultFile()
   const outDir = join(await mkdtemp(join(tmpdir(), 'qare-cli-')), 'artifacts')
   const out = capture()
@@ -188,7 +191,9 @@ test('judge --runner nare skips the verifier and still writes all three artifact
   )
   expect(code).toBe(0)
   expect(errors.lines.join('')).toContain('verifier skipped:')
-  expect(errors.lines.join('')).toContain('NotImplemented')
+  // nare is not installed in the test environment, so the runner reports that
+  // rather than the placeholder's NotImplemented it used to raise.
+  expect(errors.lines.join('')).toMatch(/NareRunnerError|nare/)
   for (const name of ['judged-result.json', 'comment.md', 'checkrun.json'])
     expect(existsSync(join(outDir, name))).toBe(true)
   const judged = JSON.parse(await readFile(join(outDir, 'judged-result.json'), 'utf8'))
