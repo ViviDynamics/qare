@@ -8,6 +8,7 @@ name: QARE
 #   - judge:   holds the model key + GitHub token only
 #     (QARE_MODEL_KEY for the verifier seam, GITHUB_TOKEN for the
 #     comment/check-run poster that lands with the orchestrator)
+#   - requeue: holds the GitHub token only    (posts /qa on refused PRs)
 # No secret values are written here; only names, resolved at runtime.
 #
 # nare-pending state: nare's machine contract (nare issues #9-#11) is not
@@ -19,6 +20,9 @@ name: QARE
 on:
   workflow_dispatch:
   pull_request:
+  push:
+    branches: [main]
+    paths: ['.qa/**']
 
 permissions:
   contents: read
@@ -32,6 +36,7 @@ jobs:
   plan:
     name: plan (model key only)
     runs-on: ubuntu-latest
+    if: github.event_name != 'push'
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -75,7 +80,7 @@ jobs:
   execute:
     name: execute (no secrets)
     needs: plan
-    if: always()
+    if: always() && github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
       # actions/checkout checks out the PR merge ref on pull_request events
@@ -114,8 +119,11 @@ jobs:
   judge:
     name: judge (model key + GitHub token only)
     needs: [plan, execute]
-    if: always()
+    if: always() && github.event_name != 'push'
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -136,6 +144,19 @@ jobs:
           QARE_MODEL_KEY: ${{ secrets.QARE_MODEL_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node packages/cli/dist/index.js judge --result result.json
+      - name: File stub issues (refused runs only)
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f judged-result.json ]; then
+            echo "judged-result.json missing: judge did not produce an artifact, no stub issues to file"
+          elif jq -e '.verdict == "refused"' judged-result.json > /dev/null; then
+            node packages/action/dist/index.js stub-issues --result judged-result.json --pr "${{ github.event.pull_request.number }}"
+          else
+            echo "verdict $(jq -r '.verdict' judged-result.json): not refused, no stub issues to file"
+          fi
       - name: Upload judge artifacts (comment.md, checkrun.json, judged-result.json)
         if: always()
         uses: actions/upload-artifact@v4
@@ -146,3 +167,34 @@ jobs:
             checkrun.json
             judged-result.json
           if-no-files-found: ignore
+
+  # label: requeue (GitHub token only)
+  requeue:
+    name: requeue (GitHub token only)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Re-queue refused PRs unblocked by the merged stubs
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          before="${{ github.event.before }}"
+          if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
+            before="$(git hash-object -t tree /dev/null)"
+            echo "first push to main: diffing from the empty tree"
+          fi
+          node packages/action/dist/index.js requeue --keys-from-diff "$before...${{ github.sha }}"
