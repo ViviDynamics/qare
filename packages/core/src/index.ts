@@ -44,7 +44,14 @@ export type {
   CriterionResult,
   RunResult,
 } from './result.js'
-export { FakeAgentRunner, FakeAgentRunnerError, NareAgentRunner, NotImplemented } from './runner.js'
+export {
+  FakeAgentRunner,
+  FakeAgentRunnerError,
+  NARE_CONTRACT,
+  NareAgentRunner,
+  NareRunnerError,
+  NotImplemented,
+} from './runner.js'
 export type {
   AgentBudget,
   AgentRunRequest,
@@ -53,6 +60,7 @@ export type {
   AgentRunStatus,
   AgentStopReason,
   AgentUsage,
+  NareAgentRunnerOptions,
   ToolPolicy,
 } from './runner.js'
 export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'

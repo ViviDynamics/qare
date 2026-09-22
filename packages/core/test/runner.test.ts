@@ -5,8 +5,9 @@ import { expect, test } from 'vitest'
 import {
   FakeAgentRunner,
   FakeAgentRunnerError,
+  NARE_CONTRACT,
   NareAgentRunner,
-  NotImplemented,
+  type AgentRunner,
   type AgentRunRequest,
   type AgentRunResult,
 } from '../src/index.js'
@@ -62,21 +63,19 @@ test('a scripted failure result is surfaced as-is, not converted to a pass', asy
   await expect(fake.run(request())).resolves.toBe(failed)
 })
 
-test('NareAgentRunner throws NotImplemented on construction, pointing at the deferred nare integration', () => {
-  expect(() => new NareAgentRunner()).toThrow(NotImplemented)
-  try {
-    new NareAgentRunner()
-  } catch (error) {
-    expect(error).toBeInstanceOf(NotImplemented)
-    expect(error.name).toBe('NotImplemented')
-    expect(error.message).toMatch(/nare/i)
-    expect(error.message).toMatch(/not versioned/)
-  }
+// These two tests used to assert NareAgentRunner threw NotImplemented, which
+// was true while nare's machine contract was unversioned. nare #11 shipped it,
+// so the runner is real (see nare-runner.test.ts, which drives it against a
+// nare stand-in process). NotImplemented stays exported for the next seam that
+// needs to be named before it is built.
+test('NareAgentRunner is constructible and satisfies the runner interface', () => {
+  const runner: AgentRunner = new NareAgentRunner()
+
+  expect(typeof runner.run).toBe('function')
 })
 
-test('NareAgentRunner throws NotImplemented on call, even when construction is bypassed', async () => {
-  const stub = Object.create(NareAgentRunner.prototype) as NareAgentRunner
-  await expect(stub.run()).rejects.toThrow(NotImplemented)
+test('NareAgentRunner pins the nare contract version it reads', () => {
+  expect(NARE_CONTRACT).toBe(1)
 })
 
 const NETWORK_MARKERS = [
