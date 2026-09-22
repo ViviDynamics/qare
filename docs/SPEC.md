@@ -267,6 +267,40 @@ client, installing an artefact for another, and launching a binary for a third.
 And some clients can only run in certain places, so a target declares what it
 requires and a run refuses to start where that is unmet, naming what is missing.
 
+## Installing and running QARE
+
+QARE runs the same way installed on a host or inside a container. Neither is
+the real one and the other a convenience: the same command, the same profile
+and the same evidence come out of both, and the evidence records which it was.
+
+### Images
+
+The image family is layered. The base image is the smallest thing that runs
+QARE at all: the CLI, the ledger, the judge, command and mail checks, and a
+pinned nare, with no client driver. Every other image is built from it and adds
+one driver family, so nothing is installed twice and a project that needs
+something unusual starts from the base and adds only that. Paths, the entry
+point and the user are a stable contract, so a derived image keeps working
+across QARE releases.
+
+### Tools QARE did not ship
+
+A host that installs QARE will have tools QARE has never heard of: an in-house
+device rig, a proprietary simulator, a test data service. Rather than a plug-in
+system per tool, QARE speaks one generic protocol to them. A profile can
+register a host's MCP servers in two ways:
+
+- **For the planner to look through.** They reach the model through nare, like
+  every other model tool.
+- **As a driver or a check.** QARE's code calls the tools directly, with no model
+  in between, by mapping its action vocabulary onto them. The rules do not
+  change: references stay semantic, the harness records what the tool returned,
+  and code decides the verdict. A tool that can only act on coordinates is not a
+  driver.
+
+A registered tool declares which steps it may run in, so a tool that needs a
+credential can never be placed in the step that runs pull request code.
+
 ## Running against a deployed environment
 
 Most runs use a stack QARE boots itself, where every dependency is a stub. A run
