@@ -186,6 +186,24 @@ test('a run with no result line is refused rather than guessed at', async () => 
   await expect(new NareAgentRunner({ binary: nare.binary }).run(REQUEST)).rejects.toThrow(/result/i)
 })
 
+test('a line that is not JSON fails closed, naming nare rather than throwing a parser error', async () => {
+  // A run killed mid-write, or anything that put a stray line on stdout. The
+  // caller must see a NareRunnerError, not a SyntaxError from a parser it
+  // never called.
+  const nare = await fakeNare([result()])
+  const { writeFile } = await import('node:fs/promises')
+  await writeFile(
+    `${nare.binary}.mjs`,
+    ['#!/usr/bin/env node', `console.log('{"type": "progress", "text": tru')`, `process.exit(0)`].join('\n'),
+    'utf8',
+  )
+
+  const run = new NareAgentRunner({ binary: nare.binary }).run(REQUEST)
+
+  await expect(run).rejects.toThrow(/nare/i)
+  await expect(run).rejects.not.toThrow(SyntaxError)
+})
+
 test('a missing nare binary says so plainly', async () => {
   const runner = new NareAgentRunner({ binary: join(tmpdir(), 'nare-does-not-exist') })
 

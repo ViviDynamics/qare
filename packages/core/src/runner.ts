@@ -198,7 +198,19 @@ export class NareAgentRunner implements AgentRunner {
     const lines = stdout
       .split('\n')
       .filter((line) => line.trim() !== '')
-      .map((line) => JSON.parse(line) as NareEvent | NareResult)
+      .map((line) => {
+        try {
+          return JSON.parse(line) as NareEvent | NareResult
+        } catch {
+          // A run killed mid-write, or anything that put a stray line on
+          // stdout. Failing closed means the caller sees this as nare's
+          // outcome being unreadable, not as a parser error from a parser it
+          // never called.
+          throw new NareRunnerError(
+            `nare wrote a line that is not JSON, so its output cannot be read as an outcome: ${line.slice(0, 120)}`,
+          )
+        }
+      })
     const last = lines.length > 0 ? (lines[lines.length - 1] as NareResult) : undefined
     if (!last || last.type !== 'result') {
       throw new NareRunnerError(
