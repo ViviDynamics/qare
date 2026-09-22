@@ -141,3 +141,14 @@ export type {
   ReadinessProfileInfo,
   ReadinessScanStats,
 } from './readiness.js'
+export {
+  missingStubs,
+  missingStubsFromResult,
+  stubIssueDraft,
+  stubIssueMarker,
+  parseStubIssueMarkers,
+  refusedRegistryLine,
+  parseRefusedRegistry,
+  requeueTargets,
+} from './stub-issues.js'
+export type { MissingStub, StubIssueDraft, StubIssueRefusedEntry, StubIssuePoster } from './stub-issues.js'
