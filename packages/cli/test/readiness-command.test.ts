@@ -55,10 +55,15 @@ test('qare readiness defaults to the working directory', async () => {
   const previousCwd = process.cwd()
   try {
     process.chdir(repo)
+    // What the command reports is process.cwd(), which is the REAL path: on
+    // macOS the temp directory is /var/..., a symlink to /private/var/..., and
+    // chdir resolves it. Comparing against the unresolved path passed on Linux
+    // and failed on every Mac.
+    const reported = process.cwd()
     const { lines, writer } = capture()
     const code = await main(['readiness'], writer)
     expect(code).toBe(0)
-    expect(lines.join('')).toContain(`Repo: ${repo}`)
+    expect(lines.join('')).toContain(`Repo: ${reported}`)
   } finally {
     process.chdir(previousCwd)
   }
