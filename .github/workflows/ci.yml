@@ -23,7 +23,9 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # build first: workspace types (@qare/core etc.) resolve to dist/, so a
+      # fresh checkout cannot typecheck or test until packages are built
+      - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test
-      - run: pnpm build
