@@ -34,13 +34,13 @@ test('GitHubClient searches issues by phrase and gets issues by number', async (
   }
 })
 
-test('GitHubClient posts and lists issue comments and patches bodies', async () => {
+test('GitHubClient posts issue comments and patches bodies', async () => {
   const fake = await startFakeGithub()
   try {
     fake.issues.set(9, { number: 9, title: 't', body: 'b', comments: [] })
     const client = new GitHubClient({ ...OPTIONS, apiRoot: fake.url })
     await client.postIssueComment(9, 're-queued')
-    expect(await client.listIssueComments(9)).toEqual([{ body: 're-queued' }])
+    expect(fake.issues.get(9)?.comments).toEqual(['re-queued'])
     await client.patchIssueBody(9, 'b2')
     expect(fake.issues.get(9)?.body).toBe('b2')
     const patch = fake.calls.find((call) => call.method === 'PATCH')
@@ -50,12 +50,19 @@ test('GitHubClient posts and lists issue comments and patches bodies', async () 
   }
 })
 
-test('GitHubClient lists open pull requests', async () => {
+test('searchIssues paginates until a short page instead of silently truncating', async () => {
   const fake = await startFakeGithub()
   try {
-    fake.pulls.push({ number: 3, title: 'add stub', state: 'open' })
+    for (let i = 1; i <= 101; i += 1) {
+      fake.issues.set(i, { number: i, title: `Stub ${i}`, body: 'qare-stub: host.example', comments: [] })
+    }
     const client = new GitHubClient({ ...OPTIONS, apiRoot: fake.url })
-    expect(await client.listOpenPullRequests()).toEqual([{ number: 3, title: 'add stub', state: 'open' }])
+    const hits = await client.searchIssues('repo:octocat/qare in:body is:issue "qare-stub: host.example"')
+    expect(hits).toHaveLength(101)
+    const searchCalls = fake.calls.filter((call) => call.path === '/search/issues')
+    expect(searchCalls).toHaveLength(2)
+    expect(searchCalls[0]?.query).toContain('page=1')
+    expect(searchCalls[1]?.query).toContain('page=2')
   } finally {
     await fake.close()
   }

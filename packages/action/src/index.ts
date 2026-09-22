@@ -23,7 +23,7 @@ export async function main(argv: string[], out: Writer = process.stdout, err: Wr
     if (command === 'stub-issues') return await stubIssuesCommand(rest, out)
     if (command === 'requeue') return await requeueCommand(rest, out)
   } catch (error) {
-    err.write(`${error instanceof Error ? error.message : String(error)}\n`)
+    err.write(error instanceof Error ? `${error.name}: ${error.message}\n` : `${String(error)}\n`)
     return 1
   }
   entry(out)
@@ -43,7 +43,10 @@ function stubIssuesCommand(argv: string[], out: Writer): Promise<number> {
     apiRoot: flags.string('api-root'),
     tokenEnv: flags.string('token-env'),
   }).then((filed) => {
-    if (filed === undefined) return 0
+    if (filed === undefined) {
+      out.write('verdict is not refused: no stub issues to file\n')
+      return 0
+    }
     for (const item of filed) out.write(`filed stub issue #${item.issue} for ${item.key}\n`)
     return 0
   })

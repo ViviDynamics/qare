@@ -8,6 +8,8 @@ export function stubKeysFromDiffText(diffText: string): string[] {
   const keys = new Set<string>()
   for (const line of diffText.split('\n')) {
     if (!line.startsWith('+') || line.startsWith('+++')) continue
+    // only flow-style `hosts: ["a.example", "b.example"]` entries are recognized;
+    // block-sequence profiles under .qa/ must use the flow style for requeue pickup
     for (const block of line.matchAll(/hosts:\s*\[[^\]]*\]/g)) {
       for (const quoted of block[0].matchAll(/"([^"]+)"/g)) {
         const key = quoted[1]
@@ -23,7 +25,7 @@ export async function requeueUnblocked(
   mergedKeys: string[],
   comment: string = REQUEUE_COMMENT,
 ): Promise<number[]> {
-  const issues = await client.searchIssues(`repo:${client.repository} in:body "qare-stub:"`)
+  const issues = await client.searchIssues(`repo:${client.repository} in:body is:issue "qare-stub:"`)
   const refused: StubIssueRefusedEntry[] = []
   for (const issue of issues) {
     const keys = parseStubIssueMarkers(issue.body ?? '')

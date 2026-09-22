@@ -19,7 +19,6 @@ export interface FakeGithub {
   url: string
   calls: FakeCall[]
   issues: Map<number, FakeIssue>
-  pulls: Array<{ number: number; title: string; state: string }>
   status: number | undefined
   close(): Promise<void>
 }
@@ -30,7 +29,6 @@ const AUTH_HEADER = `Bearer ${TOKEN}`
 export function startFakeGithub(): Promise<FakeGithub> {
   const issues = new Map<number, FakeIssue>()
   const calls: FakeCall[] = []
-  const pulls: Array<{ number: number; title: string; state: string }> = []
   const state = { status: undefined as number | undefined }
   let nextNumber = 100
 
@@ -59,8 +57,14 @@ export function startFakeGithub(): Promise<FakeGithub> {
     if (url.pathname === '/search/issues' && request.method === 'GET') {
       const q = url.searchParams.get('q') ?? ''
       const phrase = /"([^"]+)"/.exec(q)?.[1] ?? ''
-      const items = [...issues.values()].filter((issue) => issue.body.includes(phrase) || issue.title.includes(phrase))
-      respond(response, 200, { total_count: items.length, items })
+      const matched = [...issues.values()].filter((issue) => issue.body.includes(phrase) || issue.title.includes(phrase))
+      const perPage = Number(url.searchParams.get('per_page') ?? '30')
+      const page = Number(url.searchParams.get('page') ?? '1')
+      const items =
+        Number.isInteger(perPage) && perPage > 0 && Number.isInteger(page) && page > 0
+          ? matched.slice((page - 1) * perPage, page * perPage)
+          : matched
+      respond(response, 200, { total_count: matched.length, items })
       return
     }
     if (parts[0] === 'repos' && parts[3] === 'issues' && parts.length === 4 && request.method === 'POST') {
@@ -93,19 +97,11 @@ export function startFakeGithub(): Promise<FakeGithub> {
         respond(response, 404, { message: 'issue not found' })
         return
       }
-      if (request.method === 'GET') {
-        respond(response, 200, issue.comments.map((text) => ({ body: text })))
-        return
-      }
       if (request.method === 'POST') {
         issue.comments.push((body as { body: string }).body)
         respond(response, 201, { body: (body as { body: string }).body })
         return
       }
-    }
-    if (parts[0] === 'repos' && parts[3] === 'pulls' && parts.length === 4 && request.method === 'GET') {
-      respond(response, 200, pulls)
-      return
     }
     respond(response, 404, { message: `fake github has no route for ${request.method} ${url.pathname}` })
   }
@@ -124,7 +120,6 @@ export function startFakeGithub(): Promise<FakeGithub> {
         url: ['http:', `//127.0.0.1:${port}`].join(''),
         calls,
         issues,
-        pulls,
         get status(): number | undefined {
           return state.status
         },

@@ -16,8 +16,13 @@ export class GitHubStubIssuePoster implements StubIssuePoster {
   }
 
   async fileIfMissing(draft: StubIssueDraft): Promise<number> {
+    // Search-then-create is racy: GitHub's search index lags issue creation by
+    // minutes, so two runs can both miss and both create a duplicate stub issue.
+    // Tolerated because requeue is driven by the qare-refused registry lines on
+    // the issue body — a duplicate still carries the registry and each refused
+    // PR is re-queued exactly once per registry entry.
     const marker = stubIssueMarker(draft.key)
-    const hits = await this.client.searchIssues(`repo:${this.client.repository} in:body "${marker}"`)
+    const hits = await this.client.searchIssues(`repo:${this.client.repository} in:body is:issue "${marker}"`)
     const existing = hits[0]
     if (existing !== undefined) return existing.number
     const created = await this.client.createIssue(draft.title, draft.body)

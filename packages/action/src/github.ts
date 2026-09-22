@@ -29,16 +29,6 @@ export interface GitHubIssue {
   state?: string
 }
 
-export interface GitHubComment {
-  body: string
-}
-
-export interface GitHubPullRequest {
-  number: number
-  title: string
-  state?: string
-}
-
 export interface GitHubClientOptions {
   repository?: string
   apiRoot?: string
@@ -73,9 +63,19 @@ export class GitHubClient {
   }
 
   async searchIssues(query: string): Promise<GitHubIssue[]> {
-    const response = await this.request('GET', '/search/issues', new URLSearchParams({ q: query, per_page: '100' }))
-    const items = (response as { items?: GitHubIssue[] }).items
-    return Array.isArray(items) ? items : []
+    const items: GitHubIssue[] = []
+    for (let page = 1; ; page += 1) {
+      const response = await this.request(
+        'GET',
+        '/search/issues',
+        new URLSearchParams({ q: query, per_page: '100', page: String(page) }),
+      )
+      const batch = (response as { items?: GitHubIssue[] }).items
+      if (!Array.isArray(batch) || batch.length === 0) break
+      items.push(...batch)
+      if (batch.length < 100) break
+    }
+    return items
   }
 
   async getIssue(number: number): Promise<GitHubIssue> {
@@ -90,18 +90,8 @@ export class GitHubClient {
     await this.request('PATCH', `/repos/${this.repository}/issues/${number}`, undefined, { body })
   }
 
-  async listIssueComments(number: number): Promise<GitHubComment[]> {
-    const response = await this.request('GET', `/repos/${this.repository}/issues/${number}/comments`)
-    return Array.isArray(response) ? (response as GitHubComment[]) : []
-  }
-
   async postIssueComment(number: number, body: string): Promise<void> {
     await this.request('POST', `/repos/${this.repository}/issues/${number}/comments`, undefined, { body })
-  }
-
-  async listOpenPullRequests(): Promise<GitHubPullRequest[]> {
-    const response = await this.request('GET', `/repos/${this.repository}/pulls`, new URLSearchParams({ state: 'open' }))
-    return Array.isArray(response) ? (response as GitHubPullRequest[]) : []
   }
 
   private async request<T>(method: string, path: string, query?: URLSearchParams, payload?: unknown): Promise<T> {

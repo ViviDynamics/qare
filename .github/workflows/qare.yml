@@ -150,7 +150,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if jq -e '.verdict == "refused"' judged-result.json > /dev/null; then
+          if [ ! -f judged-result.json ]; then
+            echo "judged-result.json missing: judge did not produce an artifact, no stub issues to file"
+          elif jq -e '.verdict == "refused"' judged-result.json > /dev/null; then
             node packages/action/dist/index.js stub-issues --result judged-result.json --pr "${{ github.event.pull_request.number }}"
           else
             echo "verdict $(jq -r '.verdict' judged-result.json): not refused, no stub issues to file"
@@ -189,4 +191,10 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node packages/action/dist/index.js requeue --keys-from-diff "${{ github.event.before }}...${{ github.sha }}"
+        run: |
+          before="${{ github.event.before }}"
+          if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
+            before="$(git hash-object -t tree /dev/null)"
+            echo "first push to main: diffing from the empty tree"
+          fi
+          node packages/action/dist/index.js requeue --keys-from-diff "$before...${{ github.sha }}"
