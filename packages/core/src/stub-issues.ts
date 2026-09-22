@@ -58,14 +58,14 @@ function parseMissingStub(finding: EgressFinding): MissingStub | undefined {
   if (!finding || finding.kind !== 'refused') return undefined
   if (typeof finding.reason !== 'string' || !finding.reason.startsWith(MISSING_STUB_PREFIX)) return undefined
   const rest = finding.reason.slice(MISSING_STUB_PREFIX.length)
-  // shipped shape: <host>:<port> (<protocol>)
-  const match = /^(\S+):(\d+) \((.+)\)$/.exec(rest)
+  // shipped shape: <host>:<port> (<protocol>); port is numeric or the producer's 'unknown'
+  const match = /^(\S+):(\d+|unknown) \((.+)\)$/.exec(rest)
   if (match === null || match[1] === undefined || match[2] === undefined || match[3] === undefined) return undefined
   const host = match[1].toLowerCase()
-  if (!/^[a-z0-9._*-]+$/.test(host)) return undefined
+  if (!/^[a-z0-9._*-]+$/.test(host) || host === 'unknown') return undefined
   const port = match[2]
   const protocol = match[3].trim()
-  if (protocol === '') return undefined
+  if (!/^[a-z0-9+.-]+$/i.test(protocol)) return undefined
   const count = typeof finding.count === 'number' && Number.isFinite(finding.count) && finding.count >= 1 ? finding.count : 1
   return { host, port, protocol, count }
 }
@@ -138,7 +138,7 @@ export function requeueTargets(mergedKeys: string[], refused: StubIssueRefusedEn
   const wanted = new Set(mergedKeys ?? [])
   const targets = new Set<number>()
   for (const entry of refused ?? []) {
-    if (!entry || typeof entry.pr !== 'number' || !Number.isFinite(entry.pr)) continue
+    if (!entry || typeof entry.pr !== 'number' || !Number.isFinite(entry.pr) || entry.pr < 1) continue
     for (const key of entry.keys ?? []) {
       if (wanted.has(key)) {
         targets.add(entry.pr)

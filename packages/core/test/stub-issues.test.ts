@@ -29,14 +29,32 @@ test('missingStubs skips malformed and non-refused findings (fail closed, never 
     { kind: 'refused', reason: 'refused: missing stub: api.example.com:443', count: 1 },
     { kind: 'refused', reason: 'refused: other reason', count: 2 },
     { kind: 'refused', reason: 'refused: missing stub: ok.example.com:8443 (https)', count: 2 },
+    { kind: 'refused', reason: 'refused: missing stub: injected.example.com:443 (https` </b>)', count: 1 },
   ])
   expect(stubs).toEqual([{ host: 'ok.example.com', port: '8443', protocol: 'https', count: 2 }])
+})
+
+test("missingStubs accepts the producer's 'unknown' port placeholder but skips the unknown host placeholder", () => {
+  const stubs = missingStubs([
+    { kind: 'refused', reason: 'refused: missing stub: api.example.com:unknown (https)', count: 1 },
+    { kind: 'refused', reason: 'refused: missing stub: unknown:443 (https)', count: 1 },
+  ])
+  expect(stubs).toEqual([{ host: 'api.example.com', port: 'unknown', protocol: 'https', count: 1 }])
+})
+
+test('missingStubs coerces non-positive or missing counts to 1', () => {
+  const stubs = missingStubs([
+    { kind: 'refused', reason: 'refused: missing stub: a.example.com:443 (https)', count: 0 },
+    { kind: 'refused', reason: 'refused: missing stub: b.example.com:443 (https)', count: Number.NaN },
+    { kind: 'refused', reason: 'refused: missing stub: c.example.com:443 (https)' },
+  ])
+  expect(stubs.map((entry) => entry.count)).toEqual([1, 1, 1])
 })
 
 test('missingStubs merges by host summing counts, deterministic first-seen port and protocol', () => {
   const stubs = missingStubs([
     { kind: 'refused', reason: 'refused: missing stub: api.example.com:443 (https)', count: 1 },
-    { kind: 'refused', reason: 'refused: missing stub: api.example.com:443 (https)', count: 3 },
+    { kind: 'refused', reason: 'refused: missing stub: api.example.com:25 (tcp)', count: 3 },
   ])
   expect(stubs).toEqual([{ host: 'api.example.com', port: '443', protocol: 'https', count: 4 }])
 })
@@ -49,18 +67,37 @@ test('missingStubs sorts by host', () => {
   expect(stubs.map((entry) => entry.host)).toEqual(['a.example.com', 'z.example.com'])
 })
 
-test('stubIssueDraft is byte-identical for identical inputs and contains the YAML entry', () => {
+test('stubIssueDraft is byte-identical for identical inputs and matches the exact body', () => {
   const draft = stubIssueDraft({ host: 'api.billing-vendor.example', port: '443', protocol: 'https', count: 3 })
   const again = stubIssueDraft({ host: 'api.billing-vendor.example', port: '443', protocol: 'https', count: 3 })
   expect(draft).toEqual(again)
   expect(draft.title).toBe('Stub needed for api.billing-vendor.example')
   expect(draft.key).toBe('api.billing-vendor.example')
-  expect(draft.body).toContain(stubIssueMarker('api.billing-vendor.example'))
-  expect(draft.body).toContain('```yaml')
-  expect(draft.body).toContain('hosts: ["api.billing-vendor.example"]')
-  expect(draft.body).toContain('provided_by: { compose_service: api-stub }')
-  expect(draft.body).toContain('- api.billing-vendor.example:443 (https) — 3 attempt(s)')
-  expect(draft.body).not.toMatch(/\d{4}-\d{2}-\d{2}/)
+  expect(draft.body).toBe(
+    [
+      '## Calls made',
+      '',
+      '- api.billing-vendor.example:443 (https) — 3 attempt(s)',
+      '',
+      '## What the stub must answer',
+      '',
+      'The app reaches `api.billing-vendor.example` over https on port 443.',
+      'QARE refuses the run until a stub provides it. Add this entry to the profile stub map:',
+      '',
+      '```yaml',
+      'stubs:',
+      '  - service: api',
+      '    hosts: ["api.billing-vendor.example"]',
+      '    provided_by: { compose_service: api-stub }',
+      '```',
+      '',
+      '## Linking',
+      '',
+      'Dedup key: qare-stub: api.billing-vendor.example',
+      'Refused PRs are registered here as `qare-refused: #<pr>` lines; when the stub PR merges, those PRs are re-queued.',
+      '',
+    ].join('\n'),
+  )
 })
 
 test('missingStubsFromResult extracts from unverified criteria only', () => {
@@ -102,7 +139,13 @@ test('requeueTargets returns deduped sorted PRs whose keys intersect the merged 
 
 test('requeueTargets is empty on disjoint keys and tolerates garbage entries', () => {
   expect(requeueTargets(['a.example.com'], [{ pr: 1, keys: ['b.example.com'] }])).toEqual([])
-  expect(requeueTargets(['a.example.com'], [{ pr: Number.NaN, keys: ['a.example.com'] }, undefined as never])).toEqual([])
+  expect(
+    requeueTargets(['a.example.com'], [
+      { pr: Number.NaN, keys: ['a.example.com'] },
+      { pr: 0, keys: ['a.example.com'] },
+      { pr: -5, keys: ['a.example.com'] },
+    ]),
+  ).toEqual([])
   expect(requeueTargets([], [{ pr: 1, keys: ['a.example.com'] }])).toEqual([])
 })
 
