@@ -234,6 +234,14 @@ export class NareAgentRunner implements AgentRunner {
     // closed, and a stop reason outside the mapped set is reported as an error
     // rather than flattened into end_turn, which would read as finished.
     const completed = last.status === 'done'
+    if (completed && answer === undefined) {
+      // nare emits an output event on every done run, so a done result without
+      // one means the contract was broken. Reporting completed with no answer
+      // would hand the caller a pass carrying nothing.
+      throw new NareRunnerError(
+        'nare reported a completed run with no output event, so there is no answer to read',
+      )
+    }
     return {
       status: completed ? 'completed' : 'failed',
       stopReason: STOP_REASONS[last.stop_reason ?? ''] ?? 'error',

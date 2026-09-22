@@ -95,8 +95,10 @@ test('the answer text survives a round trip through the verifier parser', async 
   })
 })
 
+const ANSWER = { type: 'output', text: '{"verdict": "pass"}', detail: {} }
+
 test('the request reaches nare as flags, not as prose', async () => {
-  const nare = await fakeNare([result()])
+  const nare = await fakeNare([ANSWER, result()])
 
   await new NareAgentRunner({ binary: nare.binary }).run(REQUEST)
   const argv = await nare.argv()
@@ -112,7 +114,7 @@ test('the request reaches nare as flags, not as prose', async () => {
 })
 
 test('a read-only policy allows reading and nothing else', async () => {
-  const nare = await fakeNare([result()])
+  const nare = await fakeNare([ANSWER, result()])
 
   await new NareAgentRunner({ binary: nare.binary }).run({ ...REQUEST, toolPolicy: 'read-only' })
 
@@ -120,7 +122,7 @@ test('a read-only policy allows reading and nothing else', async () => {
 })
 
 test('the schema is handed over as a file nare can read', async () => {
-  const nare = await fakeNare([result()])
+  const nare = await fakeNare([ANSWER, result()])
 
   await new NareAgentRunner({ binary: nare.binary }).run(REQUEST)
 
@@ -128,7 +130,7 @@ test('the schema is handed over as a file nare can read', async () => {
 })
 
 test('no schema means no --schema flag', async () => {
-  const nare = await fakeNare([result({ output: null })])
+  const nare = await fakeNare([ANSWER, result({ output: null })])
 
   await new NareAgentRunner({ binary: nare.binary }).run({ ...REQUEST, outputSchema: '' })
 
@@ -175,7 +177,7 @@ test('a run that never started is an error the caller must fix, not a verdict', 
 })
 
 test('a contract nare does not speak is refused rather than parsed', async () => {
-  const nare = await fakeNare([result({ contract: 99 })])
+  const nare = await fakeNare([ANSWER, result({ contract: 99 })])
 
   await expect(new NareAgentRunner({ binary: nare.binary }).run(REQUEST)).rejects.toThrow(/contract/i)
 })
@@ -184,6 +186,15 @@ test('a run with no result line is refused rather than guessed at', async () => 
   const nare = await fakeNare([{ type: 'progress', text: 'thinking' }])
 
   await expect(new NareAgentRunner({ binary: nare.binary }).run(REQUEST)).rejects.toThrow(/result/i)
+})
+
+test('a completed run with no answer is refused rather than reported as completed', async () => {
+  // nare emits an output event on every done run, so a done result without one
+  // means the contract was broken. Reporting completed with no answer would
+  // hand the caller a pass carrying nothing.
+  const nare = await fakeNare([result()])
+
+  await expect(new NareAgentRunner({ binary: nare.binary }).run(REQUEST)).rejects.toThrow(/answer|output/i)
 })
 
 test('a line that is not JSON fails closed, naming nare rather than throwing a parser error', async () => {
