@@ -33,10 +33,23 @@ function failedReason(criterion: CriterionResult): string {
   return ''
 }
 
+type UnverifiedCause = 'waived' | 'verifier' | 'environment'
+
+// judge names the cause at the start of the reason: a human waiver, or the
+// verifier being unable to check what the checks proved. Anything else is the
+// environment, which is where every other unverified criterion comes from.
+function unverifiedCause(criterion: CriterionResult): UnverifiedCause {
+  const reason = 'reason' in criterion && typeof criterion.reason === 'string' ? criterion.reason : ''
+  if (reason.startsWith('waived by ')) return 'waived'
+  if (reason.startsWith('verifier ')) return 'verifier'
+  return 'environment'
+}
+
 function reasonCell(criterion: CriterionResult): string {
   if (criterion.outcome === 'unverified') {
-    if (typeof criterion.reason === 'string' && criterion.reason.startsWith('waived by '))
-      return `waived (human): ${criterion.reason}`
+    const cause = unverifiedCause(criterion)
+    if (cause === 'waived') return `waived (human): ${criterion.reason}`
+    if (cause === 'verifier') return `not independently checked: ${criterion.reason}`
     return `could not verify (environment): ${criterion.reason}`
   }
   return failedReason(criterion)
@@ -73,18 +86,19 @@ export function renderComment(result: RunResult): string {
   const details = detailLinks(result.criteria)
   if (details.length > 0) lines.push('', 'Details:', '', ...details)
   const unverified = result.criteria.filter(criterion => criterion.outcome === 'unverified')
-  if (unverified.length > 0) {
-    if (unverified.every(criterion => typeof criterion.reason === 'string' && criterion.reason.startsWith('waived by ')))
-      lines.push(
-        '',
-        'Waived criteria are recorded as waived (human) — a waiver is not a pass and needs out-of-band confirmation.',
-      )
-    else
-      lines.push(
-        '',
-        'Unverified criteria could not verify (environment) — that is not a code defect.',
-      )
-  }
+  const causes = new Set(unverified.map(unverifiedCause))
+  if (causes.has('waived'))
+    lines.push(
+      '',
+      'Waived criteria are recorded as waived (human) — a waiver is not a pass and needs out-of-band confirmation.',
+    )
+  if (causes.has('verifier'))
+    lines.push(
+      '',
+      'Criteria not independently checked passed their checks, but the verifier could not review them, so they do not count as proven.',
+    )
+  if (causes.has('environment'))
+    lines.push('', 'Unverified criteria could not verify (environment) — that is not a code defect.')
   return lines.join('\n')
 }
 

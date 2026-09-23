@@ -244,15 +244,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - name: Install the pinned nare
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pip install --quiet --user "$NARE_WHEEL"
-          "$HOME/.local/bin/nare" --version
-        env:
-          # The same pin as the plan job; a test holds the two together.
-          NARE_WHEEL: https://github.com/ViviDynamics/nare/releases/download/2026.9.10/nare-2026.9.10-py3-none-any.whl
       - name: Download the QA inputs
         uses: actions/download-artifact@v4
         with:
@@ -270,6 +261,22 @@ jobs:
         with:
           name: execute-evidence
           path: evidence
+      # A refused run executed nothing, so judge will not call the verifier,
+      # and a failed install must not stop its stub issues being filed.
+      - name: Read the executed verdict
+        id: executed
+        shell: bash
+        run: echo "verdict=$(jq -r '.verdict' evidence/result.json)" >> "$GITHUB_OUTPUT"
+      - name: Install the pinned nare
+        if: steps.executed.outputs.verdict != 'refused'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --user "$NARE_WHEEL"
+          "$HOME/.local/bin/nare" --version
+        env:
+          # The same pin as the plan job; a test holds the two together.
+          NARE_WHEEL: https://github.com/ViviDynamics/nare/releases/download/2026.9.10/nare-2026.9.10-py3-none-any.whl
       - name: Judge the result
         shell: bash
         env:

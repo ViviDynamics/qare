@@ -182,13 +182,6 @@ export interface VerifierInputs {
   diff: string
 }
 
-export class VerifierInputError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'VerifierInputError'
-  }
-}
-
 const VERIFIER_INSTRUCTIONS = [
   'You are the qare verifier: an independent reviewer of a QA run.',
   'You receive the criteria the run claims to have proven, each with its text and the evidence files saved for it, and the diff under review. You can read the evidence files.',
@@ -220,9 +213,9 @@ export const VERIFIER_OUTPUT_SCHEMA = {
 
 /**
  * Only proven criteria are put to the verifier: a finding can do nothing to a
- * criterion that already failed or was never verified. Each one must come with
- * its text, because a verifier that cannot read the requirement is not
- * checking it.
+ * criterion that already failed or was never verified. A proven criterion the
+ * plan has no text for cannot be checked, since a verifier that cannot read
+ * the requirement is not checking it, so it is left unverified saying so.
  */
 export function prepareVerifierInputs(input: {
   criteria: CriterionVerdict[]
@@ -230,23 +223,26 @@ export function prepareVerifierInputs(input: {
   evidence: Record<string, string[]>
   diff: string
 }): VerifierInputs {
-  const claims = input.criteria
+  const textOf = (id: string): string | undefined => {
+    const text = Object.hasOwn(input.texts, id) ? input.texts[id] : undefined
+    return text === undefined || text.trim() === '' ? undefined : text
+  }
+  const criteria = input.criteria.map((criterion) =>
+    criterion.outcome === 'proven' && textOf(criterion.criterionId) === undefined
+      ? {
+          ...criterion,
+          outcome: 'unverified' as const,
+          reason: 'verifier could not check it: the plan has no text for this criterion',
+        }
+      : { ...criterion },
+  )
+  const claims = criteria
     .filter((criterion) => criterion.outcome === 'proven')
     .map((criterion) => {
-      const text = Object.hasOwn(input.texts, criterion.criterionId) ? input.texts[criterion.criterionId] : undefined
-      if (text === undefined || text.trim() === '')
-        throw new VerifierInputError(
-          `criterion ${criterion.criterionId} was proven but the plan has no text for it, so the verifier cannot check it`,
-        )
       const evidence = Object.hasOwn(input.evidence, criterion.criterionId) ? input.evidence[criterion.criterionId] : undefined
-      return { criterionId: criterion.criterionId, text, evidence: [...(evidence ?? [])] }
+      return { criterionId: criterion.criterionId, text: textOf(criterion.criterionId) as string, evidence: [...(evidence ?? [])] }
     })
-  return {
-    instructions: VERIFIER_INSTRUCTIONS,
-    criteria: input.criteria.map((criterion) => ({ ...criterion })),
-    claims,
-    diff: input.diff,
-  }
+  return { instructions: VERIFIER_INSTRUCTIONS, criteria, claims, diff: input.diff }
 }
 
 /**

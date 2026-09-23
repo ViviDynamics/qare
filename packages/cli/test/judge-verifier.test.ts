@@ -175,3 +175,15 @@ test('--runner none judges from the evidence alone, with no plan and no model', 
   expect(run.code).toBe(0)
   expect(run.out).toContain('verdict passed')
 })
+
+test('judging a judged result again keeps the reason the verifier gave', async () => {
+  const { dir, resultPath, planPath, diffPath } = await provenRun()
+  const nare = await fakeNare({ findings: [{ criterionId: 'export-csv', problem: 'the export wrote 0 rows' }] })
+  await judge(['--result', resultPath, '--plan', planPath, '--diff', diffPath, '--nare', nare.binary, '--outDir', dir])
+  const again = join(dir, 'again')
+
+  await judge(['--result', join(dir, 'judged-result.json'), '--runner', 'none', '--outDir', again])
+
+  const judged = JSON.parse(await readFile(join(again, 'judged-result.json'), 'utf8'))
+  expect(judged.criteria[0].reason).toBe('verifier: the export wrote 0 rows')
+})

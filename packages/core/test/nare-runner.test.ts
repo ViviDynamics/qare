@@ -280,3 +280,15 @@ test('a missing nare binary says so plainly', async () => {
 
   await expect(runner.run(REQUEST)).rejects.toThrow(/nare/i)
 })
+
+test.runIf(process.platform === 'linux')(
+  'a prompt too large for one argument is refused by name, before nare is spawned',
+  async () => {
+    const nare = await fakeNare([result()])
+
+    await expect(
+      new NareAgentRunner({ binary: nare.binary }).run({ ...REQUEST, prompt: 'x'.repeat(128 * 1024) }),
+    ).rejects.toThrow(/over the 131071 one argument can carry on Linux.*nare#29/)
+    await expect(nare.argv()).rejects.toThrow()
+  },
+)

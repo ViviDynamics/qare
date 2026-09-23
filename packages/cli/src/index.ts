@@ -261,6 +261,7 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     const loaded = loadResult(await readFile(resultPath, 'utf8'))
     const waived = loaded.waived?.map((entry) => entry.criterionId) ?? []
     const judged = judgeRun({ base: [], head: toSideResults(loaded), waived })
+    const evidenceById = new Map(loaded.criteria.map((criterion) => [criterion.id, evidenceOf(criterion)]))
     let criteria = judged.criteria
     // Nothing ran on a refused run, so there is no evidence for the verifier
     // to read and a model call would be spent on nothing.
@@ -284,7 +285,7 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
         prepareVerifierInputs({
           criteria: judged.criteria,
           texts: Object.fromEntries(plan.criteria.map((criterion) => [criterion.id, criterion.text])),
-          evidence: Object.fromEntries(loaded.criteria.map((criterion) => [criterion.id, evidenceOf(criterion)])),
+          evidence: Object.fromEntries(evidenceById),
           diff,
         }),
       )
@@ -297,7 +298,7 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     // it back as blocked, and the stub-issue step that acts on refused never
     // fired.
     const verdict = loaded.verdict === 'refused' ? 'refused' : verdictOf(criteria, judged.regressions, waived)
-    const result = mergeJudged(loaded, verdict, criteria)
+    const result = mergeJudged(loaded, verdict, criteria, evidenceById)
     await mkdir(outDir, { recursive: true })
     await writeFile(join(outDir, 'judged-result.json'), `${JSON.stringify(result, null, 2)}\n`, 'utf8')
     await writeFile(join(outDir, 'comment.md'), `${renderComment(result)}\n`, 'utf8')
@@ -410,9 +411,13 @@ async function ledgerStatus(dir: string, out: Writer, err: Writer): Promise<numb
   return 0
 }
 
-function mergeJudged(loaded: RunResult, verdict: RunVerdict, criteria: CriterionVerdict[]): RunResult {
-  const evidenceById = new Map(loaded.criteria.map((criterion) => [criterion.id, evidenceOf(criterion)]))
-  const executedOutcome = new Map(loaded.criteria.map((criterion) => [criterion.id, criterion.outcome]))
+function mergeJudged(
+  loaded: RunResult,
+  verdict: RunVerdict,
+  criteria: CriterionVerdict[],
+  evidenceById: Map<string, string[]>,
+): RunResult {
+  const executed = new Map(loaded.criteria.map((criterion) => [criterion.id, criterion]))
   return {
     schemaVersion: RESULT_SCHEMA_VERSION,
     verdict,
@@ -425,11 +430,18 @@ function mergeJudged(loaded: RunResult, verdict: RunVerdict, criteria: Criterion
           reason: criterion.reason,
           ...(evidence.length === 0 ? {} : { evidence }),
         }
-      // A check that failed speaks through its evidence. A criterion judge
-      // failed after the check proved it (the verifier) carries the reason, or
-      // the comment would show a failure with nothing saying why.
-      if (criterion.outcome === 'failed' && executedOutcome.get(criterion.criterionId) !== 'failed')
-        return { id: criterion.criterionId, outcome: 'failed', evidence, reason: criterion.reason }
+      if (criterion.outcome === 'failed') {
+        // A check that failed speaks through its evidence. A criterion judge
+        // failed after the check proved it (the verifier) carries the reason,
+        // or the comment would show a failure with nothing saying why, and a
+        // reason the result already carried survives being judged again.
+        const before = executed.get(criterion.criterionId)
+        const reason =
+          before?.outcome !== 'failed' ? criterion.reason : 'reason' in before ? before.reason : undefined
+        return reason === undefined
+          ? { id: criterion.criterionId, outcome: 'failed', evidence }
+          : { id: criterion.criterionId, outcome: 'failed', evidence, reason }
+      }
       return { id: criterion.criterionId, outcome: criterion.outcome, evidence }
     }),
     ...(loaded.job === undefined ? {} : { job: { id: loaded.job.id } }),

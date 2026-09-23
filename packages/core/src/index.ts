@@ -96,7 +96,6 @@ export {
   runVerifier,
   toSideResults,
   verdictOf,
-  VerifierInputError,
   VERIFIER_OUTPUT_SCHEMA,
 } from './judge.js'
 export type {

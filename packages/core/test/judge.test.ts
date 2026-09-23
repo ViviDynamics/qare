@@ -9,7 +9,6 @@ import {
   verdictOf,
   FakeAgentRunner,
   VERIFIER_OUTPUT_SCHEMA,
-  VerifierInputError,
   type CriterionOutcome,
   type CriterionVerdict,
   type RunResult,
@@ -355,10 +354,18 @@ describe('runVerifier', () => {
 })
 
 describe('prepareVerifierInputs', () => {
-  test('a proven criterion with no text is refused: the verifier cannot check what it cannot read', () => {
-    expect(() =>
-      prepareVerifierInputs({ criteria: [proven], texts: {}, evidence: {}, diff: '' }),
-    ).toThrow(VerifierInputError)
+  test('a proven criterion with no text is left unverified: the verifier cannot check what it cannot read', () => {
+    const inputs = prepareVerifierInputs({ criteria: [proven], texts: { c1: '  ' }, evidence: {}, diff: '' })
+
+    expect(inputs.claims).toEqual([])
+    expect(inputs.criteria).toEqual([
+      {
+        criterionId: 'c1',
+        outcome: 'unverified',
+        regression: false,
+        reason: 'verifier could not check it: the plan has no text for this criterion',
+      },
+    ])
   })
 
   test('a criterion that is not proven needs no text', () => {

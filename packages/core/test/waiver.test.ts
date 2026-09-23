@@ -105,3 +105,12 @@ test('waiving a nonexistent or empty id list is a no-op, never a verdict flip', 
 test('parseWaiver deduplicates repeated ids', () => {
   expect(parseWaiver({ body: '/qa-waive c1, c1' })).toEqual({ criterionIds: ['c1'] })
 })
+
+test('a waiver covers only what it names: another unverified criterion still blocks', () => {
+  const withGap: RunResult = {
+    ...allProven,
+    criteria: [...allProven.criteria, { id: 'no-check', outcome: 'unverified', reason: 'no staging data' }],
+  }
+  expect(recordWaiver(withGap, { criterionIds: ['payouts'], by: 'hana' }).verdict).toBe('blocked')
+  expect(recordWaiver(withGap, { criterionIds: ['payouts', 'no-check'], by: 'hana' }).verdict).toBe('waived')
+})

@@ -76,6 +76,12 @@ export const NARE_CONTRACT = 1
 /** Exit 2 from nare: the run never started, so there is no result line. */
 const NEVER_STARTED = 2
 
+/**
+ * Linux caps one argv element at 128 KiB (MAX_ARG_STRLEN, counting its NUL),
+ * and nare takes its prompt only as an argument until nare#29 lands.
+ */
+const MAX_ARG_BYTES = 128 * 1024 - 1
+
 export class NareRunnerError extends Error {
   constructor(message: string) {
     super(message)
@@ -146,6 +152,14 @@ export class NareAgentRunner implements AgentRunner {
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
     const { tmpdir } = await import('node:os')
     const { join } = await import('node:path')
+
+    // Past the cap the spawn fails with a bare E2BIG. Saying what happened is
+    // the difference between a named outcome and a mystery.
+    const promptBytes = Buffer.byteLength(request.prompt, 'utf8')
+    if (process.platform === 'linux' && promptBytes > MAX_ARG_BYTES)
+      throw new NareRunnerError(
+        `the prompt is ${promptBytes} bytes, over the ${MAX_ARG_BYTES} one argument can carry on Linux, and nare takes its prompt only as an argument (nare#29)`,
+      )
 
     const workDir = await mkdtemp(join(tmpdir(), 'qare-nare-'))
     try {
