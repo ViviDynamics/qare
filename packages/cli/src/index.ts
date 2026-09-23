@@ -210,7 +210,9 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
       head: toSideResults(loaded),
       waived: loaded.waived?.map((entry) => entry.criterionId),
     })
-    if (runnerSpec === 'nare') {
+    // Nothing ran on a refused run, so there is no evidence for the verifier
+    // to read and a model call would be spent on nothing.
+    if (runnerSpec === 'nare' && loaded.verdict !== 'refused') {
       try {
         const runner = new NareAgentRunner()
         await runVerifier(
@@ -221,7 +223,12 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
         err.write(`verifier skipped: ${formatError(error)}\n`)
       }
     }
-    const result = mergeJudged(loaded, judged.verdict, judged.criteria)
+    // A refused run executed nothing, so there is nothing to judge: the
+    // verdict stays refused. Recomputing it from all-unverified criteria read
+    // it back as blocked, and the stub-issue step that acts on refused never
+    // fired.
+    const verdict = loaded.verdict === 'refused' ? 'refused' : judged.verdict
+    const result = mergeJudged(loaded, verdict, judged.criteria)
     await mkdir(outDir, { recursive: true })
     await writeFile(join(outDir, 'judged-result.json'), `${JSON.stringify(result, null, 2)}\n`, 'utf8')
     await writeFile(join(outDir, 'comment.md'), `${renderComment(result)}\n`, 'utf8')
