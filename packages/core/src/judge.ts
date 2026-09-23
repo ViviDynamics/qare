@@ -75,12 +75,10 @@ export function judgeRun(input: JudgeRunInput): JudgeRunResult {
   for (const side of head) headById.set(side.criterionId, side)
 
   const criteria: CriterionVerdict[] = []
-  let anyWaived = false
   for (const headSide of head) {
     const criterionId = headSide.criterionId
     const isRegressed = regressed.has(criterionId)
     if (waived.has(criterionId)) {
-      anyWaived = true
       criteria.push({ criterionId, outcome: 'unverified', regression: isRegressed, reason: 'waived by human' })
       continue
     }
@@ -113,7 +111,6 @@ export function judgeRun(input: JudgeRunInput): JudgeRunResult {
   for (const baseSide of base) {
     if (headById.has(baseSide.criterionId)) continue
     if (waived.has(baseSide.criterionId)) {
-      anyWaived = true
       criteria.push({
         criterionId: baseSide.criterionId,
         outcome: 'unverified',
@@ -130,17 +127,24 @@ export function judgeRun(input: JudgeRunInput): JudgeRunResult {
     })
   }
 
-  const derived = deriveVerdict(criteria, regressions, anyWaived)
+  const derived = verdictOf(criteria, regressions, waived)
   const verdict = input.egressVerdict === 'refused' ? mergeVerdicts([derived, 'refused']) : derived
   return { criteria, regressions, verdict }
 }
 
-function deriveVerdict(criteria: CriterionVerdict[], regressions: Regression[], anyWaived: boolean): RunVerdict {
+/**
+ * The run verdict from criterion verdicts. Waived is only a waiver when every
+ * criterion left unverified was waived by a human; one that nobody waived
+ * still blocks the run.
+ */
+export function verdictOf(criteria: CriterionVerdict[], regressions: Regression[], waived: Iterable<string> = []): RunVerdict {
   if (regressions.length > 0 || criteria.some((criterion) => criterion.outcome === 'failed')) return 'failed'
   // An empty run proves nothing: fail closed rather than vacuously passing.
   if (criteria.length === 0) return 'blocked'
-  if (!criteria.some((criterion) => criterion.outcome === 'unverified')) return 'passed'
-  return anyWaived ? 'waived' : 'blocked'
+  const unverified = criteria.filter((criterion) => criterion.outcome === 'unverified')
+  if (unverified.length === 0) return 'passed'
+  const waivedIds = new Set(waived)
+  return unverified.every((criterion) => waivedIds.has(criterion.criterionId)) ? 'waived' : 'blocked'
 }
 
 /**
@@ -164,31 +168,84 @@ export interface VerifierFinding {
   problem: string
 }
 
+/** A proven criterion as the verifier sees it: what it says, and what was saved. */
+export interface VerifierClaim {
+  criterionId: string
+  text: string
+  evidence: string[]
+}
+
 export interface VerifierInputs {
   instructions: string
   criteria: CriterionVerdict[]
+  claims: VerifierClaim[]
   diff: string
-  evidence: string[]
+}
+
+export class VerifierInputError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'VerifierInputError'
+  }
 }
 
 const VERIFIER_INSTRUCTIONS = [
   'You are the qare verifier: an independent reviewer of a QA run.',
-  'You receive quality criteria with their outcomes, the diff under review, and the evidence list.',
-  'You report PROBLEMS ONLY: every finding is a JSON object {"criterionId": string, "problem": string} naming a criterion that the diff or evidence shows is not actually proven.',
-  'A finding against a proven criterion downgrades it to failed with your problem as the reason. Findings against failed or unverified criteria are ignored, and findings naming criteria that were not given are dropped: your output can never upgrade a verdict or create a criterion.',
-  'Reply with a JSON array of findings, or an object {"findings": [...]} where an empty list changes nothing. No prose.',
+  'You receive the criteria the run claims to have proven, each with its text and the evidence files saved for it, and the diff under review. You can read the evidence files.',
+  'Report PROBLEMS ONLY: a finding names a criterion whose evidence does not actually show what the criterion says, or that the diff shows is not met. Report gaps against the criterion, never style.',
+  'A finding downgrades its criterion to failed with your problem as the reason. Findings naming criteria you were not given are dropped: your output can never upgrade a verdict or create a criterion.',
+  'Answer with {"findings": [{"criterionId": string, "problem": string}]}. An empty list changes nothing.',
 ].join('\n')
 
+/** The answer shape nare validates the verifier's output against. */
+export const VERIFIER_OUTPUT_SCHEMA = {
+  type: 'object',
+  required: ['findings'],
+  additionalProperties: false,
+  properties: {
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['criterionId', 'problem'],
+        additionalProperties: false,
+        properties: {
+          criterionId: { type: 'string' },
+          problem: { type: 'string' },
+        },
+      },
+    },
+  },
+} as const
+
+/**
+ * Only proven criteria are put to the verifier: a finding can do nothing to a
+ * criterion that already failed or was never verified. Each one must come with
+ * its text, because a verifier that cannot read the requirement is not
+ * checking it.
+ */
 export function prepareVerifierInputs(input: {
   criteria: CriterionVerdict[]
+  texts: Record<string, string>
+  evidence: Record<string, string[]>
   diff: string
-  evidence: string[]
 }): VerifierInputs {
+  const claims = input.criteria
+    .filter((criterion) => criterion.outcome === 'proven')
+    .map((criterion) => {
+      const text = Object.hasOwn(input.texts, criterion.criterionId) ? input.texts[criterion.criterionId] : undefined
+      if (text === undefined || text.trim() === '')
+        throw new VerifierInputError(
+          `criterion ${criterion.criterionId} was proven but the plan has no text for it, so the verifier cannot check it`,
+        )
+      const evidence = Object.hasOwn(input.evidence, criterion.criterionId) ? input.evidence[criterion.criterionId] : undefined
+      return { criterionId: criterion.criterionId, text, evidence: [...(evidence ?? [])] }
+    })
   return {
     instructions: VERIFIER_INSTRUCTIONS,
     criteria: input.criteria.map((criterion) => ({ ...criterion })),
+    claims,
     diff: input.diff,
-    evidence: [...input.evidence],
   }
 }
 
@@ -210,9 +267,28 @@ export function consumeVerifierFindings(criteria: CriterionVerdict[], findings: 
 }
 
 /**
- * Hand the verifier inputs to the model through the agent runner seam and
- * consume its findings. Parse failure fails closed: the criteria come back
- * unchanged and no finding is applied.
+ * A verifier that gave no readable answer checked nothing, so nothing it was
+ * asked about stays proven: each proven criterion becomes unverified, naming
+ * why. Leaving them proven would let a pass stand that the second check never
+ * saw.
+ */
+function verifierUnavailable(criteria: CriterionVerdict[], why: string): CriterionVerdict[] {
+  return criteria.map((criterion) =>
+    criterion.outcome === 'proven'
+      ? { ...criterion, outcome: 'unverified' as const, reason: `verifier did not answer: ${why}` }
+      : criterion,
+  )
+}
+
+/**
+ * Hand the proven claims to the model through the agent runner seam and
+ * consume its findings. The verifier reads evidence with a read-only tool set,
+ * and its answer is schema-constrained.
+ *
+ * It fails closed: a runner that throws, a run that does not complete, or an
+ * answer that is not a findings list leaves every proven criterion unverified
+ * with the reason named, never proven. With nothing proven there is nothing to
+ * downgrade, so no model call is made.
  */
 export async function runVerifier(
   runner: AgentRunner,
@@ -220,20 +296,27 @@ export async function runVerifier(
   request: Partial<Omit<AgentRunRequest, 'prompt'>> = {},
 ): Promise<CriterionVerdict[]> {
   const criteria = inputs.criteria ?? []
-  const payload = JSON.stringify({
-    criteria: criteria.map((criterion) => ({ criterionId: criterion.criterionId, outcome: criterion.outcome })),
-    diff: inputs.diff,
-    evidence: inputs.evidence,
-  })
-  const result = await runner.run({
-    system: request.system ?? '',
-    toolPolicy: request.toolPolicy ?? 'none',
-    outputSchema: request.outputSchema ?? '',
-    budget: request.budget ?? { maxOutputTokens: 0 },
-    prompt: `${inputs.instructions}\n\n${payload}`,
-  })
-  const findings = result.status === 'completed' ? parseVerifierFindings(result.output) : undefined
-  if (findings === undefined) return criteria
+  if (inputs.claims.length === 0) return criteria
+  const payload = JSON.stringify({ criteria: inputs.claims, diff: inputs.diff })
+  let result: Awaited<ReturnType<AgentRunner['run']>>
+  try {
+    result = await runner.run({
+      system: request.system ?? '',
+      toolPolicy: request.toolPolicy ?? 'read-only',
+      outputSchema: request.outputSchema ?? JSON.stringify(VERIFIER_OUTPUT_SCHEMA),
+      budget: request.budget ?? { maxOutputTokens: 4096 },
+      prompt: `${inputs.instructions}\n\n${payload}`,
+    })
+  } catch (error) {
+    return verifierUnavailable(criteria, error instanceof Error ? error.message : String(error))
+  }
+  if (result.status !== 'completed')
+    return verifierUnavailable(
+      criteria,
+      `the run stopped (${result.stopReason})${result.error === undefined ? '' : `: ${result.error}`}`,
+    )
+  const findings = parseVerifierFindings(result.output)
+  if (findings === undefined) return verifierUnavailable(criteria, 'its answer was not a findings list')
   return consumeVerifierFindings(criteria, findings)
 }
 

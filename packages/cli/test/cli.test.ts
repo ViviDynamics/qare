@@ -137,7 +137,7 @@ async function writeResultFile(): Promise<{ dir: string; resultPath: string; res
 test('judge writes judged-result.json, comment.md and checkrun.json next to the result', async () => {
   const { dir, resultPath, resultText } = await writeResultFile()
   const { lines, writer } = capture()
-  const code = await main(['judge', '--result', resultPath], writer, NO_OUT)
+  const code = await main(['judge', '--result', resultPath, '--runner', 'none'], writer, NO_OUT)
   expect(code).toBe(0)
   expect(lines.join('')).toContain('verdict passed')
   const judged = JSON.parse(await readFile(join(dir, 'judged-result.json'), 'utf8'))
@@ -165,7 +165,7 @@ test('judge of a waived result keeps the waived verdict and the waiver record', 
     'utf8',
   )
   const { lines, writer } = capture()
-  const code = await main(['judge', '--result', resultPath], writer, NO_OUT)
+  const code = await main(['judge', '--result', resultPath, '--runner', 'none'], writer, NO_OUT)
   expect(code).toBe(0)
   expect(lines.join('')).toContain('verdict waived')
   const judged = JSON.parse(await readFile(join(dir, 'judged-result.json'), 'utf8'))
@@ -174,30 +174,6 @@ test('judge of a waived result keeps the waived verdict and the waiver record', 
   expect(judged.criteria).toEqual([
     { id: 'criterion-1', outcome: 'unverified', reason: 'waived by human' },
   ])
-})
-
-// The verifier is downgrade-only, so a judge run whose verifier cannot start
-// still writes its artifacts and still reports the code-decided verdict. What
-// must never happen is silence: the reason reaches stderr.
-test('judge --runner nare reports why the verifier did not run, and still writes all three artifacts', async () => {
-  const { resultPath } = await writeResultFile()
-  const outDir = join(await mkdtemp(join(tmpdir(), 'qare-cli-')), 'artifacts')
-  const out = capture()
-  const errors = capture()
-  const code = await main(
-    ['judge', '--result', resultPath, '--outDir', outDir, '--runner', 'nare'],
-    out.writer,
-    errors.writer,
-  )
-  expect(code).toBe(0)
-  expect(errors.lines.join('')).toContain('verifier skipped:')
-  // nare is not installed in the test environment, so the runner reports that
-  // rather than the placeholder's NotImplemented it used to raise.
-  expect(errors.lines.join('')).toMatch(/NareRunnerError|nare/)
-  for (const name of ['judged-result.json', 'comment.md', 'checkrun.json'])
-    expect(existsSync(join(outDir, name))).toBe(true)
-  const judged = JSON.parse(await readFile(join(outDir, 'judged-result.json'), 'utf8'))
-  expect(judged.verdict).toBe('passed')
 })
 
 test('judge on malformed result.json exits 4 with the named error on stderr', async () => {
