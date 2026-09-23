@@ -26,6 +26,8 @@ export interface AgentRunResult {
   stopReason: AgentStopReason
   usage: AgentUsage
   output: unknown
+  /** What the harness said went wrong, when it said anything. */
+  error?: string
 }
 
 export interface AgentRunner {
@@ -254,6 +256,10 @@ export class NareAgentRunner implements AgentRunner {
       stopReason: STOP_REASONS[last.stop_reason ?? ''] ?? 'error',
       usage: { inputTokens: last.usage.input, outputTokens: last.usage.output },
       output: completed ? answer : undefined,
+      // Carried through rather than dropped: "stop reason error" sent one
+      // caller to reproduce a run by hand to learn the proxy had returned
+      // HTTP 524. The reason nare already knows belongs in the result.
+      ...(completed || !last.error ? {} : { error: last.error }),
     }
   }
 }
