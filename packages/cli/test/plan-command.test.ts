@@ -3,6 +3,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
+import { criterionIdFor } from '@qare/core'
 import { main } from '../src/index.js'
 import type { Writer } from '../src/index.js'
 
@@ -115,4 +116,48 @@ test('qare plan needs criteria and a diff', async () => {
 
   expect(code).toBe(4)
   expect(err.lines.join('')).toMatch(/--criteria/)
+})
+
+test('qare plan reads criteria straight from an issue body', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-plan-issue-'))
+  const issuePath = join(dir, 'issue.md')
+  const diffPath = join(dir, 'change.diff')
+  const outPath = join(dir, 'plan.json')
+  await writeFile(issuePath, '## Acceptance criteria\n\n- [ ] the login form rejects an empty password\n', 'utf8')
+  await writeFile(diffPath, 'diff --git a/login.ts b/login.ts', 'utf8')
+  // The id is derived from the wording, so the fixture derives it the same way
+  // rather than hard-coding a guess that would drift.
+  const text = 'the login form rejects an empty password'
+  const answer = {
+    schemaVersion: '1',
+    criteria: [{ id: criterionIdFor(text), text, checks: [{ kind: 'command', name: 'login', command: 'npm test' }] }],
+  }
+  const out = capture()
+
+  const code = await main(
+    ['plan', '--issue', issuePath, '--diff', diffPath, '--out', outPath, '--nare', await fakeNare(answer)],
+    out.writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  expect(out.lines.join('')).toContain('1 criteria')
+})
+
+test('qare plan refuses an issue that states no criteria', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-plan-nocrit-'))
+  const issuePath = join(dir, 'issue.md')
+  const diffPath = join(dir, 'change.diff')
+  await writeFile(issuePath, '## Problem\n\nnothing stated\n', 'utf8')
+  await writeFile(diffPath, 'diff', 'utf8')
+  const err = capture()
+
+  const code = await main(
+    ['plan', '--issue', issuePath, '--diff', diffPath, '--out', join(dir, 'plan.json')],
+    capture().writer,
+    err.writer,
+  )
+
+  expect(code).toBe(4)
+  expect(err.lines.join('')).toMatch(/acceptance criteria|done when/i)
 })
