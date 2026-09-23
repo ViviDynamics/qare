@@ -222,13 +222,20 @@ export class NareAgentRunner implements AgentRunner {
         `nare speaks contract ${last.contract} and this runner reads ${NARE_CONTRACT}; refusing to parse shapes it does not define`,
       )
     }
-    // The answer is the last output event's TEXT, which is what qare's parsers
-    // consume. When a schema was set, nare has already proven that text parses
-    // and satisfies it, so validation is not repeated here.
-    const answer = lines
+    // The answer qare's parsers consume is a JSON STRING, so a schema-
+    // constrained run returns nare's own parsed object re-serialised rather
+    // than the raw text. A real model fences its JSON: nare's validator sees
+    // through the fence and reports done, but JSON.parse on the fenced text
+    // throws, and the verifier would then silently find nothing.
+    //
+    // Without a schema there is nothing parsed to return, so the text stands
+    // as it came.
+    const text = lines
       .filter((line): line is NareEvent => line.type === 'output')
       .map((event) => event.text)
       .pop()
+    const answer =
+      last.output === null || last.output === undefined ? text : JSON.stringify(last.output)
 
     // Only a completed run yields an answer. blocked and error both fail
     // closed, and a stop reason outside the mapped set is reported as an error
@@ -239,7 +246,7 @@ export class NareAgentRunner implements AgentRunner {
       // one means the contract was broken. Reporting completed with no answer
       // would hand the caller a pass carrying nothing.
       throw new NareRunnerError(
-        'nare reported a completed run with no output event, so there is no answer to read',
+        'nare reported a completed run carrying neither an output event nor a parsed object, so there is no answer to read',
       )
     }
     return {
