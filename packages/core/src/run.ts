@@ -5,7 +5,7 @@ import { bootApp, type BootOpts } from './boot.js'
 import { judgeRun, toSideResults } from './judge.js'
 import { feedRunLedger } from './ledger-feed.js'
 import type { Job, JobCommandCheck, JobCriterion } from './job.js'
-import { loadProfile, validateProfileConfig } from './profile.js'
+import { ProfileMissingError, loadProfile, validateProfileConfig, type QaProfile } from './profile.js'
 import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult } from './result.js'
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 60000
@@ -30,7 +30,23 @@ export async function runJob(
   job: Job,
   opts: BootOpts & { ledgerFeed?: { dir: string } } = {},
 ): Promise<{ result: RunResult }> {
-  const profile = await resolveProfile(job)
+  let profile: QaProfile
+  try {
+    profile = await resolveProfile(job)
+  } catch (error) {
+    if (!(error instanceof ProfileMissingError)) throw error
+    // A repository that has not onboarded is refused, not a caller mistake
+    // (#107). Every criterion is still reported, unverified, naming the gap,
+    // so the evidence says what nobody checked and what onboarding needs.
+    const criteria: CriterionResult[] = job.criteria.map((criterion) => ({
+      id: criterion.id,
+      outcome: 'unverified',
+      reason: `this repository has no usable .qa/ profile yet, so qare will not claim to have checked it: ${error.message}`,
+    }))
+    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria })
+    await feedIfOptedIn(opts, job, finished.result)
+    return finished
+  }
   const boot = await bootApp(profile, opts)
   if (boot.kind === 'blocked') {
     const criteria: CriterionResult[] = job.criteria.map((criterion) => ({

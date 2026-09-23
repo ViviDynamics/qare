@@ -26,7 +26,7 @@ export {
   loadResult,
   parseResult,
 } from './result.js'
-export { ProfileValidationError, loadProfile, validateProfileConfig } from './profile.js'
+export { ProfileMissingError, ProfileValidationError, loadProfile, validateProfileConfig } from './profile.js'
 export type {
   QaProfile,
   ProfileApp,

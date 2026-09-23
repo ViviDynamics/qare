@@ -47,8 +47,27 @@ export class ProfileValidationError extends Error {
   }
 }
 
+/**
+ * The profile, or a required part of it, is not there at all (#107).
+ *
+ * A subclass so every existing handler of ProfileValidationError still catches
+ * it, and distinct so a caller can tell absence from a mistake: a repository
+ * that has not onboarded is refused, while a malformed file somebody wrote is
+ * still an error.
+ */
+export class ProfileMissingError extends ProfileValidationError {
+  constructor(field: string, message: string) {
+    super(field, message)
+    this.name = 'ProfileMissingError'
+  }
+}
+
 function fail(field: string, message: string): never {
   throw new ProfileValidationError(field, message)
+}
+
+function missing(field: string, message: string): never {
+  throw new ProfileMissingError(field, message)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -79,13 +98,13 @@ function numberArray(value: unknown, field: string, label: string): number[] {
 
 async function requireFile(filePath: string, field: string, label: string): Promise<void> {
   const info = await stat(filePath).catch(() => undefined)
-  if (!info) fail(field, `${label} is required but missing at ${filePath}`)
+  if (!info) missing(field, `${label} is required but missing at ${filePath}`)
   if (!info.isFile()) fail(field, `${label} must be a file, but ${filePath} is not`)
 }
 
 async function requireDirectory(dirPath: string, field: string, label: string): Promise<void> {
   const info = await stat(dirPath).catch(() => undefined)
-  if (!info) fail(field, `${label} is required but missing at ${dirPath}`)
+  if (!info) missing(field, `${label} is required but missing at ${dirPath}`)
   if (!info.isDirectory()) fail(field, `${label} must be a directory, but ${dirPath} is not`)
 }
 
@@ -99,10 +118,11 @@ export async function loadProfile(dir: string): Promise<QaProfile> {
   try {
     text = await readFile(configPath, 'utf8')
   } catch (error) {
-    throw new ProfileValidationError(
-      'config.yml',
-      `config.yml is required in the .qa/ profile at ${dir} (${error instanceof Error ? error.message : String(error)})`,
-    )
+    const reason = error instanceof Error ? error.message : String(error)
+    // Absent is refusal; unreadable for any other reason is a real error.
+    const absent = (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT'
+    const Kind = absent ? ProfileMissingError : ProfileValidationError
+    throw new Kind('config.yml', `config.yml is required in the .qa/ profile at ${dir} (${reason})`)
   }
 
   let input: unknown
