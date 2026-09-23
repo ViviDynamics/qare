@@ -61,3 +61,16 @@ test('the refusal reasons survive judging', async () => {
   const judged = JSON.parse(await readFile(join(path, '..', 'judged-result.json'), 'utf8'))
   expect(judged.criteria[0].reason).toContain('.qa/ profile')
 })
+
+test('the verifier is not attempted on a refused run', async () => {
+  // With --runner nare the verifier would try to spawn nare. On a refused run
+  // there is no evidence for it to read, so it must not be tried at all:
+  // attempting it would print "verifier skipped" and spend a model call where
+  // nare is installed.
+  const path = await refusedResult()
+  const err = capture()
+
+  await main(['judge', '--result', path, '--runner', 'nare'], capture().writer, err.writer)
+
+  expect(err.lines.join('')).not.toContain('verifier skipped')
+})
