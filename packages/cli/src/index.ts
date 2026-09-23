@@ -60,7 +60,9 @@ function flag(argv: string[], name: string): string | undefined {
   const at = argv.indexOf(name)
   if (at === -1) return undefined
   const value = argv[at + 1]
-  if (value === undefined) throw new Error(`qare plan needs a value after ${name}`)
+  // No command name: this helper is shared, and naming the wrong command
+  // sends a reader to the wrong usage line.
+  if (value === undefined) throw new Error(`${name} needs a value`)
   return value
 }
 

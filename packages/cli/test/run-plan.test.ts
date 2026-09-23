@@ -74,3 +74,14 @@ test('--job still works, because a job file is how a run is driven by hand', asy
   expect(code).toBe(4)
   expect(err.lines.join('')).toMatch(/--job|--plan/)
 })
+
+test('a flag with no value names the command the user actually typed', async () => {
+  // The helper is shared by four commands now; saying "qare plan" to someone
+  // running "qare run" sends them to the wrong usage line.
+  const err = capture()
+
+  await main(['run', '--plan'], capture().writer, err.writer, BOOT)
+
+  expect(err.lines.join('')).not.toContain('qare plan needs a value')
+  expect(err.lines.join('')).toMatch(/--plan/)
+})
