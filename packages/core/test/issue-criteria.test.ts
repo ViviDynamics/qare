@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 
-import { IssueCriteriaError, criteriaFromIssue, criterionIdFor } from '../src/index.js'
+import { IssueCriteriaError, criteriaFromIssue, criteriaFromIssues, criterionIdFor } from '../src/index.js'
 
 const ISSUE = `## Problem
 
@@ -86,4 +86,26 @@ test('markdown in a criterion is kept as written', () => {
   const issue = '## Acceptance criteria\n\n- [ ] `qare plan` writes **plan.json**\n'
 
   expect(criteriaFromIssue(issue)[0].text).toBe('`qare plan` writes **plan.json**')
+})
+
+test('the error says whether the section is absent or empty', () => {
+  const problem = (body: string): string | undefined => {
+    try {
+      criteriaFromIssue(body)
+    } catch (error) {
+      return (error as IssueCriteriaError).problem
+    }
+    return undefined
+  }
+  expect(problem('## Problem\n\nno criteria here\n')).toBe('none-stated')
+  expect(problem('## Acceptance criteria\n\nnothing yet.\n')).toBe('empty-section')
+})
+
+test('criteriaFromIssues skips issues that state none, and is empty when none do', () => {
+  expect(criteriaFromIssues([{ name: 'a', body: '## Bug\n' }, { name: 'b', body: ISSUE }])).toEqual(criteriaFromIssue(ISSUE))
+  expect(criteriaFromIssues([{ name: 'a', body: '## Bug\n' }])).toEqual([])
+})
+
+test('criteriaFromIssues fails on an empty criteria section, naming the issue', () => {
+  expect(() => criteriaFromIssues([{ name: 'issue-11.md', body: '## Done when\n\nTBD\n' }])).toThrow(/^issue-11\.md: /)
 })

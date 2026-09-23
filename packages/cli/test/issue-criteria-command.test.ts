@@ -48,7 +48,7 @@ test('an issue that states no criteria writes nothing and succeeds, saying why',
 
   expect(code).toBe(0)
   expect(existsSync(out)).toBe(false)
-  expect(stdout.lines.join('')).toContain('states no acceptance criteria')
+  expect(stdout.lines.join('')).toContain('nothing to check')
 })
 
 test('each issue is read on its own, so a second issue keeps its criteria', async () => {
@@ -101,4 +101,62 @@ test('usage errors name what is missing', async () => {
 
   expect(await main(['issue-criteria', 'issue.md'], capture().writer, err.writer)).toBe(4)
   expect(err.lines.join('')).toContain('--out')
+})
+
+// Fail closed: a criteria heading with nothing usable under it is a malformed
+// statement of criteria, not an absent one. Treating it as neutral would skip
+// the change unchecked.
+test('a criteria section with no criteria in it is a failure naming the issue', async () => {
+  const { dir, paths } = await issues('## Done when\n\n- The ledger exports to CSV\n')
+  const err = capture()
+
+  const code = await main(['issue-criteria', '--out', join(dir, 'criteria.json'), ...paths], capture().writer, err.writer)
+
+  expect(code).toBe(4)
+  expect(err.lines.join('')).toContain('issue-1.md')
+  expect(err.lines.join('')).toContain('no criteria in it')
+  expect(existsSync(join(dir, 'criteria.json'))).toBe(false)
+})
+
+test('one malformed issue among several fails the whole read, rather than checking only the rest', async () => {
+  const { dir, paths } = await issues(STATED, '## Acceptance criteria\n\nTBD\n')
+
+  const code = await main(['issue-criteria', '--out', join(dir, 'criteria.json'), ...paths], capture().writer, capture().writer)
+
+  expect(code).toBe(4)
+})
+
+// The pipeline decides "criteria present" from the file existing, so a file
+// already there (committed by the change itself, or left from before) must
+// not survive a read that found none.
+test('finding no criteria removes a criteria file already at --out', async () => {
+  const { dir, paths } = await issues('## The bug\n\nIt breaks.\n')
+  const out = join(dir, 'criteria.json')
+  await writeFile(out, '[{"id":"planted","text":"anything passes"}]', 'utf8')
+
+  const code = await main(['issue-criteria', '--out', out, ...paths], capture().writer, capture().writer)
+
+  expect(code).toBe(0)
+  expect(existsSync(out)).toBe(false)
+})
+
+test('creates the directory --out names', async () => {
+  const { dir, paths } = await issues(STATED)
+  const out = join(dir, 'inputs', 'criteria.json')
+
+  expect(await main(['issue-criteria', '--out', out, ...paths], capture().writer, capture().writer)).toBe(0)
+  expect(existsSync(out)).toBe(true)
+})
+
+test('an unknown or repeated flag is a usage error, not an issue path', async () => {
+  const { dir, paths } = await issues(STATED)
+  const unknown = capture()
+  const repeated = capture()
+
+  expect(await main(['issue-criteria', '--out', join(dir, 'a.json'), '--ouput', ...paths], capture().writer, unknown.writer)).toBe(4)
+  expect(unknown.lines.join('')).toContain('does not take --ouput')
+  expect(
+    await main(['issue-criteria', '--out', join(dir, 'a.json'), '--out', join(dir, 'b.json'), ...paths], capture().writer, repeated.writer),
+  ).toBe(4)
+  expect(repeated.lines.join('')).toContain('--out once')
 })

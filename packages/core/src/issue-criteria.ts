@@ -3,10 +3,20 @@ import { createHash } from 'node:crypto'
 import { normalizeWording } from './criterion-identity.js'
 import type { PlanCriterionInput } from './plan-step.js'
 
+/**
+ * `none-stated`: the issue has no criteria section, so it states nothing to
+ * check. `empty-section`: it has the heading and nothing usable under it,
+ * which is a malformed statement of criteria rather than an absent one.
+ */
+export type IssueCriteriaProblem = 'none-stated' | 'empty-section'
+
 export class IssueCriteriaError extends Error {
-  constructor(message: string) {
+  readonly problem: IssueCriteriaProblem
+
+  constructor(problem: IssueCriteriaProblem, message: string) {
     super(message)
     this.name = 'IssueCriteriaError'
+    this.problem = problem
   }
 }
 
@@ -41,6 +51,7 @@ export function criteriaFromIssue(body: string): PlanCriterionInput[] {
   const start = lines.findIndex((line) => HEADING.test(line.trim()))
   if (start === -1)
     throw new IssueCriteriaError(
+      'none-stated',
       'the issue states no acceptance criteria: expected a heading "Acceptance criteria" or "Done when"',
     )
 
@@ -61,7 +72,35 @@ export function criteriaFromIssue(body: string): PlanCriterionInput[] {
 
   if (criteria.length === 0)
     throw new IssueCriteriaError(
+      'empty-section',
       'the issue has a criteria section with no criteria in it; a run with nothing to check passes nothing',
     )
   return criteria
+}
+
+/**
+ * The acceptance criteria several issues state between them, each issue read
+ * on its own and the same wording counted once.
+ *
+ * An issue with no criteria section contributes nothing, and when none has
+ * one the result is empty: there is nothing to check, and whether that is
+ * neutral is the caller's call. A criteria section with nothing usable in it
+ * still throws, naming the issue, because a malformed statement of criteria
+ * is not the same as stating none.
+ */
+export function criteriaFromIssues(issues: { name: string; body: string }[]): PlanCriterionInput[] {
+  const criteria = new Map<string, PlanCriterionInput>()
+  for (const issue of issues) {
+    let stated: PlanCriterionInput[]
+    try {
+      stated = criteriaFromIssue(issue.body)
+    } catch (error) {
+      if (error instanceof IssueCriteriaError && error.problem === 'none-stated') continue
+      if (error instanceof IssueCriteriaError)
+        throw new IssueCriteriaError(error.problem, `${issue.name}: ${error.message}`)
+      throw error
+    }
+    for (const criterion of stated) if (!criteria.has(criterion.id)) criteria.set(criterion.id, criterion)
+  }
+  return [...criteria.values()]
 }

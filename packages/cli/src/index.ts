@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -15,6 +15,7 @@ import {
   loadResult,
   NareAgentRunner,
   criteriaFromIssue,
+  criteriaFromIssues,
   IssueCriteriaError,
   linkedIssues,
   planRun,
@@ -68,13 +69,6 @@ function flag(argv: string[], name: string): string | undefined {
 }
 
 /**
- * The plan step as a command (#9): criteria and a diff in, plan.json out.
- *
- * It writes nothing unless the whole plan parsed and covered every criterion.
- * A half-written plan.json would be consumed by execute as though it were the
- * whole run.
- */
-/**
  * The issues a pull request promises to close, one per line.
  *
  * Prints nothing and succeeds when it promises none: a chore states no
@@ -99,35 +93,40 @@ async function linkedIssuesCommand(argv: string[], out: Writer, err: Writer): Pr
  * issues can decide whether there is anything to plan before a model-key job
  * starts.
  *
- * Each issue is read on its own. One that states no criteria contributes
- * nothing; when none do, nothing is written and it succeeds, because a change
- * that states no criteria has nothing to check, and whether that is neutral is
- * the pipeline's call. An unreadable file is still a failure.
+ * When no issue has a criteria section, it removes any file at --out and
+ * succeeds: a change that states no criteria has nothing to check, and
+ * whether that is neutral is the pipeline's call. A criteria section with
+ * nothing usable in it is a failure, as is an unreadable file.
  */
 async function issueCriteriaCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
   try {
-    const outPath = flag(argv, '--out')
-    const at = argv.indexOf('--out')
-    const paths = argv.filter((_, index) => index !== at && index !== at + 1)
+    const paths: string[] = []
+    let outPath: string | undefined
+    for (let index = 0; index < argv.length; index++) {
+      const arg = argv[index] as string
+      if (arg === '--out') {
+        if (outPath !== undefined) throw new Error('qare issue-criteria takes --out once')
+        outPath = flag(argv.slice(index), '--out')
+        index++
+      } else if (arg.startsWith('-')) throw new Error(`qare issue-criteria does not take ${arg}`)
+      else paths.push(arg)
+    }
     if (outPath === undefined || paths.length === 0)
       throw new Error('qare issue-criteria requires --out <file> and at least one issue body path')
-    const criteria = new Map<string, { id: string; text: string }>()
-    for (const path of paths) {
-      const body = await readFile(resolve(path), 'utf8')
-      try {
-        for (const criterion of criteriaFromIssue(body))
-          if (!criteria.has(criterion.id)) criteria.set(criterion.id, criterion)
-      } catch (error) {
-        if (!(error instanceof IssueCriteriaError)) throw error
-        out.write(`${path}: ${error.message}\n`)
-      }
-    }
-    if (criteria.size === 0) {
-      out.write('no linked issue states acceptance criteria, so nothing was written\n')
+    const target = resolve(outPath)
+    const issues = await Promise.all(
+      paths.map(async (path) => ({ name: path, body: await readFile(resolve(path), 'utf8') })),
+    )
+    const criteria = criteriaFromIssues(issues)
+    if (criteria.length === 0) {
+      // A file left from before would read as criteria present.
+      await rm(target, { force: true })
+      out.write('no linked issue states acceptance criteria, so there is nothing to check\n')
       return 0
     }
-    await writeFile(resolve(outPath), `${JSON.stringify([...criteria.values()], null, 2)}\n`, 'utf8')
-    out.write(`${criteria.size} criteria; ${resolve(outPath)}\n`)
+    await mkdir(dirname(target), { recursive: true })
+    await writeFile(target, `${JSON.stringify(criteria, null, 2)}\n`, 'utf8')
+    out.write(`${criteria.length} criteria; ${target}\n`)
     return 0
   } catch (error) {
     err.write(`${formatError(error)}\n`)
@@ -135,6 +134,13 @@ async function issueCriteriaCommand(argv: string[], out: Writer, err: Writer): P
   }
 }
 
+/**
+ * The plan step as a command (#9): criteria and a diff in, plan.json out.
+ *
+ * It writes nothing unless the whole plan parsed and covered every criterion.
+ * A half-written plan.json would be consumed by execute as though it were the
+ * whole run.
+ */
 async function planCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
   try {
     const criteriaPath = flag(argv, '--criteria')
@@ -161,7 +167,7 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         // no criteria has nothing to check, which is an outcome and not a
         // fault. Nothing is written, so no later step mistakes silence for a
         // plan.
-        if (allowNone && error instanceof IssueCriteriaError) {
+        if (allowNone && error instanceof IssueCriteriaError && error.problem === 'none-stated') {
           out.write(`no acceptance criteria stated, so nothing was planned: ${error.message}\n`)
           return 0
         }
