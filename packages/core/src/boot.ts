@@ -10,6 +10,7 @@ export interface BootOutcome {
 }
 
 export interface BootOpts {
+  /** Runs `docker compose` with these arguments; args begin after the `compose` subcommand. */
   runCompose?: (args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>
   probe?: (url: string) => Promise<{ ok: boolean }>
   pollIntervalMs?: number
@@ -32,7 +33,7 @@ function parseTimeoutMs(timeout: string): number {
 function defaultRunCompose(args: string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
   void timeoutMs
   return new Promise((resolve) => {
-    const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn('docker', ['compose', ...args], { stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
     child.stdout?.on('data', (chunk) => {
