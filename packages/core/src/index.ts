@@ -63,7 +63,8 @@ export type {
   NareAgentRunnerOptions,
   ToolPolicy,
 } from './runner.js'
-export { IssueCriteriaError, criteriaFromIssue, criterionIdFor } from './issue-criteria.js'
+export { IssueCriteriaError, criteriaFromIssue, criteriaFromIssues, criterionIdFor } from './issue-criteria.js'
+export type { IssueCriteriaProblem } from './issue-criteria.js'
 export { linkedIssues } from './linked-issues.js'
 export { jobFromPlan } from './job-from-plan.js'
 export type { RunContext } from './job-from-plan.js'

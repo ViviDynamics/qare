@@ -13,9 +13,10 @@ name: QARE
 # No secret values are written here; only names, resolved at runtime.
 #
 # Criteria come from the issue the pull request promises to close (#98). A
-# change that promises none states no acceptance criteria, so there is nothing
-# to check: collect says so, every later job skips, and the pipeline stays
-# green. A red pipeline on every chore would hide the failure that matters.
+# change that promises none, or closes only issues that state none, has
+# nothing to check: collect says so, every later job skips, and the pipeline
+# stays green. A red pipeline on every chore would hide the failure that
+# matters.
 #
 # collect reads the issue so the model-key job never needs a GitHub token,
 # which keeps the secret-hygiene map above true rather than approximately true.
@@ -79,11 +80,19 @@ jobs:
             echo "criteria=none" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          : > issue.md
+          issues=()
           while read -r number; do
-            gh issue view "$number" --json body --jq .body >> issue.md
-            printf '\n' >> issue.md
+            gh issue view "$number" --json body --jq .body > "issue-${number}.md"
+            issues+=("issue-${number}.md")
           done < linked.txt
+          # Read here, without a model: an issue that states no criteria (a bug
+          # report closed by a one-line fix) has nothing to check, the same
+          # neutral outcome as closing no issue at all.
+          node packages/cli/dist/index.js issue-criteria --out criteria.json "${issues[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ ! -f criteria.json ]; then
+            echo "criteria=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           git diff "${BASE_SHA}...HEAD" > change.diff
           echo "criteria=present" >> "$GITHUB_OUTPUT"
           {
@@ -96,7 +105,7 @@ jobs:
         with:
           name: qa-inputs
           path: |
-            issue.md
+            criteria.json
             change.diff
           if-no-files-found: error
 
@@ -144,7 +153,7 @@ jobs:
         run: |
           set -euo pipefail
           node packages/cli/dist/index.js plan \
-            --issue issue.md --diff change.diff --out plan.json \
+            --criteria criteria.json --diff change.diff --out plan.json \
             --nare "$HOME/.local/bin/nare"
       - name: Upload plan.json
         uses: actions/upload-artifact@v4

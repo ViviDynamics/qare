@@ -76,3 +76,19 @@ test('without that flag, no criteria is still a failure', async () => {
 
   expect(code).toBe(4)
 })
+
+test('--allow-no-criteria covers an absent criteria section, not an empty one', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-plan-empty-'))
+  const issuePath = join(dir, 'issue.md')
+  const diffPath = join(dir, 'change.diff')
+  await writeFile(issuePath, '## Done when\n\n- no checkbox, so not a criterion\n', 'utf8')
+  await writeFile(diffPath, 'diff', 'utf8')
+
+  const code = await main(
+    ['plan', '--issue', issuePath, '--diff', diffPath, '--out', join(dir, 'plan.json'), '--allow-no-criteria'],
+    capture().writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(4)
+})

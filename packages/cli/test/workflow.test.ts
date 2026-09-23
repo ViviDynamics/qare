@@ -57,6 +57,16 @@ test('a fork pull request skips the model-key job rather than failing', () => {
   expect(section('plan')).toContain('github.event.pull_request.head.repo.full_name == github.repository')
 })
 
+test('collect reads the criteria without a model, and an issue that states none is neutral', () => {
+  // A bug report closed by a one-line fix states no criteria. That is nothing
+  // to check, decided before a model-key job starts, not a red plan job.
+  const collect = section('collect')
+  expect(collect).toContain('issue-criteria --out criteria.json')
+  expect(collect).toMatch(/if \[ ! -f criteria\.json \]; then\n\s+echo "criteria=none"/)
+  expect(section('plan')).toContain('--criteria criteria.json')
+  expect(section('plan')).not.toContain('--issue')
+})
+
 test('nothing runs when the change states no criteria', () => {
   // Neutral, not red: a chore states no acceptance criteria, and a pipeline
   // that is red by default hides the failure that matters.
