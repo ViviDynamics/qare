@@ -13,6 +13,8 @@ import {
   loadResult,
   NareAgentRunner,
   criteriaFromIssue,
+  IssueCriteriaError,
+  linkedIssues,
   planRun,
   prepareVerifierInputs,
   renderCheckRun,
@@ -41,12 +43,13 @@ export async function main(
     return 0
   }
   if (argv[0] === 'run') return runCommand(argv.slice(1), out, err, boot, stdin)
+  if (argv[0] === 'linked-issues') return linkedIssuesCommand(argv.slice(1), out, err)
   if (argv[0] === 'plan') return planCommand(argv.slice(1), out, err)
   if (argv[0] === 'judge') return judgeCommand(argv.slice(1), out, err)
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare plan (--issue <path> | --criteria <path>) --diff <path> [--out <file>] [--suites a,b] [--nare <binary>] | qare run --job <path|-> | qare judge --result <path> | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>]\n`,
+    `qare ${VERSION}\nusage: qare --version | qare linked-issues --body <path> | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run --job <path|-> | qare judge --result <path> | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>]\n`,
   )
   return 0
 }
@@ -66,6 +69,25 @@ function flag(argv: string[], name: string): string | undefined {
  * A half-written plan.json would be consumed by execute as though it were the
  * whole run.
  */
+/**
+ * The issues a pull request promises to close, one per line.
+ *
+ * Prints nothing and succeeds when it promises none: a chore states no
+ * criteria, and whether that is neutral or a failure is the pipeline's call.
+ */
+async function linkedIssuesCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
+  try {
+    const bodyPath = flag(argv, '--body')
+    if (bodyPath === undefined) throw new Error('qare linked-issues requires --body <path>')
+    for (const issue of linkedIssues(await readFile(resolve(bodyPath), 'utf8')))
+      out.write(`${issue}\n`)
+    return 0
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 4
+  }
+}
+
 async function planCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
   try {
     const criteriaPath = flag(argv, '--criteria')
@@ -82,9 +104,22 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       .filter(Boolean)
     const binary = flag(argv, '--nare')
 
+    const allowNone = argv.includes('--allow-no-criteria')
     let criteria: { id: string; text: string }[]
     if (issuePath !== undefined) {
-      criteria = criteriaFromIssue(await readFile(resolve(issuePath), 'utf8'))
+      try {
+        criteria = criteriaFromIssue(await readFile(resolve(issuePath), 'utf8'))
+      } catch (error) {
+        // The pipeline asked for neutral rather than red: a change that states
+        // no criteria has nothing to check, which is an outcome and not a
+        // fault. Nothing is written, so no later step mistakes silence for a
+        // plan.
+        if (allowNone && error instanceof IssueCriteriaError) {
+          out.write(`no acceptance criteria stated, so nothing was planned: ${error.message}\n`)
+          return 0
+        }
+        throw error
+      }
     } else {
       const loaded: unknown = JSON.parse(await readFile(resolve(criteriaPath as string), 'utf8'))
       if (!Array.isArray(loaded))
