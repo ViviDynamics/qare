@@ -246,7 +246,7 @@ export class NareAgentRunner implements AgentRunner {
       // one means the contract was broken. Reporting completed with no answer
       // would hand the caller a pass carrying nothing.
       throw new NareRunnerError(
-        'nare reported a completed run with no output event, so there is no answer to read',
+        'nare reported a completed run carrying neither an output event nor a parsed object, so there is no answer to read',
       )
     }
     return {
