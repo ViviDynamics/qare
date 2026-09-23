@@ -50,7 +50,10 @@ test('a profile without QA.md fails naming QA.md', async () => {
   rmSync(join(dir, 'QA.md'))
 
   const error = await profileError(() => loadProfile(dir))
-  expect(error.name).toBe('ProfileValidationError')
+  // Absence is the more specific ProfileMissingError (#107), which is still a
+  // ProfileValidationError so every existing handler catches it.
+  expect(error).toBeInstanceOf(ProfileValidationError)
+  expect(error.name).toBe('ProfileMissingError')
   expect(error.field).toBe('QA.md')
   expect(error.message).toContain('QA.md')
 
