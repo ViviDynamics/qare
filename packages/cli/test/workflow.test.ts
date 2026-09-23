@@ -152,3 +152,12 @@ test('judge posts the evidence with the token alone, linking only to the uploade
   expect(judge).toContain('checks: write')
   expect(section('execute')).toContain('evidence-url: ${{ steps.evidence.outputs.artifact-url }}')
 })
+
+test('judge leaves no token in the checkout for the model step to find', () => {
+  expect(section('judge')).toMatch(/actions\/checkout@v4\n\s+with:\n\s+persist-credentials: false/)
+})
+
+test('stub issues are filed before posting, so a posting failure cannot stop them', () => {
+  const judge = section('judge')
+  expect(judge.indexOf('- name: File stub issues')).toBeLessThan(judge.indexOf('- name: Post the evidence'))
+})

@@ -32,6 +32,7 @@ export interface GitHubIssue {
 export interface GitHubComment {
   id: number
   body?: string
+  user?: { login?: string } | null
 }
 
 export interface GitHubCheckRun {

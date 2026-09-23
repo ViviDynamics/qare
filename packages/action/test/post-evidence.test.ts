@@ -34,7 +34,7 @@ afterEach(async () => {
 })
 
 test('posts one marked comment and a check run on the head commit', async () => {
-  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), failed, { headSha: SHA, artifactUrl: ARTIFACT })
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), failed, { artifactUrl: ARTIFACT })
 
   const [comment] = fake.issues.get(12)?.comments ?? []
   expect(comment?.startsWith(`${EVIDENCE_MARKER}\n## QARE run: failed`)).toBe(true)
@@ -53,7 +53,7 @@ test('posts one marked comment and a check run on the head commit', async () => 
 // Rule 4: a posted comment links to nothing that was not uploaded. The
 // evidence paths are relative to a directory the pull request cannot see.
 test('the posted comment links only to the uploaded artifact', async () => {
-  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), failed, { headSha: SHA, artifactUrl: ARTIFACT })
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), failed, { artifactUrl: ARTIFACT })
 
   const comment = fake.issues.get(12)?.comments[0] ?? ''
   expect(comment).toContain('`checks/export-csv/0/stdout.txt`')
@@ -62,8 +62,8 @@ test('the posted comment links only to the uploaded artifact', async () => {
 
 test('a second run updates the comment in place rather than adding another', async () => {
   const poster = new GitHubEvidencePoster(client, 12, SHA)
-  await postEvidence(poster, failed, { headSha: SHA })
-  await postEvidence(poster, { ...failed, verdict: 'passed' }, { headSha: SHA })
+  await postEvidence(poster, failed)
+  await postEvidence(poster, { ...failed, verdict: 'passed' })
 
   expect(fake.issues.get(12)?.comments).toHaveLength(1)
   expect(fake.issues.get(12)?.comments[0]).toContain('## QARE run: passed')
@@ -71,31 +71,58 @@ test('a second run updates the comment in place rather than adding another', asy
 })
 
 test('other comments on the pull request are left alone', async () => {
-  fake.commentRecords.push({ id: 1, issue: 12, body: 'looks good to me' })
-  fake.issues.get(12)?.comments.push('looks good to me')
+  fake.commentRecords.push({ id: 1, issue: 12, body: 'looks good to me', author: 'hana' })
 
-  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), failed, { headSha: SHA })
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), failed)
 
   expect(fake.commentRecords.find((record) => record.id === 1)?.body).toBe('looks good to me')
   expect(fake.commentRecords).toHaveLength(2)
 })
 
-test('a marked comment this identity cannot edit gets a new one beside it, not a failure', async () => {
-  fake.commentRecords.push({ id: 1, issue: 12, body: `${EVIDENCE_MARKER}\nquoted by a person`, foreign: true })
+// Anyone can write the marker. Updating their comment would put qare's
+// verdict somewhere they can edit it afterwards.
+test('a marked comment someone else wrote is never updated; qare posts its own', async () => {
+  fake.commentRecords.push({ id: 1, issue: 12, body: `${EVIDENCE_MARKER}\n## QARE run: passed`, author: 'mallory' })
 
-  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), failed, { headSha: SHA })
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), failed)
 
-  expect(fake.commentRecords).toHaveLength(2)
-  expect(fake.commentRecords[0]?.body).toBe(`${EVIDENCE_MARKER}\nquoted by a person`)
+  expect(fake.calls.filter((call) => call.method === 'PATCH')).toHaveLength(0)
+  expect(fake.commentRecords[0]?.body).toBe(`${EVIDENCE_MARKER}\n## QARE run: passed`)
+  expect(fake.commentRecords[1]?.body).toContain('## QARE run: failed')
+})
+
+test('the identity the comment is written as can be named, for an App or a token', async () => {
+  fake.commentRecords.push({ id: 1, issue: 12, body: `${EVIDENCE_MARKER}\nearlier run`, author: 'qare-app[bot]' })
+
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA, 'qare-app[bot]'), failed)
+
+  expect(fake.calls.filter((call) => call.method === 'PATCH').map((call) => call.path)).toEqual([
+    '/repos/octocat/qare/issues/comments/1',
+  ])
 })
 
 test('a server error while updating is a failure, not a quiet second comment', async () => {
   fake.commentRecords.push({ id: 1, issue: 12, body: `${EVIDENCE_MARKER}\nearlier run`, failEditWith: 500 })
 
-  await expect(postEvidence(new GitHubEvidencePoster(client, 12, SHA), failed, { headSha: SHA })).rejects.toThrow(
-    /responded 500/,
-  )
+  await expect(postEvidence(new GitHubEvidencePoster(client, 12, SHA), failed)).rejects.toThrow(/responded 500/)
   expect(fake.commentRecords).toHaveLength(1)
+})
+
+// A 403 on an edit is a rate limit or a permission problem, not a reason to
+// leave a stale verdict up beside a new one.
+test('a 403 while updating is a failure too', async () => {
+  fake.commentRecords.push({ id: 1, issue: 12, body: `${EVIDENCE_MARKER}\nearlier run`, failEditWith: 403 })
+
+  await expect(postEvidence(new GitHubEvidencePoster(client, 12, SHA), failed)).rejects.toThrow(/responded 403/)
+  expect(fake.commentRecords).toHaveLength(1)
+})
+
+test('a comment deleted since it was listed is posted afresh', async () => {
+  fake.commentRecords.push({ id: 1, issue: 12, body: `${EVIDENCE_MARKER}\nearlier run`, failEditWith: 404 })
+
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), failed)
+
+  expect(fake.commentRecords).toHaveLength(2)
 })
 
 test('a malformed head SHA or pull request number is refused before anything is posted', () => {

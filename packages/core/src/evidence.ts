@@ -15,7 +15,7 @@ export interface CheckRunPayload {
  * and the only link is to the run's evidence artifact, when one was uploaded.
  * Nothing links to a file that is not there to open (CONSTITUTION rule 4).
  */
-export type EvidenceLinks = { kind: 'relative' } | { kind: 'artifact'; url?: string }
+export type EvidenceLinks = { kind: 'relative' } | { kind: 'artifact'; url?: string | undefined }
 
 export interface EvidencePoster {
   postComment(body: string): Promise<void>
@@ -82,20 +82,31 @@ function detailNames(criteria: CriterionResult[]): string[] {
   const lines: string[] = []
   for (const criterion of criteria) {
     const names = (criterion.evidence ?? []).filter(path => path !== '').map(codeSpan)
-    if (names.length > 0) lines.push(`- ${escapeLinkText(criterion.id)}: ${names.join(', ')}`)
+    if (names.length > 0) lines.push(`- ${codeSpan(criterion.id)}: ${names.join(', ')}`)
   }
   return lines
 }
 
-// A path is shown whole, so it can be found inside the artifact, and a
-// backtick in it cannot end the span early.
+// Text shown on a pull request goes in a code span, where nothing renders: a
+// link, raw HTML, a bare URL or an @mention in a reason or a path stays text.
+// The fence is longer than any backtick run inside, so the text is shown
+// exactly (a path can still be found in the artifact) and cannot end the span.
 function codeSpan(text: string): string {
-  return `\`${text.replaceAll('`', "'").replaceAll('\r', ' ').replaceAll('\n', ' ')}\``
+  const flat = text.replaceAll('\r', ' ').replaceAll('\n', ' ')
+  const longest = Math.max(0, ...(flat.match(/`+/g) ?? []).map(run => run.length))
+  const fence = '`'.repeat(longest + 1)
+  const pad = flat.startsWith('`') || flat.endsWith('`') ? ' ' : ''
+  return `${fence}${pad}${flat}${pad}${fence}`
+}
+
+// In a table a pipe ends the cell even inside a code span unless escaped.
+function cellSpan(text: string): string {
+  return text === '' ? '' : codeSpan(text).replaceAll('|', '\\|')
 }
 
 function artifactLine(url: string | undefined): string {
   if (url === undefined) return "The run's evidence was not uploaded, so these files are named but not linked."
-  return `These files are in the run's [evidence artifact](<${url}>), for as long as GitHub keeps it.`
+  return `The run's evidence is in its [evidence artifact](<${url}>), for as long as GitHub keeps it.`
 }
 
 function escapeLinkText(text: string): string {
@@ -103,15 +114,16 @@ function escapeLinkText(text: string): string {
 }
 
 export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 'relative' }): string {
-  const job = result.job === undefined ? '' : ` (job ${result.job.id})`
+  const posted = links.kind === 'artifact'
+  const cell = posted ? cellSpan : escapeCell
+  const job = result.job === undefined ? '' : ` (job ${posted ? codeSpan(result.job.id) : result.job.id})`
   const lines = [
     `## QARE run: ${result.verdict}${job}`,
     '',
     '| criterion | outcome | reason |',
     '| --- | --- | --- |',
     ...result.criteria.map(
-      criterion =>
-        `| ${escapeCell(criterion.id)} | ${criterion.outcome} | ${escapeCell(reasonCell(criterion))} |`,
+      criterion => `| ${cell(criterion.id)} | ${criterion.outcome} | ${cell(reasonCell(criterion))} |`,
     ),
   ]
   if (links.kind === 'relative') {
@@ -119,7 +131,10 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
     if (details.length > 0) lines.push('', 'Details:', '', ...details)
   } else {
     const details = detailNames(result.criteria)
-    if (details.length > 0) lines.push('', 'Details:', '', ...details, '', artifactLine(links.url))
+    if (details.length > 0) lines.push('', 'Details:', '', ...details)
+    // The artifact holds result.json and the logs even when no criterion
+    // lists a file, so it is linked whenever it was uploaded.
+    if (details.length > 0 || links.url !== undefined) lines.push('', artifactLine(links.url))
   }
   const unverified = result.criteria.filter(criterion => criterion.outcome === 'unverified')
   const causes = new Set(unverified.map(unverifiedCause))

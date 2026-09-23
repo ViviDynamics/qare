@@ -19,8 +19,8 @@ export interface FakeComment {
   id: number
   issue: number
   body: string
-  /** Comments another identity wrote: this token cannot edit them. */
-  foreign?: boolean
+  /** Who wrote it; the fake token comments as github-actions[bot]. */
+  author?: string
   /** An edit to this comment answers with this status. */
   failEditWith?: number
 }
@@ -37,6 +37,7 @@ export interface FakeGithub {
 }
 
 const TOKEN = 'qa-test-token'
+const TOKEN_LOGIN = 'github-actions[bot]'
 const AUTH_HEADER = `Bearer ${TOKEN}`
 
 export function startFakeGithub(): Promise<FakeGithub> {
@@ -116,7 +117,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
       if (request.method === 'POST') {
         const text = (body as { body: string }).body
         issue.comments.push(text)
-        const record = { id: nextCommentId, issue: issue.number, body: text }
+        const record = { id: nextCommentId, issue: issue.number, body: text, author: TOKEN_LOGIN }
         nextCommentId += 1
         commentRecords.push(record)
         respond(response, 201, { id: record.id, body: text })
@@ -129,7 +130,9 @@ export function startFakeGithub(): Promise<FakeGithub> {
         respond(
           response,
           200,
-          mine.slice((page - 1) * perPage, page * perPage).map((record) => ({ id: record.id, body: record.body })),
+          mine
+            .slice((page - 1) * perPage, page * perPage)
+            .map((record) => ({ id: record.id, body: record.body, user: { login: record.author ?? TOKEN_LOGIN } })),
         )
         return
       }
@@ -145,10 +148,6 @@ export function startFakeGithub(): Promise<FakeGithub> {
       }
       if (record.failEditWith !== undefined) {
         respond(response, record.failEditWith, { message: 'fake edit failure' })
-        return
-      }
-      if (record.foreign === true) {
-        respond(response, 403, { message: 'Resource not accessible by integration' })
         return
       }
       record.body = (body as { body: string }).body

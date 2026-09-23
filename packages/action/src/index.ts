@@ -90,7 +90,8 @@ async function postEvidenceCommand(argv: string[], out: Writer): Promise<number>
     apiRoot: flags.string('api-root'),
     tokenEnv: flags.string('token-env'),
   })
-  await postEvidence(new GitHubEvidencePoster(client, pr, headSha), result, { headSha, artifactUrl })
+  const author = flags.string('author')
+  await postEvidence(new GitHubEvidencePoster(client, pr, headSha, author), result, { artifactUrl })
   out.write(`posted verdict ${result.verdict} on pull request #${pr} at ${headSha.slice(0, 12)}\n`)
   return 0
 }
