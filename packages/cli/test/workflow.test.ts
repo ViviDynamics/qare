@@ -15,49 +15,93 @@ function section(job: string): string {
   return lines.slice(start, end === -1 ? undefined : end).join('\n')
 }
 
-test('the qare workflow exists alongside its fallback job fixture', () => {
+test('the workflow declares collect, plan, execute and judge', () => {
   expect(existsSync(workflowPath)).toBe(true)
-  expect(workflow).toContain('.github/qare/fallback-job.yml')
-})
-
-test('the workflow declares the three jobs plan, execute and judge', () => {
-  expect(lines).toContain('  plan:')
-  expect(lines).toContain('  execute:')
-  expect(lines).toContain('  judge:')
+  for (const job of ['collect', 'plan', 'execute', 'judge']) expect(lines).toContain(`  ${job}:`)
 })
 
 test('the artifact handoff names are pinned', () => {
-  expect(workflow).toContain('name: plan.json')
-  expect(workflow).toContain('name: execute-evidence')
-  expect(workflow).toContain('name: judge-artifacts')
+  for (const name of ['qa-inputs', 'plan.json', 'execute-evidence', 'judge-artifacts'])
+    expect(workflow).toContain(`name: ${name}`)
 })
 
-test('the plan failure names the pending nare integration', () => {
-  expect(workflow).toContain(
-    'plan job unavailable: nare integration pending (nare issues #9-#11); plan.json cannot be produced yet',
-  )
+test('secret hygiene: the model-key job never holds a GitHub token', () => {
+  // The whole point of collect: it reads the issue, so the job that talks to a
+  // model needs no token, and the secret map in the header stays true.
+  const plan = section('plan')
+  expect(plan).toContain('${{ secrets.QARE_PLANNER_KEY }}')
+  expect(plan).not.toContain('GITHUB_TOKEN')
+  expect(plan).not.toContain('secrets.GITHUB_TOKEN')
 })
 
-test('the qare CLI invocation is pinned to the repo own build', () => {
-  expect(workflow.match(/node packages\/cli\/dist\/index\.js/g)?.length ?? 0).toBeGreaterThanOrEqual(3)
-  expect(workflow).toContain('pnpm build')
+test('secret hygiene: collect holds the token and no model key', () => {
+  const collect = section('collect')
+  expect(collect).toContain('${{ secrets.GITHUB_TOKEN }}')
+  expect(collect).not.toContain('QARE_PLANNER_KEY')
+  expect(collect).not.toContain('QARE_MODEL_KEY')
 })
 
-test('secret hygiene: only named secrets, and the execute job holds none', () => {
-  expect(workflow).toContain('${{ secrets.QARE_MODEL_KEY }}')
-  expect(workflow).toContain('${{ secrets.GITHUB_TOKEN }}')
-  const execute = section('execute')
-  expect(execute).not.toContain('secrets.')
-  expect(section('plan')).toContain('${{ secrets.QARE_MODEL_KEY }}')
+test('secret hygiene: the job that runs pull request code holds nothing', () => {
+  expect(section('execute')).not.toContain('secrets.')
+})
+
+test('judge holds the model key and the token, and nothing else does', () => {
   const judge = section('judge')
   expect(judge).toContain('${{ secrets.QARE_MODEL_KEY }}')
   expect(judge).toContain('${{ secrets.GITHUB_TOKEN }}')
 })
 
-test('plan continues on error and the downstream jobs always run', () => {
-  const plan = section('plan')
-  expect(plan).toContain('continue-on-error: true')
-  expect(section('execute')).toMatch(/needs: plan\n/)
-  expect(section('judge')).toContain('needs: [plan, execute]')
-  expect(workflow.match(/if: always\(\)/g)?.length ?? 0).toBeGreaterThanOrEqual(3)
+test('a fork pull request skips the model-key job rather than failing', () => {
+  // A fork gets no secrets, so the run would fail for a reason that has
+  // nothing to do with the change.
+  expect(section('plan')).toContain('github.event.pull_request.head.repo.full_name == github.repository')
+})
+
+test('nothing runs when the change states no criteria', () => {
+  // Neutral, not red: a chore states no acceptance criteria, and a pipeline
+  // that is red by default hides the failure that matters.
+  for (const job of ['plan', 'execute'])
+    expect(section(job)).toContain("needs.collect.outputs.criteria == 'present'")
+})
+
+test('execute runs the plan, with no fallback fixture behind it', () => {
+  // The fixture existed only while the plan step could not be produced. A
+  // fallback that runs when planning failed would report a pass for checks
+  // nobody planned.
+  expect(workflow).not.toContain('fallback-job')
+  expect(existsSync(join(repoRoot, '.github', 'qare', 'fallback-job.yml'))).toBe(false)
+  expect(section('execute')).toContain('--plan plan.json')
+  // The run context is the caller's to supply (#105); a plan carries none of it.
+  for (const flag of ['--id', '--repo', '--base', '--head', '--profile', '--evidence'])
+    expect(section('execute')).toContain(flag)
+})
+
+test('a refused run is reported rather than turned into a red pipeline', () => {
+  // Refusal is qare saying it cannot check this repository yet (no profile or
+  // no stubs). It is an outcome about the repository, not a fault in the
+  // change, and the judge still reports it.
+  const execute = section('execute')
+  expect(execute).toContain('"$code" -eq 3')
+  expect(execute).toContain('exit "$code"')
+})
+
+test('a refusal must have left its evidence, or exit 3 is not a refusal', () => {
+  expect(section('execute')).toContain('evidence/result.json')
+})
+
+test('a fork pull request is told why it got no QA, rather than skipping silently', () => {
+  expect(section('collect')).toContain('github.event.pull_request.head.repo.full_name != github.repository')
+})
+
+test('judge depends only on what it consumes', () => {
+  expect(section('judge')).toContain('needs: execute')
+})
+
+test('the nare the plan job installs is pinned to a version', () => {
+  expect(workflow).toMatch(/nare-\d{4}\.\d+\.\d+-py3-none-any\.whl/)
+})
+
+test('the qare CLI invocations are the repository own build', () => {
+  expect(workflow.match(/node packages\/cli\/dist\/index\.js/g)?.length ?? 0).toBeGreaterThanOrEqual(4)
+  expect(workflow).toContain('pnpm build')
 })

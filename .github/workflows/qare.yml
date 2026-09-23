@@ -3,7 +3,8 @@ name: QARE
 # Three-job qare pipeline: plan -> execute -> judge, with artifact handoff.
 #
 # Secret-hygiene map (constitution: the three jobs never share a machine):
-#   - plan:    holds the model key only       (QARE_MODEL_KEY)
+#   - collect: holds the GitHub token only    (reads the linked issue; no model key)
+#   - plan:    holds the model key only       (QARE_PLANNER_KEY)
 #   - execute: holds no secrets at all        (stub containers only)
 #   - judge:   holds the model key + GitHub token only
 #     (QARE_MODEL_KEY for the verifier seam, GITHUB_TOKEN for the
@@ -11,11 +12,16 @@ name: QARE
 #   - requeue: holds the GitHub token only    (posts /qa on refused PRs)
 # No secret values are written here; only names, resolved at runtime.
 #
-# nare-pending state: nare's machine contract (nare issues #9-#11) is not
-# versioned yet, so the plan job fails with a named, actionable message and
-# plan.json cannot be produced. The job is continue-on-error so the pipeline
-# shape stays visible; execute falls back to a documented job fixture and
-# judge consumes whatever result.json the execute slice produced.
+# Criteria come from the issue the pull request promises to close (#98). A
+# change that promises none states no acceptance criteria, so there is nothing
+# to check: collect says so, every later job skips, and the pipeline stays
+# green. A red pipeline on every chore would hide the failure that matters.
+#
+# collect reads the issue so the model-key job never needs a GitHub token,
+# which keeps the secret-hygiene map above true rather than approximately true.
+#
+# Fork pull requests get no secrets, so the model-key jobs are guarded on the
+# head repository being this one; they skip rather than failing on a fork.
 
 on:
   workflow_dispatch:
@@ -32,12 +38,78 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # label: collect (GitHub token only)
+  collect:
+    name: collect (GitHub token only)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      criteria: ${{ steps.inputs.outputs.criteria }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Say why a fork gets no QA
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "this pull request comes from a fork, which gets no model key, so qare cannot plan or check it here" >> "$GITHUB_STEP_SUMMARY"
+      - name: Read the linked issue and the diff
+        id: inputs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${PR_BODY:-}" > pr-body.md
+          node packages/cli/dist/index.js linked-issues --body pr-body.md > linked.txt
+          if [ ! -s linked.txt ]; then
+            echo "this change promises to close no issue, so it states no acceptance criteria and there is nothing to check" >> "$GITHUB_STEP_SUMMARY"
+            echo "criteria=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          : > issue.md
+          while read -r number; do
+            gh issue view "$number" --json body --jq .body >> issue.md
+            printf '\n' >> issue.md
+          done < linked.txt
+          git diff "${BASE_SHA}...HEAD" > change.diff
+          echo "criteria=present" >> "$GITHUB_OUTPUT"
+          {
+            echo "criteria read from: $(tr '\n' ' ' < linked.txt)"
+            echo "diff bytes: $(wc -c < change.diff)"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the QA inputs
+        if: steps.inputs.outputs.criteria == 'present'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-inputs
+          path: |
+            issue.md
+            change.diff
+          if-no-files-found: error
+
   # label: plan (model key only)
   plan:
     name: plan (model key only)
+    needs: collect
     runs-on: ubuntu-latest
-    if: github.event_name != 'push'
-    continue-on-error: true
+    # A fork pull request gets no secrets, so this would fail for a reason that
+    # has nothing to do with the change. It skips instead.
+    if: >-
+      needs.collect.outputs.criteria == 'present' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -47,40 +119,45 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: Install the pinned nare
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --user "$NARE_WHEEL"
+          "$HOME/.local/bin/nare" --version
+        env:
+          NARE_WHEEL: https://github.com/ViviDynamics/nare/releases/download/2026.9.10/nare-2026.9.10-py3-none-any.whl
+      - name: Download the QA inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: qa-inputs
+          path: .
       - name: Plan the QA run
         shell: bash
         env:
-          QARE_MODEL_KEY: ${{ secrets.QARE_MODEL_KEY }}
+          # nare's openai rail: the planner key is scoped to a model that
+          # answers inside the proxy's edge timeout (see nare#27).
+          OPENAI_API_KEY: ${{ secrets.QARE_PLANNER_KEY }}
+          NARE_PROVIDER: openai
+          NARE_BASE_URL: https://llm.vividynamics.com/v1
+          NARE_MODEL: claude-haiku
         run: |
-          node --input-type=module -e '
-            import { pathToFileURL } from "node:url"
-            import { join } from "node:path"
-            const seam = pathToFileURL(join(process.cwd(), "packages", "core", "dist", "index.js")).href
-            const { NareAgentRunner } = await import(seam)
-            try {
-              new NareAgentRunner()
-              process.stderr.write("plan job unavailable: nare integration pending (nare issues #9-#11); plan.json cannot be produced yet\n")
-              process.exit(3)
-            } catch (error) {
-              const name = error && typeof error === "object" ? error.name : String(error)
-              if (name !== "NotImplemented") throw error
-              process.stderr.write("NotImplemented: plan job unavailable: nare integration pending (nare issues #9-#11); plan.json cannot be produced yet\n")
-              process.exit(3)
-            }
-          '
-      - name: Upload plan.json (if produced)
-        if: always()
+          set -euo pipefail
+          node packages/cli/dist/index.js plan \
+            --issue issue.md --diff change.diff --out plan.json \
+            --nare "$HOME/.local/bin/nare"
+      - name: Upload plan.json
         uses: actions/upload-artifact@v4
         with:
           name: plan.json
           path: plan.json
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   # label: execute (no secrets)
   execute:
     name: execute (no secrets)
-    needs: plan
-    if: always() && github.event_name != 'push'
+    needs: [collect, plan]
+    if: needs.collect.outputs.criteria == 'present' && needs.plan.result == 'success'
     runs-on: ubuntu-latest
     steps:
       # actions/checkout checks out the PR merge ref on pull_request events
@@ -92,21 +169,44 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - name: Download plan.json (absent while nare is pending)
+      - name: Download plan.json
         uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           name: plan.json
           path: .
-      - name: Run the QA job (plan.json when present, documented fallback fixture otherwise)
+      - name: Run the plan
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          if [ -f plan.json ]; then
-            node packages/cli/dist/index.js run --job plan.json
-          else
-            echo "plan.json absent: nare integration pending (nare issues #9-#11); running the documented fallback job fixture for the shape-visible slice"
-            node packages/cli/dist/index.js run --job .github/qare/fallback-job.yml
+          set -uo pipefail
+          # The run's own facts come from here rather than from the plan: a
+          # plan is the same wherever it runs (#105).
+          code=0
+          node packages/cli/dist/index.js run --plan plan.json \
+            --id "pr-${PR_NUMBER}" \
+            --repo "$PWD" \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --profile .qa \
+            --evidence evidence || code=$?
+          # 3 is refused: this repository has no .qa profile or no stubs, so
+          # qare will not pretend to have checked it. That is an outcome about
+          # the repository rather than a fault in the change, judge still
+          # reports it, and stub issues are filed. Anything else is a failure.
+          if [ "$code" -eq 3 ]; then
+            # A refusal writes result.json like any other run; without it,
+            # exit 3 means something else went wrong and judge has nothing.
+            if [ ! -f evidence/result.json ]; then
+              echo "exit 3 but no evidence/result.json: not a refusal qare recorded" >&2
+              exit 1
+            fi
+            echo "qare refused this run (no profile or stubs yet); judge will report it and file stub issues" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
+          exit "$code"
       - name: Upload evidence (raw results + result.json)
         if: always()
         uses: actions/upload-artifact@v4
@@ -118,8 +218,8 @@ jobs:
   # label: judge (model key + GitHub token only)
   judge:
     name: judge (model key + GitHub token only)
-    needs: [plan, execute]
-    if: always() && github.event_name != 'push'
+    needs: execute
+    if: always() && needs.execute.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       issues: write
