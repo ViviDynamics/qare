@@ -6,6 +6,17 @@ export interface CheckRunPayload {
   conclusion: 'success' | 'failure' | 'neutral'
 }
 
+/**
+ * Where the comment's evidence lives, which decides what it may link to.
+ *
+ * `relative`: the comment is read beside the evidence directory (qare judge's
+ * comment.md), so relative links resolve. `artifact`: the comment is posted on
+ * a pull request, where a relative path resolves to nothing; files are named,
+ * and the only link is to the run's evidence artifact, when one was uploaded.
+ * Nothing links to a file that is not there to open (CONSTITUTION rule 4).
+ */
+export type EvidenceLinks = { kind: 'relative' } | { kind: 'artifact'; url?: string }
+
 export interface EvidencePoster {
   postComment(body: string): Promise<void>
   createCheckRun(payload: CheckRunPayload): Promise<void>
@@ -67,11 +78,31 @@ function detailLinks(criteria: CriterionResult[]): string[] {
   return lines
 }
 
+function detailNames(criteria: CriterionResult[]): string[] {
+  const lines: string[] = []
+  for (const criterion of criteria) {
+    const names = (criterion.evidence ?? []).filter(path => path !== '').map(codeSpan)
+    if (names.length > 0) lines.push(`- ${escapeLinkText(criterion.id)}: ${names.join(', ')}`)
+  }
+  return lines
+}
+
+// A path is shown whole, so it can be found inside the artifact, and a
+// backtick in it cannot end the span early.
+function codeSpan(text: string): string {
+  return `\`${text.replaceAll('`', "'").replaceAll('\r', ' ').replaceAll('\n', ' ')}\``
+}
+
+function artifactLine(url: string | undefined): string {
+  if (url === undefined) return "The run's evidence was not uploaded, so these files are named but not linked."
+  return `These files are in the run's [evidence artifact](<${url}>), for as long as GitHub keeps it.`
+}
+
 function escapeLinkText(text: string): string {
   return text.replace(/[\[\]]/g, ' ')
 }
 
-export function renderComment(result: RunResult): string {
+export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 'relative' }): string {
   const job = result.job === undefined ? '' : ` (job ${result.job.id})`
   const lines = [
     `## QARE run: ${result.verdict}${job}`,
@@ -83,8 +114,13 @@ export function renderComment(result: RunResult): string {
         `| ${escapeCell(criterion.id)} | ${criterion.outcome} | ${escapeCell(reasonCell(criterion))} |`,
     ),
   ]
-  const details = detailLinks(result.criteria)
-  if (details.length > 0) lines.push('', 'Details:', '', ...details)
+  if (links.kind === 'relative') {
+    const details = detailLinks(result.criteria)
+    if (details.length > 0) lines.push('', 'Details:', '', ...details)
+  } else {
+    const details = detailNames(result.criteria)
+    if (details.length > 0) lines.push('', 'Details:', '', ...details, '', artifactLine(links.url))
+  }
   const unverified = result.criteria.filter(criterion => criterion.outcome === 'unverified')
   const causes = new Set(unverified.map(unverifiedCause))
   if (causes.has('waived'))

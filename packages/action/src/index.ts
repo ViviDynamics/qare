@@ -6,6 +6,7 @@ import { loadResult, VERSION } from '@qare/core'
 import { GitHubClient, GitHubClientError } from './github.js'
 import { fileRefusalStubs, GitHubStubIssuePoster } from './stub-issues.js'
 import { requeueUnblocked, stubKeysFromDiffText } from './requeue.js'
+import { GitHubEvidencePoster, postEvidence } from './post-evidence.js'
 
 export interface Writer {
   write(chunk: string): void
@@ -22,13 +23,14 @@ export async function main(argv: string[], out: Writer = process.stdout, err: Wr
   try {
     if (command === 'stub-issues') return await stubIssuesCommand(rest, out)
     if (command === 'requeue') return await requeueCommand(rest, out)
+    if (command === 'post-evidence') return await postEvidenceCommand(rest, out)
   } catch (error) {
     err.write(error instanceof Error ? `${error.name}: ${error.message}\n` : `${String(error)}\n`)
     return 1
   }
   entry(out)
   if (command !== undefined) {
-    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues" and "requeue"\n`)
+    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue" and "post-evidence"\n`)
     return 1
   }
   return 0
@@ -66,6 +68,31 @@ async function runStubIssues(
   if (result.verdict !== 'refused') return undefined
   const client = new GitHubClient({ repository: opts.repository, apiRoot: opts.apiRoot, tokenEnv: opts.tokenEnv })
   return fileRefusalStubs(new GitHubStubIssuePoster(client), result, opts.pr)
+}
+
+async function postEvidenceCommand(argv: string[], out: Writer): Promise<number> {
+  const flags = parseFlags(argv)
+  const resultPath = flags.string('result')
+  const pr = flags.number('pr')
+  const headSha = flags.string('sha')
+  if (resultPath === undefined || resultPath === '')
+    throw new GitHubClientError('qare-action post-evidence needs --result <path to judged-result.json>')
+  if (pr === undefined) throw new GitHubClientError('qare-action post-evidence needs --pr <pull request number>')
+  if (headSha === undefined) throw new GitHubClientError('qare-action post-evidence needs --sha <head commit>')
+  // An empty value is what a workflow expression gives when no artifact was
+  // uploaded; it means no link, never a link to nothing.
+  const artifactUrl = flags.string('artifact-url') || undefined
+  if (artifactUrl !== undefined && !/^https:\/\/[^\s<>]+$/.test(artifactUrl))
+    throw new GitHubClientError(`--artifact-url must be an https URL (got ${JSON.stringify(artifactUrl)})`)
+  const result = loadResult(await readFile(resultPath, 'utf8'))
+  const client = new GitHubClient({
+    repository: flags.string('repository'),
+    apiRoot: flags.string('api-root'),
+    tokenEnv: flags.string('token-env'),
+  })
+  await postEvidence(new GitHubEvidencePoster(client, pr, headSha), result, { headSha, artifactUrl })
+  out.write(`posted verdict ${result.verdict} on pull request #${pr} at ${headSha.slice(0, 12)}\n`)
+  return 0
 }
 
 function requeueCommand(argv: string[], out: Writer): Promise<number> {

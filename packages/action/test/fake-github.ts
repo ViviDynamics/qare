@@ -15,10 +15,23 @@ export interface FakeCall {
   body: unknown
 }
 
+export interface FakeComment {
+  id: number
+  issue: number
+  body: string
+  /** Comments another identity wrote: this token cannot edit them. */
+  foreign?: boolean
+  /** An edit to this comment answers with this status. */
+  failEditWith?: number
+}
+
 export interface FakeGithub {
   url: string
   calls: FakeCall[]
   issues: Map<number, FakeIssue>
+  /** Every comment with its id, in the order written; issue.comments mirrors the bodies. */
+  commentRecords: FakeComment[]
+  checkRuns: unknown[]
   status: number | undefined
   close(): Promise<void>
 }
@@ -29,8 +42,11 @@ const AUTH_HEADER = `Bearer ${TOKEN}`
 export function startFakeGithub(): Promise<FakeGithub> {
   const issues = new Map<number, FakeIssue>()
   const calls: FakeCall[] = []
+  const commentRecords: FakeComment[] = []
+  const checkRuns: unknown[] = []
   const state = { status: undefined as number | undefined }
   let nextNumber = 100
+  let nextCommentId = 5000
 
   const server: Server = createServer((request, response) => {
     void handle(request, response)
@@ -98,10 +114,56 @@ export function startFakeGithub(): Promise<FakeGithub> {
         return
       }
       if (request.method === 'POST') {
-        issue.comments.push((body as { body: string }).body)
-        respond(response, 201, { body: (body as { body: string }).body })
+        const text = (body as { body: string }).body
+        issue.comments.push(text)
+        const record = { id: nextCommentId, issue: issue.number, body: text }
+        nextCommentId += 1
+        commentRecords.push(record)
+        respond(response, 201, { id: record.id, body: text })
         return
       }
+      if (request.method === 'GET') {
+        const perPage = Number(url.searchParams.get('per_page') ?? '30')
+        const page = Number(url.searchParams.get('page') ?? '1')
+        const mine = commentRecords.filter((record) => record.issue === issue.number)
+        respond(
+          response,
+          200,
+          mine.slice((page - 1) * perPage, page * perPage).map((record) => ({ id: record.id, body: record.body })),
+        )
+        return
+      }
+    }
+    if (
+      parts[0] === 'repos' && parts[3] === 'issues' && parts[4] === 'comments' && parts.length === 6 &&
+      request.method === 'PATCH'
+    ) {
+      const record = commentRecords.find((candidate) => candidate.id === Number(parts[5]))
+      if (record === undefined) {
+        respond(response, 404, { message: 'comment not found' })
+        return
+      }
+      if (record.failEditWith !== undefined) {
+        respond(response, record.failEditWith, { message: 'fake edit failure' })
+        return
+      }
+      if (record.foreign === true) {
+        respond(response, 403, { message: 'Resource not accessible by integration' })
+        return
+      }
+      record.body = (body as { body: string }).body
+      const issue = issues.get(record.issue)
+      if (issue !== undefined) {
+        const mine = commentRecords.filter((candidate) => candidate.issue === record.issue)
+        issue.comments = mine.map((candidate) => candidate.body)
+      }
+      respond(response, 200, { id: record.id, body: record.body })
+      return
+    }
+    if (parts[0] === 'repos' && parts[3] === 'check-runs' && parts.length === 4 && request.method === 'POST') {
+      checkRuns.push(body)
+      respond(response, 201, { id: checkRuns.length, ...(body as object) })
+      return
     }
     respond(response, 404, { message: `fake github has no route for ${request.method} ${url.pathname}` })
   }
@@ -120,6 +182,8 @@ export function startFakeGithub(): Promise<FakeGithub> {
         url: ['http:', `//127.0.0.1:${port}`].join(''),
         calls,
         issues,
+        commentRecords,
+        checkRuns,
         get status(): number | undefined {
           return state.status
         },

@@ -188,3 +188,31 @@ test('a verifier finding shows as the failed criterion reason', () => {
   })
   expect(body).toContain('| c1 | failed | verifier: 0 rows exported |')
 })
+
+// Posted on a pull request, a relative path resolves to nothing. Rule 4: the
+// only link is to what was uploaded, the run's evidence artifact.
+test('a posted comment names evidence files and links only to the uploaded artifact', () => {
+  const url = ['https:', '//github.com/octocat/qare/actions/runs/1/artifacts/2'].join('')
+  const body = renderComment(mixed, { kind: 'artifact', url })
+
+  expect(body).toContain('- payout-1099-notice: `checks/payout-1099-notice/1/stdout.txt`')
+  expect(body).toContain(`[evidence artifact](<${url}>)`)
+  expect(body).not.toContain('](<checks/')
+  expect(body.match(/\]\(/g)).toHaveLength(1)
+})
+
+test('with no artifact uploaded, a posted comment links nothing and says so', () => {
+  const body = renderComment(mixed, { kind: 'artifact' })
+
+  expect(body).not.toContain('](')
+  expect(body).toContain('named but not linked')
+})
+
+test('a backtick in an evidence path cannot break out of its code span', () => {
+  const body = renderComment(
+    result('passed', [{ id: 'c1', outcome: 'proven', evidence: [['checks/c1/a`](<https:', '//evil>)`.txt'].join('')] }]),
+    { kind: 'artifact' },
+  )
+
+  expect(body).toContain(["- c1: `checks/c1/a'](<https:", "//evil>)'.txt`"].join(''))
+})

@@ -53,7 +53,8 @@ test('judge holds the model key and the token, and nothing else does', () => {
 
 test('the step that talks to the verifier model holds no GitHub token', () => {
   const judge = section('judge')
-  const step = judge.slice(judge.indexOf('- name: Judge the result'), judge.indexOf('- name: File stub issues'))
+  const start = judge.indexOf('- name: Judge the result')
+  const step = judge.slice(start, judge.indexOf('- name:', start + 1))
   expect(step).toContain('secrets.QARE_PLANNER_KEY')
   expect(step).not.toContain('GITHUB_TOKEN')
 })
@@ -138,4 +139,16 @@ test('the nare the plan job installs is pinned to a version', () => {
 test('the qare CLI invocations are the repository own build', () => {
   expect(workflow.match(/node packages\/cli\/dist\/index\.js/g)?.length ?? 0).toBeGreaterThanOrEqual(4)
   expect(workflow).toContain('pnpm build')
+})
+
+test('judge posts the evidence with the token alone, linking only to the uploaded artifact', () => {
+  const judge = section('judge')
+  const start = judge.indexOf('- name: Post the evidence')
+  const step = judge.slice(start, judge.indexOf('- name:', start + 1))
+  expect(step).toContain('post-evidence --result judged-result.json')
+  expect(step).toContain('secrets.GITHUB_TOKEN')
+  expect(step).not.toContain('QARE_PLANNER_KEY')
+  expect(step).toContain('needs.execute.outputs.evidence-url')
+  expect(judge).toContain('checks: write')
+  expect(section('execute')).toContain('evidence-url: ${{ steps.evidence.outputs.artifact-url }}')
 })

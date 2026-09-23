@@ -109,7 +109,7 @@ export type {
   VerifierInputs,
 } from './judge.js'
 export { renderComment, renderCheckRun } from './evidence.js'
-export type { CheckRunPayload, EvidencePoster } from './evidence.js'
+export type { CheckRunPayload, EvidenceLinks, EvidencePoster } from './evidence.js'
 export {
   SetSeenShas,
   decideTrigger,
