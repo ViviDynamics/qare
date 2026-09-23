@@ -46,12 +46,13 @@ export async function main(
   }
   if (argv[0] === 'run') return runCommand(argv.slice(1), out, err, boot, stdin)
   if (argv[0] === 'linked-issues') return linkedIssuesCommand(argv.slice(1), out, err)
+  if (argv[0] === 'issue-criteria') return issueCriteriaCommand(argv.slice(1), out, err)
   if (argv[0] === 'plan') return planCommand(argv.slice(1), out, err)
   if (argv[0] === 'judge') return judgeCommand(argv.slice(1), out, err)
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare linked-issues --body <path> | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>]\n`,
+    `qare ${VERSION}\nusage: qare --version | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>]\n`,
   )
   return 0
 }
@@ -85,6 +86,48 @@ async function linkedIssuesCommand(argv: string[], out: Writer, err: Writer): Pr
     if (bodyPath === undefined) throw new Error('qare linked-issues requires --body <path>')
     for (const issue of linkedIssues(await readFile(resolve(bodyPath), 'utf8')))
       out.write(`${issue}\n`)
+    return 0
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 4
+  }
+}
+
+/**
+ * The acceptance criteria a set of issues state, as the {id, text} list
+ * `qare plan --criteria` reads. No model is involved, so the job that reads the
+ * issues can decide whether there is anything to plan before a model-key job
+ * starts.
+ *
+ * Each issue is read on its own. One that states no criteria contributes
+ * nothing; when none do, nothing is written and it succeeds, because a change
+ * that states no criteria has nothing to check, and whether that is neutral is
+ * the pipeline's call. An unreadable file is still a failure.
+ */
+async function issueCriteriaCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
+  try {
+    const outPath = flag(argv, '--out')
+    const at = argv.indexOf('--out')
+    const paths = argv.filter((_, index) => index !== at && index !== at + 1)
+    if (outPath === undefined || paths.length === 0)
+      throw new Error('qare issue-criteria requires --out <file> and at least one issue body path')
+    const criteria = new Map<string, { id: string; text: string }>()
+    for (const path of paths) {
+      const body = await readFile(resolve(path), 'utf8')
+      try {
+        for (const criterion of criteriaFromIssue(body))
+          if (!criteria.has(criterion.id)) criteria.set(criterion.id, criterion)
+      } catch (error) {
+        if (!(error instanceof IssueCriteriaError)) throw error
+        out.write(`${path}: ${error.message}\n`)
+      }
+    }
+    if (criteria.size === 0) {
+      out.write('no linked issue states acceptance criteria, so nothing was written\n')
+      return 0
+    }
+    await writeFile(resolve(outPath), `${JSON.stringify([...criteria.values()], null, 2)}\n`, 'utf8')
+    out.write(`${criteria.size} criteria; ${resolve(outPath)}\n`)
     return 0
   } catch (error) {
     err.write(`${formatError(error)}\n`)
