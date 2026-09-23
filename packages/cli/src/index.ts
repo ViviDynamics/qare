@@ -9,7 +9,9 @@ import {
   buildReadinessReport,
   loadJobFromFile,
   loadJobFromText,
+  jobFromPlan,
   judgeRun,
+  loadPlan,
   loadResult,
   NareAgentRunner,
   criteriaFromIssue,
@@ -25,7 +27,7 @@ import {
   toSideResults,
   VERSION,
 } from '@qare/core'
-import type { BootOpts, CriterionResult, CriterionVerdict, LedgerEntry, RunResult, RunVerdict } from '@qare/core'
+import type { BootOpts, CriterionResult, CriterionVerdict, Job, LedgerEntry, RunResult, RunVerdict } from '@qare/core'
 
 export interface Writer {
   write(chunk: string): void
@@ -49,7 +51,7 @@ export async function main(
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare linked-issues --body <path> | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run --job <path|-> | qare judge --result <path> | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>]\n`,
+    `qare ${VERSION}\nusage: qare --version | qare linked-issues --body <path> | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>]\n`,
   )
   return 0
 }
@@ -369,9 +371,37 @@ async function runCommand(
   try {
     const jobFlag = argv.indexOf('--job')
     const jobSpec = jobFlag === -1 ? undefined : argv[jobFlag + 1]
-    if (jobSpec === undefined)
-      throw new Error('qare run requires --job <path|->; pass "-" to read the job from stdin')
-    const job = jobSpec === '-' ? loadJobFromText(await readStdin(stdin)) : await loadJobFromFile(jobSpec)
+    const planSpec = flag(argv, '--plan')
+    if (jobSpec === undefined && planSpec === undefined)
+      throw new Error(
+        'qare run requires --job <path|-> (pass "-" for stdin), or --plan <path> with the run context',
+      )
+    let job: Job
+    if (planSpec !== undefined) {
+      // A plan is the same wherever it runs; these are the facts about this
+      // run, and they come from the caller rather than from the model.
+      const missing = ['--id', '--repo', '--base', '--head', '--profile', '--evidence'].filter(
+        (name) => flag(argv, name) === undefined,
+      )
+      if (missing.length > 0)
+        throw new Error(`qare run --plan also requires ${missing.join(', ')}`)
+      const plan = loadPlan(await readFile(resolve(planSpec), 'utf8'))
+      const built = jobFromPlan(plan, {
+        id: flag(argv, '--id') as string,
+        repoPath: resolve(flag(argv, '--repo') as string),
+        baseRef: flag(argv, '--base') as string,
+        headRef: flag(argv, '--head') as string,
+        profile: { path: resolve(flag(argv, '--profile') as string) },
+        evidenceDir: resolve(flag(argv, '--evidence') as string),
+        ...(flag(argv, '--post') === undefined ? {} : { post: flag(argv, '--post') as string }),
+      })
+      // On stderr, not swallowed: a criterion nothing can check still has to
+      // be visible to whoever reads the run.
+      for (const note of built.notes) err.write(`${note}\n`)
+      job = built.job
+    } else {
+      job = jobSpec === '-' ? loadJobFromText(await readStdin(stdin)) : await loadJobFromFile(jobSpec as string)
+    }
     const { result } = await runJob(job, boot)
     const code = exitCodeFor(result.verdict)
     out.write(`verdict ${result.verdict}; evidence ${job.evidenceDir}\n`)

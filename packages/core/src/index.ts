@@ -65,6 +65,8 @@ export type {
 } from './runner.js'
 export { IssueCriteriaError, criteriaFromIssue, criterionIdFor } from './issue-criteria.js'
 export { linkedIssues } from './linked-issues.js'
+export { jobFromPlan } from './job-from-plan.js'
+export type { RunContext } from './job-from-plan.js'
 export { PLAN_OUTPUT_SCHEMA, PlanStepError, planRun } from './plan-step.js'
 export type { PlanCriterionInput, PlanInputs } from './plan-step.js'
 export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'
