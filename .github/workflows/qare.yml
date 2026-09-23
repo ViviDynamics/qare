@@ -170,9 +170,33 @@ jobs:
         with:
           name: plan.json
           path: .
-      - name: Run the QA job
+      - name: Run the plan
         shell: bash
-        run: node packages/cli/dist/index.js run --job plan.json
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          # The run's own facts come from here rather than from the plan: a
+          # plan is the same wherever it runs (#105).
+          code=0
+          node packages/cli/dist/index.js run --plan plan.json \
+            --id "pr-${PR_NUMBER}" \
+            --repo "$PWD" \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --profile .qa \
+            --evidence evidence || code=$?
+          # 3 is refused: this repository has no .qa profile or no stubs, so
+          # qare will not pretend to have checked it. That is an outcome about
+          # the repository rather than a fault in the change, judge still
+          # reports it, and stub issues are filed. Anything else is a failure.
+          if [ "$code" -eq 3 ]; then
+            echo "qare refused this run (no profile or stubs yet); judge will report it and file stub issues" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          exit "$code"
       - name: Upload evidence (raw results + result.json)
         if: always()
         uses: actions/upload-artifact@v4

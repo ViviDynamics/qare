@@ -70,7 +70,19 @@ test('execute runs the plan, with no fallback fixture behind it', () => {
   // nobody planned.
   expect(workflow).not.toContain('fallback-job')
   expect(existsSync(join(repoRoot, '.github', 'qare', 'fallback-job.yml'))).toBe(false)
-  expect(section('execute')).toContain('--job plan.json')
+  expect(section('execute')).toContain('--plan plan.json')
+  // The run context is the caller's to supply (#105); a plan carries none of it.
+  for (const flag of ['--id', '--repo', '--base', '--head', '--profile', '--evidence'])
+    expect(section('execute')).toContain(flag)
+})
+
+test('a refused run is reported rather than turned into a red pipeline', () => {
+  // Refusal is qare saying it cannot check this repository yet (no profile or
+  // no stubs). It is an outcome about the repository, not a fault in the
+  // change, and the judge still reports it.
+  const execute = section('execute')
+  expect(execute).toContain('"$code" -eq 3')
+  expect(execute).toContain('exit "$code"')
 })
 
 test('the nare the plan job installs is pinned to a version', () => {
