@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { delimiter, join } from 'node:path'
 import { expect, test } from 'vitest'
 import { bootApp, loadProfile, stopApp, type QaProfile } from '../src/index.js'
 
@@ -139,4 +142,22 @@ test('stopApp brings the compose service down', async () => {
   })
 
   expect(composeArgs).toEqual([['-f', 'compose.qa.yaml', 'down']])
+})
+
+test('the default compose runner calls docker compose, not bare docker', async () => {
+  // A fake docker on PATH echoes its arguments, so this pins what the default
+  // runner really spawns rather than what a test seam is handed.
+  const bin = await mkdtemp(join(tmpdir(), 'qare-docker-'))
+  await writeFile(join(bin, 'docker'), '#!/bin/sh\necho "$@"\n', { mode: 0o755 })
+  const savedPath = process.env.PATH
+  process.env.PATH = `${bin}${delimiter}${savedPath ?? ''}`
+  try {
+    const profile = await profileWith({ app: { health: { timeout: '1s' } } })
+    const outcome = await bootApp(profile, { probe: async () => ({ ok: true }), pollIntervalMs: 1 })
+
+    expect(outcome).toEqual({ kind: 'up', logs: 'compose -f compose.qa.yaml up -d --wait admin\n' })
+  } finally {
+    process.env.PATH = savedPath
+    await rm(bin, { recursive: true, force: true })
+  }
 })
