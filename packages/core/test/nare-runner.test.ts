@@ -127,6 +127,7 @@ test('the answer text survives a round trip through the verifier parser', async 
 })
 
 const ANSWER = { type: 'output', text: '{"verdict": "pass"}', detail: {} }
+const ANSWER_EVENT = ANSWER
 
 test('the request reaches nare as flags, not as prose', async () => {
   const nare = await fakeNare([ANSWER, result()])
@@ -178,6 +179,33 @@ test('a blocked run fails closed', async () => {
 
   expect(run.status).toBe('failed')
   expect(run.output).toBeUndefined()
+})
+
+test('a failed run carries the reason nare gave, not just a status', async () => {
+  // Without this, a caller sees "stop reason error" and has to reproduce the
+  // run by hand to learn that the proxy returned HTTP 524. Found doing exactly
+  // that.
+  const nare = await fakeNare([
+    result({
+      status: 'error',
+      stop_reason: null,
+      output: null,
+      error: 'RuntimeError: chat completion failed with HTTP 524: <html>...',
+    }),
+  ], 1)
+
+  const run = await new NareAgentRunner({ binary: nare.binary }).run(REQUEST)
+
+  expect(run.status).toBe('failed')
+  expect(run.error).toContain('HTTP 524')
+})
+
+test('a completed run carries no error', async () => {
+  const nare = await fakeNare([ANSWER_EVENT, result()])
+
+  const run = await new NareAgentRunner({ binary: nare.binary }).run(REQUEST)
+
+  expect(run.error).toBeUndefined()
 })
 
 test('a truncated run fails closed and keeps its stop reason', async () => {

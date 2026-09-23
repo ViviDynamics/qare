@@ -12,6 +12,7 @@ import {
   judgeRun,
   loadResult,
   NareAgentRunner,
+  planRun,
   prepareVerifierInputs,
   renderCheckRun,
   renderComment,
@@ -39,13 +40,67 @@ export async function main(
     return 0
   }
   if (argv[0] === 'run') return runCommand(argv.slice(1), out, err, boot, stdin)
+  if (argv[0] === 'plan') return planCommand(argv.slice(1), out, err)
   if (argv[0] === 'judge') return judgeCommand(argv.slice(1), out, err)
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare run --job <path|-> | qare judge --result <path> | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>]\n`,
+    `qare ${VERSION}\nusage: qare --version | qare plan --criteria <path> --diff <path> [--out <file>] [--suites a,b] [--nare <binary>] | qare run --job <path|-> | qare judge --result <path> | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>]\n`,
   )
   return 0
+}
+
+function flag(argv: string[], name: string): string | undefined {
+  const at = argv.indexOf(name)
+  if (at === -1) return undefined
+  const value = argv[at + 1]
+  if (value === undefined) throw new Error(`qare plan needs a value after ${name}`)
+  return value
+}
+
+/**
+ * The plan step as a command (#9): criteria and a diff in, plan.json out.
+ *
+ * It writes nothing unless the whole plan parsed and covered every criterion.
+ * A half-written plan.json would be consumed by execute as though it were the
+ * whole run.
+ */
+async function planCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
+  try {
+    const criteriaPath = flag(argv, '--criteria')
+    const diffPath = flag(argv, '--diff')
+    if (criteriaPath === undefined || diffPath === undefined)
+      throw new Error('qare plan requires --criteria <path> and --diff <path>')
+    const outPath = resolve(flag(argv, '--out') ?? 'plan.json')
+    const suites = flag(argv, '--suites')
+      ?.split(',')
+      .map((suite) => suite.trim())
+      .filter(Boolean)
+    const binary = flag(argv, '--nare')
+
+    const criteria: unknown = JSON.parse(await readFile(resolve(criteriaPath), 'utf8'))
+    if (!Array.isArray(criteria))
+      throw new Error(`${criteriaPath} must hold a JSON array of {id, text} criteria`)
+    const diff = await readFile(resolve(diffPath), 'utf8')
+
+    const runner = new NareAgentRunner(binary === undefined ? {} : { binary })
+    const plan = await planRun(runner, {
+      criteria: criteria as { id: string; text: string }[],
+      diff,
+      ...(suites === undefined ? {} : { suites }),
+    })
+
+    await mkdir(dirname(outPath), { recursive: true })
+    await writeFile(outPath, `${JSON.stringify(plan, null, 2)}\n`, 'utf8')
+    const unplannable = plan.criteria.filter((criterion) => 'unplannable' in criterion).length
+    out.write(
+      `planned ${plan.criteria.length} criteria (${unplannable} unplannable); ${outPath}\n`,
+    )
+    return 0
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 4
+  }
 }
 
 async function readinessCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
