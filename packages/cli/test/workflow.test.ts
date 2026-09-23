@@ -85,6 +85,18 @@ test('a refused run is reported rather than turned into a red pipeline', () => {
   expect(execute).toContain('exit "$code"')
 })
 
+test('a refusal must have left its evidence, or exit 3 is not a refusal', () => {
+  expect(section('execute')).toContain('evidence/result.json')
+})
+
+test('a fork pull request is told why it got no QA, rather than skipping silently', () => {
+  expect(section('collect')).toContain('github.event.pull_request.head.repo.full_name != github.repository')
+})
+
+test('judge depends only on what it consumes', () => {
+  expect(section('judge')).toContain('needs: execute')
+})
+
 test('the nare the plan job installs is pinned to a version', () => {
   expect(workflow).toMatch(/nare-\d{4}\.\d+\.\d+-py3-none-any\.whl/)
 })

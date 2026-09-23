@@ -59,6 +59,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: Say why a fork gets no QA
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "this pull request comes from a fork, which gets no model key, so qare cannot plan or check it here" >> "$GITHUB_STEP_SUMMARY"
       - name: Read the linked issue and the diff
         id: inputs
         shell: bash
@@ -193,6 +197,12 @@ jobs:
           # the repository rather than a fault in the change, judge still
           # reports it, and stub issues are filed. Anything else is a failure.
           if [ "$code" -eq 3 ]; then
+            # A refusal writes result.json like any other run; without it,
+            # exit 3 means something else went wrong and judge has nothing.
+            if [ ! -f evidence/result.json ]; then
+              echo "exit 3 but no evidence/result.json: not a refusal qare recorded" >&2
+              exit 1
+            fi
             echo "qare refused this run (no profile or stubs yet); judge will report it and file stub issues" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -208,7 +218,7 @@ jobs:
   # label: judge (model key + GitHub token only)
   judge:
     name: judge (model key + GitHub token only)
-    needs: [collect, execute]
+    needs: execute
     if: always() && needs.execute.result == 'success'
     runs-on: ubuntu-latest
     permissions:
