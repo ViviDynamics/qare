@@ -6,7 +6,9 @@ import {
   prepareVerifierInputs,
   runVerifier,
   toSideResults,
+  verdictOf,
   FakeAgentRunner,
+  VERIFIER_OUTPUT_SCHEMA,
   type CriterionOutcome,
   type CriterionVerdict,
   type RunResult,
@@ -202,11 +204,14 @@ describe('consumeVerifierFindings', () => {
   })
 })
 
-const verifierInputs = (): VerifierInputs =>
+const proven: CriterionVerdict = { criterionId: 'c1', outcome: 'proven', regression: false, reason: 'proven at head' }
+
+const verifierInputs = (criteria: CriterionVerdict[] = [proven]): VerifierInputs =>
   prepareVerifierInputs({
-    criteria: [{ criterionId: 'c1', outcome: 'proven', regression: false, reason: 'proven at head' }],
+    criteria,
+    texts: { c1: 'The ledger exports to CSV.', c2: 'Totals convert to the viewer currency.' },
+    evidence: { c1: ['checks/c1/0/stdout.txt'] },
     diff: 'diff --git a/x b/x',
-    evidence: ['checks/c1/0/stdout.txt'],
   })
 
 const scriptedVerifier = (output: string): FakeAgentRunner =>
@@ -217,18 +222,57 @@ const scriptedVerifier = (output: string): FakeAgentRunner =>
 describe('runVerifier', () => {
   test('applies findings JSON from the runner as downgrades', async () => {
     const runner = scriptedVerifier(JSON.stringify([{ criterionId: 'c1', problem: 'evidence contradicts the claim' }]))
-    const inputs = verifierInputs()
 
-    const result = await runVerifier(runner, inputs)
+    const result = await runVerifier(runner, verifierInputs())
 
     expect(result).toEqual([
       { criterionId: 'c1', outcome: 'failed', regression: false, reason: 'verifier: evidence contradicts the claim' },
     ])
+  })
+
+  test('puts each proven claim to the model with its text, its evidence and the diff', async () => {
+    const runner = scriptedVerifier(JSON.stringify({ findings: [] }))
+    const inputs = verifierInputs()
+
+    await runVerifier(runner, inputs)
+
     const request = runner.requests[0]
     expect(request.prompt).toContain(inputs.instructions)
-    expect(request.prompt).toContain('"outcome":"proven"')
-    expect(request.prompt).toContain('diff --git a/x b/x')
+    expect(request.prompt).toContain('The ledger exports to CSV.')
     expect(request.prompt).toContain('checks/c1/0/stdout.txt')
+    expect(request.prompt).toContain('diff --git a/x b/x')
+  })
+
+  test('reads evidence with a read-only tool set and answers to a schema', async () => {
+    const runner = scriptedVerifier(JSON.stringify({ findings: [] }))
+
+    await runVerifier(runner, verifierInputs())
+
+    const request = runner.requests[0]
+    expect(request.toolPolicy).toBe('read-only')
+    expect(JSON.parse(request.outputSchema)).toEqual(VERIFIER_OUTPUT_SCHEMA)
+    expect(request.budget.maxOutputTokens).toBeGreaterThan(0)
+  })
+
+  test('only proven criteria are put to the verifier', async () => {
+    const runner = scriptedVerifier(JSON.stringify({ findings: [] }))
+    const failed: CriterionVerdict = { criterionId: 'c2', outcome: 'failed', regression: false, reason: 'failed at head' }
+
+    await runVerifier(runner, verifierInputs([proven, failed]))
+
+    expect(runner.requests[0].prompt).not.toContain('Totals convert to the viewer currency.')
+  })
+
+  test('with nothing proven there is nothing to downgrade, so no model call is made', async () => {
+    const runner = new FakeAgentRunner([])
+    const criteria: CriterionVerdict[] = [
+      { criterionId: 'c2', outcome: 'failed', regression: false, reason: 'failed at head' },
+    ]
+
+    const result = await runVerifier(runner, verifierInputs(criteria))
+
+    expect(result).toEqual(criteria)
+    expect(runner.requests).toHaveLength(0)
   })
 
   test('tolerates a {"findings": [...]} wrapper object', async () => {
@@ -241,22 +285,60 @@ describe('runVerifier', () => {
     ])
   })
 
-  test('non-JSON output fails closed to unchanged criteria', async () => {
-    const runner = scriptedVerifier('I looked at it and everything seems fine')
-    const criteria = verifierInputs().criteria
+  test('an empty findings list leaves a proven criterion proven', async () => {
+    const result = await runVerifier(scriptedVerifier(JSON.stringify({ findings: [] })), verifierInputs())
 
-    const result = await runVerifier(runner, verifierInputs())
-
-    expect(result).toEqual(criteria)
+    expect(result).toEqual([proven])
   })
 
-  test('malformed findings JSON fails closed to unchanged criteria', async () => {
+  // Fail closed: a verifier that gave no readable answer checked nothing, so a
+  // pass must not stand as though it had.
+  test('non-JSON output leaves the proven criterion unverified, naming why', async () => {
+    const result = await runVerifier(scriptedVerifier('I looked at it and everything seems fine'), verifierInputs())
+
+    expect(result).toEqual([
+      {
+        criterionId: 'c1',
+        outcome: 'unverified',
+        regression: false,
+        reason: 'verifier did not answer: its answer was not a findings list',
+      },
+    ])
+  })
+
+  test('malformed findings JSON leaves the proven criterion unverified', async () => {
     const runner = scriptedVerifier(JSON.stringify({ findings: [{ criterion: 'c1', why: 'no id' }] }))
-    const criteria = verifierInputs().criteria
 
     const result = await runVerifier(runner, verifierInputs())
 
-    expect(result).toEqual(criteria)
+    expect(result[0]?.outcome).toBe('unverified')
+    expect(result[0]?.reason).toContain('verifier did not answer')
+  })
+
+  test('a run that did not complete leaves the proven criterion unverified, carrying the runner error', async () => {
+    const runner = new FakeAgentRunner([
+      {
+        status: 'failed',
+        stopReason: 'error',
+        usage: { inputTokens: 1, outputTokens: 0 },
+        output: undefined,
+        error: 'HTTP 524',
+      },
+    ])
+
+    const result = await runVerifier(runner, verifierInputs())
+
+    expect(result[0]?.outcome).toBe('unverified')
+    expect(result[0]?.reason).toBe('verifier did not answer: the run stopped (error): HTTP 524')
+  })
+
+  test('a runner that throws leaves the proven criterion unverified, carrying the message', async () => {
+    const runner = new FakeAgentRunner([])
+
+    const result = await runVerifier(runner, verifierInputs())
+
+    expect(result[0]?.outcome).toBe('unverified')
+    expect(result[0]?.reason).toContain('fake runner script is exhausted')
   })
 
   test('a verifier that approves everything cannot upgrade a failed criterion', async () => {
@@ -265,9 +347,60 @@ describe('runVerifier', () => {
       { criterionId: 'c1', outcome: 'failed', regression: true, reason: 'broke at head' },
     ]
 
-    const result = await runVerifier(runner, prepareVerifierInputs({ criteria, diff: '', evidence: [] }))
+    const result = await runVerifier(runner, verifierInputs(criteria))
 
     expect(result).toEqual(criteria)
+  })
+})
+
+describe('prepareVerifierInputs', () => {
+  test('a proven criterion with no text is left unverified: the verifier cannot check what it cannot read', () => {
+    const inputs = prepareVerifierInputs({ criteria: [proven], texts: { c1: '  ' }, evidence: {}, diff: '' })
+
+    expect(inputs.claims).toEqual([])
+    expect(inputs.criteria).toEqual([
+      {
+        criterionId: 'c1',
+        outcome: 'unverified',
+        regression: false,
+        reason: 'verifier could not check it: the plan has no text for this criterion',
+      },
+    ])
+  })
+
+  test('a criterion that is not proven needs no text', () => {
+    const failed: CriterionVerdict = { criterionId: 'c9', outcome: 'failed', regression: false, reason: 'failed at head' }
+
+    expect(prepareVerifierInputs({ criteria: [failed], texts: {}, evidence: {}, diff: '' }).claims).toEqual([])
+  })
+})
+
+describe('verdictOf', () => {
+  const unverified = (criterionId: string): CriterionVerdict => ({
+    criterionId,
+    outcome: 'unverified',
+    regression: false,
+    reason: 'why',
+  })
+
+  test('waived when every unverified criterion was waived', () => {
+    expect(verdictOf([unverified('c1')], [], ['c1'])).toBe('waived')
+  })
+
+  test('one waiver does not cover a criterion nobody waived: blocked', () => {
+    expect(verdictOf([unverified('c1'), unverified('c2')], [], ['c1'])).toBe('blocked')
+  })
+
+  // The verifier moves criteria only from proven to failed or unverified, and
+  // the verdict follows. Nothing it returns reads better than what it was given.
+  test('downgrading a proven criterion never improves the verdict', () => {
+    const order: RunVerdict[] = ['passed', 'waived', 'failed', 'blocked']
+    const base: CriterionVerdict[] = [proven, unverified('w')]
+    const before = verdictOf(base, [], ['w'])
+    for (const outcome of ['failed', 'unverified'] as const) {
+      const after = verdictOf([{ ...proven, outcome }, unverified('w')], [], ['w'])
+      expect(order.indexOf(after)).toBeGreaterThan(order.indexOf(before))
+    }
   })
 })
 
@@ -286,4 +419,23 @@ test('waived plus regressed: the regression still fails the run', () => {
   expect(result.criteria[0]?.outcome).toBe('unverified')
   expect(result.criteria[0]?.regression).toBe(true)
   expect(result.verdict).toBe('failed')
+})
+
+// nare refuses to start a run whose schema uses a keyword its validator does
+// not support, which would block every verified run. This is nare 2026.9.10's
+// list, as its own error message states it.
+test('the verifier output schema uses only keywords nare validates', () => {
+  const supported = new Set(['$schema', 'additionalProperties', 'description', 'enum', 'items', 'properties', 'required', 'title', 'type'])
+  const unsupported: string[] = []
+  const walk = (node: unknown, path: string): void => {
+    if (typeof node !== 'object' || node === null) return
+    for (const [key, value] of Object.entries(node)) {
+      if (!supported.has(key)) unsupported.push(`${path}${key}`)
+      if (key === 'properties') {
+        for (const [name, child] of Object.entries(value as Record<string, unknown>)) walk(child, `${path}properties.${name}.`)
+      } else if (key === 'items') walk(value, `${path}items.`)
+    }
+  }
+  walk(VERIFIER_OUTPUT_SCHEMA, '')
+  expect(unsupported).toEqual([])
 })

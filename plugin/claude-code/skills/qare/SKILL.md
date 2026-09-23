@@ -19,7 +19,7 @@ Action). From this plugin you only use the CLI:
 
 - `qare init` — prepare a repo's `.qa/` profile and readiness state (forthcoming; not in the CLI yet).
 - `qare run` — plan, execute and judge; writes evidence and `result.json`.
-- `qare judge` — re-judge from existing evidence.
+- `qare judge` — re-judge from existing evidence. Its verifier needs `--plan` and `--diff`; `--runner none` judges without it.
 - `qare ledger` — inspect the criteria ledger.
 
 If the CLI is not installed, say so and stop; do not approximate qare by

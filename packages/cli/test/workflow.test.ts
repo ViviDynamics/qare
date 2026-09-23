@@ -47,8 +47,32 @@ test('secret hygiene: the job that runs pull request code holds nothing', () => 
 
 test('judge holds the model key and the token, and nothing else does', () => {
   const judge = section('judge')
-  expect(judge).toContain('${{ secrets.QARE_MODEL_KEY }}')
+  expect(judge).toContain('${{ secrets.QARE_PLANNER_KEY }}')
   expect(judge).toContain('${{ secrets.GITHUB_TOKEN }}')
+})
+
+test('the step that talks to the verifier model holds no GitHub token', () => {
+  const judge = section('judge')
+  const step = judge.slice(judge.indexOf('- name: Judge the result'), judge.indexOf('- name: File stub issues'))
+  expect(step).toContain('secrets.QARE_PLANNER_KEY')
+  expect(step).not.toContain('GITHUB_TOKEN')
+})
+
+test('judge runs the verifier with the criteria text, the diff and the evidence', () => {
+  const judge = section('judge')
+  for (const flag of ['--plan plan.json', '--diff change.diff', '--result evidence/result.json', '--nare'])
+    expect(judge).toContain(flag)
+  expect(judge).not.toContain('--runner none')
+  // The evidence directory is the verifier's file root, so it must be its own.
+  expect(judge).toMatch(/name: execute-evidence\n\s+path: evidence\n/)
+})
+
+test('plan and judge install the same pinned nare', () => {
+  const pins = [section('plan'), section('judge')].map(
+    (job) => job.match(/nare-\d{4}\.\d+\.\d+-py3-none-any\.whl/)?.[0],
+  )
+  expect(pins[0]).toBeDefined()
+  expect(pins[1]).toBe(pins[0])
 })
 
 test('a fork pull request skips the model-key job rather than failing', () => {
@@ -103,8 +127,8 @@ test('a fork pull request is told why it got no QA, rather than skipping silentl
   expect(section('collect')).toContain('github.event.pull_request.head.repo.full_name != github.repository')
 })
 
-test('judge depends only on what it consumes', () => {
-  expect(section('judge')).toContain('needs: execute')
+test('judge depends on exactly the jobs whose artifacts it consumes', () => {
+  expect(section('judge')).toContain('needs: [collect, plan, execute]')
 })
 
 test('the nare the plan job installs is pinned to a version', () => {

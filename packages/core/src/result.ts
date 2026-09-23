@@ -14,6 +14,8 @@ export interface FailedCriterionResult {
   id: string
   outcome: 'failed'
   evidence: string[]
+  /** Why, when something other than the check itself decided it failed (the verifier). */
+  reason?: string
 }
 
 export interface UnverifiedCriterionResult {
@@ -153,8 +155,12 @@ function parseCriterionResult(value: unknown, index: number): CriterionResult {
   switch (outcome as CriterionOutcome) {
     case 'proven':
       return { id, outcome: 'proven', evidence: requiredEvidence(value.evidence, `${base}.evidence`, id, 'proven') }
-    case 'failed':
-      return { id, outcome: 'failed', evidence: requiredEvidence(value.evidence, `${base}.evidence`, id, 'failed') }
+    case 'failed': {
+      const evidence = requiredEvidence(value.evidence, `${base}.evidence`, id, 'failed')
+      return value.reason === undefined
+        ? { id, outcome: 'failed', evidence }
+        : { id, outcome: 'failed', evidence, reason: nonEmptyString(value.reason, `${base}.reason`, 'reason') }
+    }
     case 'unverified': {
       const reason = nonEmptyString(value.reason, `${base}.reason`, 'reason')
       const evidence = value.evidence === undefined ? undefined : relativePathArray(value.evidence, `${base}.evidence`, 'evidence')

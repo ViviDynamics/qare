@@ -26,6 +26,7 @@ import {
   runJob,
   runVerifier,
   toSideResults,
+  verdictOf,
   VERSION,
 } from '@qare/core'
 import type { BootOpts, CriterionResult, CriterionVerdict, Job, LedgerEntry, RunResult, RunVerdict } from '@qare/core'
@@ -53,7 +54,7 @@ export async function main(
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>]\n`,
+    `qare ${VERSION}\nusage: qare --version | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>]\n`,
   )
   return 0
 }
@@ -251,33 +252,53 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     if (runnerSpec !== 'nare' && runnerSpec !== 'none')
       throw new Error(`unknown --runner ${JSON.stringify(runnerSpec)} (expected "nare" or "none")`)
 
+    const binary = flag(argv, '--nare')
+    const planPath = flag(argv, '--plan')
+    const diffPath = flag(argv, '--diff')
+
     const resultPath = resolve(resultSpec)
     const outDir = outDirSpec === undefined ? dirname(resultPath) : resolve(outDirSpec)
     const loaded = loadResult(await readFile(resultPath, 'utf8'))
-    const judged = judgeRun({
-      base: [],
-      head: toSideResults(loaded),
-      waived: loaded.waived?.map((entry) => entry.criterionId),
-    })
+    const waived = loaded.waived?.map((entry) => entry.criterionId) ?? []
+    const judged = judgeRun({ base: [], head: toSideResults(loaded), waived })
+    const evidenceById = new Map(loaded.criteria.map((criterion) => [criterion.id, evidenceOf(criterion)]))
+    let criteria = judged.criteria
     // Nothing ran on a refused run, so there is no evidence for the verifier
     // to read and a model call would be spent on nothing.
     if (runnerSpec === 'nare' && loaded.verdict !== 'refused') {
-      try {
-        const runner = new NareAgentRunner()
-        await runVerifier(
-          runner,
-          prepareVerifierInputs({ criteria: judged.criteria, diff: '', evidence: evidencePaths(loaded) }),
+      if (planPath === undefined || diffPath === undefined)
+        throw new Error(
+          'qare judge checks proven criteria with the verifier, which needs --plan <path> (for the criteria text) and --diff <path>; pass --runner none to judge without it',
         )
-      } catch (error) {
-        err.write(`verifier skipped: ${formatError(error)}\n`)
-      }
+      const plan = loadPlan(await readFile(resolve(planPath), 'utf8'))
+      const diff = await readFile(resolve(diffPath), 'utf8')
+      // Evidence paths in result.json are relative to its directory, and that
+      // directory is all the verifier's read tool can reach.
+      const evidenceDir = dirname(resultPath)
+      const runner = new NareAgentRunner({
+        ...(binary === undefined ? {} : { binary }),
+        cwd: evidenceDir,
+        root: evidenceDir,
+      })
+      criteria = await runVerifier(
+        runner,
+        prepareVerifierInputs({
+          criteria: judged.criteria,
+          texts: Object.fromEntries(plan.criteria.map((criterion) => [criterion.id, criterion.text])),
+          evidence: Object.fromEntries(evidenceById),
+          diff,
+        }),
+      )
+      for (const [index, criterion] of criteria.entries())
+        if (criterion.outcome !== judged.criteria[index]?.outcome)
+          err.write(`verifier: ${criterion.criterionId} ${criterion.outcome}: ${criterion.reason}\n`)
     }
     // A refused run executed nothing, so there is nothing to judge: the
     // verdict stays refused. Recomputing it from all-unverified criteria read
     // it back as blocked, and the stub-issue step that acts on refused never
     // fired.
-    const verdict = loaded.verdict === 'refused' ? 'refused' : judged.verdict
-    const result = mergeJudged(loaded, verdict, judged.criteria)
+    const verdict = loaded.verdict === 'refused' ? 'refused' : verdictOf(criteria, judged.regressions, waived)
+    const result = mergeJudged(loaded, verdict, criteria, evidenceById)
     await mkdir(outDir, { recursive: true })
     await writeFile(join(outDir, 'judged-result.json'), `${JSON.stringify(result, null, 2)}\n`, 'utf8')
     await writeFile(join(outDir, 'comment.md'), `${renderComment(result)}\n`, 'utf8')
@@ -288,10 +309,6 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     err.write(`${formatError(error)}\n`)
     return 4
   }
-}
-
-function evidencePaths(result: RunResult): string[] {
-  return result.criteria.flatMap((criterion) => ('evidence' in criterion ? criterion.evidence ?? [] : []))
 }
 
 export async function runLedgerCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
@@ -394,8 +411,13 @@ async function ledgerStatus(dir: string, out: Writer, err: Writer): Promise<numb
   return 0
 }
 
-function mergeJudged(loaded: RunResult, verdict: RunVerdict, criteria: CriterionVerdict[]): RunResult {
-  const evidenceById = new Map(loaded.criteria.map((criterion) => [criterion.id, evidenceOf(criterion)]))
+function mergeJudged(
+  loaded: RunResult,
+  verdict: RunVerdict,
+  criteria: CriterionVerdict[],
+  evidenceById: Map<string, string[]>,
+): RunResult {
+  const executed = new Map(loaded.criteria.map((criterion) => [criterion.id, criterion]))
   return {
     schemaVersion: RESULT_SCHEMA_VERSION,
     verdict,
@@ -408,6 +430,18 @@ function mergeJudged(loaded: RunResult, verdict: RunVerdict, criteria: Criterion
           reason: criterion.reason,
           ...(evidence.length === 0 ? {} : { evidence }),
         }
+      if (criterion.outcome === 'failed') {
+        // A check that failed speaks through its evidence. A criterion judge
+        // failed after the check proved it (the verifier) carries the reason,
+        // or the comment would show a failure with nothing saying why, and a
+        // reason the result already carried survives being judged again.
+        const before = executed.get(criterion.criterionId)
+        const reason =
+          before?.outcome !== 'failed' ? criterion.reason : 'reason' in before ? before.reason : undefined
+        return reason === undefined
+          ? { id: criterion.criterionId, outcome: 'failed', evidence }
+          : { id: criterion.criterionId, outcome: 'failed', evidence, reason }
+      }
       return { id: criterion.criterionId, outcome: criterion.outcome, evidence }
     }),
     ...(loaded.job === undefined ? {} : { job: { id: loaded.job.id } }),

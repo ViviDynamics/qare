@@ -181,3 +181,25 @@ test('UNC-style evidence references fail closed', () => {
     ).field,
   ).toBe('criteria[0].evidence[0]')
 })
+
+test('a failed criterion may say why, and the reason survives loading', () => {
+  const result = parseResult({
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'failed',
+    criteria: [{ id: 'c1', outcome: 'failed', evidence: ['c1/out.txt'], reason: 'verifier: the evidence shows 0 rows' }],
+  })
+  expect(result.criteria).toEqual([
+    { id: 'c1', outcome: 'failed', evidence: ['c1/out.txt'], reason: 'verifier: the evidence shows 0 rows' },
+  ])
+})
+
+test('an empty reason on a failed criterion fails closed', () => {
+  const error = resultError(() =>
+    parseResult({
+      schemaVersion: RESULT_SCHEMA_VERSION,
+      verdict: 'failed',
+      criteria: [{ id: 'c1', outcome: 'failed', evidence: ['c1/out.txt'], reason: ' ' }],
+    }),
+  )
+  expect(error.field).toBe('criteria[0].reason')
+})

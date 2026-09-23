@@ -20,6 +20,13 @@ written to. On every run that reaches a verdict, the CLI prints
 run; on success it exits 0 whatever the verdict was. Gating — deciding whether
 the work passed — is `qare run`'s exit code and result.json, never the judge.
 
+By default judge also puts every proven criterion to the verifier model
+through nare, which needs `--plan <path>` for the criteria text and
+`--diff <path>`; `--runner none` judges from the evidence alone. The verifier
+can only downgrade: a finding fails its criterion with the reason recorded,
+and a verifier that gives no readable answer leaves the criterion unverified,
+so the run blocks rather than passing unchecked.
+
 ## result.json
 
 A completed run always writes a result, even when the verdict is failure:

@@ -6,9 +6,9 @@ name: QARE
 #   - collect: holds the GitHub token only    (reads the linked issue; no model key)
 #   - plan:    holds the model key only       (QARE_PLANNER_KEY)
 #   - execute: holds no secrets at all        (stub containers only)
-#   - judge:   holds the model key + GitHub token only
-#     (QARE_MODEL_KEY for the verifier seam, GITHUB_TOKEN for the
-#     comment/check-run poster that lands with the orchestrator)
+#   - judge:   holds the model key + GitHub token only, in separate steps
+#     (QARE_PLANNER_KEY for the verifier, which reads evidence but runs
+#     nothing; GITHUB_TOKEN for the steps that write to GitHub)
 #   - requeue: holds the GitHub token only    (posts /qa on refused PRs)
 # No secret values are written here; only names, resolved at runtime.
 #
@@ -227,7 +227,9 @@ jobs:
   # label: judge (model key + GitHub token only)
   judge:
     name: judge (model key + GitHub token only)
-    needs: execute
+    # collect and plan for the diff and the criteria text the verifier reads;
+    # execute for the evidence it checks them against.
+    needs: [collect, plan, execute]
     if: always() && needs.execute.result == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -242,17 +244,55 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: Download the QA inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: qa-inputs
+          path: .
+      - name: Download plan.json
+        uses: actions/download-artifact@v4
+        with:
+          name: plan.json
+          path: .
+      # Evidence gets a directory of its own: it is the verifier's file root,
+      # so its read tool reaches the evidence and nothing else.
       - name: Download execute evidence
         uses: actions/download-artifact@v4
         with:
           name: execute-evidence
-          path: .
+          path: evidence
+      # A refused run executed nothing, so judge will not call the verifier,
+      # and a failed install must not stop its stub issues being filed.
+      - name: Read the executed verdict
+        id: executed
+        shell: bash
+        run: echo "verdict=$(jq -r '.verdict' evidence/result.json)" >> "$GITHUB_OUTPUT"
+      - name: Install the pinned nare
+        if: steps.executed.outputs.verdict != 'refused'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --user "$NARE_WHEEL"
+          "$HOME/.local/bin/nare" --version
+        env:
+          # The same pin as the plan job; a test holds the two together.
+          NARE_WHEEL: https://github.com/ViviDynamics/nare/releases/download/2026.9.10/nare-2026.9.10-py3-none-any.whl
       - name: Judge the result
         shell: bash
         env:
-          QARE_MODEL_KEY: ${{ secrets.QARE_MODEL_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node packages/cli/dist/index.js judge --result result.json
+          # The planner's key and model: the verifier's prompt is planning
+          # size, and the model QARE_MODEL_KEY is scoped to does not answer
+          # one inside the proxy's edge timeout (nare#27).
+          OPENAI_API_KEY: ${{ secrets.QARE_PLANNER_KEY }}
+          NARE_PROVIDER: openai
+          NARE_BASE_URL: https://llm.vividynamics.com/v1
+          NARE_MODEL: claude-haiku
+        run: |
+          set -euo pipefail
+          node packages/cli/dist/index.js judge \
+            --result evidence/result.json --outDir . \
+            --plan plan.json --diff change.diff \
+            --nare "$HOME/.local/bin/nare"
       - name: File stub issues (refused runs only)
         if: github.event_name == 'pull_request'
         shell: bash

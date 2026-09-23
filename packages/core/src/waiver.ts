@@ -83,17 +83,18 @@ export function recordWaiver(
   )
   return {
     ...result,
-    verdict: deriveWaivedVerdict(criteria),
+    verdict: deriveWaivedVerdict(criteria, new Set([...named, ...(result.waived ?? []).map((entry) => entry.criterionId)])),
     criteria,
     waived: [...named].map((criterionId) => ({ criterionId, by })),
   }
 }
 
-function deriveWaivedVerdict(criteria: CriterionResult[]): RunVerdict {
+// The same rule judge applies (verdictOf): a waiver covers only the criteria
+// it names, so a criterion left unverified that nobody waived still blocks.
+function deriveWaivedVerdict(criteria: CriterionResult[], waived: Set<string>): RunVerdict {
   if (criteria.some((criterion) => criterion.outcome === 'failed')) return 'failed'
-  // recordWaiver only reaches here with at least one waived criterion mapped
-  // to unverified, so the waived verdict is unconditional from this point
-  return 'waived'
+  const unverified = criteria.filter((criterion) => criterion.outcome === 'unverified')
+  return unverified.every((criterion) => waived.has(criterion.id)) ? 'waived' : 'blocked'
 }
 
 function sanitizeActor(by: string): string {

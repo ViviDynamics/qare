@@ -95,6 +95,8 @@ export {
   prepareVerifierInputs,
   runVerifier,
   toSideResults,
+  verdictOf,
+  VERIFIER_OUTPUT_SCHEMA,
 } from './judge.js'
 export type {
   CriterionVerdict,
@@ -102,6 +104,7 @@ export type {
   JudgeRunResult,
   Regression,
   SideResult,
+  VerifierClaim,
   VerifierFinding,
   VerifierInputs,
 } from './judge.js'

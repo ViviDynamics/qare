@@ -168,3 +168,23 @@ test('the rendered comment is pinned in full: regressions to order or wording fa
       'Unverified criteria could not verify (environment) — that is not a code defect.',
   )
 })
+
+test('a verifier that could not check is not blamed on the environment', () => {
+  const body = renderComment({
+    schemaVersion: '1',
+    verdict: 'blocked',
+    criteria: [{ id: 'c1', outcome: 'unverified', reason: 'verifier did not answer: HTTP 524', evidence: ['c1/out.txt'] }],
+  })
+  expect(body).toContain('| c1 | unverified | not independently checked: verifier did not answer: HTTP 524 |')
+  expect(body).toContain('the verifier could not review them')
+  expect(body).not.toContain('(environment)')
+})
+
+test('a verifier finding shows as the failed criterion reason', () => {
+  const body = renderComment({
+    schemaVersion: '1',
+    verdict: 'failed',
+    criteria: [{ id: 'c1', outcome: 'failed', evidence: ['c1/out.txt'], reason: 'verifier: 0 rows exported' }],
+  })
+  expect(body).toContain('| c1 | failed | verifier: 0 rows exported |')
+})

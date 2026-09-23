@@ -72,7 +72,7 @@ Judge:
 
 - Criterion verdicts come from executed results only.
 - Visual diffs are advisory evidence for the human, never the sole basis for a pass.
-- The verifier model gets the criteria, diff and evidence in a fresh context and reports only criteria the evidence does not actually show. Its findings can downgrade a verdict, never upgrade one.
+- The verifier model gets the criteria, diff and evidence in a fresh context and reports only criteria the evidence does not actually show. Its findings can downgrade a verdict, never upgrade one. A verifier that gives no readable answer leaves the criteria it was asked about unverified, so the run blocks rather than passing unchecked.
 
 ## The `.qa/` profile (per repo)
 
