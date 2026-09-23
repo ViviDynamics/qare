@@ -12,6 +12,7 @@ import {
   judgeRun,
   loadResult,
   NareAgentRunner,
+  criteriaFromIssue,
   planRun,
   prepareVerifierInputs,
   renderCheckRun,
@@ -45,7 +46,7 @@ export async function main(
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare plan --criteria <path> --diff <path> [--out <file>] [--suites a,b] [--nare <binary>] | qare run --job <path|-> | qare judge --result <path> | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>]\n`,
+    `qare ${VERSION}\nusage: qare --version | qare plan (--issue <path> | --criteria <path>) --diff <path> [--out <file>] [--suites a,b] [--nare <binary>] | qare run --job <path|-> | qare judge --result <path> | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>]\n`,
   )
   return 0
 }
@@ -68,9 +69,12 @@ function flag(argv: string[], name: string): string | undefined {
 async function planCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
   try {
     const criteriaPath = flag(argv, '--criteria')
+    const issuePath = flag(argv, '--issue')
     const diffPath = flag(argv, '--diff')
-    if (criteriaPath === undefined || diffPath === undefined)
-      throw new Error('qare plan requires --criteria <path> and --diff <path>')
+    if ((criteriaPath === undefined && issuePath === undefined) || diffPath === undefined)
+      throw new Error('qare plan requires --diff <path> and one of --criteria <path> or --issue <path>')
+    if (criteriaPath !== undefined && issuePath !== undefined)
+      throw new Error('qare plan takes --criteria or --issue, not both')
     const outPath = resolve(flag(argv, '--out') ?? 'plan.json')
     const suites = flag(argv, '--suites')
       ?.split(',')
@@ -78,14 +82,20 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       .filter(Boolean)
     const binary = flag(argv, '--nare')
 
-    const criteria: unknown = JSON.parse(await readFile(resolve(criteriaPath), 'utf8'))
-    if (!Array.isArray(criteria))
-      throw new Error(`${criteriaPath} must hold a JSON array of {id, text} criteria`)
+    let criteria: { id: string; text: string }[]
+    if (issuePath !== undefined) {
+      criteria = criteriaFromIssue(await readFile(resolve(issuePath), 'utf8'))
+    } else {
+      const loaded: unknown = JSON.parse(await readFile(resolve(criteriaPath as string), 'utf8'))
+      if (!Array.isArray(loaded))
+        throw new Error(`${criteriaPath} must hold a JSON array of {id, text} criteria`)
+      criteria = loaded as { id: string; text: string }[]
+    }
     const diff = await readFile(resolve(diffPath), 'utf8')
 
     const runner = new NareAgentRunner(binary === undefined ? {} : { binary })
     const plan = await planRun(runner, {
-      criteria: criteria as { id: string; text: string }[],
+      criteria,
       diff,
       ...(suites === undefined ? {} : { suites }),
     })

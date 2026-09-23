@@ -63,6 +63,7 @@ export type {
   NareAgentRunnerOptions,
   ToolPolicy,
 } from './runner.js'
+export { IssueCriteriaError, criteriaFromIssue, criterionIdFor } from './issue-criteria.js'
 export { PLAN_OUTPUT_SCHEMA, PlanStepError, planRun } from './plan-step.js'
 export type { PlanCriterionInput, PlanInputs } from './plan-step.js'
 export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'
