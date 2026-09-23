@@ -1,13 +1,21 @@
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { expect, test } from 'vitest'
+import { afterEach, expect, test } from 'vitest'
 
 import { ProfileMissingError, ProfileValidationError, loadProfile, runJob, type Job } from '../src/index.js'
 
+const made: string[] = []
+
 async function repo(): Promise<string> {
-  return await mkdtemp(join(tmpdir(), 'qare-noprofile-'))
+  const path = await mkdtemp(join(tmpdir(), 'qare-noprofile-'))
+  made.push(path)
+  return path
 }
+
+afterEach(async () => {
+  await Promise.all(made.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+})
 
 function job(repoPath: string): Job {
   return {
