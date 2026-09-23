@@ -168,6 +168,10 @@ jobs:
     needs: [collect, plan]
     if: needs.collect.outputs.criteria == 'present' && needs.plan.result == 'success'
     runs-on: ubuntu-latest
+    outputs:
+      # Where the evidence was uploaded, the one place the posted comment may
+      # link to (CONSTITUTION rule 4). Empty when nothing was uploaded.
+      evidence-url: ${{ steps.evidence.outputs.artifact-url }}
     steps:
       # actions/checkout checks out the PR merge ref on pull_request events
       - uses: actions/checkout@v4
@@ -217,6 +221,7 @@ jobs:
           fi
           exit "$code"
       - name: Upload evidence (raw results + result.json)
+        id: evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -233,10 +238,15 @@ jobs:
     if: always() && needs.execute.result == 'success'
     runs-on: ubuntu-latest
     permissions:
+      checks: write
       issues: write
       pull-requests: write
     steps:
+      # No token left in .git/config: the verifier step holds the model key
+      # and reads files, and must not find a token that can write a check run.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -306,6 +316,21 @@ jobs:
           else
             echo "verdict $(jq -r '.verdict' judged-result.json): not refused, no stub issues to file"
           fi
+      # One sticky comment, updated on every run, and a check run on the head
+      # commit. The comment names evidence files and links only to the
+      # uploaded artifact. Last, so a posting failure cannot stop stub issues.
+      - name: Post the evidence on the pull request
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVIDENCE_URL: ${{ needs.execute.outputs.evidence-url }}
+        run: |
+          set -euo pipefail
+          node packages/action/dist/index.js post-evidence --result judged-result.json \
+            --pr "$PR_NUMBER" --sha "$HEAD_SHA" --artifact-url "$EVIDENCE_URL"
       - name: Upload judge artifacts (comment.md, checkrun.json, judged-result.json)
         if: always()
         uses: actions/upload-artifact@v4

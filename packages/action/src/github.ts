@@ -29,6 +29,20 @@ export interface GitHubIssue {
   state?: string
 }
 
+export interface GitHubComment {
+  id: number
+  body?: string
+  user?: { login?: string } | null
+}
+
+export interface GitHubCheckRun {
+  name: string
+  head_sha: string
+  status: 'completed'
+  conclusion: 'success' | 'failure' | 'neutral'
+  output: { title: string; summary: string }
+}
+
 export interface GitHubClientOptions {
   repository?: string
   apiRoot?: string
@@ -92,6 +106,29 @@ export class GitHubClient {
 
   async postIssueComment(number: number, body: string): Promise<void> {
     await this.request('POST', `/repos/${this.repository}/issues/${number}/comments`, undefined, { body })
+  }
+
+  async listIssueComments(number: number): Promise<GitHubComment[]> {
+    const comments: GitHubComment[] = []
+    for (let page = 1; ; page += 1) {
+      const batch = await this.request<GitHubComment[]>(
+        'GET',
+        `/repos/${this.repository}/issues/${number}/comments`,
+        new URLSearchParams({ per_page: '100', page: String(page) }),
+      )
+      if (!Array.isArray(batch) || batch.length === 0) break
+      comments.push(...batch)
+      if (batch.length < 100) break
+    }
+    return comments
+  }
+
+  async updateIssueComment(id: number, body: string): Promise<void> {
+    await this.request('PATCH', `/repos/${this.repository}/issues/comments/${id}`, undefined, { body })
+  }
+
+  async createCheckRun(run: GitHubCheckRun): Promise<void> {
+    await this.request('POST', `/repos/${this.repository}/check-runs`, undefined, run)
   }
 
   private async request<T>(method: string, path: string, query?: URLSearchParams, payload?: unknown): Promise<T> {
