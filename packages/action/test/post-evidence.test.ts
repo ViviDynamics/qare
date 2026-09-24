@@ -187,3 +187,18 @@ test('post-evidence names what is missing', async () => {
   expect(await main(['post-evidence', '--pr', '12', '--sha', SHA], capture().writer, err.writer)).toBe(1)
   expect(err.lines.join('')).toContain('--result')
 })
+
+test('a secret in a reason is redacted before the comment is posted (#52)', async () => {
+  const token = ['ghp', '_', 'Qq7'.repeat(12)].join('')
+  const leaky: RunResult = {
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'blocked',
+    criteria: [{ id: 'boot', outcome: 'unverified', reason: `compose up rejected ${token}` }],
+  }
+
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), leaky, { artifactUrl: ARTIFACT })
+
+  const [comment] = fake.issues.get(12)?.comments ?? []
+  expect(comment).toContain('compose up rejected [redacted]')
+  expect(comment).not.toContain(token)
+})

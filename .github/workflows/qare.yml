@@ -220,9 +220,24 @@ jobs:
             exit 0
           fi
           exit "$code"
+      # Evidence is published, so it is redacted before it leaves this
+      # machine, and a redaction that fails uploads nothing (#52). The run
+      # already redacts what it writes; this also covers files a crashed run
+      # left behind and anything else that landed in the directory.
+      - name: Redact the evidence
+        id: redact
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d evidence ]; then
+            echo "no evidence directory: nothing to redact or upload"
+            exit 0
+          fi
+          node packages/cli/dist/index.js redact --evidence evidence --profile .qa
       - name: Upload evidence (raw results + result.json)
         id: evidence
-        if: always()
+        if: always() && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: execute-evidence
@@ -302,7 +317,7 @@ jobs:
           node packages/cli/dist/index.js judge \
             --result evidence/result.json --outDir . \
             --plan plan.json --diff change.diff \
-            --nare "$HOME/.local/bin/nare"
+            --nare "$HOME/.local/bin/nare" --profile .qa
       - name: File stub issues (refused runs only)
         if: github.event_name == 'pull_request'
         shell: bash

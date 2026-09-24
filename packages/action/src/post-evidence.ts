@@ -1,4 +1,4 @@
-import { renderCheckRun, renderComment } from '@qare/core'
+import { redactResult, renderCheckRun, renderComment } from '@qare/core'
 import type { CheckRunPayload, EvidencePoster, RunResult } from '@qare/core'
 import { GitHubApiError, GitHubClientError, type GitHubClient } from './github.js'
 
@@ -66,13 +66,15 @@ export class GitHubEvidencePoster implements EvidencePoster {
 
 /**
  * Post a judged result where reviewers look. The comment names evidence and
- * links only to the run's uploaded evidence artifact.
+ * links only to the run's uploaded evidence artifact. Reasons are redacted
+ * here with the built-in rules as a last pass: judge has already applied the
+ * profile's, and this is the point where they are published.
  */
 export async function postEvidence(
   poster: EvidencePoster,
   result: RunResult,
   opts: { artifactUrl?: string | undefined } = {},
 ): Promise<void> {
-  await poster.postComment(renderComment(result, { kind: 'artifact', url: opts.artifactUrl }))
+  await poster.postComment(renderComment(redactResult(result), { kind: 'artifact', url: opts.artifactUrl }))
   await poster.createCheckRun(renderCheckRun(result))
 }

@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
+import { RedactionError, redactionRules, type ProfileRedaction } from './redact.js'
 
 export interface ProfileApp {
   boot: { compose: string; service: string }
@@ -33,6 +34,8 @@ export interface QaProfile {
   stubs: ProfileStub[]
   visual: ProfileVisual
   suites: ProfileSuite[]
+  /** Fixture data that must not be published in evidence (#52). */
+  redact?: ProfileRedaction
 }
 
 const SUITE_KINDS: ProfileSuiteKind[] = ['command', 'flow', 'visual']
@@ -145,6 +148,7 @@ export function validateProfileConfig(config: unknown): QaProfile {
     stubs: parseStubs(config.stubs),
     visual: parseVisual(config.visual),
     suites: parseSuites(config.suites),
+    ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
   }
 }
 
@@ -220,4 +224,23 @@ function parseSuite(value: unknown, index: number): ProfileSuite {
     command: nonEmptyString(value.command, `${base}.command`, 'command'),
     kind: kind as ProfileSuiteKind,
   }
+}
+
+function parseRedact(value: unknown): ProfileRedaction {
+  if (!isRecord(value)) fail('redact', 'redact must be a YAML object with values and/or patterns')
+  const redact: ProfileRedaction = {
+    ...(value.values === undefined ? {} : { values: stringArray(value.values, 'redact.values', 'redact values') }),
+    ...(value.patterns === undefined
+      ? {}
+      : { patterns: stringArray(value.patterns, 'redact.patterns', 'redact patterns') }),
+  }
+  // Compiled here so a bad pattern stops the profile loading, not the upload
+  // at the end of a run.
+  try {
+    redactionRules(redact)
+  } catch (error) {
+    if (error instanceof RedactionError) fail('redact', error.message)
+    throw error
+  }
+  return redact
 }

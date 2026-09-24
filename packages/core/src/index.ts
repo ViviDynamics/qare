@@ -27,6 +27,17 @@ export {
   parseResult,
 } from './result.js'
 export { ProfileMissingError, ProfileValidationError, loadProfile, validateProfileConfig } from './profile.js'
+export {
+  BUILTIN_REDACTION_RULES,
+  REDACTED,
+  RedactionError,
+  redactEvidenceDir,
+  redactResult,
+  redactText,
+  redactValue,
+  redactionRules,
+} from './redact.js'
+export type { EvidenceRedaction, ProfileRedaction, RedactionRule } from './redact.js'
 export type {
   QaProfile,
   ProfileApp,

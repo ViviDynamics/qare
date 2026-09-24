@@ -27,6 +27,10 @@ can only downgrade: a finding fails its criterion with the reason recorded,
 and a verifier that gives no readable answer leaves the criterion unverified,
 so the run blocks rather than passing unchecked.
 
+Everything judge writes is published, so it redacts the reasons in it, with
+the built-in rules and, given `--profile <dir>`, the profile's `redact` values
+and patterns too.
+
 ## result.json
 
 A completed run always writes a result, even when the verdict is failure:
