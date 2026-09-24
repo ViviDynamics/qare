@@ -56,7 +56,7 @@ export const PLAN_OUTPUT_SCHEMA = {
             items: {
               type: 'object',
               properties: {
-                kind: { type: 'string', enum: ['command', 'flow', 'visual'] },
+                kind: { type: 'string', enum: ['command', 'flow', 'visual', 'mail'] },
                 name: { type: 'string' },
                 command: { type: 'string' },
                 suite: { type: 'string' },
@@ -64,6 +64,11 @@ export const PLAN_OUTPUT_SCHEMA = {
                 screenshot: { type: 'string' },
                 widths: { type: 'array', items: { type: 'integer' } },
                 themes: { type: 'array', items: { type: 'string' } },
+                address: { type: 'string' },
+                from: { type: 'string' },
+                subject: { type: 'string' },
+                body: { type: 'string' },
+                timeoutMs: { type: 'integer' },
                 inferred: { type: 'boolean' },
               },
               required: ['kind', 'name'],
@@ -99,6 +104,7 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     '- command: {"kind":"command","name":...,"command":"the shell command to run"}',
     '- flow: {"kind":"flow","name":...,"suite":"an existing suite"} or {"kind":"flow","name":...,"actions":["..."]}',
     '- visual: {"kind":"visual","name":...,"screenshot":"name","widths":[390],"themes":["light"]}',
+    '- mail: {"kind":"mail","name":...,"address":"the address a message is waited for","subject":"a substring to match", "timeoutMs":60000}',
     '',
     'Mark a check "inferred": true when the criterion did not state how it should be proven.',
     `Answer with schemaVersion "${PLAN_SCHEMA_VERSION}".`,

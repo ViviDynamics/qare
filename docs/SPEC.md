@@ -127,6 +127,28 @@ nothing boots. The minted values are written to the run's evidence, so a reader
 can see which address a run used, and two concurrent runs never collide. Flow
 definitions substitute with the flow runner.
 
+### Mail checks
+
+A `mail` check waits for one message at an address and reads it. The address
+and every matcher (`from`, `subject`, `body`) are literal substrings, may carry
+`{{run.<name>}}` values, and all matchers must match the same message. The
+harness considers only messages the source reports after the check's own start,
+so a rerun waits for a new message instead of matching the previous run's mail.
+
+Where the messages come from is the profile's business, not the plan's: the
+optional `mail.inbox` setting names a sink that lists what it caught — a GET of
+the inbox URL with `address` and `after` query parameters answers with the
+messages sent to that address, along with what it observed (`from`, `subject`,
+`body`, `received_at`). The runner polls until a message matches or the check's
+timeout passes.
+
+A message that matches is proven, and the evidence records what the harness
+actually observed: the sender, the subject, an excerpt of the body, the wait,
+and links extracted from the body, marked as harness-produced data rather than
+claims. A message that never arrives, and a mailbox that cannot be reached, are
+both `unverified` with the reason naming the mailbox — neither is a product
+failure, and neither may be reported as one.
+
 ## The criteria ledger
 
 A single pull request's acceptance criteria are the small case. The general
