@@ -56,7 +56,7 @@ test('a repository with no profile gets the built-in rules, and says so', async 
 
   expect(code).toBe(0)
   expect(await readFile(stdout, 'utf8')).toBe('pushed with [redacted] for jane@pilot.example\n')
-  expect(out.lines.join('')).toContain('only the built-in rules apply')
+  expect(out.lines.join('')).toContain('only the built-in redaction rules apply')
 })
 
 test('a broken profile fails rather than redacting with fewer rules', async () => {
@@ -108,4 +108,32 @@ test('judge redacts what it writes, since every file it writes is published', as
     expect(written, name).not.toContain(TOKEN)
     expect(written, name).toContain('boot said [redacted]')
   }
+})
+
+test('judge applies the profile rules to what it writes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'qare-judge-profile-'))
+  made.push(root)
+  const profile = join(root, '.qa')
+  cpSync(profileFixture, profile, { recursive: true })
+  const config = await readFile(join(profile, 'config.yml'), 'utf8')
+  await writeFile(join(profile, 'config.yml'), `${config}\nredact:\n  values: [jane@pilot.example]\n`)
+  const result = join(root, 'result.json')
+  await writeFile(
+    result,
+    JSON.stringify({
+      schemaVersion: RESULT_SCHEMA_VERSION,
+      verdict: 'blocked',
+      criteria: [{ id: 'c1', outcome: 'unverified', reason: 'mailed jane@pilot.example' }],
+    }),
+  )
+
+  const code = await main(
+    ['judge', '--result', result, '--runner', 'none', '--profile', profile],
+    capture().writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  for (const name of ['judged-result.json', 'comment.md'])
+    expect(await readFile(join(root, name), 'utf8'), name).not.toContain('jane@pilot.example')
 })

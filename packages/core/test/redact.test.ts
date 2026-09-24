@@ -67,9 +67,10 @@ test('a long run of word characters does not backtrack for seconds', () => {
   expect(Date.now() - started).toBeLessThan(2000)
 })
 
-test('profile values and patterns are redacted before the built-in rules', () => {
+test('profile values and patterns are redacted after the built-in rules', () => {
   const rules = redactionRules({ values: ['jane@pilot.example'], patterns: ['CUST-\\d{6}'] })
-  expect(rules.slice(2)).toEqual(BUILTIN_REDACTION_RULES)
+  expect(rules.slice(0, BUILTIN_REDACTION_RULES.length)).toEqual(BUILTIN_REDACTION_RULES)
+  expect(rules).toHaveLength(BUILTIN_REDACTION_RULES.length + 2)
   expect(redactText('mailed jane@pilot.example about CUST-004211 (a.b)', rules)).toBe(
     `mailed ${REDACTED} about ${REDACTED} (a.b)`,
   )
@@ -92,6 +93,46 @@ test('a JSON value is redacted in its strings and under keys that name a secret'
     nested: [{ apiKey: REDACTED }],
     count: 3,
   })
+})
+
+test('a secret-named key loses its value whatever its type, and a key that only contains the word keeps it', () => {
+  expect(
+    redactValue({
+      password: 123456,
+      token: { value: 's3cr3t' },
+      accessToken: 'abc',
+      db_password: 'x',
+      author: 'jane',
+      oauthProvider: 'github',
+      tokenizer: 'bpe',
+      missing: null,
+    }),
+  ).toEqual({
+    password: REDACTED,
+    token: REDACTED,
+    accessToken: REDACTED,
+    db_password: REDACTED,
+    author: 'jane',
+    oauthProvider: 'github',
+    tokenizer: 'bpe',
+    missing: null,
+  })
+})
+
+test('a file and line reference is not a key and its value', () => {
+  const output = '[chromium] › tests/auth.spec.ts:12:5 › logs in\n    at refresh (src/token.ts:42:10)\n'
+  expect(redactText(output)).toBe(output)
+  expect(redactText('password:1234')).toBe(`password:${REDACTED}`)
+})
+
+test('a profile value inside a key cannot shield the key from the built-in rule', () => {
+  const rules = redactionRules({ values: ['api'] })
+  expect(redactText('api_key=abcd1234secret', rules)).not.toContain('abcd1234secret')
+})
+
+test('a profile pattern that matches nothing only in context redacts nothing', () => {
+  const rules = redactionRules({ patterns: ['\\b', '(?=CUST)'] })
+  expect(redactText('CUST-123 ok', rules)).toBe('CUST-123 ok')
 })
 
 test('a result keeps its ids and evidence paths and loses secrets from its reasons', () => {
@@ -145,6 +186,39 @@ test('the sweep redacts result.json reasons and leaves its ids alone', async () 
     ...result,
     criteria: [{ id: 'secret=1', outcome: 'unverified', reason: `compose said ${REDACTED}` }],
   })
+})
+
+test('the sweep keeps result.json fields it does not know', async () => {
+  const dir = await evidenceDir()
+  await writeFile(
+    join(dir, 'result.json'),
+    JSON.stringify({
+      schemaVersion: '1',
+      verdict: 'blocked',
+      notes: 'from a newer writer',
+      criteria: [{ id: 'c1', outcome: 'unverified', reason: `saw ${AWS_KEY_ID}`, extra: 1 }],
+    }),
+  )
+
+  await redactEvidenceDir(dir)
+
+  expect(JSON.parse(await readFile(join(dir, 'result.json'), 'utf8'))).toEqual({
+    schemaVersion: '1',
+    verdict: 'blocked',
+    notes: 'from a newer writer',
+    criteria: [{ id: 'c1', outcome: 'unverified', reason: `saw ${REDACTED}`, extra: 1 }],
+  })
+})
+
+test('a text file that opens with an image signature is redacted as text', async () => {
+  const dir = await evidenceDir()
+  await writeFile(join(dir, 'gif.txt'), `GIF89a ${GITHUB_TOKEN}\n`)
+  await writeFile(join(dir, 'webp.txt'), `12345678WEBP ${GITHUB_TOKEN}\n`)
+
+  const report = await redactEvidenceDir(dir)
+
+  expect(report.images).toEqual([])
+  expect(report.changed).toEqual(['gif.txt', 'webp.txt'])
 })
 
 test('a result.json that does not parse stops the sweep', async () => {

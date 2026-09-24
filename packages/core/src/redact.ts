@@ -19,7 +19,7 @@ export interface RedactionRule {
   name: string
   /** Global; a rule that keeps part of its match does so through `replacement`. */
   pattern: RegExp
-  replacement: string
+  replacement: string | ((match: string, ...groups: string[]) => string)
 }
 
 // Bounded repeats where nare's are open: evidence is up to a megabyte of
@@ -33,11 +33,20 @@ const KEY_VALUE = new RegExp(
   'gi',
 )
 
+// `tests/auth.spec.ts:12:5` and `(src/token.ts:42:10)` are a file and a line,
+// the references test output is made of, not a key and its value.
+const FILE_LINE = /^[\w.\-]*\.[A-Za-z]\w*:\d+(?::\d+)*\)?[,;]?$/
+
+function redactKeyValue(match: string, key: string): string {
+  return FILE_LINE.test(match) ? match : `${key}${REDACTED}`
+}
+
 export const BUILTIN_REDACTION_RULES: readonly RedactionRule[] = [
+  // Covered by the sk- rule below; kept so the first four stay nare's list.
   { name: 'anthropic key', pattern: /sk-ant-[A-Za-z0-9_-]{20,}/g, replacement: REDACTED },
   { name: 'sk- key', pattern: /sk-[A-Za-z0-9_-]{20,}/g, replacement: REDACTED },
   { name: 'github token', pattern: /gh[pousr]_[A-Za-z0-9]{20,}/g, replacement: REDACTED },
-  { name: 'key or password assignment', pattern: KEY_VALUE, replacement: `$1${REDACTED}` },
+  { name: 'key or password assignment', pattern: KEY_VALUE, replacement: redactKeyValue },
   { name: 'github fine-grained token', pattern: /github_pat_[A-Za-z0-9_]{20,}/g, replacement: REDACTED },
   { name: 'aws access key id', pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, replacement: REDACTED },
   { name: 'slack token', pattern: /xox[abposr]-[A-Za-z0-9-]{10,}/g, replacement: REDACTED },
@@ -76,10 +85,13 @@ export class RedactionError extends Error {
 }
 
 /**
- * The rules for a run: the profile's own first, then the built-in ones.
+ * The rules for a run: the built-in ones first, then the profile's own. In
+ * that order a profile value that happens to sit inside a key or a token
+ * cannot cut it short of what the built-in rule needs to recognise it.
  *
  * Throws RedactionError for a pattern that does not compile or that matches
- * the empty string, which would redact between every character.
+ * the empty string. A pattern that matches nothing only in context (`\b`,
+ * a lookahead) is not caught here, so its empty matches are left alone.
  */
 export function redactionRules(profile?: ProfileRedaction): RedactionRule[] {
   const own: RedactionRule[] = []
@@ -88,7 +100,7 @@ export function redactionRules(profile?: ProfileRedaction): RedactionRule[] {
     own.push({ name: 'profile value', pattern: new RegExp(escapeRegExp(value), 'g'), replacement: REDACTED })
   }
   for (const source of profile?.patterns ?? []) own.push(profilePattern(source))
-  return [...own, ...BUILTIN_REDACTION_RULES]
+  return [...BUILTIN_REDACTION_RULES, ...own]
 }
 
 function profilePattern(source: string): RedactionRule {
@@ -102,7 +114,7 @@ function profilePattern(source: string): RedactionRule {
   }
   if (new RegExp(source).test(''))
     throw new RedactionError(`redact pattern ${JSON.stringify(source)} matches the empty string`)
-  return { name: 'profile pattern', pattern, replacement: REDACTED }
+  return { name: 'profile pattern', pattern, replacement: (match) => (match === '' ? match : REDACTED) }
 }
 
 function escapeRegExp(text: string): string {
@@ -111,16 +123,40 @@ function escapeRegExp(text: string): string {
 
 export function redactText(text: string, rules: readonly RedactionRule[] = BUILTIN_REDACTION_RULES): string {
   let redacted = text
-  for (const rule of rules) redacted = redacted.replace(rule.pattern, rule.replacement)
+  for (const rule of rules)
+    redacted =
+      typeof rule.replacement === 'string'
+        ? redacted.replace(rule.pattern, rule.replacement)
+        : redacted.replace(rule.pattern, rule.replacement as (match: string, ...groups: string[]) => string)
   return redacted
 }
 
-const SECRET_KEY = /api[_-]?key|auth|token|secret|password|passwd|credential/i
+const SECRET_WORDS = new Set([
+  'apikey',
+  'auth',
+  'authorization',
+  'credential',
+  'credentials',
+  'passwd',
+  'password',
+  'secret',
+  'token',
+])
+
+// By word, so accessToken and db_password count and author and oauthProvider
+// do not.
+function namesSecret(key: string): boolean {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+  return words.some((word, index) => SECRET_WORDS.has(word) || (word === 'api' && words[index + 1] === 'key'))
+}
 
 /**
  * Every string in a JSON value, redacted, and the whole value of any key that
- * names a secret: `{"password": "hunter2"}` has nothing for a text rule to
- * match, since the value alone does not look like one.
+ * names a secret, whatever its type: `{"password": "hunter2"}` has nothing for
+ * a text rule to match, since the value alone does not look like one.
  */
 export function redactValue<T>(value: T, rules: readonly RedactionRule[] = BUILTIN_REDACTION_RULES): T {
   return redactNode(value, rules) as T
@@ -133,7 +169,7 @@ function redactNode(value: unknown, rules: readonly RedactionRule[]): unknown {
     return Object.fromEntries(
       Object.entries(value).map(([key, entry]) => [
         key,
-        typeof entry === 'string' && SECRET_KEY.test(key) ? REDACTED : redactNode(entry, rules),
+        entry !== null && namesSecret(key) ? REDACTED : redactNode(entry, rules),
       ]),
     )
   return value
@@ -209,13 +245,15 @@ async function redactFile(
 ): Promise<void> {
   report.files.push(name)
   const bytes = await readFile(path)
-  if (isImage(bytes)) {
+  // Text first: anything that reads as text is redacted as text, so a log
+  // that happens to open with an image signature is not waved through.
+  const text = decodeText(bytes)
+  if (text === undefined) {
+    if (!isImage(bytes))
+      throw new RedactionError(`${name} is neither text nor an image, so redaction cannot read it`)
     report.images.push(name)
     return
   }
-  const text = decodeText(bytes)
-  if (text === undefined)
-    throw new RedactionError(`${name} is neither text nor an image, so redaction cannot read it`)
   const redacted =
     name === 'result.json'
       ? redactResultText(text, name, rules)
@@ -227,17 +265,26 @@ async function redactFile(
   report.changed.push(name)
 }
 
+// The raw document is redacted rather than the parsed result, so a field the
+// parser does not know survives the rewrite.
 function redactResultText(text: string, name: string, rules: readonly RedactionRule[]): string {
-  let result: RunResult
+  let raw: { criteria: Array<Record<string, unknown>> }
   try {
-    result = loadResult(text)
+    loadResult(text)
+    raw = JSON.parse(text) as typeof raw
   } catch (error) {
     throw new RedactionError(
       `${name} is not a valid result, so its reasons cannot be told from its ids (${error instanceof Error ? error.message : String(error)})`,
     )
   }
-  const redacted = redactResult(result, rules)
-  return JSON.stringify(redacted) === JSON.stringify(result) ? text : `${JSON.stringify(redacted, null, 2)}\n`
+  let changed = false
+  for (const criterion of raw.criteria) {
+    if (typeof criterion.reason !== 'string') continue
+    const reason = redactText(criterion.reason, rules)
+    if (reason !== criterion.reason) changed = true
+    criterion.reason = reason
+  }
+  return changed ? `${JSON.stringify(raw, null, 2)}\n` : text
 }
 
 function redactJsonText(text: string, rules: readonly RedactionRule[]): string {
@@ -256,13 +303,18 @@ const IMAGE_SIGNATURES: Array<{ at: number; bytes: number[] }> = [
   { at: 0, bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] }, // PNG
   { at: 0, bytes: [0xff, 0xd8, 0xff] }, // JPEG
   { at: 0, bytes: [0x47, 0x49, 0x46, 0x38] }, // GIF8
-  { at: 8, bytes: [0x57, 0x45, 0x42, 0x50] }, // WEBP (after RIFF....)
 ]
+const RIFF = [0x52, 0x49, 0x46, 0x46]
+const WEBP = [0x57, 0x45, 0x42, 0x50]
+
+function hasAt(bytes: Buffer, at: number, signature: number[]): boolean {
+  return bytes.length >= at + signature.length && signature.every((byte, index) => bytes[at + index] === byte)
+}
 
 function isImage(bytes: Buffer): boolean {
-  return IMAGE_SIGNATURES.some(
-    ({ at, bytes: signature }) =>
-      bytes.length >= at + signature.length && signature.every((byte, index) => bytes[at + index] === byte),
+  return (
+    IMAGE_SIGNATURES.some(({ at, bytes: signature }) => hasAt(bytes, at, signature)) ||
+    (hasAt(bytes, 0, RIFF) && hasAt(bytes, 8, WEBP))
   )
 }
 

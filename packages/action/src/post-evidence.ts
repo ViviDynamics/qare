@@ -67,7 +67,8 @@ export class GitHubEvidencePoster implements EvidencePoster {
 /**
  * Post a judged result where reviewers look. The comment names evidence and
  * links only to the run's uploaded evidence artifact. Reasons are redacted
- * here as well as upstream: this is the point where they are published.
+ * here with the built-in rules as a last pass: judge has already applied the
+ * profile's, and this is the point where they are published.
  */
 export async function postEvidence(
   poster: EvidencePoster,

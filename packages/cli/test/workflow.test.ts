@@ -176,3 +176,10 @@ test('execute redacts the evidence, and uploads it only when redaction succeeded
   const uploadStep = execute.slice(upload, execute.indexOf('- name:', upload + 1) === -1 ? undefined : execute.indexOf('- name:', upload + 1))
   expect(uploadStep).toContain("if: always() && steps.redact.outcome == 'success'")
 })
+
+test('judge redacts what it publishes with the profile rules', () => {
+  const judge = section('judge')
+  const start = judge.indexOf('- name: Judge the result')
+  const step = judge.slice(start, judge.indexOf('- name:', start + 1))
+  expect(step).toContain('--profile .qa')
+})
