@@ -15,7 +15,7 @@ export interface MailEvidenceMessage {
   polls: number
 }
 
-export type ReadMail = (address: string, after: string) => Promise<MailMessage[]>
+export type ReadMail = (address: string, after: string, signal?: AbortSignal) => Promise<MailMessage[]>
 
 export type MailOutcome =
   | { status: 'passed'; message: MailMessage; waitMs: number; polls: number }
@@ -31,17 +31,35 @@ const MAIL_POLL_INTERVAL_MS = 500
  * environment problem, not a product failure.
  */
 export function httpMailbox(inbox: string, fetchImpl: typeof fetch = fetch): ReadMail {
-  return async (address, after) => {
+  return async (address, after, signal) => {
     const url = new URL(inbox)
     url.searchParams.set('address', address)
     url.searchParams.set('after', after)
-    const response = await fetchImpl(url.toString())
+    const response = await fetchImpl(url.toString(), { signal })
     if (!response.ok) {
       throw new Error(`inbox responded ${response.status}`)
     }
     const parsed = (await response.json()) as { messages?: unknown }
     if (!Array.isArray(parsed.messages)) throw new Error('inbox response carries no messages array')
-    return parsed.messages as MailMessage[]
+    return parsed.messages.map(parseMessage)
+  }
+}
+
+function parseMessage(value: unknown, index: number): MailMessage {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error(`inbox message ${index} is not an object`)
+  }
+  const record = value as Record<string, unknown>
+  for (const field of ['from', 'subject', 'body'] as const) {
+    if (typeof record[field] !== 'string') throw new Error(`inbox message ${index} has no string ${field}`)
+  }
+  const received = Date.parse(String(record.received_at))
+  if (!Number.isFinite(received)) throw new Error(`inbox message ${index} has no parsable received_at`)
+  return {
+    from: record.from as string,
+    subject: record.subject as string,
+    body: record.body as string,
+    received_at: new Date(received).toISOString(),
   }
 }
 
@@ -73,7 +91,10 @@ export async function runMailCheck(
     polls += 1
     let messages: MailMessage[]
     try {
-      messages = await readMail(check.address, after)
+      // The signal bounds a poll as well as the waiting between polls, so a
+      // sink that accepts and never answers cannot stall the run past the
+      // check's timeout; the abort rejection lands as unverified below.
+      messages = await readMail(check.address, after, AbortSignal.timeout(Math.max(1, deadline - Date.now())))
     } catch (error) {
       return {
         status: 'unverified',
@@ -114,7 +135,7 @@ const EXCERPT_CHARS = 280
 const LINK = /https?:\/\/[^\s<>"')]+/g
 
 export function mailEvidence(message: MailMessage, waitMs: number, polls: number): MailEvidenceMessage {
-  const links = [...new Set(message.body.match(LINK) ?? [])]
+  const links = [...new Set((message.body.match(LINK) ?? []).map((link) => link.replace(/[.,;:]+$/, '')))]
   return {
     from: message.from,
     subject: message.subject,

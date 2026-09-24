@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Plan, PlanCheck, PlanCriterion } from './plan.js'
 
-const CHECK_FIELDS = ['kind', 'name', 'command', 'suite', 'actions', 'screenshot', 'widths', 'themes', 'inferred']
+const CHECK_FIELDS = ['kind', 'name', 'command', 'suite', 'actions', 'screenshot', 'widths', 'themes', 'address', 'from', 'subject', 'body', 'timeoutMs', 'inferred']
 
 export interface PlanComparison {
   matches: boolean
