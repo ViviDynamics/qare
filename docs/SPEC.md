@@ -114,6 +114,18 @@ Agent-written stubs are allowed only when flagged: any check that depends on a
 stub QARE wrote itself is shown as such and cannot count as `proven` without a
 human note.
 
+### Run-scoped values
+
+Strings in the profile, the seed step, commands, flows and checks may carry
+`{{run.<name>}}` references, which the harness substitutes with values minted
+fresh for each run. The first minted value is a per-run mail address
+(`{{run.mail_address}}`), and a run id and started-at timestamp come free with
+it (`{{run.id}}`, `{{run.started_at}}`). This is substitution, not a language:
+no expressions, no conditionals, no nesting. A reference to a name the harness
+does not mint, or an unterminated `{{`, fails the run closed at plan time and
+nothing boots. The minted values are written to the run's evidence, so a reader
+can see which address a run used, and two concurrent runs never collide.
+
 ## The criteria ledger
 
 A single pull request's acceptance criteria are the small case. The general
