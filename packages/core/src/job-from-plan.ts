@@ -1,4 +1,4 @@
-import type { Job, JobCommandCheck, JobCriterion, JobProfileRef, JobPostTarget } from './job.js'
+import type { Job, JobCheck, JobCriterion, JobProfileRef, JobPostTarget } from './job.js'
 import type { Plan, PlanCheck } from './plan.js'
 
 /**
@@ -19,8 +19,22 @@ export interface RunContext {
 }
 
 /** Check kinds the job runner executes today. */
-function runnable(check: PlanCheck): JobCommandCheck | undefined {
-  return check.kind === 'command' ? { kind: 'command', run: check.command } : undefined
+function runnable(check: PlanCheck): JobCheck | undefined {
+  switch (check.kind) {
+    case 'command':
+      return { kind: 'command', run: check.command }
+    case 'mail':
+      return {
+        kind: 'mail',
+        address: check.address,
+        ...(check.from === undefined ? {} : { from: check.from }),
+        ...(check.subject === undefined ? {} : { subject: check.subject }),
+        ...(check.body === undefined ? {} : { body: check.body }),
+        ...(check.timeoutMs === undefined ? {} : { timeoutMs: check.timeoutMs }),
+      }
+    default:
+      return undefined
+  }
 }
 
 /**
@@ -39,11 +53,11 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
       notes.push(`${criterion.id}: nothing to run, the plan called it unplannable (${criterion.unplannable})`)
       return { id: criterion.id, text: criterion.text }
     }
-    const checks = criterion.checks.map(runnable).filter((check): check is JobCommandCheck => check !== undefined)
+    const checks = criterion.checks.map(runnable).filter((check): check is JobCheck => check !== undefined)
     const skipped = criterion.checks.filter((check) => runnable(check) === undefined)
     if (skipped.length > 0)
       notes.push(
-        `${criterion.id}: ${skipped.length} check(s) not run, because the runner executes command checks only ` +
+        `${criterion.id}: ${skipped.length} check(s) not run, because the runner executes command and mail checks only ` +
           `(${[...new Set(skipped.map((check) => check.kind))].join(', ')})`,
       )
     return checks.length > 0

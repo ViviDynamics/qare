@@ -1,6 +1,6 @@
 export const PLAN_SCHEMA_VERSION = '1'
 
-export type CheckKind = 'command' | 'flow' | 'visual'
+export type CheckKind = 'command' | 'flow' | 'visual' | 'mail'
 
 export interface CommandCheck {
   kind: 'command'
@@ -26,7 +26,18 @@ export interface VisualCheck {
   inferred?: boolean
 }
 
-export type PlanCheck = CommandCheck | FlowCheck | VisualCheck
+export interface MailCheck {
+  kind: 'mail'
+  name: string
+  address: string
+  from?: string
+  subject?: string
+  body?: string
+  timeoutMs?: number
+  inferred?: boolean
+}
+
+export type PlanCheck = CommandCheck | FlowCheck | VisualCheck | MailCheck
 
 export interface PlannedCriterion {
   id: string
@@ -47,7 +58,7 @@ export interface Plan {
   criteria: PlanCriterion[]
 }
 
-const CHECK_KINDS: CheckKind[] = ['command', 'flow', 'visual']
+const CHECK_KINDS: CheckKind[] = ['command', 'flow', 'visual', 'mail']
 
 export class PlanValidationError extends Error {
   readonly field: string
@@ -150,7 +161,7 @@ function parseCheck(value: unknown, base: string): PlanCheck {
 
   const kind = value.kind
   if (typeof kind !== 'string' || !CHECK_KINDS.includes(kind as CheckKind))
-    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(kind)} (expected "command", "flow" or "visual")`)
+    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(kind)} (expected "command", "flow", "visual" or "mail")`)
   const name = nonEmptyString(value.name, `${base}.name`, 'name')
   const inferred = parseInferred(value.inferred, `${base}.inferred`)
 
@@ -186,12 +197,37 @@ function parseCheck(value: unknown, base: string): PlanCheck {
             )
       return finish({ kind: 'visual', name, screenshot, ...(widths !== undefined ? { widths } : {}), ...(themes !== undefined ? { themes } : {}) }, inferred)
     }
+    case 'mail': {
+      const address = nonEmptyString(value.address, `${base}.address`, 'address')
+      const from = value.from === undefined ? undefined : nonEmptyString(value.from, `${base}.from`, 'from')
+      const subject = value.subject === undefined ? undefined : nonEmptyString(value.subject, `${base}.subject`, 'subject')
+      const body = value.body === undefined ? undefined : nonEmptyString(value.body, `${base}.body`, 'body')
+      const timeoutMs = value.timeoutMs === undefined ? undefined : parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
+      return finish(
+        {
+          kind: 'mail',
+          name,
+          address,
+          ...(from !== undefined ? { from } : {}),
+          ...(subject !== undefined ? { subject } : {}),
+          ...(body !== undefined ? { body } : {}),
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        },
+        inferred,
+      )
+    }
   }
 }
 
 function parseInferred(value: unknown, field: string): boolean | undefined {
   if (value === undefined) return undefined
   if (typeof value !== 'boolean') fail(field, 'inferred must be a boolean')
+  return value
+}
+
+function parseTimeoutMs(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)
+    fail(field, 'timeoutMs must be a positive number of milliseconds')
   return value
 }
 

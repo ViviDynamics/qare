@@ -4,9 +4,10 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { bootApp, type BootOpts } from './boot.js'
 import { judgeRun, toSideResults } from './judge.js'
 import { feedRunLedger } from './ledger-feed.js'
-import { JobValidationError, type Job, type JobCommandCheck, type JobCriterion } from './job.js'
+import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion } from './job.js'
+import { httpMailbox, mailEvidence, runMailCheck, type ReadMail } from './mailbox.js'
 import { ProfileMissingError, loadProfile, validateProfileConfig, type QaProfile } from './profile.js'
-import { BUILTIN_REDACTION_RULES, redactResult, redactText, redactionRules, type RedactionRule } from './redact.js'
+import { BUILTIN_REDACTION_RULES, redactResult, redactText, redactValue, redactionRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult } from './result.js'
 import { mintRunValues, substituteValues, validateValueReferences, type RunValues } from './values.js'
 
@@ -34,7 +35,7 @@ const NO_CHECKS_REASON = 'no checks: model planning lands when nare integration 
  */
 export async function runJob(
   job: Job,
-  opts: BootOpts & { ledgerFeed?: { dir: string } } = {},
+  opts: BootOpts & { ledgerFeed?: { dir: string }; readMail?: ReadMail } = {},
 ): Promise<{ result: RunResult }> {
   let profile: QaProfile
   try {
@@ -70,7 +71,11 @@ export async function runJob(
   }
 
   const criteria: CriterionResult[] = []
-  for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values))
+  const mail = {
+    inbox: profile.mail?.inbox,
+    readMail: opts.readMail ?? (profile.mail?.inbox === undefined ? undefined : httpMailbox(profile.mail.inbox)),
+  }
+  for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail))
   // The judge is the verdict decision. Base execution and egress interception
   // land with the orchestrator; today the head side is the whole picture.
   const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: 'allowed' })
@@ -107,6 +112,14 @@ function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): vo
   for (const [criterionIndex, criterion] of job.criteria.entries()) {
     for (const [checkIndex, check] of (criterion.checks ?? []).entries()) {
       const base = `criteria[${criterionIndex}].checks[${checkIndex}]`
+      if (check.kind === 'mail') {
+        validateValueReferences(check.address, values, `${base}.address`)
+        for (const field of ['from', 'subject', 'body'] as const) {
+          const value = check[field]
+          if (value !== undefined) validateValueReferences(value, values, `${base}.${field}`)
+        }
+        continue
+      }
       validateValueReferences(check.run, values, `${base}.run`)
       if (check.cwd !== undefined) validateValueReferences(check.cwd, values, `${base}.cwd`)
       for (const [key, value] of Object.entries(check.env ?? {})) {
@@ -160,6 +173,7 @@ async function runCriterion(
   job: Job,
   rules: readonly RedactionRule[],
   values: RunValues,
+  mail: { inbox?: string; readMail?: ReadMail },
 ): Promise<CriterionResult> {
   const checks = criterion.checks ?? []
   if (checks.length === 0)
@@ -170,6 +184,30 @@ async function runCriterion(
   let unverifiedReason: string | undefined
   for (const [index, check] of checks.entries()) {
     const substituted = substituteCheck(check, values)
+    const checkDir = join('checks', criterion.id, String(index))
+    if (substituted.kind === 'mail') {
+      const outcome = await runMailCheck(
+        substituted,
+        mail.inbox,
+        mail.readMail,
+        substituted.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
+      )
+      if (outcome.status === 'unverified') {
+        if (unverifiedReason === undefined) unverifiedReason = outcome.reason
+        continue
+      }
+      await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
+      // Redacted value by value, before the JSON is built: a text pass over the
+      // serialized form can eat a closing quote and publish half the record.
+      const text = JSON.stringify(
+        redactValue(mailEvidence(outcome.message, outcome.waitMs, outcome.polls), rules),
+        null,
+        2,
+      )
+      await writeFile(join(job.evidenceDir, checkDir, 'message.json'), `${text}\n`)
+      evidence.push(`${checkDir}/message.json`)
+      continue
+    }
     const cwd = resolveCheckCwd(substituted.cwd, job.repoPath)
     if (cwd === undefined) {
       const reason = `check cwd ${JSON.stringify(substituted.cwd ?? '')} escapes the repository path; refusing to run it`
@@ -178,7 +216,6 @@ async function runCriterion(
     }
     const timeoutMs = substituted.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
     const outcome = await runCommandCheck(substituted, cwd, timeoutMs)
-    const checkDir = join('checks', criterion.id, String(index))
     await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
     await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), rules))
     await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), redactText(truncationNote(outcome, 'stderr'), rules))
@@ -198,7 +235,16 @@ async function runCriterion(
  * the run's minted values. Unknown names never reach this point: the plan-time
  * walk already refused the run.
  */
-function substituteCheck(check: JobCommandCheck, values: RunValues): JobCommandCheck {
+function substituteCheck(check: JobCheck, values: RunValues): JobCheck {
+  if (check.kind === 'mail') {
+    return {
+      ...check,
+      address: substituteValues(check.address, values),
+      ...(check.from === undefined ? {} : { from: substituteValues(check.from, values) }),
+      ...(check.subject === undefined ? {} : { subject: substituteValues(check.subject, values) }),
+      ...(check.body === undefined ? {} : { body: substituteValues(check.body, values) }),
+    }
+  }
   return {
     ...check,
     run: substituteValues(check.run, values),

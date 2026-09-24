@@ -34,8 +34,14 @@ export interface QaProfile {
   stubs: ProfileStub[]
   visual: ProfileVisual
   suites: ProfileSuite[]
+  /** Where the harness reads the mail a check waits for (#67). */
+  mail?: ProfileMail
   /** Fixture data that must not be published in evidence (#52). */
   redact?: ProfileRedaction
+}
+
+export interface ProfileMail {
+  inbox: string
 }
 
 const SUITE_KINDS: ProfileSuiteKind[] = ['command', 'flow', 'visual']
@@ -148,6 +154,7 @@ export function validateProfileConfig(config: unknown): QaProfile {
     stubs: parseStubs(config.stubs),
     visual: parseVisual(config.visual),
     suites: parseSuites(config.suites),
+    ...(config.mail === undefined ? {} : { mail: parseMail(config.mail) }),
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
   }
 }
@@ -224,6 +231,20 @@ function parseSuite(value: unknown, index: number): ProfileSuite {
     command: nonEmptyString(value.command, `${base}.command`, 'command'),
     kind: kind as ProfileSuiteKind,
   }
+}
+
+function parseMail(value: unknown): ProfileMail {
+  if (!isRecord(value)) fail('mail', 'mail must be a YAML object with inbox')
+  const inbox = nonEmptyString(value.inbox, 'mail.inbox', 'mail inbox')
+  let parsed: URL
+  try {
+    parsed = new URL(inbox)
+  } catch {
+    fail('mail.inbox', `mail inbox ${JSON.stringify(inbox)} is not a valid URL`)
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+    fail('mail.inbox', `mail inbox ${JSON.stringify(inbox)} must be an http or https URL`)
+  return { inbox }
 }
 
 function parseRedact(value: unknown): ProfileRedaction {

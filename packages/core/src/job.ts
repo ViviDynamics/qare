@@ -12,10 +12,21 @@ export interface JobCommandCheck {
   env?: Record<string, string>
 }
 
+export interface JobMailCheck {
+  kind: 'mail'
+  address: string
+  from?: string
+  subject?: string
+  body?: string
+  timeoutMs?: number
+}
+
+export type JobCheck = JobCommandCheck | JobMailCheck
+
 export interface JobCriterion {
   id: string
   text: string
-  checks?: JobCommandCheck[]
+  checks?: JobCheck[]
 }
 
 export type JobPostTarget = 'none' | string
@@ -141,15 +152,16 @@ function parseCriterion(value: unknown, index: number): JobCriterion {
   return checks === undefined ? { id, text } : { id, text, checks }
 }
 
-function parseChecks(value: unknown, base: string): JobCommandCheck[] {
+function parseChecks(value: unknown, base: string): JobCheck[] {
   if (!Array.isArray(value)) fail(`${base}.checks`, 'checks must be an array of command checks')
   return value.map((check, checkIndex) => parseCheck(check, `${base}.checks[${checkIndex}]`))
 }
 
-function parseCheck(value: unknown, base: string): JobCommandCheck {
+function parseCheck(value: unknown, base: string): JobCheck {
   if (!isRecord(value)) fail(base, 'check must be a YAML object with kind and run')
+  if (value.kind === 'mail') return parseMailCheck(value, base)
   if (value.kind !== 'command')
-    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(value.kind)} (job checks are command checks, expected "command")`)
+    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(value.kind)} (job checks are command or mail checks, expected "command" or "mail")`)
   const run = nonEmptyString(value.run, `${base}.run`, 'run command')
   const cwd = value.cwd === undefined ? undefined : nonEmptyString(value.cwd, `${base}.cwd`, 'working directory')
   const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
@@ -160,6 +172,22 @@ function parseCheck(value: unknown, base: string): JobCommandCheck {
     ...(cwd !== undefined ? { cwd } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(env !== undefined ? { env } : {}),
+  }
+}
+
+function parseMailCheck(value: Record<string, unknown>, base: string): JobMailCheck {
+  const address = nonEmptyString(value.address, `${base}.address`, 'address')
+  const from = value.from === undefined ? undefined : nonEmptyString(value.from, `${base}.from`, 'from')
+  const subject = value.subject === undefined ? undefined : nonEmptyString(value.subject, `${base}.subject`, 'subject')
+  const body = value.body === undefined ? undefined : nonEmptyString(value.body, `${base}.body`, 'body')
+  const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
+  return {
+    kind: 'mail',
+    address,
+    ...(from !== undefined ? { from } : {}),
+    ...(subject !== undefined ? { subject } : {}),
+    ...(body !== undefined ? { body } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   }
 }
 

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Plan, PlanCheck, PlanCriterion } from './plan.js'
 
-const CHECK_FIELDS = ['kind', 'name', 'command', 'suite', 'actions', 'screenshot', 'widths', 'themes', 'inferred']
+const CHECK_FIELDS = ['kind', 'name', 'command', 'suite', 'actions', 'screenshot', 'widths', 'themes', 'address', 'from', 'subject', 'body', 'timeoutMs', 'inferred']
 
 export interface PlanComparison {
   matches: boolean
@@ -26,6 +26,12 @@ function canonicalCheck(check: PlanCheck): PlanCheck {
   } else if (check.kind === 'flow') {
     if (check.suite !== undefined) canonical.suite = check.suite
     if (check.actions !== undefined) canonical.actions = [...check.actions]
+  } else if (check.kind === 'mail') {
+    canonical.address = check.address
+    if (check.from !== undefined) canonical.from = check.from
+    if (check.subject !== undefined) canonical.subject = check.subject
+    if (check.body !== undefined) canonical.body = check.body
+    if (check.timeoutMs !== undefined) canonical.timeoutMs = check.timeoutMs
   } else {
     canonical.screenshot = check.screenshot
     if (check.widths !== undefined) canonical.widths = [...check.widths]
@@ -153,5 +159,6 @@ function describeCheck(check: PlanCheck): string {
       ? `flow "${check.name}" (suite ${check.suite})`
       : `flow "${check.name}" (actions ${JSON.stringify(check.actions ?? [])})`
   }
+  if (check.kind === 'mail') return `mail "${check.name}" (${check.address})`
   return `visual "${check.name}" (screenshot ${check.screenshot})`
 }
