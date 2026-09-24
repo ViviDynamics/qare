@@ -448,3 +448,130 @@ test('a seeded token and fixture data in command output reach neither the eviden
     expect(published).not.toContain('jane@pilot.example')
   }
 })
+
+test('run values substitute into check run and env, and the minted values land in evidence', async () => {
+  const job = await makeJob({
+    criteria: [
+      {
+        id: 'values-in-run',
+        text: 'echoes the minted address',
+        checks: [{ kind: 'command', run: 'echo {{run.mail_address}}' }],
+      },
+      {
+        id: 'values-in-env',
+        text: 'reads the minted address from its environment',
+        checks: [{ kind: 'command', run: 'printenv ADDR', env: { ADDR: '{{run.mail_address}}' } }],
+      },
+    ],
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('passed')
+  const stdout = await readFile(join(job.evidenceDir, 'checks', 'values-in-run', '0', 'stdout.txt'), 'utf8')
+  const values = JSON.parse(await readFile(join(job.evidenceDir, 'values.json'), 'utf8')) as Record<string, string>
+  expect(stdout.trim()).toBe(values.mail_address)
+  expect(values.mail_address).toBe(`qare-${values.id}@localhost`)
+  expect(
+    (await readFile(join(job.evidenceDir, 'checks', 'values-in-env', '0', 'stdout.txt'), 'utf8')).trim(),
+  ).toBe(values.mail_address)
+})
+
+test('values.json is redacted like every other published evidence file', async () => {
+  const job = await makeJob({
+    criteria: commandCriteria('echo ok'),
+    profile: { inline: { ...INLINE_PROFILE, redact: { values: ['@localhost'] } } },
+  })
+
+  await runJob(job, HEALTHY_BOOT)
+
+  const values = await readFile(join(job.evidenceDir, 'values.json'), 'utf8')
+  expect(values).not.toContain('@localhost')
+})
+
+test('an unknown run value reference refuses the whole run before anything boots', async () => {
+  let bootAttempted = false
+  const job = await makeJob({
+    criteria: commandCriteria('echo {{run.bogus}}'),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, {
+    runCompose: async () => {
+      bootAttempted = true
+      return { code: 0, stdout: '', stderr: '' }
+    },
+    probe: async () => ({ ok: true }),
+  })
+
+  expect(bootAttempted).toBe(false)
+  expect(result.verdict).toBe('refused')
+  for (const criterion of result.criteria) {
+    expect(criterion.outcome).toBe('unverified')
+    expect(criterion.reason).toContain('{{run.bogus}}')
+  }
+  expect(existsSync(join(job.evidenceDir, 'checks'))).toBe(false)
+})
+
+test('an unterminated run value reference refuses the run the same way', async () => {
+  const job = await makeJob({
+    criteria: commandCriteria('echo {{oops'),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('refused')
+  expect(result.criteria[0].reason).toContain('unterminated run value reference')
+})
+
+test('an unknown run value reference in the seed command is a plan-time refusal too', async () => {
+  const job = await makeJob({
+    criteria: commandCriteria('echo ok'),
+    profile: { inline: { ...INLINE_PROFILE, app: { ...INLINE_PROFILE.app, seed: { command: 'bin/rails db:seed:qa {{run.bogus}}' } } } },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('refused')
+  expect(result.criteria[0].reason).toContain('{{run.bogus}}')
+  expect(result.criteria[0].reason).toContain('app.seed.command')
+})
+
+test('a run value reference in a check cwd is refused at plan time with the cwd field named', async () => {
+  const job = await makeJob({
+    criteria: [
+      {
+        id: 'cwd-ref',
+        text: 'runs somewhere with a reference in the cwd',
+        checks: [{ kind: 'command', run: 'echo ok', cwd: 'e2e-{{run.bogus}}' }],
+      },
+    ],
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('refused')
+  expect(result.criteria[0].reason).toContain('criteria[0].checks[0].cwd')
+  expect(result.criteria[0].reason).toContain('{{run.bogus}}')
+})
+
+test('a reference in an env key is refused: keys name variables, they are not substitution sites', async () => {
+  const job = await makeJob({
+    criteria: [
+      {
+        id: 'env-key-ref',
+        text: 'carries a reference in an env key',
+        checks: [{ kind: 'command', run: 'echo ok', env: { '{{run.bogus}}': 'x' } }],
+      },
+    ],
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('refused')
+  expect(result.criteria[0].reason).toContain('env key')
+})

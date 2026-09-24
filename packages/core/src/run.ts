@@ -4,10 +4,11 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { bootApp, type BootOpts } from './boot.js'
 import { judgeRun, toSideResults } from './judge.js'
 import { feedRunLedger } from './ledger-feed.js'
-import type { Job, JobCommandCheck, JobCriterion } from './job.js'
+import { JobValidationError, type Job, type JobCommandCheck, type JobCriterion } from './job.js'
 import { ProfileMissingError, loadProfile, validateProfileConfig, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, redactResult, redactText, redactionRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult } from './result.js'
+import { mintRunValues, substituteValues, validateValueReferences, type RunValues } from './values.js'
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 60000
 const NO_CHECKS_REASON = 'no checks: model planning lands when nare integration ships'
@@ -43,18 +44,17 @@ export async function runJob(
     // A repository that has not onboarded is refused, not a caller mistake
     // (#107). Every criterion is still reported, unverified, naming the gap,
     // so the evidence says what nobody checked and what onboarding needs.
-    const criteria: CriterionResult[] = job.criteria.map((criterion) => ({
-      id: criterion.id,
-      outcome: 'unverified',
-      reason: `this repository has no usable .qa/ profile yet, so qare will not claim to have checked it: ${error.message}`,
-    }))
-    const finished = await finishRun(
-      job,
-      { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria },
-      BUILTIN_REDACTION_RULES,
-    )
-    await feedIfOptedIn(opts, job, finished.result)
-    return finished
+    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `this repository has no usable .qa/ profile yet, so qare will not claim to have checked it: ${error.message}`)
+  }
+  // Run values exist per run, so they are minted here and referenced by name
+  // from user-authored strings (#68). An unknown reference fails closed at
+  // plan time: nothing boots, and the refusal names the field and the name.
+  const values = mintRunValues()
+  try {
+    validatePlanValues(job, profile, values)
+  } catch (error) {
+    if (!(error instanceof JobValidationError)) throw error
+    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, error.message)
   }
   const rules = redactionRules(profile.redact)
   const boot = await bootApp(profile, opts)
@@ -64,19 +64,58 @@ export async function runJob(
       outcome: 'unverified',
       reason: boot.reason ?? 'boot did not come up',
     }))
-    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria }, rules)
+    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria }, rules, values)
     await feedIfOptedIn(opts, job, finished.result)
     return finished
   }
 
   const criteria: CriterionResult[] = []
-  for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules))
+  for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values))
   // The judge is the verdict decision. Base execution and egress interception
   // land with the orchestrator; today the head side is the whole picture.
   const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: 'allowed' })
-  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria }, rules)
+  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria }, rules, values)
   await feedIfOptedIn(opts, job, finished.result)
   return finished
+}
+
+/** Refuse the whole run without booting: every criterion is reported unverified, naming the gap. */
+async function refuseRun(
+  job: Job,
+  opts: BootOpts & { ledgerFeed?: { dir: string } },
+  rules: readonly RedactionRule[],
+  reason: string,
+): Promise<{ result: RunResult }> {
+  const criteria: CriterionResult[] = job.criteria.map((criterion) => ({
+    id: criterion.id,
+    outcome: 'unverified',
+    reason,
+  }))
+  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria }, rules)
+  await feedIfOptedIn(opts, job, finished.result)
+  return finished
+}
+
+/**
+ * Walk every user-authored string that can carry a `{{run.<name>}}` reference and
+ * reject unknown names before anything boots. The seed command is validated here
+ * even though its execution lands with the orchestrator, so a bad name in the
+ * seed is still a plan-time failure.
+ */
+function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): void {
+  validateValueReferences(profile.app.seed.command, values, 'app.seed.command')
+  for (const [criterionIndex, criterion] of job.criteria.entries()) {
+    for (const [checkIndex, check] of (criterion.checks ?? []).entries()) {
+      const base = `criteria[${criterionIndex}].checks[${checkIndex}]`
+      validateValueReferences(check.run, values, `${base}.run`)
+      if (check.cwd !== undefined) validateValueReferences(check.cwd, values, `${base}.cwd`)
+      for (const [key, value] of Object.entries(check.env ?? {})) {
+        if (key.includes('{{'))
+          throw new JobValidationError(`${base}.env.${key}`, 'an env key names a variable and is not a substitution site; put the reference in the value')
+        validateValueReferences(value, values, `${base}.env.${key}`)
+      }
+    }
+  }
 }
 
 async function feedIfOptedIn(
@@ -102,10 +141,17 @@ async function finishRun(
   job: Job,
   result: RunResult,
   rules: readonly RedactionRule[],
+  values?: RunValues,
 ): Promise<{ result: RunResult }> {
   const full: RunResult = redactResult({ ...result, job: { id: job.id } }, rules)
   await mkdir(job.evidenceDir, { recursive: true })
   await writeFile(join(job.evidenceDir, 'result.json'), `${JSON.stringify(full, null, 2)}\n`)
+  if (values !== undefined) {
+    // Evidence is published, so the minted values go through the same redaction
+    // sweep as everything else the run writes (#68).
+    const text = redactText(JSON.stringify(values, null, 2), rules)
+    await writeFile(join(job.evidenceDir, 'values.json'), `${text}\n`)
+  }
   return { result: full }
 }
 
@@ -113,6 +159,7 @@ async function runCriterion(
   criterion: JobCriterion,
   job: Job,
   rules: readonly RedactionRule[],
+  values: RunValues,
 ): Promise<CriterionResult> {
   const checks = criterion.checks ?? []
   if (checks.length === 0)
@@ -122,14 +169,15 @@ async function runCriterion(
   let failed = false
   let unverifiedReason: string | undefined
   for (const [index, check] of checks.entries()) {
-    const cwd = resolveCheckCwd(check.cwd, job.repoPath)
+    const substituted = substituteCheck(check, values)
+    const cwd = resolveCheckCwd(substituted.cwd, job.repoPath)
     if (cwd === undefined) {
-      const reason = `check cwd ${JSON.stringify(check.cwd ?? '')} escapes the repository path; refusing to run it`
+      const reason = `check cwd ${JSON.stringify(substituted.cwd ?? '')} escapes the repository path; refusing to run it`
       if (unverifiedReason === undefined) unverifiedReason = reason
       continue
     }
-    const timeoutMs = check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
-    const outcome = await runCommandCheck(check, cwd, timeoutMs)
+    const timeoutMs = substituted.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
+    const outcome = await runCommandCheck(substituted, cwd, timeoutMs)
     const checkDir = join('checks', criterion.id, String(index))
     await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
     await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), rules))
@@ -143,6 +191,26 @@ async function runCriterion(
   if (failed) return { id: criterion.id, outcome: 'failed', evidence }
   if (unverifiedReason !== undefined) return { id: criterion.id, outcome: 'unverified', reason: unverifiedReason }
   return { id: criterion.id, outcome: 'proven', evidence }
+}
+
+/**
+ * Substitute `{{run.<name>}}` references in a check's user-authored strings with
+ * the run's minted values. Unknown names never reach this point: the plan-time
+ * walk already refused the run.
+ */
+function substituteCheck(check: JobCommandCheck, values: RunValues): JobCommandCheck {
+  return {
+    ...check,
+    run: substituteValues(check.run, values),
+    ...(check.cwd === undefined ? {} : { cwd: substituteValues(check.cwd, values) }),
+    ...(check.env === undefined
+      ? {}
+      : {
+          env: Object.fromEntries(
+            Object.entries(check.env).map(([key, value]) => [key, substituteValues(value, values)]),
+          ),
+        }),
+  }
 }
 
 interface CheckOutcome {
