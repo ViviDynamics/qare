@@ -109,8 +109,11 @@ function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): vo
       const base = `criteria[${criterionIndex}].checks[${checkIndex}]`
       validateValueReferences(check.run, values, `${base}.run`)
       if (check.cwd !== undefined) validateValueReferences(check.cwd, values, `${base}.cwd`)
-      for (const [key, value] of Object.entries(check.env ?? {}))
+      for (const [key, value] of Object.entries(check.env ?? {})) {
+        if (key.includes('{{'))
+          throw new JobValidationError(`${base}.env.${key}`, 'an env key names a variable and is not a substitution site; put the reference in the value')
         validateValueReferences(value, values, `${base}.env.${key}`)
+      }
     }
   }
 }

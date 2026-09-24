@@ -18,7 +18,7 @@ export type {
 } from './plan.js'
 export { fingerprintPlan, comparePlan, lockPlan } from './plan-lock.js'
 export type { PlanComparison } from './plan-lock.js'
-export { mintRunValues, substituteValues, validateValueReferences, hasValueReferences } from './values.js'
+export { mintRunValues, substituteValues, validateValueReferences } from './values.js'
 export type { RunValues } from './values.js'
 export { mintCriterionId, normalizeWording, resolveCriterion } from './criterion-identity.js'
 export type { CriterionRevision, CriterionResolution } from './criterion-identity.js'

@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { hasValueReferences, mintRunValues, substituteValues, validateValueReferences } from '../src/values.js'
+import { mintRunValues, substituteValues, validateValueReferences } from '../src/values.js'
 import { JobValidationError } from '../src/job.js'
 
 test('minted values carry a run id, a timestamp and a mail address shaped from the id', () => {
@@ -25,12 +25,6 @@ test('substitution replaces every minted reference in one string and leaves plai
   expect(substituteValues('{{}}', values)).toBe('{{}}')
 })
 
-test('hasValueReferences detects complete references only', () => {
-  expect(hasValueReferences('echo {{run.mail_address}}')).toBe(true)
-  expect(hasValueReferences('echo ok')).toBe(false)
-  expect(hasValueReferences('echo {{oops')).toBe(false)
-})
-
 test('validation accepts every minted name', () => {
   const values = mintRunValues()
   expect(() => validateValueReferences('{{run.id}} {{run.started_at}} {{run.mail_address}}', values, 'x.run')).not.toThrow()
@@ -43,9 +37,12 @@ test('validation names the field and the unknown value', () => {
   expect(error.message).toContain('{{run.bogus}}')
 })
 
-test('a reference that is not namespaced run.<name> is unknown, not substituted', () => {
+test('inherited Object.prototype names are unknown values, not minted ones', () => {
   const values = mintRunValues()
-  expect(() => validateValueReferences('{{id}}', values, 'x.run')).toThrow(JobValidationError)
+  expect(() => validateValueReferences('{{run.constructor}}', values, 'x.run')).toThrow(JobValidationError)
+  expect(() => validateValueReferences('{{run.toString}}', values, 'x.run')).toThrow(JobValidationError)
+  expect(substituteValues('{{run.constructor}}', values)).toBe('{{run.constructor}}')
+  expect(substituteValues('{{id}}', values)).toBe('{{id}}')
 })
 
 test('an unterminated reference is refused, not passed through as prose', () => {

@@ -124,7 +124,8 @@ it (`{{run.id}}`, `{{run.started_at}}`). This is substitution, not a language:
 no expressions, no conditionals, no nesting. A reference to a name the harness
 does not mint, or an unterminated `{{`, fails the run closed at plan time and
 nothing boots. The minted values are written to the run's evidence, so a reader
-can see which address a run used, and two concurrent runs never collide.
+can see which address a run used, and two concurrent runs never collide. Flow
+definitions substitute with the flow runner.
 
 ## The criteria ledger
 

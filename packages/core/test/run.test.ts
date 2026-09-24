@@ -538,3 +538,40 @@ test('an unknown run value reference in the seed command is a plan-time refusal 
   expect(result.criteria[0].reason).toContain('{{run.bogus}}')
   expect(result.criteria[0].reason).toContain('app.seed.command')
 })
+
+test('a run value reference in a check cwd is refused at plan time with the cwd field named', async () => {
+  const job = await makeJob({
+    criteria: [
+      {
+        id: 'cwd-ref',
+        text: 'runs somewhere with a reference in the cwd',
+        checks: [{ kind: 'command', run: 'echo ok', cwd: 'e2e-{{run.bogus}}' }],
+      },
+    ],
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('refused')
+  expect(result.criteria[0].reason).toContain('criteria[0].checks[0].cwd')
+  expect(result.criteria[0].reason).toContain('{{run.bogus}}')
+})
+
+test('a reference in an env key is refused: keys name variables, they are not substitution sites', async () => {
+  const job = await makeJob({
+    criteria: [
+      {
+        id: 'env-key-ref',
+        text: 'carries a reference in an env key',
+        checks: [{ kind: 'command', run: 'echo ok', env: { '{{run.bogus}}': 'x' } }],
+      },
+    ],
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('refused')
+  expect(result.criteria[0].reason).toContain('env key')
+})
