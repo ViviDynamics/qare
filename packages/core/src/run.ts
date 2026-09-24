@@ -6,6 +6,7 @@ import { judgeRun, toSideResults } from './judge.js'
 import { feedRunLedger } from './ledger-feed.js'
 import type { Job, JobCommandCheck, JobCriterion } from './job.js'
 import { ProfileMissingError, loadProfile, validateProfileConfig, type QaProfile } from './profile.js'
+import { BUILTIN_REDACTION_RULES, redactResult, redactText, redactionRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult } from './result.js'
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 60000
@@ -25,6 +26,10 @@ const NO_CHECKS_REASON = 'no checks: model planning lands when nare integration 
  *
  * The booted app is intentionally left up after the checks so evidence (logs) can
  * be inspected; teardown is the caller's job (stopApp).
+ *
+ * Everything written to the evidence directory, and the result returned, is
+ * redacted with the profile's rules and the built-in ones (#52): evidence is
+ * published, and output from the app under test can carry its secrets.
  */
 export async function runJob(
   job: Job,
@@ -43,10 +48,15 @@ export async function runJob(
       outcome: 'unverified',
       reason: `this repository has no usable .qa/ profile yet, so qare will not claim to have checked it: ${error.message}`,
     }))
-    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria })
+    const finished = await finishRun(
+      job,
+      { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria },
+      BUILTIN_REDACTION_RULES,
+    )
     await feedIfOptedIn(opts, job, finished.result)
     return finished
   }
+  const rules = redactionRules(profile.redact)
   const boot = await bootApp(profile, opts)
   if (boot.kind === 'blocked') {
     const criteria: CriterionResult[] = job.criteria.map((criterion) => ({
@@ -54,17 +64,17 @@ export async function runJob(
       outcome: 'unverified',
       reason: boot.reason ?? 'boot did not come up',
     }))
-    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria })
+    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria }, rules)
     await feedIfOptedIn(opts, job, finished.result)
     return finished
   }
 
   const criteria: CriterionResult[] = []
-  for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job))
+  for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules))
   // The judge is the verdict decision. Base execution and egress interception
   // land with the orchestrator; today the head side is the whole picture.
   const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: 'allowed' })
-  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria })
+  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria }, rules)
   await feedIfOptedIn(opts, job, finished.result)
   return finished
 }
@@ -88,14 +98,22 @@ async function resolveProfile(job: Job) {
   return loadProfile(resolve(job.repoPath, job.profile.path))
 }
 
-async function finishRun(job: Job, result: RunResult): Promise<{ result: RunResult }> {
-  const full: RunResult = { ...result, job: { id: job.id } }
+async function finishRun(
+  job: Job,
+  result: RunResult,
+  rules: readonly RedactionRule[],
+): Promise<{ result: RunResult }> {
+  const full: RunResult = redactResult({ ...result, job: { id: job.id } }, rules)
   await mkdir(job.evidenceDir, { recursive: true })
   await writeFile(join(job.evidenceDir, 'result.json'), `${JSON.stringify(full, null, 2)}\n`)
   return { result: full }
 }
 
-async function runCriterion(criterion: JobCriterion, job: Job): Promise<CriterionResult> {
+async function runCriterion(
+  criterion: JobCriterion,
+  job: Job,
+  rules: readonly RedactionRule[],
+): Promise<CriterionResult> {
   const checks = criterion.checks ?? []
   if (checks.length === 0)
     return { id: criterion.id, outcome: 'unverified', reason: NO_CHECKS_REASON }
@@ -114,8 +132,8 @@ async function runCriterion(criterion: JobCriterion, job: Job): Promise<Criterio
     const outcome = await runCommandCheck(check, cwd, timeoutMs)
     const checkDir = join('checks', criterion.id, String(index))
     await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
-    await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), truncationNote(outcome, 'stdout'))
-    await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), truncationNote(outcome, 'stderr'))
+    await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), rules))
+    await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), redactText(truncationNote(outcome, 'stderr'), rules))
     evidence.push(`${checkDir}/stdout.txt`, `${checkDir}/stderr.txt`)
     if (outcome.status === 'failed') failed = true
     else if (outcome.status === 'unverified' && unverifiedReason === undefined)

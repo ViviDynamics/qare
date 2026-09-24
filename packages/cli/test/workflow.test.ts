@@ -161,3 +161,18 @@ test('stub issues are filed before posting, so a posting failure cannot stop the
   const judge = section('judge')
   expect(judge.indexOf('- name: File stub issues')).toBeLessThan(judge.indexOf('- name: Post the evidence'))
 })
+
+test('execute redacts the evidence, and uploads it only when redaction succeeded', () => {
+  const execute = section('execute')
+  const redact = execute.indexOf('- name: Redact the evidence')
+  const upload = execute.indexOf('- name: Upload evidence')
+  expect(redact, 'no redaction step in execute').toBeGreaterThan(execute.indexOf('- name: Run the plan'))
+  expect(upload).toBeGreaterThan(redact)
+  const step = execute.slice(redact, upload)
+  expect(step).toContain('id: redact')
+  // Always, so a crashed run's leftovers are redacted too.
+  expect(step).toContain('if: always()')
+  expect(step).toContain('packages/cli/dist/index.js redact --evidence evidence --profile .qa')
+  const uploadStep = execute.slice(upload, execute.indexOf('- name:', upload + 1) === -1 ? undefined : execute.indexOf('- name:', upload + 1))
+  expect(uploadStep).toContain("if: always() && steps.redact.outcome == 'success'")
+})

@@ -14,6 +14,13 @@ import {
   loadPlan,
   loadResult,
   NareAgentRunner,
+  ProfileMissingError,
+  BUILTIN_REDACTION_RULES,
+  loadProfile,
+  redactEvidenceDir,
+  redactResult,
+  redactText,
+  redactionRules,
   criteriaFromIssue,
   criteriaFromIssues,
   IssueCriteriaError,
@@ -53,8 +60,9 @@ export async function main(
   if (argv[0] === 'judge') return judgeCommand(argv.slice(1), out, err)
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
+  if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>]\n`,
+    `qare ${VERSION}\nusage: qare --version | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>] | qare redact --evidence <dir> [--profile <dir>]\n`,
   )
   return 0
 }
@@ -128,6 +136,42 @@ async function issueCriteriaCommand(argv: string[], out: Writer, err: Writer): P
     await mkdir(dirname(target), { recursive: true })
     await writeFile(target, `${JSON.stringify(criteria, null, 2)}\n`, 'utf8')
     out.write(`${criteria.length} criteria; ${target}\n`)
+    return 0
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 4
+  }
+}
+
+/**
+ * Redact an evidence directory in place before it is uploaded (#52), with the
+ * profile's rules and the built-in ones.
+ *
+ * A repository with no usable profile gets the built-in rules alone, which is
+ * what its refused run was written with. A profile that is there but broken,
+ * or a file redaction cannot vouch for, fails: the caller uploads nothing.
+ */
+async function redactCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
+  try {
+    for (const arg of argv.filter((entry) => entry.startsWith('-')))
+      if (arg !== '--evidence' && arg !== '--profile') throw new Error(`qare redact does not take ${arg}`)
+    const evidence = flag(argv, '--evidence')
+    if (evidence === undefined) throw new Error('qare redact requires --evidence <dir>')
+    const profileDir = flag(argv, '--profile')
+    let rules = BUILTIN_REDACTION_RULES
+    if (profileDir !== undefined) {
+      try {
+        rules = redactionRules((await loadProfile(resolve(profileDir))).redact)
+      } catch (error) {
+        if (!(error instanceof ProfileMissingError)) throw error
+        out.write(`no usable .qa/ profile at ${profileDir}, so only the built-in rules apply\n`)
+      }
+    }
+    const report = await redactEvidenceDir(resolve(evidence), rules)
+    for (const name of report.changed) out.write(`redacted ${name}\n`)
+    out.write(
+      `${report.changed.length} of ${report.files.length} files redacted; ${report.images.length} images published as captured\n`,
+    )
     return 0
   } catch (error) {
     err.write(`${formatError(error)}\n`)
@@ -291,14 +335,16 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
       )
       for (const [index, criterion] of criteria.entries())
         if (criterion.outcome !== judged.criteria[index]?.outcome)
-          err.write(`verifier: ${criterion.criterionId} ${criterion.outcome}: ${criterion.reason}\n`)
+          err.write(`verifier: ${criterion.criterionId} ${criterion.outcome}: ${redactText(criterion.reason)}\n`)
     }
     // A refused run executed nothing, so there is nothing to judge: the
     // verdict stays refused. Recomputing it from all-unverified criteria read
     // it back as blocked, and the stub-issue step that acts on refused never
     // fired.
     const verdict = loaded.verdict === 'refused' ? 'refused' : verdictOf(criteria, judged.regressions, waived)
-    const result = mergeJudged(loaded, verdict, criteria, evidenceById)
+    // The verifier's reasons are model text about the evidence, and every file
+    // written here is uploaded or posted.
+    const result = redactResult(mergeJudged(loaded, verdict, criteria, evidenceById))
     await mkdir(outDir, { recursive: true })
     await writeFile(join(outDir, 'judged-result.json'), `${JSON.stringify(result, null, 2)}\n`, 'utf8')
     await writeFile(join(outDir, 'comment.md'), `${renderComment(result)}\n`, 'utf8')

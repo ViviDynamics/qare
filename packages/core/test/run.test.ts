@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
@@ -7,6 +7,7 @@ import {
   JobValidationError,
   loadJobFromText,
   loadResult,
+  renderComment,
   runJob,
   type Job,
   type JobCriterion,
@@ -406,3 +407,44 @@ test('a check whose grandchild holds the stdio pipes still settles unverified', 
     },
   ])
 }, 10000)
+
+// Assembled at runtime so no literal token sits in the repository.
+const SEEDED_TOKEN = ['ghp', '_', 'Zz9'.repeat(12)].join('')
+
+async function allEvidenceText(dir: string): Promise<string> {
+  const files = (await readdir(dir, { recursive: true, withFileTypes: true })).filter((entry) => entry.isFile())
+  const texts = await Promise.all(files.map((entry) => readFile(join(entry.parentPath, entry.name), 'utf8')))
+  return texts.join('\n')
+}
+
+test('a seeded token and fixture data in command output reach neither the evidence nor the comment (#52)', async () => {
+  const job = await makeJob({
+    criteria: [
+      {
+        id: 'leaky',
+        text: 'prints what it should not',
+        checks: [{ kind: 'command', run: './leak.sh', env: { SEEDED: SEEDED_TOKEN, CUSTOMER: 'jane@pilot.example' } }],
+      },
+      // The reason for a check that cannot start names its command, so a
+      // secret in the command reaches result.json through the reason.
+      { id: 'unstartable', text: 'names a secret', checks: [{ kind: 'command', run: SEEDED_TOKEN }] },
+    ],
+    profile: { inline: { ...INLINE_PROFILE, redact: { values: ['jane@pilot.example'] } } },
+  })
+  await writeFile(
+    join(job.repoPath, 'leak.sh'),
+    '#!/bin/sh\necho "pushing with $SEEDED"\necho "mailed $CUSTOMER" >&2\nexit 1\n',
+    { mode: 0o755 },
+  )
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.criteria.map((criterion) => criterion.outcome)).toEqual(['failed', 'unverified'])
+  const evidence = await allEvidenceText(job.evidenceDir)
+  expect(evidence).toContain('pushing with [redacted]')
+  expect(evidence).toContain('mailed [redacted]')
+  for (const published of [evidence, JSON.stringify(result), renderComment(result)]) {
+    expect(published).not.toContain(SEEDED_TOKEN)
+    expect(published).not.toContain('jane@pilot.example')
+  }
+})

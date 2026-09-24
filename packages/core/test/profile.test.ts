@@ -90,3 +90,38 @@ test('a config.yml with an unknown suite kind fails naming the field', async () 
 
   rmSync(dir, { recursive: true })
 })
+
+test('a redact section loads its values and patterns', async () => {
+  const dir = copiedProfile()
+  writeFileSync(
+    join(dir, 'config.yml'),
+    `${fixtureConfig()}\nredact:\n  values: [jane@pilot.example]\n  patterns: ['CUST-\\d{6}']\n`,
+  )
+
+  const profile = await loadProfile(dir)
+
+  expect(profile.redact).toEqual({ values: ['jane@pilot.example'], patterns: ['CUST-\\d{6}'] })
+  rmSync(dir, { recursive: true })
+})
+
+test('a profile with no redact section has none', async () => {
+  expect((await loadProfile(fixtureDir)).redact).toBeUndefined()
+})
+
+test('a redact pattern that does not compile fails the profile, naming redact', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\nredact:\n  patterns: ['(unclosed']\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('redact')
+  expect(error.message).toContain('(unclosed')
+  rmSync(dir, { recursive: true })
+})
+
+test('a redact section that is not a mapping fails naming it', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\nredact: [a]\n`)
+
+  expect((await profileError(() => loadProfile(dir))).field).toBe('redact')
+  rmSync(dir, { recursive: true })
+})

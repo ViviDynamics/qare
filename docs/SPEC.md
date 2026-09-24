@@ -105,6 +105,9 @@ visual:
   themes: [light, dark]
 suites:
   - { name: browser-e2e, command: "npm --prefix e2e test", kind: flow }
+redact:                          # optional: fixture data that must not be published
+  values: ["jane@pilot.example"] # literal strings
+  patterns: ['CUST-\d{6}']       # regular expressions
 ```
 
 Agent-written stubs are allowed only when flagged: any check that depends on a
@@ -330,6 +333,13 @@ Fork PRs are refused outright in the Action.
   before/after/diff images, trace link, preview URL if any, verifier notes.
 - A `qare` check run with the state from the table above.
 - Artifacts: screenshots, traces, logs, `plan.json`, `result.json`.
+- Everything above is redacted before it is published: known token shapes
+  (the same rules nare applies to its own events, plus a few more), key and
+  password assignments, passwords in URLs, and the profile's `redact` values
+  and patterns. A run redacts what it writes; the pipeline sweeps the evidence
+  directory again before uploading it, and a file the sweep cannot vouch for (a
+  binary that is not an image, a symlink) stops the upload. Screenshots are
+  published as captured, because text rules cannot read pixels.
 - `result.json` is the machine contract other harnesses consume.
 - Both artifact schemas are documented in [schemas.md](./schemas.md); the
   orchestrator contract (invocation, exit codes and reaction per verdict) in

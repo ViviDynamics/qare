@@ -21,6 +21,7 @@ Action). From this plugin you only use the CLI:
 - `qare run` — plan, execute and judge; writes evidence and `result.json`.
 - `qare judge` — re-judge from existing evidence. Its verifier needs `--plan` and `--diff`; `--runner none` judges without it.
 - `qare ledger` — inspect the criteria ledger.
+- `qare redact --evidence <dir> [--profile <dir>]` — redact an evidence directory in place before publishing it; fails, naming the file, when it meets one it cannot vouch for.
 
 If the CLI is not installed, say so and stop; do not approximate qare by
 writing checks or verdicts yourself.
