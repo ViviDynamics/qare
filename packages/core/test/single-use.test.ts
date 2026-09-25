@@ -217,6 +217,15 @@ test('a consumer of an unread message is unverified naming the mail check', asyn
   expect(result.criteria[0]?.outcome).toBe('unverified')
 })
 
+test('an artefact reference inside an env value substitutes like the run string', async () => {
+  const job = await makeJob(
+    criteria([mailCheck({ singleUse: true }), { kind: 'command', run: 'printenv ARTEFACT', env: { ARTEFACT: '{{mail.welcome.link}}' } }]),
+  )
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, readMail: reader(() => message()) })
+  expect(result.verdict).toBe('passed')
+  expect((await evidenceText(job, join('checks', 'criterion-1', '1', 'stdout.txt'))).trim()).toBe(SETUP_URL)
+})
+
 test('the consumed artefact is redacted in the evidence', async () => {
   const job = await makeJob(criteria([mailCheck({ singleUse: true }), consumeCheck('{{mail.welcome.link}}')]))
   await runJob(job, {

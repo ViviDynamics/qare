@@ -154,7 +154,7 @@ function validateMailArtefactName(name: string, mailChecks: Map<string, number>,
   const parts = name.split('.')
   const [kind, checkName, artefact] = parts
   if (kind !== 'mail' || checkName === undefined || artefact !== 'link' || parts.length !== 3) {
-    throw new JobValidationError(field, `unknown artefact ${JSON.stringify(`{{${name}}}`)}; a mail check exposes {{mail.<name>.link}}, the first link in the message it read`)
+    throw new JobValidationError(field, `unknown artefact ${JSON.stringify(`{{${name}}}`)}; a mail check exposes {{mail.<name>.link}}, the first link in the message it read, and a mail check name carries no dot`)
   }
   const count = mailChecks.get(checkName) ?? 0
   if (count === 0) {
@@ -345,8 +345,12 @@ function resolveArtefactFields(
   for (const name of names) {
     // The reference names the mail check between the `mail.` namespace and the
     // artefact field: {{mail.<name>.link}} reads from the mail check <name>.
+    // Plan time refuses anything else, so a shape that reaches this point is
+    // the run's own bug, and a literal left in a command is not an option.
     const [namespace, checkName] = name.split('.')
-    if (namespace !== 'mail' || checkName === undefined) continue
+    if (namespace !== 'mail' || checkName === undefined) {
+      return { ok: false, reason: `malformed artefact reference {{${name}}}; a reference is {{mail.<name>.link}}` }
+    }
     const outcome = artefacts.resolve(checkName, consumer)
     if (!outcome.ok) return outcome
     resolved.set(name, outcome.artefact)
