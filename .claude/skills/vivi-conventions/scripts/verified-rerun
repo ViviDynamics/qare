@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Rerun a run's failed jobs and prove it happened (run_attempt increments).
+# usage: verified-rerun <run_id> --pr <pr> [--wait-sec N]
+# exit: 0 verified, 1 rerun did not happen, 4 precondition failed
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+vivi_load_env; vivi_require VIVI_REPO
+run_id=${1:-}; [ -n "$run_id" ] || vivi_die 2 "usage: verified-rerun <run_id> --pr <pr> [--wait-sec N]"
+shift; pr=""; wait_sec=120
+while [ $# -gt 0 ]; do
+  case "$1" in --pr) pr=$2; shift 2;; --wait-sec) wait_sec=$2; shift 2;; *) vivi_die 2 "unknown option $1";; esac
+done
+[ -n "$pr" ] || vivi_die 2 "--pr is required (head SHA check)"
+head=$(vivi_gh pr view "$pr" --repo "$VIVI_REPO" --json headRefOid --jq .headRefOid) || exit $?
+info=$(vivi_gh api "repos/$VIVI_REPO/actions/runs/$run_id") || exit $?
+status=$(printf '%s' "$info" | jq -r .status)
+run_head=$(printf '%s' "$info" | jq -r .head_sha)
+before=$(printf '%s' "$info" | jq -r .run_attempt)
+if [ "$status" != "completed" ]; then
+  printf '{"run_id":%s,"verified":false,"reason":"run is %s, rerun would silently no-op"}\n' "$run_id" "$status"; exit 4
+fi
+if [ "$run_head" != "$head" ]; then
+  printf '{"run_id":%s,"verified":false,"reason":"run head %s is not the PR head %s; rerunning a stale run cancels live CI"}\n' "$run_id" "$run_head" "$head"; exit 4
+fi
+vivi_gh run rerun "$run_id" --failed --repo "$VIVI_REPO" >/dev/null || exit $?
+start=$(date +%s); after=$before
+while :; do
+  after=$(vivi_gh api "repos/$VIVI_REPO/actions/runs/$run_id" | jq -r .run_attempt) || after=$before
+  if [ "$after" -gt "$before" ]; then break; fi
+  if [ $(( $(date +%s) - start )) -ge "$wait_sec" ]; then break; fi
+  vivi_sleep 10
+done
+if [ "$after" -gt "$before" ]; then
+  printf '{"run_id":%s,"attempt_before":%s,"attempt_after":%s,"verified":true}\n' "$run_id" "$before" "$after"; exit 0
+fi
+printf '{"run_id":%s,"attempt_before":%s,"attempt_after":%s,"verified":false,"reason":"run_attempt did not increment within %ss"}\n' "$run_id" "$before" "$after" "$wait_sec"; exit 1

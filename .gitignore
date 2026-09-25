@@ -9,3 +9,14 @@ playwright-report/
 .env
 .env.*
 .worktrees/
+
+# Vivi skills wiring: .agents/state/ and repo.env are local; repo.env.example
+# is committed so other clones can recreate repo.env.
+.agents/state/
+repo.env
+
+# Exception: .claude/skills/ is the shared team workflow set — tracked on purpose.
+# (.claude/* not .claude/: git will not descend into an excluded directory to
+# re-include its contents.)
+.claude/*
+!.claude/skills/
