@@ -23,6 +23,12 @@ function runnable(check: PlanCheck): JobCheck | undefined {
   switch (check.kind) {
     case 'command':
       return { kind: 'command', run: check.command }
+    case 'flow':
+      return {
+        kind: 'flow',
+        ...(check.suite === undefined ? {} : { suite: check.suite }),
+        ...(check.actions === undefined ? {} : { actions: check.actions }),
+      }
     case 'mail':
       return {
         kind: 'mail',
@@ -59,7 +65,7 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
     const skipped = criterion.checks.filter((check) => runnable(check) === undefined)
     if (skipped.length > 0)
       notes.push(
-        `${criterion.id}: ${skipped.length} check(s) not run, because the runner executes command and mail checks only ` +
+        `${criterion.id}: ${skipped.length} check(s) not run, because the runner executes command, mail and flow checks only ` +
           `(${[...new Set(skipped.map((check) => check.kind))].join(', ')})`,
       )
     return checks.length > 0

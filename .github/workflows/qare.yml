@@ -204,6 +204,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # Flow checks need a browser (#121). The version tracks playwright-core
+      # in packages/core/package.json: the runner drives that chromium.
+      - name: Install the flow browser
+        run: npx --yes playwright@1.63.0 install --with-deps chromium
       - name: Download plan.json
         uses: actions/download-artifact@v4
         with:

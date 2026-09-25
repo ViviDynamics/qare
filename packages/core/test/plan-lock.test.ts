@@ -126,7 +126,7 @@ test('the fingerprint changes when any check field changes', () => {
     parsePlan({ ...basePlanInput, criteria: [{ id: 'c2', text: 'second criterion.', checks: [{ kind: 'visual', name: 'n2', screenshot: 's', widths: [1440, 390], themes: ['dark', 'light'] }] }] }),
     parsePlan({ ...basePlanInput, criteria: [{ id: 'c2', text: 'second criterion.', checks: [{ kind: 'visual', name: 'n2', screenshot: 's2', widths: [1440, 390], themes: ['light', 'dark'] }] }] }),
     parsePlan({ ...basePlanInput, criteria: [{ id: 'c1', text: 'first criterion.', checks: [{ kind: 'flow', name: 'n1', suite: 'browser-e2e' }] }] }),
-    parsePlan({ ...basePlanInput, criteria: [{ id: 'c1', text: 'first criterion.', checks: [{ kind: 'flow', name: 'n1', actions: ['open the app'] }] }] }),
+    parsePlan({ ...basePlanInput, criteria: [{ id: 'c1', text: 'first criterion.', checks: [{ kind: 'flow', name: 'n1', actions: [{ action: 'open', url: ['http:', '//localhost:3000/up'].join('') }] }] }] }),
   ]
   for (const mutation of mutations) expect(fingerprintPlan(mutation)).not.toBe(locked)
 })

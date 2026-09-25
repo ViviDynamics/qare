@@ -1,6 +1,13 @@
+// The flow vocabulary is the runner's (flow.ts); the plan loader accepts it
+// verbatim and rejects anything else. Type-only import: the loader adds no
+// runtime dependency on the runner.
+import type { FlowAction, FlowElement } from './flow.js'
+
 export const PLAN_SCHEMA_VERSION = '1'
 
 export type CheckKind = 'command' | 'flow' | 'visual' | 'mail'
+
+export type FlowActionStep = FlowAction
 
 export interface CommandCheck {
   kind: 'command'
@@ -13,7 +20,7 @@ export interface FlowCheck {
   kind: 'flow'
   name: string
   suite?: string
-  actions?: string[]
+  actions?: FlowActionStep[]
   inferred?: boolean
 }
 
@@ -183,7 +190,7 @@ function parseCheck(value: unknown, base: string): PlanCheck {
         const suite = nonEmptyString(value.suite, `${base}.suite`, 'suite')
         return finish({ kind: 'flow', name, suite }, inferred)
       }
-      const actions = stringArray(value.actions, `${base}.actions`, 'actions')
+      const actions = parseFlowActions(value.actions, `${base}.actions`)
       return finish({ kind: 'flow', name, actions }, inferred)
     }
     case 'visual': {
@@ -220,6 +227,67 @@ function parseCheck(value: unknown, base: string): PlanCheck {
         inferred,
       )
     }
+  }
+}
+
+/**
+ * Flow actions are typed, not free-form strings (#121): a plan whose actions
+ * are instructions a human improvises is rejected here, where it loads, so
+ * nothing downstream is left to interpret them.
+ */
+export function parseFlowActions(value: unknown, base: string): FlowActionStep[] {
+  if (!Array.isArray(value)) fail(base, 'actions must be an array of typed actions')
+  return value.map((entry, index) => parseFlowAction(entry, `${base}[${index}]`))
+}
+
+const FLOW_ACTION_KINDS = ['open', 'type', 'click', 'assert'] as const
+
+function parseFlowAction(value: unknown, base: string): FlowActionStep {
+  if (!isRecord(value)) fail(base, 'a flow action must be an object, not a free-form string')
+  const kind = value.action
+  if (typeof kind !== 'string' || !FLOW_ACTION_KINDS.includes(kind as 'open'))
+    fail(
+      `${base}.action`,
+      `unknown flow action ${JSON.stringify(kind)} (expected ${FLOW_ACTION_KINDS.map((k) => `"${k}"`).join(', ')})`,
+    )
+  switch (kind) {
+    case 'open': {
+      const url = nonEmptyString(value.url, `${base}.url`, 'url')
+      return { action: 'open', url }
+    }
+    case 'type': {
+      const element = parseFlowElement(value.element, `${base}.element`)
+      const actionValue = nonEmptyString(value.value, `${base}.value`, 'typed value')
+      return { action: 'type', element, value: actionValue }
+    }
+    case 'click': {
+      const element = parseFlowElement(value.element, `${base}.element`)
+      return { action: 'click', element }
+    }
+    case 'assert': {
+      const text = nonEmptyString(value.text, `${base}.text`, 'asserted text')
+      return { action: 'assert', text }
+    }
+    default:
+      throw new Error(`unreachable: ${String(kind)} was validated against the vocabulary above`)
+  }
+}
+
+function parseFlowElement(value: unknown, base: string): FlowElement {
+  if (!isRecord(value)) fail(base, 'an element reference must be an object: {"role":...,"name":...} or {"testId":...}')
+  const hasRole = value.role !== undefined
+  const hasName = value.name !== undefined
+  const hasTestId = value.testId !== undefined
+  if (hasTestId) {
+    if (hasRole || hasName)
+      fail(base, 'an element reference is a test id or a role with its accessible name, not both')
+    return { testId: nonEmptyString(value.testId, `${base}.testId`, 'test id') }
+  }
+  if (!hasRole || !hasName)
+    fail(base, 'an element reference names a role with its accessible name, or a test id')
+  return {
+    role: nonEmptyString(value.role, `${base}.role`, 'role'),
+    name: nonEmptyString(value.name, `${base}.name`, 'accessible name'),
   }
 }
 

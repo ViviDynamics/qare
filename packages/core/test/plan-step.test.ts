@@ -74,6 +74,20 @@ test('the schema handed to nare stays inside the subset nare can enforce', async
   walkSchema(JSON.parse(runner.requests[0].outputSchema))
 })
 
+test('the schema types flow actions and the prompt names the element vocabulary', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+  await planRun(runner, INPUTS)
+
+  const schema = JSON.parse(runner.requests[0].outputSchema)
+  const actions = schema.properties.criteria.items.properties.checks.items.properties.actions
+  expect(actions.items.properties.action.enum).toEqual(['open', 'type', 'click', 'assert'])
+  expect(actions.items.properties.element).toMatchObject({ type: 'object' })
+
+  const [request] = runner.requests
+  expect(request.prompt).toContain('Never a CSS selector')
+  expect(request.prompt).toContain('testId')
+})
+
 test('an unplannable criterion is kept, with its reason', async () => {
   const runner = new FakeAgentRunner([
     completed(

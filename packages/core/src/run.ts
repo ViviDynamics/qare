@@ -3,11 +3,13 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Artefacts } from './artefacts.js'
 import { bootApp, type BootOpts } from './boot.js'
+import { runFlowCheck, runSuiteCheck, type FlowPage, type FlowTrace } from './flow.js'
+import { makePlaywrightFlowSession } from './flow-playwright.js'
 import { judgeRun, toSideResults } from './judge.js'
+import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck } from './job.js'
 import { feedRunLedger } from './ledger-feed.js'
-import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion } from './job.js'
 import { httpMailbox, mailEvidence, runMailCheck, type ReadMail } from './mailbox.js'
-import { ProfileMissingError, loadProfile, validateProfileConfig, type QaProfile } from './profile.js'
+import { ProfileMissingError, loadProfile, validateProfileConfig, type ProfileSuite, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, redactResult, redactText, redactValue, redactionRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult } from './result.js'
 import { mintRunValues, substituteValues, validateValueReferences, type RunValues, REFERENCE } from './values.js'
@@ -16,12 +18,20 @@ export const DEFAULT_CHECK_TIMEOUT_MS = 60000
 const NO_CHECKS_REASON = 'no checks: model planning lands when nare integration ships'
 
 /**
+ * Where the flow check gets its browser: the run hands over a session factory,
+ * and tests hand over a fake, so the runner never imports the backend twice (#121).
+ */
+export type FlowSessionFactory = () => Promise<{ page: FlowPage; trace: FlowTrace; dispose: () => Promise<void> }>
+
+/**
  * Execute a job's checks against the head revision and write result.json into the
  * job's evidence directory.
  *
- * Limitations of this slice: checks are head commands only (base execution lands
- * with Task 14), and each check's `run` string is split on whitespace and spawned
- * directly without a shell, so quoting, pipes and shell syntax are not interpreted.
+ * Limitations of this slice: checks run against the head revision only (base
+ * execution lands with the orchestrator), and each command's `run` string is
+ * split on whitespace and spawned directly without a shell, so quoting, pipes
+ * and shell syntax are not interpreted. Flow checks run last-in-class: suite
+ * flows through their declared command, action flows through the page seam.
  *
  * A check without `env` inherits the harness environment unchanged. A check that
  * carries `env` opts into a minimal deterministic environment (PATH, HOME and the
@@ -36,7 +46,7 @@ const NO_CHECKS_REASON = 'no checks: model planning lands when nare integration 
  */
 export async function runJob(
   job: Job,
-  opts: BootOpts & { ledgerFeed?: { dir: string }; readMail?: ReadMail } = {},
+  opts: BootOpts & { ledgerFeed?: { dir: string }; readMail?: ReadMail; flowSession?: FlowSessionFactory } = {},
 ): Promise<{ result: RunResult }> {
   let profile: QaProfile
   try {
@@ -79,7 +89,8 @@ export async function runJob(
   // Single-use artefacts are a per-run ledger: what was consumed in this run
   // says nothing about any other run (#69).
   const artefacts = new Artefacts()
-  for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts))
+  const flow = { session: opts.flowSession, suites: profile.suites }
+  for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow))
   // The judge is the verdict decision. Base execution and egress interception
   // land with the orchestrator; today the head side is the whole picture.
   const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: 'allowed' })
@@ -128,6 +139,7 @@ function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): vo
         if (check.name !== undefined) mailChecks.set(check.name, (mailChecks.get(check.name) ?? 0) + 1)
         continue
       }
+      if (check.kind === 'flow') continue
       const allow = (field: string) => (name: string): boolean => {
         if (!name.startsWith('mail.')) return false
         validateMailArtefactName(name, mailChecks, field)
@@ -209,6 +221,7 @@ async function runCriterion(
   values: RunValues,
   mail: { inbox?: string; readMail?: ReadMail },
   artefacts: Artefacts,
+  flow: { session?: FlowSessionFactory; suites: ProfileSuite[] },
 ): Promise<CriterionResult> {
   const checks = criterion.checks ?? []
   if (checks.length === 0)
@@ -242,6 +255,22 @@ async function runCriterion(
       // link of the message this check waited for (#69).
       if (substituted.name !== undefined)
         artefacts.publish(substituted.name, messageEvidence.links[0], substituted.singleUse === true)
+      continue
+    }
+    if (substituted.kind === 'flow') {
+      const outcome = await runFlowCheckJob(
+        substituted,
+        flow.suites,
+        flow.session,
+        job.repoPath,
+        job.evidenceDir,
+        checkDir,
+        rules,
+      )
+      evidence.push(...outcome.evidence)
+      if (outcome.status === 'failed') failed = true
+      else if (outcome.status === 'unverified' && unverifiedReason === undefined)
+        unverifiedReason = outcome.reason
       continue
     }
     // Run-time artefact resolution happens last, immediately before the check
@@ -292,6 +321,9 @@ async function runCriterion(
  * walk already refused the run.
  */
 function substituteCheck(check: JobCheck, values: RunValues): JobCheck {
+  // A flow check's vocabulary is fixed and closed; it has no free-form string
+  // that names a run value today, so it passes through unchanged (#121).
+  if (check.kind === 'flow') return check
   if (check.kind === 'mail') {
     return {
       ...check,
@@ -319,6 +351,93 @@ interface ResolvedArtefacts {
   ok: true
   check: JobCommandCheck
   consumed: { source: string; artefact: string }[]
+}
+
+/**
+ * Execute one flow check (#121). A suite flow runs the suite's command from the
+ * profile and records the outcome in `suite.txt`; an actions flow drives the
+ * page seam and records the action log and screenshots. The trace is kept out
+ * of the published evidence: redaction cannot read a zip (#52). Anything that
+ * is not the page's fault — no suite by that name, a backend that will not
+ * start, a flow outliving its timeout — is unverified, never failed.
+ */
+async function runFlowCheckJob(
+  check: JobFlowCheck,
+  suites: ProfileSuite[],
+  session: FlowSessionFactory | undefined,
+  repoPath: string,
+  evidenceDir: string,
+  checkDir: string,
+  rules: readonly RedactionRule[],
+): Promise<{ status: 'passed' | 'failed' | 'unverified'; reason?: string; evidence: string[] }> {
+  const inEvidence = (names: readonly string[]): string[] => names.map((name) => `${checkDir}/${name}`)
+  if (check.suite !== undefined) {
+    const suite = suites.find((entry) => entry.name === check.suite)
+    if (suite === undefined) {
+      return {
+        status: 'unverified',
+        reason: `no suite named ${JSON.stringify(check.suite)} in the profile's suites; the flow is unverified, not failed`,
+        evidence: [],
+      }
+    }
+    const outcome = await runSuiteCheck(suite, { cwd: repoPath, timeoutMs: check.timeoutMs })
+    const dir = join(evidenceDir, checkDir)
+    await mkdir(dir, { recursive: true })
+    const text = redactText(
+      JSON.stringify(
+        { suite: suite.name, command: suite.command, outcome: outcome.outcome, ...(outcome.reason === undefined ? {} : { reason: outcome.reason }) },
+        null,
+        2,
+      ),
+      rules,
+    )
+    await writeFile(join(dir, 'suite.txt'), `${text}\n`)
+    return {
+      status: outcome.outcome,
+      ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+      evidence: inEvidence(['suite.txt']),
+    }
+  }
+  const factory = session ?? makePlaywrightFlowSession
+  const timeoutMs = check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
+  let started
+  try {
+    started = await factory()
+  } catch (error) {
+    // A backend that will not start says nothing about the change: without a
+    // browser the flow is unverifiable, which is an outcome and not a failure.
+    return { status: 'unverified', reason: `the flow backend did not start: ${(error as Error).message}`, evidence: [] }
+  }
+  try {
+    const work = runFlowCheck({
+      actions: check.actions ?? [],
+      page: started.page,
+      trace: started.trace,
+      outDir: join(evidenceDir, checkDir),
+      tracesDir: resolve(evidenceDir, '..', 'traces', checkDir),
+      redactLog: (text) => redactText(text, rules),
+    })
+    // The losing branch of the race is drained, so a flow that finishes late
+    // after a timeout does not crash the run with an unhandled rejection.
+    void work.catch(() => {})
+    let outcome
+    try {
+      outcome = await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          const timer = setTimeout(() => reject(new Error(`flow exceeded its ${timeoutMs} ms timeout`)), timeoutMs)
+          timer.unref()
+        }),
+      ])
+    } catch (error) {
+      return { status: 'unverified', reason: (error as Error).message, evidence: [] }
+    }
+    const evidence = inEvidence(outcome.evidence)
+    if (outcome.outcome === 'unverified') return { status: 'unverified', reason: outcome.reason, evidence }
+    return { status: outcome.outcome, ...(outcome.reason === undefined ? {} : { reason: outcome.reason }), evidence }
+  } finally {
+    await started.dispose()
+  }
 }
 
 /**
