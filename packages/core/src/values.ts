@@ -18,7 +18,8 @@ export function mintRunValues(opts: { targetUrl?: string } = {}): RunValues {
     id,
     started_at: new Date().toISOString(),
     mail_address: `qare-${id}@localhost`,
-    ...(opts.targetUrl === undefined ? {} : { target_url: opts.targetUrl }),
+    // No trailing slash, so {{run.target_url}}/path never doubles one.
+    ...(opts.targetUrl === undefined ? {} : { target_url: opts.targetUrl.replace(/\/+$/, '') }),
   }
 }
 
@@ -72,5 +73,19 @@ export function validateValueReferences(
   for (const match of complete) leftover = leftover.replace(match[0], '')
   if (leftover.includes('{{')) {
     throw new JobValidationError(field, 'unterminated run value reference; a reference is "{{run.<name>}}" and must open and close in the same string')
+  }
+}
+
+/**
+ * Fail closed on an unknown `{{run.<name>}}` reference only, leaving every
+ * other `{{...}}` alone. For text that legitimately carries braces of its own:
+ * a suite command (`docker ps --format '{{.Names}}'`), or a value a flow types
+ * or a text it asserts on a page that shows template syntax.
+ */
+export function validateRunReferences(text: string, values: RunValues, field: string): void {
+  for (const match of text.matchAll(REFERENCE)) {
+    const name = match[1] ?? ''
+    if (!name.startsWith('run.') || Object.hasOwn(values, name.slice(4))) continue
+    throw new JobValidationError(field, `unknown run value ${JSON.stringify(match[0])}; minted values are ${Object.keys(values).map((key) => `{{run.${key}}}`).join(', ')}`)
   }
 }

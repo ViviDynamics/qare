@@ -381,3 +381,56 @@ test('a flow on a target served under a sub-path opens its pages below it', asyn
 
   expect(opened).toEqual([`${app}/login`])
 })
+
+test('braces that are not run references pass through a suite command and flow text untouched', async () => {
+  const withSuite = validateProfileConfig({
+    ...TARGET_CONFIG,
+    suites: [{ name: 'e2e', command: "node echo-args.mjs {{.Names}} {{run.target_url}}", kind: 'flow' }],
+  })
+  const job = await makeJob(
+    [
+      { id: 'c1', text: 'x', checks: [{ kind: 'flow', actions: [{ action: 'open', url: '/' }, { action: 'assert', text: 'Hello {{name}}' }] }] },
+      { id: 'c2', text: 'y', checks: [{ kind: 'flow', suite: 'e2e' }] },
+    ],
+    withSuite,
+  )
+
+  const { result } = await runJob(job, { ...NEVER_COMPOSE, ...UP, flowSession: fakeSession([]) })
+
+  expect(result.verdict).toBe('passed')
+  // The evidence names the command that ran, not its template.
+  const suite = JSON.parse(await readFile(join(job.evidenceDir, 'checks/c2/0/suite.txt'), 'utf8'))
+  expect(suite.command).toBe(`node echo-args.mjs {{.Names}} ${TARGET_URL}`)
+})
+
+test('a path that climbs out of the target is refused: in a flow at plan time, in the health check at load', async () => {
+  const app = ['https:', '//org.example.test/app/'].join('')
+  expect(pathOnTarget(app, '/../admin')).toBeUndefined()
+  expect(pathOnTarget(app, '/%2e%2e/admin')).toBeUndefined()
+  expect(() => validateProfileConfig({ target: { url: app, health: { http: '/../up', timeout: '1s' } } })).toThrow(
+    expect.objectContaining({ field: 'target.health.http' }),
+  )
+
+  const opened: string[] = []
+  const job = await makeJob(
+    [{ id: 'c1', text: 'x', checks: [{ kind: 'flow', actions: [{ action: 'open', url: '/../admin' }] }] }],
+    validateProfileConfig({ target: { url: app, health: { http: '/up', timeout: '1s' } } }),
+  )
+  const { result } = await runJob(job, { ...NEVER_COMPOSE, ...UP, flowSession: fakeSession(opened) })
+
+  expect(result.verdict).toBe('refused')
+  expect((result.criteria[0] as { reason: string }).reason).toContain('actions[0].url')
+  expect(opened).toEqual([])
+})
+
+test('{{run.target_url}} carries no trailing slash, so a path after it never doubles one', async () => {
+  const opened: string[] = []
+  const job = await makeJob(
+    [{ id: 'c1', text: 'x', checks: [{ kind: 'flow', actions: [{ action: 'open', url: '{{run.target_url}}/wiki/Ada_Lovelace' }] }] }],
+    validateProfileConfig({ target: { url: `${TARGET_URL}/`, health: { http: '/health', timeout: '1s' } } }),
+  )
+
+  await runJob(job, { ...NEVER_COMPOSE, ...UP, flowSession: fakeSession(opened) })
+
+  expect(opened).toEqual([PAGE_URL])
+})

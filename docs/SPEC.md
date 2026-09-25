@@ -406,7 +406,10 @@ marked `failed`. Command checks, the command of a suite a flow names, and a
 flow's strings (a URL to open, a value to type, a text to assert) reach the
 target through `{{run.target_url}}`. A flow's `open` action also takes a path
 on the target (`/wiki/Ada_Lovelace`), which resolves below its URL, so a target
-served under a sub-path keeps it; a health path resolves the same way. A
+served under a sub-path keeps it; a health path resolves the same way, and a
+path that climbs out of the target (`/../admin`) is refused. In a flow's
+strings and a suite's command only `{{run.<name>}}` is a reference: other
+braces are the page's or the command's own and pass through untouched. A
 profile that boots its own stack does not mint `{{run.target_url}}`, so a
 reference to it there fails closed at plan time.
 
@@ -415,8 +418,9 @@ check's `outbound.json`, however the flow ended, a timeout included. A browser
 backend that cannot report what it reached leaves the flow `unverified`. The target's own host is always allowed, and `target.hosts`
 names the rest, with the same `*.` wildcards as a stub's hosts. A host that is
 neither refuses the run, as a missing stub does in a booted run, except that no
-stub issue is filed: a target has no stubs. Command checks are not intercepted;
-only the browser's traffic is recorded.
+stub issue is filed: a target has no stubs. Command checks and suites are not intercepted:
+a suite drives its own browser, which QARE cannot see. Only the traffic of the
+browser QARE drives is recorded.
 
 There is only one side, so nothing runs at a base revision and no regression is
 looked for. The result carries `target: { url, comparison: "none" }` and the

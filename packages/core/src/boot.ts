@@ -82,9 +82,11 @@ const REMOTE_PROBE_TIMEOUT_MS = 10000
  * are not followed: the health URL names the page that answers.
  */
 async function waitForHealth(url: string, timeoutMs: number, opts: BootOpts, probeTimeoutMs = LOCAL_PROBE_TIMEOUT_MS): Promise<boolean> {
-  const probe = opts.probe ?? ((target: string) => defaultProbe(target, probeTimeoutMs))
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
   const deadline = Date.now() + timeoutMs
+  // No probe outlives the deadline: a target that accepts and never answers
+  // is blocked when its timeout says, not a probe later.
+  const probe = opts.probe ?? ((target: string) => defaultProbe(target, Math.max(1, Math.min(probeTimeoutMs, deadline - Date.now()))))
   while (Date.now() < deadline) {
     try {
       if ((await probe(url)).ok) return true

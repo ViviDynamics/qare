@@ -53,16 +53,15 @@ export async function makePlaywrightFlowSession(
       .launch({ headless: true, executablePath: opts.browserExecutablePath })
       .then(async (browser) => {
         const context = await browser.newContext()
-        context.on('request', (request) => {
-          const attempt = attemptOf(request.url())
+        const record = (url: string): void => {
+          const attempt = attemptOf(url)
           if (attempt !== undefined) outbound.push(attempt)
-        })
+        }
+        context.on('request', (request) => record(request.url()))
+        // A WebSocket never raises a request event, so every page the context
+        // opens reports its own: the flow's page, and any popup it spawns.
+        context.on('page', (opened) => opened.on('websocket', (socket) => record(socket.url())))
         const page = await context.newPage()
-        // A WebSocket never raises a request event, so the page reports it.
-        page.on('websocket', (socket) => {
-          const attempt = attemptOf(socket.url())
-          if (attempt !== undefined) outbound.push(attempt)
-        })
         return { browser, context, page }
       })
       .catch((error: unknown) => {

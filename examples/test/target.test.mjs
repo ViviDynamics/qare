@@ -26,12 +26,12 @@ async function site() {
   return { server, url: `http://127.0.0.1:${server.address().port}` }
 }
 
-async function repo(targetUrl) {
+async function repo(targetUrl, timeout = '3s') {
   const dir = await mkdtemp(join(tmpdir(), 'qare-target-e2e-'))
   await mkdir(join(dir, '.qa'))
   // The whole profile: QA.md and a target. No fixtures, no stubs, no compose.
   await writeFile(join(dir, '.qa', 'QA.md'), '# QA\n')
-  await writeFile(join(dir, '.qa', 'config.yml'), `target:\n  url: ${targetUrl}\n  health: { http: /health, timeout: 3s }\n`)
+  await writeFile(join(dir, '.qa', 'config.yml'), `target:\n  url: ${targetUrl}\n  health: { http: /health, timeout: ${timeout} }\n`)
   await writeFile(
     join(dir, 'page-has.mjs'),
     [
@@ -135,4 +135,26 @@ test('a target that is down is blocked, naming the URL, and no criterion is fail
     assert.equal(criterion.outcome, 'unverified')
     assert.ok(criterion.reason.includes(url), criterion.reason)
   }
+})
+
+test('a target that accepts and never answers is blocked when its timeout says, not a probe later', async (t) => {
+  // Holds every request open: each probe waits on headers that never come.
+  const server = createServer(() => {})
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${server.address().port}`
+  // Longer than one 10s probe, so an uncapped second probe would overrun it.
+  const dir = await repo(url, '11s')
+  t.after(async () => {
+    server.closeAllConnections()
+    server.close()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  const started = Date.now()
+  const outcome = await runCli(dir)
+  const elapsed = Date.now() - started
+
+  assert.equal(outcome.code, 2, outcome.stderr)
+  // An uncapped second probe would run to about 20.5s.
+  assert.ok(elapsed < 15000, `blocked after ${elapsed} ms`)
 })

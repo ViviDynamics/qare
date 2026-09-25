@@ -31,9 +31,11 @@ function fakeChromium(events: string[], opts: { visible?: boolean; subresources?
       return Promise.resolve({
         newContext: async () => {
           events.push('context')
+          const onPage: Array<(page: unknown) => void> = []
           return {
-            on: (event: string, handler: (request: { url: () => string }) => void) => {
-              if (event === 'request') onRequest.push(handler)
+            on: (event: string, handler: (arg: never) => void) => {
+              if (event === 'request') onRequest.push(handler as (request: { url: () => string }) => void)
+              if (event === 'page') onPage.push(handler as (page: unknown) => void)
             },
             tracing: {
               start: async (opts: { screenshots: boolean; snapshots: boolean }) => {
@@ -43,7 +45,9 @@ function fakeChromium(events: string[], opts: { visible?: boolean; subresources?
                 events.push(`stop ${opts.path}`)
               },
             },
-            newPage: async () => ({
+            // Like Playwright, the context raises `page` for every page it opens.
+            newPage: async () => {
+              const page = {
               goto: async (url: string) => {
                 events.push(`open ${url}`)
                 request(url)
@@ -58,7 +62,10 @@ function fakeChromium(events: string[], opts: { visible?: boolean; subresources?
               getByTestId: (testId: string) => locator(`testId=${testId}`),
               getByText: (text: string) => locator(`text=${text}`),
               screenshot: async (opts: { path: string }) => events.push(`screenshot ${opts.path}`),
-            }),
+              }
+              for (const handler of onPage) handler(page)
+              return page
+            },
           }
         },
         close: async () => events.push('close'),

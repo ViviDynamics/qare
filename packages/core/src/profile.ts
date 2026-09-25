@@ -216,15 +216,18 @@ function httpUrl(value: string, field: string, label: string): URL {
 /**
  * A path on the target, below its URL: `/login` on a target served at
  * `https://org.example/app/` is `https://org.example/app/login`, not the
- * host's root. A path can never leave the target's origin.
+ * host's root. A path that climbs out of it (`/../admin`, encoded or not)
+ * is undefined: it names no page on the target.
  */
-export function pathOnTarget(targetUrl: string, path: string): string {
+export function pathOnTarget(targetUrl: string, path: string): string | undefined {
   const base = new URL(targetUrl)
   base.search = ''
   base.hash = ''
   if (!base.pathname.endsWith('/')) base.pathname = `${base.pathname}/`
   // "./" keeps a colon in the first segment (/Special:Search) from reading as a scheme.
-  return new URL(`./${path.replace(/^\/+/, '')}`, base).href
+  const resolved = new URL(`./${path.replace(/^\/+/, '')}`, base)
+  if (resolved.origin !== base.origin || !resolved.pathname.startsWith(base.pathname)) return undefined
+  return resolved.href
 }
 
 function parseTarget(value: unknown): ProfileTarget {
@@ -234,7 +237,14 @@ function parseTarget(value: unknown): ProfileTarget {
   if (!isRecord(value.health)) fail('target.health', 'target.health must be a YAML object with http and timeout')
   // The health check may be a path on the target, which is the usual case.
   const http = nonEmptyString(value.health.http, 'target.health.http', 'health URL')
-  const healthUrl = http.startsWith('/') ? pathOnTarget(base.href, http) : httpUrl(http, 'target.health.http', 'health URL').href
+  let healthUrl: string
+  if (http.startsWith('/')) {
+    const onTarget = pathOnTarget(base.href, http)
+    if (onTarget === undefined) fail('target.health.http', `the health path ${JSON.stringify(http)} climbs out of the target ${url}`)
+    healthUrl = onTarget
+  } else {
+    healthUrl = httpUrl(http, 'target.health.http', 'health URL').href
+  }
   const timeout = nonEmptyString(value.health.timeout, 'target.health.timeout', 'health timeout')
   try {
     parseDurationMs(timeout)

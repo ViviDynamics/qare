@@ -14,7 +14,7 @@ import { httpMailbox, mailEvidence, runMailCheck, type ReadMail } from './mailbo
 import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, redactResult, redactText, redactValue, redactionRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult } from './result.js'
-import { mintRunValues, substituteValues, validateValueReferences, type RunValues, REFERENCE } from './values.js'
+import { mintRunValues, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 60000
 const NO_CHECKS_REASON = 'no checks: model planning lands when nare integration ships'
@@ -165,14 +165,19 @@ function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): vo
       }
       if (check.kind === 'flow') {
         // Flow strings and the command of the suite a flow names carry run
-        // values too, such as {{run.target_url}} (#122).
+        // values too, such as {{run.target_url}} (#122). Only run references
+        // are held to the mint: other braces are the page's or the suite's own.
         for (const [actionIndex, action] of (check.actions ?? []).entries()) {
-          for (const [field, value] of flowStrings(action))
-            validateValueReferences(value, values, `${base}.actions[${actionIndex}].${field}`)
+          mapFlowStrings(action, (value, field) => {
+            validateRunReferences(value, values, `${base}.actions[${actionIndex}].${field}`)
+            return value
+          })
+          if (profile.target !== undefined && action.action === 'open' && action.url.startsWith('/') && pathOnTarget(profile.target.url, action.url) === undefined)
+            throw new JobValidationError(`${base}.actions[${actionIndex}].url`, `the path ${JSON.stringify(action.url)} climbs out of the target ${profile.target.url}; a path on the target stays below its URL`)
         }
         const suiteIndex = check.suite === undefined ? -1 : profile.suites.findIndex((suite) => suite.name === check.suite)
         const suite = profile.suites[suiteIndex]
-        if (suite !== undefined) validateValueReferences(suite.command, values, `suites[${suiteIndex}].command`)
+        if (suite !== undefined) validateRunReferences(suite.command, values, `suites[${suiteIndex}].command`)
         continue
       }
       const allow = (field: string) => (name: string): boolean => {
@@ -362,21 +367,7 @@ function substituteCheck(check: JobCheck, values: RunValues): JobCheck {
   // URL, a typed value, a text to assert) may name run values (#122).
   if (check.kind === 'flow') {
     if (check.actions === undefined) return check
-    return {
-      ...check,
-      actions: check.actions.map((action): FlowActionStep => {
-        switch (action.action) {
-          case 'open':
-            return { ...action, url: substituteValues(action.url, values) }
-          case 'type':
-            return { ...action, value: substituteValues(action.value, values) }
-          case 'assert':
-            return { ...action, text: substituteValues(action.text, values) }
-          default:
-            return action
-        }
-      }),
-    }
+    return { ...check, actions: check.actions.map((action) => mapFlowStrings(action, (value) => substituteValues(value, values))) }
   }
   if (check.kind === 'mail') {
     return {
@@ -438,15 +429,15 @@ async function runFlowCheckJob(
     }
     // The suite's command names run values like any command check, so a suite
     // on a target run learns where the target is from {{run.target_url}}.
-    const outcome = await runSuiteCheck(
-      { name: suite.name, command: substituteValues(suite.command, values) },
-      { cwd: repoPath, timeoutMs: check.timeoutMs },
-    )
+    // A suite runs its own browser, which qare cannot see: like a command
+    // check, its traffic is not recorded, and the SPEC says so.
+    const command = substituteValues(suite.command, values)
+    const outcome = await runSuiteCheck({ name: suite.name, command }, { cwd: repoPath, timeoutMs: check.timeoutMs })
     const dir = join(evidenceDir, checkDir)
     await mkdir(dir, { recursive: true })
     const text = redactText(
       JSON.stringify(
-        { suite: suite.name, command: suite.command, outcome: outcome.outcome, ...(outcome.reason === undefined ? {} : { reason: outcome.reason }) },
+        { suite: suite.name, command, outcome: outcome.outcome, ...(outcome.reason === undefined ? {} : { reason: outcome.reason }) },
         null,
         2,
       ),
@@ -535,20 +526,24 @@ function targetContext(target: ProfileTarget): FlowTargetContext {
 /** A path in an `open` action is a page on the target: it resolves below the target URL. */
 function onTarget(action: FlowActionStep, url: string): FlowActionStep {
   if (action.action !== 'open' || !action.url.startsWith('/')) return action
-  return { ...action, url: pathOnTarget(url, action.url) }
+  // Plan time refused a path that climbs out of the target.
+  return { ...action, url: pathOnTarget(url, action.url) ?? action.url }
 }
 
-/** The strings in a flow action that may carry run values, by field name. */
-function flowStrings(action: FlowActionStep): Array<[string, string]> {
+/**
+ * Map the strings in a flow action that may carry run values, by field name.
+ * The one list of them: plan-time validation and substitution both walk it.
+ */
+function mapFlowStrings(action: FlowActionStep, map: (value: string, field: string) => string): FlowActionStep {
   switch (action.action) {
     case 'open':
-      return [['url', action.url]]
+      return { ...action, url: map(action.url, 'url') }
     case 'type':
-      return [['value', action.value]]
+      return { ...action, value: map(action.value, 'value') }
     case 'assert':
-      return [['text', action.text]]
+      return { ...action, text: map(action.text, 'text') }
     default:
-      return []
+      return action
   }
 }
 
