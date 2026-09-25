@@ -53,11 +53,16 @@ whether or not a criterion covers it.
 
 ## Pipeline
 
-Three jobs, so the model and the GitHub token never share a machine with PR code.
+Four jobs, so the model and the GitHub token never share a machine with PR
+code. Every secret-holding job builds and runs qare from the base commit, a
+revision the pull request cannot change; the pull request contributes data
+only: its body, the linked issues, the diff, its `.qa/` profile read as YAML,
+and the artifacts execute uploaded.
 
 | Job | Secrets | Network | Does |
 | --- | --- | --- | --- |
-| **plan** | model key | yes | Reads the issue, the diff and `.qa/`; writes `plan.json` mapping each criterion to checks tagged `command`, `flow` or `visual`. Never executes PR code. |
+| **collect** | GitHub token | yes | Reads the pull request body, linked issues and diff from the base commit's checkout; writes `criteria.json`. Never executes PR code. |
+| **plan** | model key | yes | Reads the criteria, the diff and `.qa/`; writes `plan.json` mapping each criterion to checks tagged `command`, `flow` or `visual`. Never executes PR code. |
 | **execute** | none | stub containers only | Boots the app at the merge base and at the head with stubs, runs the plan, saves artifacts and raw results. |
 | **judge** | model key, GitHub token | yes | Computes verdicts in code from raw results, runs the verifier model on the evidence, posts the comment and check. |
 

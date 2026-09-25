@@ -1,8 +1,10 @@
 name: QARE
 
-# Three-job qare pipeline: plan -> execute -> judge, with artifact handoff.
+# Four-job qare pipeline: collect -> plan -> execute -> judge (+ requeue on
+# push), with artifact handoff.
 #
-# Secret-hygiene map (constitution: the three jobs never share a machine):
+# Secret-hygiene map (constitution rule 7: secrets never share a machine with
+# pull request code):
 #   - collect: holds the GitHub token only    (reads the linked issue; no model key)
 #   - plan:    holds the model key only       (QARE_PLANNER_KEY)
 #   - execute: holds no secrets at all        (stub containers only)
@@ -11,6 +13,13 @@ name: QARE
 #     nothing; GITHUB_TOKEN for the steps that write to GitHub)
 #   - requeue: holds the GitHub token only    (posts /qa on refused PRs)
 # No secret values are written here; only names, resolved at runtime.
+#
+# What runs what: collect, plan and judge hold secrets, so they build and run
+# qare from the base commit, a revision the pull request cannot change, and
+# no secret-holding job installs or runs the pull request's tree. The pull
+# request contributes data only: its body, the linked issues, the diff, its
+# .qa/ profile read as YAML, and the artifacts execute uploaded. execute runs
+# the pull request's own qare, and holds no secrets.
 #
 # Criteria come from the issue the pull request promises to close (#98). A
 # change that promises none, or closes only issues that state none, has
@@ -50,8 +59,11 @@ jobs:
     outputs:
       criteria: ${{ steps.inputs.outputs.criteria }}
     steps:
+      # The base commit: this job holds the GitHub token, so the qare it
+      # installs and runs is a revision the pull request cannot change.
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -71,6 +83,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_BODY: ${{ github.event.pull_request.body }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           printf '%s' "${PR_BODY:-}" > pr-body.md
@@ -93,7 +107,11 @@ jobs:
             echo "criteria=none" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git diff "${BASE_SHA}...HEAD" > change.diff
+          # The head is fetched as an object, not checked out: the base
+          # revision's qare produces the diff, and the pull request's tree is
+          # never installed or run in this job.
+          git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          git diff "${BASE_SHA}...${HEAD_SHA}" > change.diff
           echo "criteria=present" >> "$GITHUB_OUTPUT"
           {
             echo "criteria read from: $(tr '\n' ' ' < linked.txt)"
@@ -120,7 +138,11 @@ jobs:
       needs.collect.outputs.criteria == 'present' &&
       github.event.pull_request.head.repo.full_name == github.repository
     steps:
+      # The base revision's qare: the pull request contributes data only, and
+      # this job holds the model key.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -243,6 +265,17 @@ jobs:
           name: execute-evidence
           path: evidence/
           if-no-files-found: ignore
+      # The profile is pull-request data (rule 7): execute reads it as YAML,
+      # and judge reads it from this artifact rather than from a checkout of
+      # the pull request's tree. A run refused for want of a profile has none
+      # to upload, and judge skips the verifier for it anyway.
+      - name: Upload the profile the run used
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-profile
+          path: .qa
+          if-no-files-found: ignore
 
   # label: judge (model key + GitHub token only)
   judge:
@@ -259,9 +292,12 @@ jobs:
     steps:
       # No token left in .git/config: the verifier step holds the model key
       # and reads files, and must not find a token that can write a check run.
+      # The base commit again: judge holds secrets, so it never installs or
+      # runs the pull request's tree.
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -286,6 +322,15 @@ jobs:
         with:
           name: execute-evidence
           path: evidence
+      # The profile arrives as an artifact: it is pull-request data, and this
+      # job must not check out the pull request tree. Only a run that actually
+      # executed has one; a refused run skipped the verifier.
+      - name: Download the profile the run used
+        if: steps.executed.outputs.verdict != 'refused'
+        uses: actions/download-artifact@v4
+        with:
+          name: qa-profile
+          path: profile
       # A refused run executed nothing, so judge will not call the verifier,
       # and a failed install must not stop its stub issues being filed.
       - name: Read the executed verdict
@@ -317,7 +362,7 @@ jobs:
           node packages/cli/dist/index.js judge \
             --result evidence/result.json --outDir . \
             --plan plan.json --diff change.diff \
-            --nare "$HOME/.local/bin/nare" --profile .qa
+            --nare "$HOME/.local/bin/nare" --profile profile
       - name: File stub issues (refused runs only)
         if: github.event_name == 'pull_request'
         shell: bash

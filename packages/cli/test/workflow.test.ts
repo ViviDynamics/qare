@@ -177,9 +177,44 @@ test('execute redacts the evidence, and uploads it only when redaction succeeded
   expect(uploadStep).toContain("if: always() && steps.redact.outcome == 'success'")
 })
 
-test('judge redacts what it publishes with the profile rules', () => {
+test('judge reads the profile the run used from the artifact, as data only', () => {
   const judge = section('judge')
   const start = judge.indexOf('- name: Judge the result')
   const step = judge.slice(start, judge.indexOf('- name:', start + 1))
-  expect(step).toContain('--profile .qa')
+  expect(step).toContain('--profile profile')
+})
+
+test('secret-holding jobs build qare from the base commit, not the pull request tree', () => {
+  // Rule 7: the pull request contributes data only. A job holding a secret
+  // installs and runs qare from a revision the pull request cannot change,
+  // so no install script or build of the pull request's tree runs with it.
+  for (const job of ['collect', 'plan', 'judge']) {
+    const jobSection = section(job)
+    const checkout = jobSection.indexOf('actions/checkout@v4')
+    const ref = jobSection.indexOf('ref: ${{ github.event.pull_request.base.sha }}')
+    const install = jobSection.indexOf('pnpm install')
+    expect(ref, `${job} must check out the base commit`).toBeGreaterThan(checkout)
+    expect(ref, `${job} must check out the base commit before installing`).toBeLessThan(install)
+  }
+})
+
+test('execute is the only job that checks out the pull request tree', () => {
+  // It can: it holds no secrets (rule 7). The test above holds every other
+  // job to the base revision, whose checkout pins it with ref:.
+  expect(section('execute')).not.toContain('ref: ${{ github.event.pull_request.base.sha }}')
+})
+
+test('collect diffs the base commit against the head object, not its own checkout', () => {
+  // Collect checks out the base commit, so the head arrives as an object
+  // read from the pull request ref, never as a working tree.
+  const collect = section('collect')
+  expect(collect).toContain('refs/pull/')
+  expect(collect).toMatch(/git diff "\$\{BASE_SHA\}\.\.\.\$\{HEAD_SHA\}"/)
+})
+
+test('execute hands the profile to judge as an artifact', () => {
+  const execute = section('execute')
+  const judge = section('judge')
+  expect(execute).toContain('name: qa-profile')
+  expect(judge).toMatch(/name: qa-profile\n\s+path: profile/)
 })
