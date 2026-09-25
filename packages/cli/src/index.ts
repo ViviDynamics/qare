@@ -12,7 +12,7 @@ import {
   checkCriteria,
   defaultCheckEvidenceDir,
   judgeExecuted,
-  nareCheckRunners,
+  nareRunners,
   loadPlan,
   loadResult,
   NareAgentRunner,
@@ -100,13 +100,15 @@ async function checkCommand(argv: string[], out: Writer, err: Writer, boot: Boot
     const runnerSpec = flag(argv, '--runner') ?? 'nare'
     if (runnerSpec !== 'nare' && runnerSpec !== 'none')
       throw new Error(`unknown --runner ${JSON.stringify(runnerSpec)} (expected "nare" or "none")`)
-    const runners = nareCheckRunners(flag(argv, '--nare'))
+    const runners = nareRunners(flag(argv, '--nare'))
     const repoPath = resolve(flag(argv, '--repo') ?? '.')
-    const evidenceDir = resolve(flag(argv, '--evidence') ?? defaultCheckEvidenceDir(repoPath))
+    // Evidence stays where qare runs, never in the repository checked.
+    const evidenceDir = resolve(flag(argv, '--evidence') ?? defaultCheckEvidenceDir(process.cwd()))
 
     const { criteria, judged, notes } = await checkCriteria({
       criteria: sentences,
-      // The profile is the repository's, as the MCP tool resolves it.
+      // Named paths resolve from where qare runs; the default profile is the
+      // repository's. The MCP tool resolves them the same way.
       profileDir: resolve(flag(argv, '--profile') ?? join(repoPath, '.qa')),
       repoPath,
       evidenceDir,
@@ -391,7 +393,7 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
       texts: Object.fromEntries((plan?.criteria ?? []).map((criterion) => [criterion.id, criterion.text])),
       diff: verify ? await readFile(resolve(diffPath as string), 'utf8') : '',
       rules,
-      ...(verify ? { verifier: new NareAgentRunner({ ...(binary === undefined ? {} : { binary }), cwd: evidenceDir, root: evidenceDir }) } : {}),
+      ...(verify ? { verifier: nareRunners(binary).verifier(evidenceDir) } : {}),
     })
     for (const criterion of changed)
       err.write(`verifier: ${criterion.criterionId} ${criterion.outcome}: ${redactText(criterion.reason, rules)}\n`)

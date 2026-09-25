@@ -307,7 +307,13 @@ line with its outcome, then `verdict <verdict>; evidence <dir>`. The planner is
 told there is no diff and, for a target profile, where the app runs; the
 verifier is told there is no diff too. A criterion the planner cannot plan is
 `unverified` with the planner's reason, and a planner that cannot run at all
-leaves every criterion `unverified`, naming why; nothing is dropped. The
+leaves every criterion `unverified`, naming why; nothing is dropped. A
+criterion planned with a check the runner does not execute yet (visual) is
+`unverified` saying so, even when its other checks pass: half a proof is not a
+proof. What the verifier overturned is reported on stderr, as `qare judge`
+reports it. Evidence goes to `--evidence`, or by default to a directory of its
+own under `qare-evidence/` where qare runs, never into the repository
+checked. The
 evidence directory holds `plan.json`, the executed `result.json` and the
 `judged-result.json`, and the exit code is `qare run`'s for the judged
 verdict. `--runner none` judges from the evidence alone. Nothing is written

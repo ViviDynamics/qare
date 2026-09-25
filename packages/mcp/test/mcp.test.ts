@@ -207,7 +207,7 @@ test('check takes criteria in plain words and returns the judged result it wrote
   })
 
   await server.handleLine(
-    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'check', arguments: { criteria: ['the article opens'], repoPath: repo, evidenceDir: 'evidence' } } }),
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'check', arguments: { criteria: ['the article opens'], repoPath: repo, evidenceDir: join(repo, 'evidence') } } }),
   )
 
   const response = JSON.parse(lines.join('')) as { result: { content: Array<{ text: string }> } }
@@ -239,4 +239,11 @@ test('tools/list offers check alongside the job tools', async () => {
   const client = new FakeClient()
   const response = await client.send({ jsonrpc: '2.0', id: 3, method: 'tools/list' })
   expect((response.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name)).toContain('check')
+})
+
+test('the check tool advertises the criteria it accepts: at least one, none blank', async () => {
+  const client = new FakeClient()
+  const response = await client.send({ jsonrpc: '2.0', id: 4, method: 'tools/list' })
+  const check = (response.result as { tools: Array<{ name: string; inputSchema: { properties: { criteria: Record<string, unknown> } } }> }).tools.find((tool) => tool.name === 'check')
+  expect(check?.inputSchema.properties.criteria).toMatchObject({ minItems: 1, items: { type: 'string', minLength: 1 } })
 })

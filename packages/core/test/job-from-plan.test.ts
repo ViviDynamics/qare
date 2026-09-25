@@ -83,6 +83,7 @@ test('a criterion mixing runnable and unrunnable checks keeps the runnable ones'
   )
 
   expect(job.criteria[0]?.checks).toEqual([{ kind: 'command', run: 'npm test -- login' }])
+  expect(job.criteria[0]?.skipped).toBe('1 of its planned checks did not run (visual), which the runner does not execute yet')
   expect(notes.join(' ')).toMatch(/visual/)
   expect(notes.join(' ')).toContain('c1')
 })

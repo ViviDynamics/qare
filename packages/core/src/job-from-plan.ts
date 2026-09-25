@@ -69,8 +69,16 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
         `${criterion.id}: ${skipped.length} check(s) not run, because the runner executes command, mail and flow checks only ` +
           `(${[...new Set(skipped.map((check) => check.kind))].join(', ')})`,
       )
-    if (checks.length > 0) return { id: criterion.id, text: criterion.text, checks }
     const kinds = [...new Set(skipped.map((check) => check.kind))].join(', ')
+    if (checks.length > 0)
+      return skipped.length === 0
+        ? { id: criterion.id, text: criterion.text, checks }
+        : {
+            id: criterion.id,
+            text: criterion.text,
+            checks,
+            skipped: `${skipped.length} of its planned checks did not run (${kinds}), which the runner does not execute yet`,
+          }
     return {
       id: criterion.id,
       text: criterion.text,

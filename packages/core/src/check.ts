@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { BootOpts } from './boot.js'
@@ -5,12 +6,12 @@ import { jobFromPlan } from './job-from-plan.js'
 import { judgeExecuted } from './judge.js'
 import type { ReadMail } from './mailbox.js'
 import { PLAN_SCHEMA_VERSION, type Plan } from './plan.js'
-import { NO_DIFF, PlanStepError, planRun } from './plan-step.js'
+import { NO_DIFF, planRun } from './plan-step.js'
 import { ProfileMissingError, loadProfile, type QaProfile } from './profile.js'
-import { redactionRules } from './redact.js'
+import { redactText, redactionRules } from './redact.js'
 import type { RunResult } from './result.js'
 import { runJob, type FlowSessionFactory } from './run.js'
-import { NareAgentRunner, NareRunnerError, type AgentRunner } from './runner.js'
+import { NareAgentRunner, type AgentRunner } from './runner.js'
 
 export class CheckInputError extends Error {
   constructor(message: string) {
@@ -49,8 +50,13 @@ export interface CheckOutcome {
   notes: string[]
 }
 
-/** The model behind a check, through nare; the verifier is confined to the evidence it reads. */
-export function nareCheckRunners(binary?: string): { planner: AgentRunner; verifier: (evidenceDir: string) => AgentRunner } {
+/**
+ * The models behind planning and judging, through nare. The verifier is
+ * confined to the evidence it reads: nare's working directory and file root
+ * are that directory. `qare judge` and `qare check` build it here, so their
+ * verifiers are sandboxed alike.
+ */
+export function nareRunners(binary?: string): { planner: AgentRunner; verifier: (evidenceDir: string) => AgentRunner } {
   const options = binary === undefined ? {} : { binary }
   return {
     planner: new NareAgentRunner(options),
@@ -62,9 +68,10 @@ export function nareCheckRunners(binary?: string): { planner: AgentRunner; verif
  * Where a check writes when the caller names nowhere: a directory of its own
  * per run under `qare-evidence/`, with the evidence inside it, so the flow
  * traces a run keeps beside its evidence never collide with another run's.
+ * The time orders runs; the suffix keeps two started together apart.
  */
-export function defaultCheckEvidenceDir(root: string, now: Date = new Date()): string {
-  return join(root, 'qare-evidence', `check-${now.toISOString().replace(/[:.]/g, '-')}`, 'evidence')
+export function defaultCheckEvidenceDir(root: string, now: Date = new Date(), suffix: string = randomUUID().slice(0, 8)): string {
+  return join(root, 'qare-evidence', `check-${now.toISOString().replace(/[:.]/g, '-')}-${suffix}`, 'evidence')
 }
 
 /**
@@ -113,12 +120,15 @@ export async function checkCriteria(opts: CheckOptions): Promise<CheckOutcome> {
   })
   const { result: executed } = await runJob(job, opts.run ?? {})
 
-  const { result: judged } = await judgeExecuted(executed, {
+  const rules = redactionRules(profile?.redact)
+  const { result: judged, changed } = await judgeExecuted(executed, {
     texts: Object.fromEntries(criteria.map((criterion) => [criterion.id, criterion.text])),
     diff: NO_DIFF,
-    rules: redactionRules(profile?.redact),
+    rules,
     ...(opts.verifier === 'none' ? {} : { verifier: opts.verifier(opts.evidenceDir) }),
   })
+  // The verifier, not the run, changed these: say so, as qare judge does.
+  for (const criterion of changed) notes.push(`verifier: ${criterion.criterionId} ${criterion.outcome}: ${redactText(criterion.reason ?? '', rules)}`)
   await writeFile(join(opts.evidenceDir, 'judged-result.json'), `${JSON.stringify(judged, null, 2)}\n`)
   return { criteria, executed, judged, notes }
 }
@@ -131,11 +141,11 @@ async function planOrReport(planner: AgentRunner, criteria: { id: string; text: 
       ...(profile.target === undefined ? {} : { target: profile.target.url }),
     })
   } catch (error) {
-    // A planner that could not answer (nare missing or failing, a model that
-    // never produced a usable plan) leaves every criterion unverified, naming
-    // why. Anything else is a bug, and surfaces as one.
-    if (!(error instanceof PlanStepError || error instanceof NareRunnerError)) throw error
-    return unplanned(criteria, `planning failed: ${error.message}`)
+    // A planner that could not run, for whatever reason, leaves every
+    // criterion unverified, naming the error and its kind: the run still
+    // reports each one, and a bug still shows as one, by name.
+    const named = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+    return unplanned(criteria, `planning failed (${named})`)
   }
 }
 

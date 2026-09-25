@@ -1,10 +1,11 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import {
+  CheckInputError,
   VERSION,
   checkCriteria,
   defaultCheckEvidenceDir,
-  nareCheckRunners,
+  nareRunners,
   loadResult,
   parseJob,
   runJob,
@@ -22,10 +23,16 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        criteria: { type: 'array', items: { type: 'string' }, description: 'each criterion in a sentence' },
+        criteria: {
+          type: 'array',
+          minItems: 1,
+          items: { type: 'string', minLength: 1, pattern: '\\S' },
+          description: 'each criterion in a sentence',
+        },
+        // Named paths resolve from the server's working directory, as the CLI's do from its own.
         profile: { type: 'string', description: 'the .qa/ profile directory (default: .qa under repoPath)' },
         repoPath: { type: 'string', description: 'where command checks run (default: the server working directory)' },
-        evidenceDir: { type: 'string', description: 'where evidence is written (default: qare-evidence/check-<time> under repoPath)' },
+        evidenceDir: { type: 'string', description: 'where evidence is written (default: qare-evidence/check-<time>-<id>/evidence under the server working directory)' },
         runner: { type: 'string', enum: ['nare', 'none'], description: 'none judges from the evidence alone, without the verifier' },
       },
       required: ['criteria'],
@@ -114,26 +121,28 @@ async function dispatchTool(
 ): Promise<unknown> {
   const record = isRecord(args) ? args : {}
   if (name === 'check') {
-    if (
-      !Array.isArray(record.criteria) ||
-      record.criteria.length === 0 ||
-      !record.criteria.every((entry) => typeof entry === 'string' && entry.trim() !== '')
-    )
-      throw new McpProtocolError(-32602, 'criteria must be a non-empty array of sentences, one criterion each')
+    // The shape is checked here; what makes a criterion usable is checkCriteria's
+    // rule, and its CheckInputError is answered as invalid params below.
+    if (!Array.isArray(record.criteria) || !record.criteria.every((entry) => typeof entry === 'string'))
+      throw new McpProtocolError(-32602, 'criteria must be an array of sentences, one criterion each')
     const runner = optionalString(record, 'runner') ?? 'nare'
     if (runner !== 'nare' && runner !== 'none') throw new McpProtocolError(-32602, 'runner must be "nare" or "none"')
     const repoPath = resolve(optionalString(record, 'repoPath') ?? '.')
     const named = optionalString(record, 'evidenceDir')
-    const evidenceDir = named === undefined ? defaultCheckEvidenceDir(repoPath) : resolve(repoPath, named)
-    const runners = deps.runners?.() ?? nareCheckRunners()
+    const evidenceDir = resolve(named ?? defaultCheckEvidenceDir(process.cwd()))
+    const profile = optionalString(record, 'profile')
+    const runners = deps.runners?.() ?? nareRunners()
     const { judged, notes } = await checkCriteria({
       criteria: record.criteria as string[],
-      profileDir: resolve(repoPath, optionalString(record, 'profile') ?? '.qa'),
+      profileDir: profile === undefined ? join(repoPath, '.qa') : resolve(profile),
       repoPath,
       evidenceDir,
       planner: runners.planner,
       verifier: runner === 'none' ? 'none' : runners.verifier,
       run: deps.boot ?? {},
+    }).catch((error: unknown) => {
+      if (error instanceof CheckInputError) throw new McpProtocolError(-32602, `criteria: ${error.message}`)
+      throw error
     })
     // Notes say what the plan could not run; dropping them here would hide it.
     return { evidenceDir, result: judged, notes }

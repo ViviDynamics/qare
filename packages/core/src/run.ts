@@ -358,6 +358,8 @@ async function runCriterion(
 
   if (failed) return { id: criterion.id, outcome: 'failed', evidence }
   if (unverifiedReason !== undefined) return { id: criterion.id, outcome: 'unverified', reason: unverifiedReason }
+  // Everything that ran passed, but the plan asked for more than ran.
+  if (criterion.skipped !== undefined) return { id: criterion.id, outcome: 'unverified', reason: criterion.skipped, evidence }
   return { id: criterion.id, outcome: 'proven', evidence }
 }
 

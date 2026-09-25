@@ -30,21 +30,24 @@ async function check(dir: string, planner: AgentRunner) {
   })
 }
 
-test('a planner that fails as a planner leaves the criterion unverified, naming why', async () => {
+test('a planner that cannot run leaves the criterion unverified, naming the error and its kind', async () => {
   const dir = await repo()
   const { judged } = await check(dir, throwing(new NareRunnerError('could not run nare (nare): ENOENT')))
-  expect(judged.criteria[0]).toMatchObject({ outcome: 'unverified', reason: expect.stringContaining('planning failed: could not run nare') })
-})
+  expect(judged.criteria[0]).toMatchObject({ outcome: 'unverified', reason: expect.stringContaining('planning failed (NareRunnerError: could not run nare') })
 
-test('a bug in the planner path surfaces as a bug, not as an unverified outcome', async () => {
-  const dir = await repo()
-  await expect(check(dir, throwing(new TypeError('Cannot read properties of undefined')))).rejects.toThrow(TypeError)
+  // Whatever the failure, the check still reports every criterion, and a bug
+  // shows as one by name rather than aborting with no result at all.
+  const bug = await check(dir, throwing(new TypeError('Cannot read properties of undefined')))
+  expect(bug.judged.verdict).toBe('blocked')
+  expect(bug.judged.criteria[0]).toMatchObject({ outcome: 'unverified', reason: expect.stringContaining('TypeError: Cannot read') })
 })
 
 test('each default evidence directory sits in a run directory of its own, so traces beside it never collide', () => {
-  const first = defaultCheckEvidenceDir('/work', new Date(0))
-  const second = defaultCheckEvidenceDir('/work', new Date(1000))
-  expect(first).toBe('/work/qare-evidence/check-1970-01-01T00-00-00-000Z/evidence')
+  const first = defaultCheckEvidenceDir('/work', new Date(0), 'aaaa')
+  const second = defaultCheckEvidenceDir('/work', new Date(0))
+  expect(first).toBe('/work/qare-evidence/check-1970-01-01T00-00-00-000Z-aaaa/evidence')
+  // Two runs started in the same millisecond still get directories of their own.
+  expect(defaultCheckEvidenceDir('/work', new Date(0))).not.toBe(second)
   // run.ts keeps traces at <evidenceDir>/../traces: per run, never shared.
   expect(join(first, '..', 'traces')).not.toBe(join(second, '..', 'traces'))
 })

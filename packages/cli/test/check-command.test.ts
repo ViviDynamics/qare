@@ -143,7 +143,7 @@ test('a planner that cannot run leaves every criterion unverified, naming why, r
   const code = await main(['check', 'the home page loads', ...args(repo, '--nare', join(repo, 'no-such-nare'))], out.writer, capture().writer, UP)
 
   expect(code).toBe(2)
-  expect(out.text()).toMatch(/check-1 unverified: the home page loads \(the planner could not plan it: planning failed: .*no-such-nare/)
+  expect(out.text()).toMatch(/check-1 unverified: the home page loads \(the planner could not plan it: planning failed \(NareRunnerError: .*no-such-nare/)
 })
 
 test('a repository with no profile is refused, and nothing is planned for it', async () => {
@@ -190,4 +190,29 @@ test('a criterion planned only with checks the runner skips says so in its reaso
   await main(['check', 'looks right', ...args(repo, '--nare', (await fakeNare(visual)).binary, '--runner', 'none')], out.writer, capture().writer, UP)
 
   expect(out.text()).toContain('check-1 unverified: looks right (the plan checks it only with visual checks, which the runner does not execute yet)')
+})
+
+test('a criterion whose run checks pass while others planned for it never ran is unverified, not proven', async () => {
+  const repo = await targetRepo()
+  const mixed = {
+    schemaVersion: '1',
+    criteria: [{ ...PLAN.criteria[0], checks: [...PLAN.criteria[0]!.checks!, { kind: 'visual', name: 'home', screenshot: 'home' }] }],
+  }
+  const out = capture()
+
+  const code = await main(['check', PLAN.criteria[0]!.text, ...args(repo, '--nare', (await fakeNare(mixed)).binary, '--runner', 'none')], out.writer, capture().writer, UP)
+
+  expect(code).toBe(2)
+  expect(out.text()).toContain('check-1 unverified')
+  expect(out.text()).toContain('1 of its planned checks did not run (visual)')
+})
+
+test('what the verifier overturned is reported, as qare judge reports it', async () => {
+  const repo = await targetRepo()
+  const one = { schemaVersion: '1', criteria: [PLAN.criteria[0]] }
+  const err = capture()
+
+  await main(['check', PLAN.criteria[0]!.text, ...args(repo, '--nare', (await fakeNare(one, [{ criterionId: 'check-1', problem: 'wrong page' }])).binary)], capture().writer, err.writer, UP)
+
+  expect(err.text()).toContain('verifier: check-1 failed: verifier: wrong page')
 })
