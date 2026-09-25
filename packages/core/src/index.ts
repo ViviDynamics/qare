@@ -4,6 +4,7 @@ export {
   PlanValidationError,
   loadPlan,
   parsePlan,
+  parseFlowActions,
 } from './plan.js'
 export type {
   CheckKind,
@@ -15,6 +16,7 @@ export type {
   CommandCheck,
   FlowCheck,
   VisualCheck,
+  FlowActionStep,
 } from './plan.js'
 export { fingerprintPlan, comparePlan, lockPlan } from './plan-lock.js'
 export type { PlanComparison } from './plan-lock.js'
@@ -84,16 +86,17 @@ export type { RunContext } from './job-from-plan.js'
 export { PLAN_OUTPUT_SCHEMA, PlanStepError, planRun } from './plan-step.js'
 export type { PlanCriterionInput, PlanInputs } from './plan-step.js'
 export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'
-export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobCheck, JobPostTarget } from './job.js'
+export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobCheck, JobPostTarget } from './job.js'
 export { httpMailbox, mailEvidence, runMailCheck } from './mailbox.js'
 export type { MailMessage, MailEvidenceMessage, MailOutcome, ReadMail } from './mailbox.js'
 export { Artefacts } from './artefacts.js'
 export { bootApp, stopApp } from './boot.js'
 export type { BootOutcome, BootOpts } from './boot.js'
 export { runJob } from './run.js'
+export type { FlowSessionFactory } from './run.js'
 export { runVisualCheck, type VisualRevision, type VisualCheckOpts, type VisualScreenshot, type VisualDiff, type VisualCheckResult } from './visual.js'
 export { runFlowCheck, runSuiteCheck } from './flow.js'
-export type { FlowAction, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult } from './flow.js'
+export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult } from './flow.js'
 export {
   makePlaywrightScreenshot,
   disposeBrowser,

@@ -49,7 +49,19 @@ test('plan.valid.json carries the inferred-check marker and an unplannable crite
   expect(plan.criteria[1]).toEqual({
     id: 'ledger-export-csv',
     text: 'The ledger exports to CSV.',
-    checks: [{ kind: 'flow', name: 'ledger-export-actions', actions: ['open the ledger', 'click export'] , inferred: true }],
+    checks: [
+      {
+        kind: 'flow',
+        name: 'ledger-export-actions',
+        actions: [
+          { action: 'open', url: ['http:', '//localhost:3000/ledger'].join('') },
+          { action: 'type', element: { role: 'textbox', name: 'Search' }, value: 'Ada Lovelace' },
+          { action: 'click', element: { testId: 'export-csv' } },
+          { action: 'assert', text: 'Export complete' },
+        ],
+        inferred: true,
+      },
+    ],
   })
   expect(plan.criteria[2]).toEqual({
     id: 'multi-currency-totals',
@@ -108,6 +120,34 @@ test('schema violations name the field', () => {
   expect(planError(() => parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ kind: 'visual', name: 'n' }] }] })).field).toBe('criteria[0].checks[0].screenshot')
   expect(planError(() => parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ ...commandCheck, inferred: 'yes' }] }] })).field).toBe('criteria[0].checks[0].inferred')
   expect(planError(() => parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, unplannable: '' }] })).field).toBe('criteria[0].unplannable')
+})
+
+test('free-form flow actions are rejected: a plan is typed or it does not load', () => {
+  const error = planError(() =>
+    parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ kind: 'flow', name: 'n', actions: ['open the ledger', 'click export'] }] }] }),
+  )
+  expect(error.field).toBe('criteria[0].checks[0].actions[0]')
+  expect(error.message).toContain('must be an object')
+})
+
+test('a flow action whose kind is outside the vocabulary fails closed naming it', () => {
+  const error = planError(() =>
+    parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ kind: 'flow', name: 'n', actions: [{ action: 'hover', selector: '#menu' }] }] }] }),
+  )
+  expect(error.field).toBe('criteria[0].checks[0].actions[0].action')
+  expect(error.message).toContain('hover')
+})
+
+test('an element reference is a role with its name or a test id, never both, never a selector', () => {
+  const both = planError(() =>
+    parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ kind: 'flow', name: 'n', actions: [{ action: 'click', element: { role: 'button', name: 'Export', testId: 'export' } }] }] }] }),
+  )
+  expect(both.field).toBe('criteria[0].checks[0].actions[0].element')
+  const selector = planError(() =>
+    parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ kind: 'flow', name: 'n', actions: [{ action: 'click', element: { selector: '#export' } }] }] }] }),
+  )
+  expect(selector.field).toBe('criteria[0].checks[0].actions[0].element')
+  expect(selector.message).toContain('role')
 })
 
 test('visual check themes become evidence file names, so they cannot escape the evidence dir', () => {

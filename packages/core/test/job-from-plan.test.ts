@@ -74,14 +74,58 @@ test('a criterion mixing runnable and unrunnable checks keeps the runnable ones'
       {
         id: 'c1',
         text: 'logs in',
-        checks: [COMMAND, { kind: 'flow', name: 'login flow', suite: 'e2e' }],
+        checks: [COMMAND, { kind: 'visual', name: 'home', screenshot: 'home' }],
       },
     ]),
     CONTEXT,
   )
 
   expect(job.criteria[0]?.checks).toEqual([{ kind: 'command', run: 'npm test -- login' }])
-  expect(notes.join(' ')).toMatch(/flow/)
+  expect(notes.join(' ')).toMatch(/visual/)
+  expect(notes.join(' ')).toContain('c1')
+})
+
+test('flow checks are carried to the job, with suites and typed actions', () => {
+  const actions = [
+    { action: 'open', url: ['http:', '//localhost:3000'].join('') },
+    { action: 'type', element: { role: 'textbox', name: 'Email' }, value: 'me@example.com' },
+    { action: 'click', element: { testId: 'sign-in' } },
+    { action: 'assert', text: 'Welcome' },
+  ]
+  const { job, notes } = jobFromPlan(
+    plan([
+      {
+        id: 'c1',
+        text: 'logs in',
+        checks: [
+          { kind: 'flow', name: 'login flow', suite: 'e2e' },
+          { kind: 'flow', name: 'login actions', actions },
+        ],
+      },
+    ]),
+    CONTEXT,
+  )
+
+  expect(job.criteria[0]?.checks).toEqual([
+    { kind: 'flow', suite: 'e2e' },
+    { kind: 'flow', actions },
+  ])
+  expect(notes.join(' ')).not.toMatch(/flow/)
+})
+
+test('the drop note names flow among the kinds the runner executes', () => {
+  const { notes } = jobFromPlan(
+    plan([
+      {
+        id: 'c1',
+        text: 'x',
+        checks: [{ kind: 'visual', name: 'home', screenshot: 'home' }],
+      },
+    ]),
+    CONTEXT,
+  )
+
+  expect(notes.join(' ')).toMatch(/command, mail and flow checks only/)
 })
 
 test('a plan whose criteria are all unrunnable says so', () => {

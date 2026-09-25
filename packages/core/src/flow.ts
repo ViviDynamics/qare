@@ -1,17 +1,25 @@
+import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DEFAULT_CHECK_TIMEOUT_MS, runCommandCheck } from './run.js'
 
+/**
+ * The fixed flow vocabulary a plan may ask for (#70, #121). The driver resolves
+ * element references against the page; nothing here names a selector.
+ */
+export type FlowElement = { role: string; name: string } | { testId: string }
+
 export type FlowAction =
-  | { action: 'navigate'; url: string }
-  | { action: 'click'; selector: string }
-  | { action: 'fill'; selector: string; value: string }
-  | { action: 'assert'; selector: string; text: string }
+  | { action: 'open'; url: string }
+  | { action: 'type'; element: FlowElement; value: string }
+  | { action: 'click'; element: FlowElement }
+  | { action: 'assert'; text: string }
 
 export interface FlowPage {
-  navigate(url: string): Promise<void>
-  click(selector: string): Promise<void>
-  fill(selector: string, value: string): Promise<void>
-  assertText(selector: string, text: string): Promise<void>
+  open(url: string): Promise<void>
+  click(element: FlowElement): Promise<void>
+  type(element: FlowElement, value: string): Promise<void>
+  assertText(text: string): Promise<void>
+  screenshot(path: string): Promise<void>
 }
 
 export interface FlowTrace {
@@ -23,7 +31,20 @@ export interface FlowCheckOpts {
   actions: FlowAction[]
   page: FlowPage
   trace?: FlowTrace
+  /** The check's own directory inside the evidence: the action log and screenshots land here. */
   outDir: string
+  /**
+   * Where the trace is written: a Playwright trace is a zip, which evidence
+   * redaction cannot read (#52), so it is kept out of the published evidence
+   * and its location is noted in the action log instead.
+   */
+  tracesDir?: string
+  /**
+   * Applied to the action log before it is written: the log carries user-
+   * authored strings, so it goes through the same sweep as the rest of the
+   * published evidence.
+   */
+  redactLog?: (text: string) => string
 }
 
 export interface FlowCheckResult {
@@ -32,28 +53,45 @@ export interface FlowCheckResult {
   evidence: string[]
 }
 
-const KNOWN_KINDS: readonly string[] = ['navigate', 'click', 'fill', 'assert']
+const KNOWN_KINDS: readonly string[] = ['open', 'type', 'click', 'assert']
+
+const FAILURE_SCREENSHOT = 'failure.png'
+const FINAL_SCREENSHOT = 'final.png'
+const ACTION_LOG = 'actions.log'
 
 function unknownKind(action: FlowAction): string | undefined {
   const kind = (action as { action?: unknown }).action
   return KNOWN_KINDS.includes(String(kind)) ? undefined : String(kind)
 }
 
+function describeElement(element: FlowElement): string {
+  return 'testId' in element ? `testId=${element.testId}` : `role=${element.role} name=${element.name}`
+}
+
 function describeAction(action: FlowAction, index: number): string {
   switch (action.action) {
-    case 'navigate':
-      return `action ${index}: navigate ${action.url}`
+    case 'open':
+      return `action ${index}: open ${action.url}`
+    case 'type':
+      return `action ${index}: type ${describeElement(action.element)}=${action.value}`
     case 'click':
-      return `action ${index}: click ${action.selector}`
-    case 'fill':
-      return `action ${index}: fill ${action.selector}=${action.value}`
+      return `action ${index}: click ${describeElement(action.element)}`
     case 'assert':
-      return `action ${index}: assert ${action.selector}=${action.text}`
+      return `action ${index}: assert text "${action.text}" is visible`
   }
 }
 
+/**
+ * Drive one flow check through the page seam, producing the evidence the issue
+ * asks for: the action log, a screenshot at the end and at the point of
+ * failure, and a trace kept out of the published evidence.
+ *
+ * A failed assert is a failed check. Anything that is not the page's fault —
+ * an unknown action, an action that cannot run, a trace that cannot start —
+ * is unverified, never failed: the criterion says nothing about the change.
+ */
 export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult> {
-  const { actions, page, trace, outDir } = opts
+  const { actions, page, trace, outDir, tracesDir, redactLog } = opts
 
   if (actions.length === 0) {
     return { outcome: 'unverified', reason: 'flow has no actions', evidence: [] }
@@ -70,56 +108,83 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
     }
   }
 
-  const evidence: string[] = []
+  await mkdir(outDir, { recursive: true })
+
+  const log: string[] = []
+  const writeLog = async (): Promise<void> => {
+    const text = log.join('\n')
+    await writeFile(join(outDir, ACTION_LOG), `${redactLog === undefined ? text : redactLog(text)}\n`)
+  }
+  const screenshot = async (name: string): Promise<string | undefined> => {
+    try {
+      await page.screenshot(join(outDir, name))
+      return name
+    } catch (error) {
+      log.push(`screenshot ${name} failed: ${String(error)}`)
+      return undefined
+    }
+  }
 
   if (trace) {
     try {
       await trace.start()
     } catch (error) {
-      return { outcome: 'unverified', reason: `trace start failed: ${String(error)}`, evidence }
+      return { outcome: 'unverified', reason: `trace start failed: ${String(error)}`, evidence: [] }
     }
   }
 
   let outcome: FlowCheckResult['outcome'] = 'passed'
   let reason: string | undefined
+  let failureScreenshot: string | undefined
 
   for (const [index, action] of actions.entries()) {
     try {
       switch (action.action) {
-        case 'navigate':
-          await page.navigate(action.url)
+        case 'open':
+          await page.open(action.url)
+          break
+        case 'type':
+          await page.type(action.element, action.value)
           break
         case 'click':
-          await page.click(action.selector)
-          break
-        case 'fill':
-          await page.fill(action.selector, action.value)
+          await page.click(action.element)
           break
         case 'assert':
-          await page.assertText(action.selector, action.text)
+          await page.assertText(action.text)
           break
       }
     } catch (error) {
       if (action.action === 'assert') {
         outcome = 'failed'
-        reason = `assert failed: ${action.selector} does not contain "${action.text}"`
-        break
+        reason = `assert failed: the text ${JSON.stringify(action.text)} is not visible`
+      } else {
+        outcome = 'unverified'
+        reason = `action ${index} failed: ${String(error)}`
       }
-      outcome = 'unverified'
-      reason = `action ${index} failed: ${String(error)}`
+      failureScreenshot = await screenshot(FAILURE_SCREENSHOT)
       break
     }
-    evidence.push(describeAction(action, index))
+    log.push(describeAction(action, index))
   }
 
+  const evidence: string[] = [ACTION_LOG]
+  if (outcome === 'passed') {
+    const final = await screenshot(FINAL_SCREENSHOT)
+    if (final !== undefined) evidence.push(final)
+  } else if (failureScreenshot !== undefined) {
+    evidence.push(failureScreenshot)
+  }
+  await writeLog()
+
   if (trace) {
-    const tracePath = join(outDir, 'trace.zip')
+    const tracePath = join(tracesDir ?? outDir, 'trace.zip')
     try {
       await trace.stop(tracePath)
-      evidence.push(`trace: ${tracePath}`)
+      log.push(`trace kept out of the published evidence (redaction cannot read a zip): ${tracePath}`)
     } catch (error) {
-      evidence.push(`trace stop failed: ${String(error)}`)
+      log.push(`trace stop failed: ${String(error)}`)
     }
+    await writeLog()
   }
 
   return outcome === 'passed' ? { outcome, evidence } : { outcome, reason, evidence }

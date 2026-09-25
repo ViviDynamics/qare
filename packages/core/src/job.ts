@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { parse as parseYaml } from 'yaml'
 import type { QaProfile } from './profile.js'
+import { PlanValidationError, parseFlowActions, type FlowActionStep } from './plan.js'
 
 export type JobProfileRef = { path: string } | { inline: QaProfile }
 
@@ -24,7 +25,15 @@ export interface JobMailCheck {
   singleUse?: boolean
 }
 
-export type JobCheck = JobCommandCheck | JobMailCheck
+export interface JobFlowCheck {
+  kind: 'flow'
+  name?: string
+  suite?: string
+  actions?: FlowActionStep[]
+  timeoutMs?: number
+}
+
+export type JobCheck = JobCommandCheck | JobMailCheck | JobFlowCheck
 
 export interface JobCriterion {
   id: string
@@ -156,15 +165,46 @@ function parseCriterion(value: unknown, index: number): JobCriterion {
 }
 
 function parseChecks(value: unknown, base: string): JobCheck[] {
-  if (!Array.isArray(value)) fail(`${base}.checks`, 'checks must be an array of command checks')
+  if (!Array.isArray(value)) fail(`${base}.checks`, 'checks must be an array of check entries')
   return value.map((check, checkIndex) => parseCheck(check, `${base}.checks[${checkIndex}]`))
+}
+
+function parseFlowCheck(value: Record<string, unknown>, base: string): JobFlowCheck {
+  const name = value.name === undefined ? undefined : nonEmptyString(value.name, `${base}.name`, 'name')
+  const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
+  const hasSuite = value.suite !== undefined
+  const hasActions = value.actions !== undefined
+  if (!hasSuite && !hasActions)
+    fail(`${base}.suite`, 'flow check needs a suite (an existing suite name) or actions (a fixed action set)')
+  if (hasSuite && hasActions)
+    fail(`${base}.suite`, 'flow check carries both suite and actions; a flow check is one or the other')
+  if (hasSuite) {
+    const suite = nonEmptyString(value.suite, `${base}.suite`, 'suite')
+    return { kind: 'flow', ...(name !== undefined ? { name } : {}), suite, ...(timeoutMs !== undefined ? { timeoutMs } : {}) }
+  }
+  let actions
+  try {
+    actions = parseFlowActions(value.actions, `${base}.actions`)
+  } catch (error) {
+    // The shared flow parser names its errors with the plan loader's type; a
+    // job load throws the job loader's type, carrying the same field and text.
+    if (error instanceof PlanValidationError) throw new JobValidationError(error.field, error.message)
+    throw error
+  }
+  return {
+    kind: 'flow',
+    ...(name !== undefined ? { name } : {}),
+    actions,
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  }
 }
 
 function parseCheck(value: unknown, base: string): JobCheck {
   if (!isRecord(value)) fail(base, 'check must be a YAML object with kind and run')
   if (value.kind === 'mail') return parseMailCheck(value, base)
+  if (value.kind === 'flow') return parseFlowCheck(value, base)
   if (value.kind !== 'command')
-    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(value.kind)} (job checks are command or mail checks, expected "command" or "mail")`)
+    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(value.kind)} (job checks are command, mail or flow checks, expected "command", "mail" or "flow")`)
   const run = nonEmptyString(value.run, `${base}.run`, 'run command')
   const cwd = value.cwd === undefined ? undefined : nonEmptyString(value.cwd, `${base}.cwd`, 'working directory')
   const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)

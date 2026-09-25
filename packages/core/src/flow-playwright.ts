@@ -1,4 +1,4 @@
-import type { FlowPage, FlowTrace } from './flow.js'
+import type { FlowElement, FlowPage, FlowTrace } from './flow.js'
 
 const NOT_INSTALLED_MESSAGE =
   'playwright-core is not installed; flow checks are unverified without a browser backend'
@@ -60,27 +60,41 @@ export async function makePlaywrightFlowSession(
     return starting
   }
 
+  // Elements are resolved against the page here, from the semantic reference
+  // the plan carries (#70, #121): the model names a role with its accessible
+  // name or a test id, never a selector, never coordinates.
+  const resolve = (
+    page: BrowserPage,
+    element: FlowElement,
+  ): ReturnType<BrowserPage['getByRole']> | ReturnType<BrowserPage['getByTestId']> =>
+    'testId' in element
+      ? page.getByTestId(element.testId)
+      : page.getByRole(element.role as never, { name: element.name })
+
   const page: FlowPage = {
-    navigate: async (url) => {
+    open: async (url) => {
       const started = await start()
       await started.page.goto(url, { waitUntil: 'networkidle' })
     },
-    click: async (selector) => {
+    click: async (element) => {
       const started = await start()
-      await started.page.click(selector)
+      await resolve(started.page, element).click()
     },
-    fill: async (selector, value) => {
+    type: async (element, value) => {
       const started = await start()
-      await started.page.fill(selector, value)
+      await resolve(started.page, element).fill(value)
     },
-    assertText: async (selector, text) => {
+    assertText: async (text) => {
       const started = await start()
-      const actual = await started.page.locator(selector).textContent()
-      if (actual === null || !actual.includes(text)) {
-        throw new Error(
-          `assert failed: ${selector} does not contain "${text}" (got: ${actual ?? 'null'})`,
-        )
+      const locator = started.page.getByText(text).first()
+      const visible = await locator.isVisible()
+      if (!visible) {
+        throw new Error(`assert failed: the text ${JSON.stringify(text)} is not visible`)
       }
+    },
+    screenshot: async (path) => {
+      const started = await start()
+      await started.page.screenshot({ path })
     },
   }
 
