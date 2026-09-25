@@ -1,5 +1,6 @@
 import { mergeVerdicts } from './egress.js'
-import { RESULT_SCHEMA_VERSION, type CriterionOutcome, type RunResult, type RunVerdict } from './result.js'
+import { BUILTIN_REDACTION_RULES, redactResult, type RedactionRule } from './redact.js'
+import { RESULT_SCHEMA_VERSION, type CriterionOutcome, type CriterionResult, type RunResult, type RunVerdict } from './result.js'
 import type { AgentRunRequest, AgentRunner } from './runner.js'
 
 export interface SideResult {
@@ -386,4 +387,49 @@ export function judgedResult(
     ...(loaded.waived === undefined ? {} : { waived: loaded.waived }),
     ...(loaded.target === undefined ? {} : { target: loaded.target }),
   }
+}
+
+/** The evidence a criterion result names; none for one that carries none. */
+export function evidenceOf(criterion: CriterionResult): string[] {
+  return 'evidence' in criterion ? criterion.evidence ?? [] : []
+}
+
+export interface JudgeExecutedOptions {
+  /** Each criterion's text, which the verifier checks the evidence against. */
+  texts: Record<string, string>
+  /** The change under review, or NO_DIFF when there is none. */
+  diff: string
+  /** The verifier's model; absent to judge from the evidence alone. */
+  verifier?: AgentRunner
+  rules?: readonly RedactionRule[]
+}
+
+/**
+ * Judge an executed result: the one path from result.json to the judged
+ * verdict, shared by `qare judge` and `qare check` so they can never disagree.
+ * Waivers are honoured, a proven criterion is put to the verifier when one is
+ * given, and a refused run stays refused, with no model call: it executed
+ * nothing. Returns the redacted judged result and the criteria the verifier
+ * changed.
+ */
+export async function judgeExecuted(
+  executed: RunResult,
+  opts: JudgeExecutedOptions,
+): Promise<{ result: RunResult; changed: CriterionVerdict[] }> {
+  const waived = executed.waived?.map((entry) => entry.criterionId) ?? []
+  const judged = judgeRun({ base: [], head: toSideResults(executed), waived })
+  const evidenceById = new Map(executed.criteria.map((criterion) => [criterion.id, evidenceOf(criterion)]))
+  let criteria = judged.criteria
+  if (opts.verifier !== undefined && executed.verdict !== 'refused') {
+    criteria = await runVerifier(
+      opts.verifier,
+      prepareVerifierInputs({ criteria: judged.criteria, texts: opts.texts, evidence: Object.fromEntries(evidenceById), diff: opts.diff }),
+    )
+  }
+  const changed = criteria.filter((criterion, index) => criterion.outcome !== judged.criteria[index]?.outcome)
+  // A refused run executed nothing, so there is nothing to judge: recomputing
+  // it from all-unverified criteria would read it back as blocked.
+  const verdict = executed.verdict === 'refused' ? 'refused' : verdictOf(criteria, judged.regressions, waived)
+  const result = redactResult(judgedResult(executed, verdict, criteria, evidenceById), opts.rules ?? BUILTIN_REDACTION_RULES)
+  return { result, changed }
 }

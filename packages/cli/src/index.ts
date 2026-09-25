@@ -10,8 +10,9 @@ import {
   loadJobFromText,
   jobFromPlan,
   checkCriteria,
-  judgeRun,
-  judgedResult,
+  defaultCheckEvidenceDir,
+  judgeExecuted,
+  nareCheckRunners,
   loadPlan,
   loadResult,
   NareAgentRunner,
@@ -19,7 +20,6 @@ import {
   BUILTIN_REDACTION_RULES,
   loadProfile,
   redactEvidenceDir,
-  redactResult,
   redactText,
   redactionRules,
   criteriaFromIssue,
@@ -27,19 +27,14 @@ import {
   IssueCriteriaError,
   linkedIssues,
   planRun,
-  prepareVerifierInputs,
   renderCheckRun,
   renderComment,
   readinessInventory,
   runJob,
-  runVerifier,
-  toSideResults,
-  verdictOf,
   VERSION,
 } from '@qare/core'
 import type {
   BootOpts,
-  CriterionResult,
   Job,
   LedgerEntry,
   RedactionRule,
@@ -105,24 +100,23 @@ async function checkCommand(argv: string[], out: Writer, err: Writer, boot: Boot
     const runnerSpec = flag(argv, '--runner') ?? 'nare'
     if (runnerSpec !== 'nare' && runnerSpec !== 'none')
       throw new Error(`unknown --runner ${JSON.stringify(runnerSpec)} (expected "nare" or "none")`)
-    const binary = flag(argv, '--nare')
-    const nare = (dir?: string) =>
-      new NareAgentRunner({ ...(binary === undefined ? {} : { binary }), ...(dir === undefined ? {} : { cwd: dir, root: dir }) })
-    const evidenceDir = resolve(flag(argv, '--evidence') ?? join('qare-evidence', `check-${new Date().toISOString().replace(/[:.]/g, '-')}`))
+    const runners = nareCheckRunners(flag(argv, '--nare'))
+    const repoPath = resolve(flag(argv, '--repo') ?? '.')
+    const evidenceDir = resolve(flag(argv, '--evidence') ?? defaultCheckEvidenceDir(repoPath))
 
-    const { judged, notes } = await checkCriteria({
+    const { criteria, judged, notes } = await checkCriteria({
       criteria: sentences,
-      profileDir: resolve(flag(argv, '--profile') ?? '.qa'),
-      repoPath: resolve(flag(argv, '--repo') ?? '.'),
+      // The profile is the repository's, as the MCP tool resolves it.
+      profileDir: resolve(flag(argv, '--profile') ?? join(repoPath, '.qa')),
+      repoPath,
       evidenceDir,
-      planner: nare(),
-      // The verifier reads evidence, so its file tools reach that and nothing else.
-      verifier: runnerSpec === 'none' ? 'none' : (dir) => nare(dir),
+      planner: runners.planner,
+      verifier: runnerSpec === 'none' ? 'none' : runners.verifier,
       ...(flag(argv, '--id') === undefined ? {} : { id: flag(argv, '--id') as string }),
       run: boot,
     })
     for (const note of notes) err.write(`${note}\n`)
-    const texts = new Map(sentences.map((text, index) => [`check-${index + 1}`, text.trim()]))
+    const texts = new Map(criteria.map((criterion) => [criterion.id, criterion.text]))
     for (const criterion of judged.criteria) {
       const why = 'reason' in criterion && criterion.reason !== undefined ? ` (${criterion.reason})` : ''
       out.write(`${criterion.id} ${criterion.outcome}: ${texts.get(criterion.id) ?? ''}${why}\n`)
@@ -382,46 +376,25 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     const resultPath = resolve(resultSpec)
     const outDir = outDirSpec === undefined ? dirname(resultPath) : resolve(outDirSpec)
     const loaded = loadResult(await readFile(resultPath, 'utf8'))
-    const waived = loaded.waived?.map((entry) => entry.criterionId) ?? []
-    const judged = judgeRun({ base: [], head: toSideResults(loaded), waived })
-    const evidenceById = new Map(loaded.criteria.map((criterion) => [criterion.id, evidenceOf(criterion)]))
-    let criteria = judged.criteria
     // Nothing ran on a refused run, so there is no evidence for the verifier
     // to read and a model call would be spent on nothing.
-    if (runnerSpec === 'nare' && loaded.verdict !== 'refused') {
-      if (planPath === undefined || diffPath === undefined)
-        throw new Error(
-          'qare judge checks proven criteria with the verifier, which needs --plan <path> (for the criteria text) and --diff <path>; pass --runner none to judge without it',
-        )
-      const plan = loadPlan(await readFile(resolve(planPath), 'utf8'))
-      const diff = await readFile(resolve(diffPath), 'utf8')
-      // Evidence paths in result.json are relative to its directory, and that
-      // directory is all the verifier's read tool can reach.
-      const evidenceDir = dirname(resultPath)
-      const runner = new NareAgentRunner({
-        ...(binary === undefined ? {} : { binary }),
-        cwd: evidenceDir,
-        root: evidenceDir,
-      })
-      criteria = await runVerifier(
-        runner,
-        prepareVerifierInputs({
-          criteria: judged.criteria,
-          texts: Object.fromEntries(plan.criteria.map((criterion) => [criterion.id, criterion.text])),
-          evidence: Object.fromEntries(evidenceById),
-          diff,
-        }),
+    const verify = runnerSpec === 'nare' && loaded.verdict !== 'refused'
+    if (verify && (planPath === undefined || diffPath === undefined))
+      throw new Error(
+        'qare judge checks proven criteria with the verifier, which needs --plan <path> (for the criteria text) and --diff <path>; pass --runner none to judge without it',
       )
-      for (const [index, criterion] of criteria.entries())
-        if (criterion.outcome !== judged.criteria[index]?.outcome)
-          err.write(`verifier: ${criterion.criterionId} ${criterion.outcome}: ${redactText(criterion.reason, rules)}\n`)
-    }
-    // A refused run executed nothing, so there is nothing to judge: the
-    // verdict stays refused. Recomputing it from all-unverified criteria read
-    // it back as blocked, and the stub-issue step that acts on refused never
-    // fired.
-    const verdict = loaded.verdict === 'refused' ? 'refused' : verdictOf(criteria, judged.regressions, waived)
-    const result = redactResult(judgedResult(loaded, verdict, criteria, evidenceById), rules)
+    const plan = verify ? loadPlan(await readFile(resolve(planPath as string), 'utf8')) : undefined
+    // Evidence paths in result.json are relative to its directory, and that
+    // directory is all the verifier's read tool can reach.
+    const evidenceDir = dirname(resultPath)
+    const { result, changed } = await judgeExecuted(loaded, {
+      texts: Object.fromEntries((plan?.criteria ?? []).map((criterion) => [criterion.id, criterion.text])),
+      diff: verify ? await readFile(resolve(diffPath as string), 'utf8') : '',
+      rules,
+      ...(verify ? { verifier: new NareAgentRunner({ ...(binary === undefined ? {} : { binary }), cwd: evidenceDir, root: evidenceDir }) } : {}),
+    })
+    for (const criterion of changed)
+      err.write(`verifier: ${criterion.criterionId} ${criterion.outcome}: ${redactText(criterion.reason, rules)}\n`)
     await mkdir(outDir, { recursive: true })
     await writeFile(join(outDir, 'judged-result.json'), `${JSON.stringify(result, null, 2)}\n`, 'utf8')
     await writeFile(join(outDir, 'comment.md'), `${renderComment(result)}\n`, 'utf8')
@@ -534,9 +507,6 @@ async function ledgerStatus(dir: string, out: Writer, err: Writer): Promise<numb
   return 0
 }
 
-function evidenceOf(criterion: CriterionResult): string[] {
-  return 'evidence' in criterion ? criterion.evidence ?? [] : []
-}
 
 async function runCommand(
   argv: string[],

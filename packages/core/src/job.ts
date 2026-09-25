@@ -39,8 +39,12 @@ export interface JobCriterion {
   id: string
   text: string
   checks?: JobCheck[]
-  /** Why the planner could not map it to a check: reported as its unverified reason (#123). */
-  unplannable?: string
+  /**
+   * Why nothing runs for it, when a plan says: the planner could not plan it,
+   * or its checks are kinds the runner does not execute. Reported as its
+   * unverified reason (#123), and never alongside checks.
+   */
+  unrunnable?: string
 }
 
 export type JobPostTarget = 'none' | string
@@ -163,12 +167,14 @@ function parseCriterion(value: unknown, index: number): JobCriterion {
     )
   const text = nonEmptyString(value.text, `${base}.text`, 'text')
   const checks = value.checks === undefined ? undefined : parseChecks(value.checks, base)
-  const unplannable = value.unplannable === undefined ? undefined : nonEmptyString(value.unplannable, `${base}.unplannable`, 'unplannable reason')
+  const unrunnable = value.unrunnable === undefined ? undefined : nonEmptyString(value.unrunnable, `${base}.unrunnable`, 'unrunnable reason')
+  if (unrunnable !== undefined && checks !== undefined && checks.length > 0)
+    fail(`${base}.unrunnable`, 'a criterion with checks has something to run; unrunnable says why one has nothing, so it carries one or the other')
   return {
     id,
     text,
     ...(checks === undefined ? {} : { checks }),
-    ...(unplannable === undefined ? {} : { unplannable }),
+    ...(unrunnable === undefined ? {} : { unrunnable }),
   }
 }
 

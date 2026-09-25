@@ -114,6 +114,8 @@ export {
   detectRegressions,
   judgeRun,
   judgedResult,
+  judgeExecuted,
+  evidenceOf,
   prepareVerifierInputs,
   runVerifier,
   toSideResults,
@@ -124,6 +126,7 @@ export type {
   CriterionVerdict,
   JudgeRunInput,
   JudgeRunResult,
+  JudgeExecutedOptions,
   Regression,
   SideResult,
   VerifierClaim,
@@ -192,5 +195,5 @@ export {
   requeueTargets,
 } from './stub-issues.js'
 export type { MissingStub, StubIssueDraft, StubIssueRefusedEntry, StubIssuePoster } from './stub-issues.js'
-export { CheckInputError, checkCriteria } from './check.js'
+export { CheckInputError, checkCriteria, defaultCheckEvidenceDir, nareCheckRunners } from './check.js'
 export type { CheckOptions, CheckOutcome } from './check.js'

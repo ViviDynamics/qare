@@ -47,7 +47,7 @@ test('an unplannable criterion is carried, so it is reported rather than forgott
     CONTEXT,
   )
 
-  expect(job.criteria).toEqual([{ id: 'c1', text: 'email arrives', unplannable: 'needs a mailbox' }])
+  expect(job.criteria).toEqual([{ id: 'c1', text: 'email arrives', unrunnable: 'the planner could not plan it: needs a mailbox' }])
   expect(notes.join(' ')).toContain('needs a mailbox')
 })
 
@@ -64,6 +64,8 @@ test('a check kind the runner cannot execute is named, not silently dropped', ()
   )
 
   expect(job.criteria[0]?.checks).toBeUndefined()
+  // The result says why nothing ran, not only the notes on stderr.
+  expect(job.criteria[0]?.unrunnable).toBe('the plan checks it only with visual checks, which the runner does not execute yet')
   expect(notes.join(' ')).toMatch(/visual/)
   expect(notes.join(' ')).toContain('c1')
 })
@@ -154,4 +156,13 @@ test('a post target is carried when the caller names one', () => {
   })
 
   expect(job.post).toBe('ViviDynamics/qare#104')
+})
+
+test('a job criterion carrying both checks and an unrunnable reason is refused as contradictory', async () => {
+  const { parseJob } = await import('../src/index.js')
+  const job = {
+    id: 'j', repoPath: '/work', baseRef: 'a', headRef: 'b', profile: { path: '.qa' }, evidenceDir: 'e', post: 'none',
+    criteria: [{ id: 'c1', text: 'x', unrunnable: 'no way', checks: [{ kind: 'command', run: 'true' }] }],
+  }
+  expect(() => parseJob(job)).toThrow(/criteria\[0\]\.unrunnable/)
 })

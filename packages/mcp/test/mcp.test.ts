@@ -203,7 +203,7 @@ test('check takes criteria in plain words and returns the judged result it wrote
   const server = createMcpServer({
     boot: BOOT,
     stdout: (chunk) => lines.push(chunk),
-    runners: { planner: () => planner, verifier: () => verifier },
+    runners: () => ({ planner, verifier: () => verifier }),
   })
 
   await server.handleLine(
@@ -211,7 +211,8 @@ test('check takes criteria in plain words and returns the judged result it wrote
   )
 
   const response = JSON.parse(lines.join('')) as { result: { content: Array<{ text: string }> } }
-  const output = JSON.parse(response.result.content[0]!.text) as { evidenceDir: string; result: unknown }
+  const output = JSON.parse(response.result.content[0]!.text) as { evidenceDir: string; result: unknown; notes: string[] }
+  expect(output.notes).toEqual([])
   expect(output.evidenceDir).toBe(join(repo, 'evidence'))
   expect(output.result).toEqual(JSON.parse(await readFile(join(repo, 'evidence', 'judged-result.json'), 'utf8')))
   expect(output.result).toMatchObject({ verdict: 'passed', target: { url: target, comparison: 'none' } })
@@ -224,6 +225,8 @@ test('check refuses arguments it cannot read, naming the field', async () => {
   for (const [args, field] of [
     [{}, 'criteria'],
     [{ criteria: 'one sentence' }, 'criteria'],
+    [{ criteria: [] }, 'criteria'],
+    [{ criteria: ['  '] }, 'criteria'],
     [{ criteria: ['x'], runner: 'model' }, 'runner'],
   ] as const) {
     const response = await client.send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'check', arguments: args } })

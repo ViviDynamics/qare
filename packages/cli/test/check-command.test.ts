@@ -166,3 +166,28 @@ test('no criterion, an empty one, or an unknown flag is a usage error, exit 4', 
     expect(err.text()).not.toBe('')
   }
 })
+
+test('without --profile the profile is the one in --repo, as the MCP tool resolves it', async () => {
+  const repo = await targetRepo()
+  const out = capture()
+
+  const code = await main(
+    ['check', PLAN.criteria[0]!.text, '--repo', repo, '--evidence', join(repo, 'evidence'), '--nare', (await fakeNare({ schemaVersion: '1', criteria: [PLAN.criteria[0]] })).binary, '--runner', 'none'],
+    out.writer,
+    capture().writer,
+    UP,
+  )
+
+  expect(code).toBe(0)
+  expect(out.text()).toContain('check-1 proven')
+})
+
+test('a criterion planned only with checks the runner skips says so in its reason, not only on stderr', async () => {
+  const repo = await targetRepo()
+  const visual = { schemaVersion: '1', criteria: [{ id: 'check-1', text: 'looks right', checks: [{ kind: 'visual', name: 'home', screenshot: 'home' }] }] }
+  const out = capture()
+
+  await main(['check', 'looks right', ...args(repo, '--nare', (await fakeNare(visual)).binary, '--runner', 'none')], out.writer, capture().writer, UP)
+
+  expect(out.text()).toContain('check-1 unverified: looks right (the plan checks it only with visual checks, which the runner does not execute yet)')
+})

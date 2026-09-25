@@ -1,9 +1,10 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import {
-  NareAgentRunner,
   VERSION,
   checkCriteria,
+  defaultCheckEvidenceDir,
+  nareCheckRunners,
   loadResult,
   parseJob,
   runJob,
@@ -17,7 +18,7 @@ const TOOLS = [
     name: 'check',
     description:
       'Check criteria stated in plain words: qare plans each one through nare, runs it and judges it, with no issue, diff or ledger. ' +
-      'Returns the judged result (the same judged-result.json qare check writes) and the evidence directory.',
+      'Returns the judged result (the same judged-result.json qare check writes), the evidence directory, and notes on anything the plan could not run.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -62,13 +63,8 @@ const TOOLS = [
 export interface McpServerDeps {
   boot?: BootOpts
   stdout: (chunk: string) => void
-  /** The model behind check, through nare; a verifier is confined to the directory it is handed. */
-  runners?: { planner: () => AgentRunner; verifier: (evidenceDir: string) => AgentRunner }
-}
-
-const NARE_RUNNERS = {
-  planner: (): AgentRunner => new NareAgentRunner(),
-  verifier: (evidenceDir: string): AgentRunner => new NareAgentRunner({ cwd: evidenceDir, root: evidenceDir }),
+  /** The model behind check (nare by default); a verifier is confined to the directory it is handed. */
+  runners?: () => { planner: AgentRunner; verifier: (evidenceDir: string) => AgentRunner }
 }
 
 function optionalString(record: Record<string, unknown>, key: string): string | undefined {
@@ -118,26 +114,29 @@ async function dispatchTool(
 ): Promise<unknown> {
   const record = isRecord(args) ? args : {}
   if (name === 'check') {
-    if (!Array.isArray(record.criteria) || !record.criteria.every((entry) => typeof entry === 'string'))
-      throw new McpProtocolError(-32602, 'criteria must be an array of strings, one criterion each')
+    if (
+      !Array.isArray(record.criteria) ||
+      record.criteria.length === 0 ||
+      !record.criteria.every((entry) => typeof entry === 'string' && entry.trim() !== '')
+    )
+      throw new McpProtocolError(-32602, 'criteria must be a non-empty array of sentences, one criterion each')
     const runner = optionalString(record, 'runner') ?? 'nare'
     if (runner !== 'nare' && runner !== 'none') throw new McpProtocolError(-32602, 'runner must be "nare" or "none"')
     const repoPath = resolve(optionalString(record, 'repoPath') ?? '.')
-    const evidenceDir = resolve(
-      repoPath,
-      optionalString(record, 'evidenceDir') ?? join('qare-evidence', `check-${new Date().toISOString().replace(/[:.]/g, '-')}`),
-    )
-    const runners = deps.runners ?? NARE_RUNNERS
-    const { judged } = await checkCriteria({
+    const named = optionalString(record, 'evidenceDir')
+    const evidenceDir = named === undefined ? defaultCheckEvidenceDir(repoPath) : resolve(repoPath, named)
+    const runners = deps.runners?.() ?? nareCheckRunners()
+    const { judged, notes } = await checkCriteria({
       criteria: record.criteria as string[],
       profileDir: resolve(repoPath, optionalString(record, 'profile') ?? '.qa'),
       repoPath,
       evidenceDir,
-      planner: runners.planner(),
+      planner: runners.planner,
       verifier: runner === 'none' ? 'none' : runners.verifier,
       run: deps.boot ?? {},
     })
-    return { evidenceDir, result: judged }
+    // Notes say what the plan could not run; dropping them here would hide it.
+    return { evidenceDir, result: judged, notes }
   }
   if (name === 'submit_job') {
     const job = parseJob(record.job)

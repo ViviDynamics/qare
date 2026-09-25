@@ -60,7 +60,7 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
     if ('unplannable' in criterion) {
       notes.push(`${criterion.id}: nothing to run, the plan called it unplannable (${criterion.unplannable})`)
       // The planner's reason travels with it, so the result says why nothing ran.
-      return { id: criterion.id, text: criterion.text, unplannable: criterion.unplannable }
+      return { id: criterion.id, text: criterion.text, unrunnable: `the planner could not plan it: ${criterion.unplannable}` }
     }
     const checks = criterion.checks.map(runnable).filter((check): check is JobCheck => check !== undefined)
     const skipped = criterion.checks.filter((check) => runnable(check) === undefined)
@@ -69,9 +69,13 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
         `${criterion.id}: ${skipped.length} check(s) not run, because the runner executes command, mail and flow checks only ` +
           `(${[...new Set(skipped.map((check) => check.kind))].join(', ')})`,
       )
-    return checks.length > 0
-      ? { id: criterion.id, text: criterion.text, checks }
-      : { id: criterion.id, text: criterion.text }
+    if (checks.length > 0) return { id: criterion.id, text: criterion.text, checks }
+    const kinds = [...new Set(skipped.map((check) => check.kind))].join(', ')
+    return {
+      id: criterion.id,
+      text: criterion.text,
+      unrunnable: `the plan checks it only with ${kinds} checks, which the runner does not execute yet`,
+    }
   })
 
   if (criteria.every((criterion) => criterion.checks === undefined))

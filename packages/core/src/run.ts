@@ -17,7 +17,7 @@ import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult } from './r
 import { mintRunValues, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 60000
-const NO_CHECKS_REASON = 'no checks: model planning lands when nare integration ships'
+const NO_CHECKS_REASON = 'no checks were given for this criterion, so nothing ran'
 
 /**
  * Where the flow check gets its browser: the run hands over a session factory,
@@ -268,7 +268,7 @@ async function runCriterion(
     return {
       id: criterion.id,
       outcome: 'unverified',
-      reason: criterion.unplannable === undefined ? NO_CHECKS_REASON : `the planner could not plan it: ${criterion.unplannable}`,
+      reason: criterion.unrunnable ?? NO_CHECKS_REASON,
     }
 
   const evidence: string[] = []

@@ -2,15 +2,15 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { BootOpts } from './boot.js'
 import { jobFromPlan } from './job-from-plan.js'
-import { judgeRun, judgedResult, prepareVerifierInputs, runVerifier, toSideResults, verdictOf } from './judge.js'
+import { judgeExecuted } from './judge.js'
 import type { ReadMail } from './mailbox.js'
 import { PLAN_SCHEMA_VERSION, type Plan } from './plan.js'
-import { NO_DIFF, planRun } from './plan-step.js'
+import { NO_DIFF, PlanStepError, planRun } from './plan-step.js'
 import { ProfileMissingError, loadProfile, type QaProfile } from './profile.js'
-import { redactResult, redactionRules } from './redact.js'
+import { redactionRules } from './redact.js'
 import type { RunResult } from './result.js'
 import { runJob, type FlowSessionFactory } from './run.js'
-import type { AgentRunner } from './runner.js'
+import { NareAgentRunner, NareRunnerError, type AgentRunner } from './runner.js'
 
 export class CheckInputError extends Error {
   constructor(message: string) {
@@ -39,12 +39,32 @@ export interface CheckOptions {
 }
 
 export interface CheckOutcome {
+  /** The criteria as checked: the id each sentence was given, and its text. */
+  criteria: { id: string; text: string }[]
   /** What `qare run` wrote: the executed result.json. */
   executed: RunResult
   /** What judge made of it, written as judged-result.json: the verdict to act on. */
   judged: RunResult
   /** Anything the plan could not carry into the run, for the caller to show. */
   notes: string[]
+}
+
+/** The model behind a check, through nare; the verifier is confined to the evidence it reads. */
+export function nareCheckRunners(binary?: string): { planner: AgentRunner; verifier: (evidenceDir: string) => AgentRunner } {
+  const options = binary === undefined ? {} : { binary }
+  return {
+    planner: new NareAgentRunner(options),
+    verifier: (evidenceDir) => new NareAgentRunner({ ...options, cwd: evidenceDir, root: evidenceDir }),
+  }
+}
+
+/**
+ * Where a check writes when the caller names nowhere: a directory of its own
+ * per run under `qare-evidence/`, with the evidence inside it, so the flow
+ * traces a run keeps beside its evidence never collide with another run's.
+ */
+export function defaultCheckEvidenceDir(root: string, now: Date = new Date()): string {
+  return join(root, 'qare-evidence', `check-${now.toISOString().replace(/[:.]/g, '-')}`, 'evidence')
 }
 
 /**
@@ -55,7 +75,8 @@ export interface CheckOutcome {
  * are told there is no diff. Nothing is dropped: a criterion the planner could
  * not plan, or every criterion when planning itself failed, is reported
  * unverified with the reason. The executed and judged results keep the same
- * contract as `qare run` and `qare judge`, in the same files.
+ * contract as `qare run` and `qare judge`, in the same files, and judging is
+ * the same code as `qare judge`.
  */
 export async function checkCriteria(opts: CheckOptions): Promise<CheckOutcome> {
   const texts = opts.criteria.map((text) => text.trim())
@@ -72,7 +93,10 @@ export async function checkCriteria(opts: CheckOptions): Promise<CheckOutcome> {
     if (!(error instanceof ProfileMissingError)) throw error
   }
 
-  const plan = profile === undefined ? unplanned(criteria, 'there is no usable profile to plan against') : await planOrReport(opts.planner, criteria, profile)
+  const plan =
+    profile === undefined
+      ? unplanned(criteria, 'there is no usable profile to plan against')
+      : await planOrReport(opts.planner, criteria, profile)
   await mkdir(opts.evidenceDir, { recursive: true })
   await writeFile(join(opts.evidenceDir, 'plan.json'), `${JSON.stringify(plan, null, 2)}\n`)
 
@@ -82,30 +106,21 @@ export async function checkCriteria(opts: CheckOptions): Promise<CheckOutcome> {
     // A one-off check runs the app as it is: there is no second side.
     baseRef: 'none',
     headRef: 'as running',
-    profile: { path: opts.profileDir },
+    // Loaded once: the run gets the profile validated here. A missing one
+    // goes by path, so the run refuses it and names the gap.
+    profile: profile === undefined ? { path: opts.profileDir } : { inline: profile },
     evidenceDir: opts.evidenceDir,
   })
   const { result: executed } = await runJob(job, opts.run ?? {})
 
-  const judged = judgeRun({ base: [], head: toSideResults(executed) })
-  const evidenceById = new Map(executed.criteria.map((criterion) => [criterion.id, 'evidence' in criterion ? criterion.evidence ?? [] : []]))
-  let verdicts = judged.criteria
-  // A refused run executed nothing, so there is nothing for the verifier to read.
-  if (opts.verifier !== 'none' && executed.verdict !== 'refused') {
-    verdicts = await runVerifier(
-      opts.verifier(opts.evidenceDir),
-      prepareVerifierInputs({
-        criteria: judged.criteria,
-        texts: Object.fromEntries(criteria.map((criterion) => [criterion.id, criterion.text])),
-        evidence: Object.fromEntries(evidenceById),
-        diff: NO_DIFF,
-      }),
-    )
-  }
-  const verdict = executed.verdict === 'refused' ? 'refused' : verdictOf(verdicts, judged.regressions)
-  const final = redactResult(judgedResult(executed, verdict, verdicts, evidenceById), redactionRules(profile?.redact))
-  await writeFile(join(opts.evidenceDir, 'judged-result.json'), `${JSON.stringify(final, null, 2)}\n`)
-  return { executed, judged: final, notes }
+  const { result: judged } = await judgeExecuted(executed, {
+    texts: Object.fromEntries(criteria.map((criterion) => [criterion.id, criterion.text])),
+    diff: NO_DIFF,
+    rules: redactionRules(profile?.redact),
+    ...(opts.verifier === 'none' ? {} : { verifier: opts.verifier(opts.evidenceDir) }),
+  })
+  await writeFile(join(opts.evidenceDir, 'judged-result.json'), `${JSON.stringify(judged, null, 2)}\n`)
+  return { criteria, executed, judged, notes }
 }
 
 async function planOrReport(planner: AgentRunner, criteria: { id: string; text: string }[], profile: QaProfile): Promise<Plan> {
@@ -116,10 +131,11 @@ async function planOrReport(planner: AgentRunner, criteria: { id: string; text: 
       ...(profile.target === undefined ? {} : { target: profile.target.url }),
     })
   } catch (error) {
-    // A planner that could not answer (nare missing, a model error, an answer
-    // that never parsed) leaves every criterion unverified, naming why, and
-    // the run still reports each one rather than stopping without a result.
-    return unplanned(criteria, `planning failed: ${error instanceof Error ? error.message : String(error)}`)
+    // A planner that could not answer (nare missing or failing, a model that
+    // never produced a usable plan) leaves every criterion unverified, naming
+    // why. Anything else is a bug, and surfaces as one.
+    if (!(error instanceof PlanStepError || error instanceof NareRunnerError)) throw error
+    return unplanned(criteria, `planning failed: ${error.message}`)
   }
 }
 
