@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Poll CI for a PR to a terminal state and emit CI_RESULT JSON.
+# usage: ci-watch <pr> [--timeout-min N] [--interval-sec S]
+# exit: 0 green, 1 failed, 4 timed out / no runs by the deadline
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+source "$here/_lib.sh"
+vivi_load_env; vivi_require VIVI_REPO
+pr=${1:-}; [ -n "$pr" ] || vivi_die 2 "usage: ci-watch <pr> [--timeout-min N] [--interval-sec S]"
+shift
+timeout_min=60; interval=30
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --timeout-min) timeout_min=$2; shift 2;;
+    --interval-sec) interval=$2; shift 2;;
+    *) vivi_die 2 "unknown option $1";;
+  esac
+done
+# "The operation was canceled" is deliberately absent: a cancellation is a
+# cascade to wait out (ci-safety §2), not infrastructure to retry.
+INFRA='runner has been lost|no space left on device|short read.*unexpected EOF|bind: address already in use|Lost communication with server|ECONNRESET|ETIMEDOUT|Could not resolve host|504 Gateway'
+sigfile=""
+if [ -n "${VIVI_FLAKE_SIGNATURES_FILE:-}" ]; then
+  case "$VIVI_FLAKE_SIGNATURES_FILE" in /*) sigfile=$VIVI_FLAKE_SIGNATURES_FILE;; *) sigfile="$VIVI_ROOT/$VIVI_FLAKE_SIGNATURES_FILE";; esac
+  [ -f "$sigfile" ] || sigfile=""
+fi
+start=$(date +%s); deadline=$((start + timeout_min * 60))
+first_head=""; head_changed=false; polls=0
+while :; do
+  code=0
+  new_snap=$("$here/ci-runs" "$pr") || code=$?
+  if [ "$code" -ne 0 ]; then
+    if [ "$code" -ne 3 ]; then exit "$code"; fi
+    echo "transient error from ci-runs, will retry" >&2
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      state=timed_out
+      if [ -z "${snap:-}" ]; then snap=$(jq -nc --argjson pr "$pr" '{pr:$pr, head_sha:"", state:"pending", runs:[], failed_jobs:[]}'); fi
+      break
+    fi
+    vivi_sleep "$interval"; continue
+  fi
+  snap=$new_snap
+  polls=$((polls+1))
+  head=$(printf '%s' "$snap" | jq -r .head_sha)
+  if [ -z "$first_head" ]; then first_head=$head; fi
+  if [ "$head" != "$first_head" ]; then head_changed=true; echo "head moved $first_head -> $head, following the new run" >&2; first_head=$head; fi
+  state=$(printf '%s' "$snap" | jq -r .state)
+  echo "poll $polls: $state (head $head)" >&2
+  case "$state" in green|failed) break;; esac
+  if [ "$(date +%s)" -ge "$deadline" ]; then state=timed_out; break; fi
+  vivi_sleep "$interval"
+done
+failures='[]'
+if [ "$state" = "failed" ]; then
+  for row in $(printf '%s' "$snap" | jq -r '.failed_jobs[] | "\(.run_id):\(.job_id)"'); do
+    rid=${row%%:*}; jid=${row##*:}
+    log_error=false
+    log=$(vivi_gh run view --job "$jid" --log-failed --repo "$VIVI_REPO" 2>/dev/null) || { log_error=true; log="(log unavailable)"; }
+    tail_=$(printf '%s\n' "$log" | tail -n 60)
+    hint=unknown; match=null
+    if $log_error; then :
+    elif printf '%s' "$log" | grep -qE "$INFRA"; then hint=infra
+    elif [ -n "$sigfile" ]; then
+      m=""
+      while IFS= read -r s || [ -n "$s" ]; do
+        [ -n "$s" ] || continue
+        if grep -qF -- "$s" <<< "$log"; then m=$s; break; fi
+      done < "$sigfile"
+      if [ -n "$m" ]; then
+        hint=known_flake
+        match=$(printf '%s' "$m" | jq -Rs 'rtrimstr("\n")')
+      fi
+    fi
+    f=$(printf '%s' "$snap" | jq -c --argjson rid "$rid" --argjson jid "$jid" '.failed_jobs[] | select(.run_id==$rid and .job_id==$jid)')
+    f=$(printf '%s' "$f" | jq -c --arg h "$hint" --argjson m "$match" --arg t "$tail_" --argjson le "$log_error" '. + {bucket_hint:$h, signature_match:$m, log_tail:$t, log_error:$le}')
+    failures=$(printf '%s' "$failures" | jq -c --argjson f "$f" '. + [$f]')
+  done
+fi
+attempt=$(printf '%s' "$snap" | jq '[.runs[].run_attempt] | max // 0')
+printf '%s' "$snap" | jq -c --arg state "$state" --argjson failures "$failures" --argjson hc "$head_changed" --argjson attempt "$attempt" --argjson el "$(( $(date +%s) - start ))" '
+  {schema:"CI_RESULT", pr, head_sha, run_ids:[.runs[].id], attempt:$attempt, state:$state, failures:$failures,
+   retries_verified:0, retries_unverified:0, elapsed_sec:$el, head_changed:$hc}'
+case "$state" in green) exit 0;; failed) exit 1;; *) exit 4;; esac

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Print the GitHub token file path to use for this consumer repo.
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+vivi_load_env
+vivi_token_file
