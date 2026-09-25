@@ -17,7 +17,7 @@ import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult } from './r
 import { mintRunValues, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 60000
-const NO_CHECKS_REASON = 'no checks: model planning lands when nare integration ships'
+const NO_CHECKS_REASON = 'no checks were given for this criterion, so nothing ran'
 
 /**
  * Where the flow check gets its browser: the run hands over a session factory,
@@ -265,7 +265,11 @@ async function runCriterion(
 ): Promise<CriterionResult> {
   const checks = criterion.checks ?? []
   if (checks.length === 0)
-    return { id: criterion.id, outcome: 'unverified', reason: NO_CHECKS_REASON }
+    return {
+      id: criterion.id,
+      outcome: 'unverified',
+      reason: criterion.unrunnable ?? NO_CHECKS_REASON,
+    }
 
   const evidence: string[] = []
   let failed = false
@@ -354,6 +358,8 @@ async function runCriterion(
 
   if (failed) return { id: criterion.id, outcome: 'failed', evidence }
   if (unverifiedReason !== undefined) return { id: criterion.id, outcome: 'unverified', reason: unverifiedReason }
+  // Everything that ran passed, but the plan asked for more than ran.
+  if (criterion.skipped !== undefined) return { id: criterion.id, outcome: 'unverified', reason: criterion.skipped, evidence }
   return { id: criterion.id, outcome: 'proven', evidence }
 }
 

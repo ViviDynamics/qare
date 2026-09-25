@@ -16,6 +16,12 @@ The job is the caller's own input (see "A job handed in" in
 written to. On every run that reaches a verdict, the CLI prints
 `verdict <verdict>; evidence <evidenceDir>` to stdout.
 
+`qare check "<criterion>"... [--profile <dir>] [--evidence <dir>]` plans,
+runs and judges criteria stated in plain words in one call (see "A criterion
+in a sentence" in [SPEC.md](./SPEC.md)). It writes the same `result.json`, plus
+`plan.json` and `judged-result.json`, and exits with the code below for the
+judged verdict, so an orchestrator can gate on either command.
+
 `qare judge --result <path>` turns a result.json into a PR comment and check
 run; on success it exits 0 whatever the verdict was. Gating — deciding whether
 the work passed — is `qare run`'s exit code and result.json, never the judge.

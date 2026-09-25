@@ -39,6 +39,18 @@ export interface JobCriterion {
   id: string
   text: string
   checks?: JobCheck[]
+  /**
+   * Why nothing runs for it, when a plan says: the planner could not plan it,
+   * or its checks are kinds the runner does not execute. Reported as its
+   * unverified reason (#123), and never alongside checks.
+   */
+  unrunnable?: string
+  /**
+   * Checks the plan gave it that the runner does not execute, when it runs
+   * others. Half a proof is not a proof: a criterion whose run checks pass is
+   * still unverified, with this as the reason.
+   */
+  skipped?: string
 }
 
 export type JobPostTarget = 'none' | string
@@ -161,7 +173,17 @@ function parseCriterion(value: unknown, index: number): JobCriterion {
     )
   const text = nonEmptyString(value.text, `${base}.text`, 'text')
   const checks = value.checks === undefined ? undefined : parseChecks(value.checks, base)
-  return checks === undefined ? { id, text } : { id, text, checks }
+  const unrunnable = value.unrunnable === undefined ? undefined : nonEmptyString(value.unrunnable, `${base}.unrunnable`, 'unrunnable reason')
+  const skipped = value.skipped === undefined ? undefined : nonEmptyString(value.skipped, `${base}.skipped`, 'skipped reason')
+  if (unrunnable !== undefined && checks !== undefined && checks.length > 0)
+    fail(`${base}.unrunnable`, 'a criterion with checks has something to run; unrunnable says why one has nothing, so it carries one or the other')
+  return {
+    id,
+    text,
+    ...(checks === undefined ? {} : { checks }),
+    ...(unrunnable === undefined ? {} : { unrunnable }),
+    ...(skipped === undefined ? {} : { skipped }),
+  }
 }
 
 function parseChecks(value: unknown, base: string): JobCheck[] {

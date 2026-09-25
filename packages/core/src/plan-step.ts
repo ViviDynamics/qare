@@ -9,11 +9,20 @@ export interface PlanCriterionInput {
 export interface PlanInputs {
   /** The acceptance criteria, as the ledger or the issue states them. */
   criteria: PlanCriterionInput[]
-  /** The change under test. */
-  diff: string
+  /**
+   * The change under test. Absent for a one-off check of the app as it runs
+   * (#123): the planner is told there is none, rather than handed an empty one.
+   */
+  diff?: string
   /** Suite names the profile declares, which a flow or command check may name. */
   suites?: string[]
+  /** The URL of a running target the profile names (#122), which checks reach it at. */
+  target?: string
 }
+
+/** What the planner and the verifier are told when there is no change under review. */
+export const NO_DIFF =
+  'There is no diff: this is a one-off check of the app as it runs now, not a review of a change.'
 
 export class PlanStepError extends Error {
   constructor(message: string) {
@@ -130,10 +139,17 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     '{"role":"the aria role","name":"the accessible name"} or {"testId":"the data-testid value"}.',
     'Never a CSS selector, never coordinates, never a free-form instruction.',
     '',
+    ...(inputs.target === undefined
+      ? []
+      : [
+          `The app is already running at ${inputs.target}. A flow opens its pages by path, such as {"action":"open","url":"/some/page"},`,
+          'which resolves against that URL, and a command check reaches it through {{run.target_url}}, which carries no trailing slash.',
+          '',
+        ]),
     'Mark a check "inferred": true when the criterion did not state how it should be proven.',
     `Answer with schemaVersion "${PLAN_SCHEMA_VERSION}".`,
     '',
-    `The change under test:\n${inputs.diff}`,
+    inputs.diff === undefined ? NO_DIFF : `The change under test:\n${inputs.diff}`,
     ...(correction ? ['', `Your previous answer was rejected: ${correction}`] : []),
   ].join('\n')
 }

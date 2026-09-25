@@ -184,7 +184,7 @@ test('a criterion with zero checks stays unverified pending planning', async () 
     {
       id: 'planned-later',
       outcome: 'unverified',
-      reason: 'no checks: model planning lands when nare integration ships',
+      reason: 'no checks were given for this criterion, so nothing ran',
     },
   ])
 })

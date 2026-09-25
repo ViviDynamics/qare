@@ -73,7 +73,7 @@ test('the MCP surface round-trips a full job through submit, result, and evidenc
     const toolNames = JSON.parse(client.lines[1]).result.tools.map(
       (tool: { name: string }) => tool.name,
     )
-    expect(toolNames).toEqual(['submit_job', 'get_result', 'get_evidence'])
+    expect(toolNames).toEqual(['check', 'submit_job', 'get_result', 'get_evidence'])
 
     const evidenceDir = join(repoPath, 'evidence')
     const job = {
@@ -177,4 +177,73 @@ test('notifications are never answered and parse errors answer with -32700', asy
   await client.server.handleLine('42')
   expect(JSON.parse(client.lines[1])).toMatchObject({ id: null, error: { code: -32600 } })
   expect(client.lines).toHaveLength(2)
+})
+
+test('check takes criteria in plain words and returns the judged result it wrote, with the evidence directory (#123)', async () => {
+  const { mkdir, readFile, writeFile } = await import('node:fs/promises')
+  const { FakeAgentRunner } = await import('@qare/core')
+  const repo = await mkdtemp(join(tmpdir(), 'qare-mcp-check-'))
+  const target = ['https:', '//wiki.example.test'].join('')
+  await mkdir(join(repo, '.qa'))
+  await writeFile(join(repo, '.qa', 'QA.md'), '# QA\n')
+  await writeFile(join(repo, '.qa', 'config.yml'), `target:\n  url: ${target}\n  health: { http: /health, timeout: 1s }\n`)
+  const completed = (output: unknown) => ({
+    status: 'completed' as const,
+    stopReason: 'end_turn' as const,
+    usage: { inputTokens: 1, outputTokens: 1 },
+    output: JSON.stringify(output),
+  })
+  const plan = {
+    schemaVersion: '1',
+    criteria: [{ id: 'check-1', text: 'the article opens', checks: [{ kind: 'command', name: 'ok', command: 'node --version' }] }],
+  }
+  const planner = new FakeAgentRunner([completed(plan)])
+  const verifier = new FakeAgentRunner([completed({ findings: [] })])
+  const lines: string[] = []
+  const server = createMcpServer({
+    boot: BOOT,
+    stdout: (chunk) => lines.push(chunk),
+    runners: () => ({ planner, verifier: () => verifier }),
+  })
+
+  await server.handleLine(
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'check', arguments: { criteria: ['the article opens'], repoPath: repo, evidenceDir: join(repo, 'evidence') } } }),
+  )
+
+  const response = JSON.parse(lines.join('')) as { result: { content: Array<{ text: string }> } }
+  const output = JSON.parse(response.result.content[0]!.text) as { evidenceDir: string; result: unknown; notes: string[] }
+  expect(output.notes).toEqual([])
+  expect(output.evidenceDir).toBe(join(repo, 'evidence'))
+  expect(output.result).toEqual(JSON.parse(await readFile(join(repo, 'evidence', 'judged-result.json'), 'utf8')))
+  expect(output.result).toMatchObject({ verdict: 'passed', target: { url: target, comparison: 'none' } })
+  expect(planner.requests[0]?.prompt).toContain('the article opens')
+  await rm(repo, { recursive: true, force: true })
+})
+
+test('check refuses arguments it cannot read, naming the field', async () => {
+  const client = new FakeClient()
+  for (const [args, field] of [
+    [{}, 'criteria'],
+    [{ criteria: 'one sentence' }, 'criteria'],
+    [{ criteria: [] }, 'criteria'],
+    [{ criteria: ['  '] }, 'criteria'],
+    [{ criteria: ['x'], runner: 'model' }, 'runner'],
+  ] as const) {
+    const response = await client.send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'check', arguments: args } })
+    expect((response.error as { code: number; message: string }).code).toBe(-32602)
+    expect((response.error as { message: string }).message).toContain(field)
+  }
+})
+
+test('tools/list offers check alongside the job tools', async () => {
+  const client = new FakeClient()
+  const response = await client.send({ jsonrpc: '2.0', id: 3, method: 'tools/list' })
+  expect((response.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name)).toContain('check')
+})
+
+test('the check tool advertises the criteria it accepts: at least one, none blank', async () => {
+  const client = new FakeClient()
+  const response = await client.send({ jsonrpc: '2.0', id: 4, method: 'tools/list' })
+  const check = (response.result as { tools: Array<{ name: string; inputSchema: { properties: { criteria: Record<string, unknown> } } }> }).tools.find((tool) => tool.name === 'check')
+  expect(check?.inputSchema.properties.criteria).toMatchObject({ minItems: 1, items: { type: 'string', minLength: 1 } })
 })

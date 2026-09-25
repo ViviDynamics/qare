@@ -1,16 +1,43 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import {
+  CheckInputError,
   VERSION,
+  checkCriteria,
+  defaultCheckEvidenceDir,
+  nareRunners,
   loadResult,
   parseJob,
   runJob,
 } from '@qare/core'
-import type { BootOpts } from '@qare/core'
+import type { AgentRunner, BootOpts } from '@qare/core'
 
 const PROTOCOL_VERSION = '2024-11-05'
 
 const TOOLS = [
+  {
+    name: 'check',
+    description:
+      'Check criteria stated in plain words: qare plans each one through nare, runs it and judges it, with no issue, diff or ledger. ' +
+      'Returns the judged result (the same judged-result.json qare check writes), the evidence directory, and notes on anything the plan could not run.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        criteria: {
+          type: 'array',
+          minItems: 1,
+          items: { type: 'string', minLength: 1, pattern: '\\S' },
+          description: 'each criterion in a sentence',
+        },
+        // Named paths resolve from the server's working directory, as the CLI's do from its own.
+        profile: { type: 'string', description: 'the .qa/ profile directory (default: .qa under repoPath)' },
+        repoPath: { type: 'string', description: 'where command checks run (default: the server working directory)' },
+        evidenceDir: { type: 'string', description: 'where evidence is written (default: qare-evidence/check-<time>-<id>/evidence under the server working directory)' },
+        runner: { type: 'string', enum: ['nare', 'none'], description: 'none judges from the evidence alone, without the verifier' },
+      },
+      required: ['criteria'],
+    },
+  },
   {
     name: 'submit_job',
     description: 'Run a qare job and return its result document.',
@@ -43,6 +70,15 @@ const TOOLS = [
 export interface McpServerDeps {
   boot?: BootOpts
   stdout: (chunk: string) => void
+  /** The model behind check (nare by default); a verifier is confined to the directory it is handed. */
+  runners?: () => { planner: AgentRunner; verifier: (evidenceDir: string) => AgentRunner }
+}
+
+function optionalString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key]
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || value === '') throw new McpProtocolError(-32602, `${key} must be a non-empty string`)
+  return value
 }
 
 export interface McpServer {
@@ -84,6 +120,33 @@ async function dispatchTool(
   args: unknown,
 ): Promise<unknown> {
   const record = isRecord(args) ? args : {}
+  if (name === 'check') {
+    // The shape is checked here; what makes a criterion usable is checkCriteria's
+    // rule, and its CheckInputError is answered as invalid params below.
+    if (!Array.isArray(record.criteria) || !record.criteria.every((entry) => typeof entry === 'string'))
+      throw new McpProtocolError(-32602, 'criteria must be an array of sentences, one criterion each')
+    const runner = optionalString(record, 'runner') ?? 'nare'
+    if (runner !== 'nare' && runner !== 'none') throw new McpProtocolError(-32602, 'runner must be "nare" or "none"')
+    const repoPath = resolve(optionalString(record, 'repoPath') ?? '.')
+    const named = optionalString(record, 'evidenceDir')
+    const evidenceDir = resolve(named ?? defaultCheckEvidenceDir(process.cwd()))
+    const profile = optionalString(record, 'profile')
+    const runners = deps.runners?.() ?? nareRunners()
+    const { judged, notes } = await checkCriteria({
+      criteria: record.criteria as string[],
+      profileDir: profile === undefined ? join(repoPath, '.qa') : resolve(profile),
+      repoPath,
+      evidenceDir,
+      planner: runners.planner,
+      verifier: runner === 'none' ? 'none' : runners.verifier,
+      run: deps.boot ?? {},
+    }).catch((error: unknown) => {
+      if (error instanceof CheckInputError) throw new McpProtocolError(-32602, `criteria: ${error.message}`)
+      throw error
+    })
+    // Notes say what the plan could not run; dropping them here would hide it.
+    return { evidenceDir, result: judged, notes }
+  }
   if (name === 'submit_job') {
     const job = parseJob(record.job)
     const { result } = await runJob(job, deps.boot ?? {})

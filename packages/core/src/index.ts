@@ -85,7 +85,7 @@ export type { IssueCriteriaProblem } from './issue-criteria.js'
 export { linkedIssues } from './linked-issues.js'
 export { jobFromPlan } from './job-from-plan.js'
 export type { RunContext } from './job-from-plan.js'
-export { PLAN_OUTPUT_SCHEMA, PlanStepError, planRun } from './plan-step.js'
+export { NO_DIFF, PLAN_OUTPUT_SCHEMA, PlanStepError, planRun } from './plan-step.js'
 export type { PlanCriterionInput, PlanInputs } from './plan-step.js'
 export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'
 export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobCheck, JobPostTarget } from './job.js'
@@ -113,6 +113,9 @@ export {
   consumeVerifierFindings,
   detectRegressions,
   judgeRun,
+  judgedResult,
+  judgeExecuted,
+  evidenceOf,
   prepareVerifierInputs,
   runVerifier,
   toSideResults,
@@ -123,6 +126,7 @@ export type {
   CriterionVerdict,
   JudgeRunInput,
   JudgeRunResult,
+  JudgeExecutedOptions,
   Regression,
   SideResult,
   VerifierClaim,
@@ -191,3 +195,5 @@ export {
   requeueTargets,
 } from './stub-issues.js'
 export type { MissingStub, StubIssueDraft, StubIssueRefusedEntry, StubIssuePoster } from './stub-issues.js'
+export { CheckInputError, checkCriteria, defaultCheckEvidenceDir, nareRunners } from './check.js'
+export type { CheckOptions, CheckOutcome } from './check.js'
