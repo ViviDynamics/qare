@@ -176,13 +176,15 @@ function redactNode(value: unknown, rules: readonly RedactionRule[]): unknown {
 }
 
 /**
- * A result with its reasons redacted, the only free text in it. Ids and
+ * A result with its reasons and target URL redacted, the only free text in it. Ids and
  * evidence paths are identities: a criterion id may legally read `token:1`,
  * and redacting it would detach the result from its plan and its files.
  */
 export function redactResult(result: RunResult, rules: readonly RedactionRule[] = BUILTIN_REDACTION_RULES): RunResult {
   return {
     ...result,
+    // A target URL can carry credentials in its userinfo or query.
+    ...(result.target === undefined ? {} : { target: { ...result.target, url: redactText(result.target.url, rules) } }),
     criteria: result.criteria.map((criterion) =>
       'reason' in criterion && typeof criterion.reason === 'string'
         ? { ...criterion, reason: redactText(criterion.reason, rules) }

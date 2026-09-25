@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process'
 import http from 'node:http'
 import https from 'node:https'
-import type { QaProfile } from './profile.js'
+import type { ProfileApp, QaProfile } from './profile.js'
+import { VERSION } from './version.js'
 
 export interface BootOutcome {
   kind: 'up' | 'blocked'
@@ -19,10 +20,11 @@ export interface BootOpts {
 const DEFAULT_POLL_INTERVAL_MS = 500
 const NO_DEADLINE_MS = 0
 
-function parseTimeoutMs(timeout: string): number {
+/** A health timeout such as `120s`, `500ms` or `2m`, in milliseconds. */
+export function parseDurationMs(timeout: string): number {
   const match = /^(\d+)(ms|s|m)$/.exec(timeout.trim())
   if (!match) {
-    throw new Error(`app.health.timeout "${timeout}" is not a duration like 120s`)
+    throw new Error(`"${timeout}" is not a duration like 120s`)
   }
   const value = Number(match[1])
   if (match[2] === 'ms') return value
@@ -58,7 +60,8 @@ function defaultProbe(url: string, timeoutMs: number): Promise<{ ok: boolean }> 
     const mod = isHttps ? https : http
     const req = mod.request(
       request,
-      { method: 'GET', timeout: timeoutMs },
+      // Named, because public sites refuse an anonymous client (#122).
+      { method: 'GET', timeout: timeoutMs, headers: { 'user-agent': `qare/${VERSION} (health check)` } },
       (res: { resume: () => void; statusCode?: number }) => {
         res.resume()
         resolve({ ok: res.statusCode === 200 })
@@ -75,26 +78,61 @@ function defaultProbe(url: string, timeoutMs: number): Promise<{ ok: boolean }> 
   })
 }
 
-async function captureComposeLogs(profile: QaProfile, opts: BootOpts): Promise<string> {
+async function captureComposeLogs(app: ProfileApp, opts: BootOpts): Promise<string> {
   const runCompose = opts.runCompose ?? defaultRunCompose
-  const logs = await runCompose(
-    ['-f', profile.app.boot.compose, 'logs', '--no-color', profile.app.boot.service],
-    NO_DEADLINE_MS,
-  )
+  const logs = await runCompose(['-f', app.boot.compose, 'logs', '--no-color', app.boot.service], NO_DEADLINE_MS)
   return logs.stdout + logs.stderr
 }
 
-export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<BootOutcome> {
-  const runCompose = opts.runCompose ?? defaultRunCompose
-  const probe = opts.probe ?? ((url: string) => defaultProbe(url, 1000))
+/** Poll the health URL until it answers 200 or the deadline passes. */
+async function waitForHealth(url: string, timeoutMs: number, opts: BootOpts): Promise<boolean> {
+  const probe = opts.probe ?? ((target: string) => defaultProbe(target, 1000))
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      if ((await probe(url)).ok) return true
+    } catch {
+      // A probe that throws is a probe that did not pass.
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
+  }
+  return false
+}
+
+/**
+ * A target profile names an app that is already running (#122): nothing boots,
+ * and the health check alone proves the target is up. A target that never
+ * answers is blocked, naming the URL, so no criterion is read as failed.
+ */
+async function probeTarget(profile: QaProfile, opts: BootOpts): Promise<BootOutcome> {
+  const target = profile.target
+  if (target === undefined) return { kind: 'blocked', reason: 'the profile names neither app nor target', logs: '' }
   let timeoutMs: number
   try {
-    timeoutMs = parseTimeoutMs(profile.app.health.timeout)
+    timeoutMs = parseDurationMs(target.health.timeout)
+  } catch (error) {
+    return { kind: 'blocked', reason: `target.health.timeout ${error instanceof Error ? error.message : String(error)}`, logs: '' }
+  }
+  if (await waitForHealth(target.health.http, timeoutMs, opts)) return { kind: 'up', logs: '' }
+  return {
+    kind: 'blocked',
+    reason: `target ${target.url} is not reachable: its health check at ${target.health.http} did not pass within ${target.health.timeout}`,
+    logs: '',
+  }
+}
+
+export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<BootOutcome> {
+  if (profile.app === undefined) return probeTarget(profile, opts)
+  const app = profile.app
+  const runCompose = opts.runCompose ?? defaultRunCompose
+  let timeoutMs: number
+  try {
+    timeoutMs = parseDurationMs(app.health.timeout)
   } catch (error) {
     return {
       kind: 'blocked',
-      reason: error instanceof Error ? error.message : String(error),
+      reason: `app.health.timeout ${error instanceof Error ? error.message : String(error)}`,
       logs: '',
     }
   }
@@ -107,10 +145,7 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   try {
     up = await Promise.race([
       watchdog,
-      runCompose(
-        ['-f', profile.app.boot.compose, 'up', '-d', '--wait', profile.app.boot.service],
-        timeoutMs,
-      ),
+      runCompose(['-f', app.boot.compose, 'up', '-d', '--wait', app.boot.service], timeoutMs),
     ])
   } catch (error) {
     clearTimeout(timer)
@@ -128,34 +163,23 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
     return {
       kind: 'blocked',
       reason: `compose up exited ${up.code}`,
-      logs: logs || (await captureComposeLogs(profile, opts)),
+      logs: logs || (await captureComposeLogs(app, opts)),
     }
   }
 
-  const deadline = Date.now() + timeoutMs
-  let lastProbe = { ok: false }
-  while (Date.now() < deadline) {
-    try {
-      lastProbe = await probe(profile.app.health.http)
-    } catch (error) {
-      lastProbe = { ok: false }
-      void error
-    }
-    if (lastProbe.ok) {
-      return { kind: 'up', logs: up.stdout }
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
-  }
+  if (await waitForHealth(app.health.http, timeoutMs, opts)) return { kind: 'up', logs: up.stdout }
 
   const logs = `${up.stdout}${up.stderr}`
   return {
     kind: 'blocked',
-    reason: `health check at ${profile.app.health.http} did not pass within ${profile.app.health.timeout}`,
-    logs: logs || (await captureComposeLogs(profile, opts)),
+    reason: `health check at ${app.health.http} did not pass within ${app.health.timeout}`,
+    logs: logs || (await captureComposeLogs(app, opts)),
   }
 }
 
+/** Tear the booted stack down; a target profile booted nothing, so there is nothing to stop. */
 export async function stopApp(profile: QaProfile, opts: BootOpts = {}): Promise<void> {
+  if (profile.app === undefined) return
   const runCompose = opts.runCompose ?? defaultRunCompose
   try {
     await runCompose(['-f', profile.app.boot.compose, 'down'], NO_DEADLINE_MS)

@@ -35,6 +35,9 @@ directory. It carries:
   `refused`, or `waived`), and a `criteria` array whose entries are
   `proven`, `failed`, or `unverified` with evidence paths.
 - Optional `job.id` and `waived` (array of `{ criterionId, by }`).
+- Optional `target` (`{ url, comparison: "none" }`) when the run checked an
+  app qare did not boot: there was no base revision, so never describe
+  such a run as having found no regressions.
 
 Read it; never edit it, and never hand-write one. A hand-written or
 edited result is a schema violation, and the hook below treats it as

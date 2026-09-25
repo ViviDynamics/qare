@@ -1,6 +1,7 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, expect, test } from 'vitest'
 
 import { ProfileMissingError, ProfileValidationError, loadProfile, runJob, type Job } from '../src/index.js'
@@ -77,6 +78,22 @@ test('a partly onboarded repository is refused too, naming the first gap', async
   const path = await repo()
   await mkdir(join(path, '.qa'), { recursive: true })
   await writeFile(join(path, '.qa', 'QA.md'), '# QA\n', 'utf8')
+
+  const { result } = await runJob(job(path))
+
+  expect(result.verdict).toBe('refused')
+  // config.yml says whether qare boots a stack (and so needs fixtures and
+  // stubs) or points at a running target (and needs neither), so it is the
+  // first gap (#122).
+  expect((result.criteria[0] as { reason: string }).reason).toMatch(/config\.yml/)
+})
+
+test('a booted profile without its fixtures directory is refused, naming it', async () => {
+  const path = await repo()
+  const qa = join(path, '.qa')
+  await mkdir(qa, { recursive: true })
+  await writeFile(join(qa, 'QA.md'), '# QA\n', 'utf8')
+  await copyFile(fileURLToPath(new URL('../fixtures/qa-valid/.qa/config.yml', import.meta.url)), join(qa, 'config.yml'))
 
   const { result } = await runJob(job(path))
 

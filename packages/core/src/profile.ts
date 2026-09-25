@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
+import { parseDurationMs } from './boot.js'
 import { RedactionError, redactionRules, type ProfileRedaction } from './redact.js'
 
 export interface ProfileApp {
@@ -8,6 +9,17 @@ export interface ProfileApp {
   health: { http: string; timeout: string }
   seed: { command: string }
   login: { fixture: string; role: string }
+}
+
+/**
+ * A deployed app qare did not boot (#122): staging, a preview, a public site.
+ * The health check proves it is up; `hosts` are the other hosts a check may
+ * reach, besides the target's own.
+ */
+export interface ProfileTarget {
+  url: string
+  health: { http: string; timeout: string }
+  hosts: string[]
 }
 
 export interface ProfileStub {
@@ -30,7 +42,10 @@ export interface ProfileSuite {
 }
 
 export interface QaProfile {
-  app: ProfileApp
+  /** The boot recipe; absent when the profile names a target instead. */
+  app?: ProfileApp
+  /** A running app to check in place of booting one (#122); exclusive with app. */
+  target?: ProfileTarget
   stubs: ProfileStub[]
   visual: ProfileVisual
   suites: ProfileSuite[]
@@ -119,8 +134,6 @@ async function requireDirectory(dirPath: string, field: string, label: string): 
 
 export async function loadProfile(dir: string): Promise<QaProfile> {
   await requireFile(join(dir, 'QA.md'), 'QA.md', 'the .qa/ profile instructions')
-  await requireDirectory(join(dir, 'fixtures'), 'fixtures', 'the .qa/ fixtures directory')
-  await requireDirectory(join(dir, 'stubs'), 'stubs', 'the .qa/ stubs directory')
 
   const configPath = join(dir, 'config.yml')
   let text: string
@@ -143,12 +156,19 @@ export async function loadProfile(dir: string): Promise<QaProfile> {
       `config.yml is not valid YAML (${error instanceof Error ? error.message : String(error)})`,
     )
   }
-  return validateProfileConfig(input)
+  const profile = validateProfileConfig(input)
+  // Fixtures and stubs feed the stack qare boots; a target profile has none.
+  if (profile.app !== undefined) {
+    await requireDirectory(join(dir, 'fixtures'), 'fixtures', 'the .qa/ fixtures directory')
+    await requireDirectory(join(dir, 'stubs'), 'stubs', 'the .qa/ stubs directory')
+  }
+  return profile
 }
 
 export function validateProfileConfig(config: unknown): QaProfile {
   if (!isRecord(config))
-    fail('config.yml', 'config.yml must be a YAML object with app, stubs, visual and suites')
+    fail('config.yml', 'config.yml must be a YAML object with app, stubs, visual and suites, or with target')
+  if (config.target !== undefined) return validateTargetConfig(config)
   return {
     app: parseApp(config.app),
     stubs: parseStubs(config.stubs),
@@ -156,6 +176,61 @@ export function validateProfileConfig(config: unknown): QaProfile {
     suites: parseSuites(config.suites),
     ...(config.mail === undefined ? {} : { mail: parseMail(config.mail) }),
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
+  }
+}
+
+/**
+ * A profile that points at a running app (#122). It boots nothing, so it has
+ * no boot recipe and no stubs; hosts a check may reach are declared on the
+ * target instead. visual and suites stay optional.
+ */
+function validateTargetConfig(config: Record<string, unknown>): QaProfile {
+  if (config.app !== undefined)
+    fail('target', 'a profile names either app (a stack qare boots) or target (an app already running), not both')
+  // An empty list says the same as none, and is what a loaded target profile
+  // carries, so a profile passed on inline validates again.
+  if (config.stubs !== undefined && !(Array.isArray(config.stubs) && config.stubs.length === 0))
+    fail('stubs', 'a target profile boots no stack, so it has no stubs; list the hosts its checks may reach in target.hosts')
+  return {
+    target: parseTarget(config.target),
+    stubs: [],
+    visual: config.visual === undefined ? { widths: [], themes: [] } : parseVisual(config.visual),
+    suites: config.suites === undefined ? [] : parseSuites(config.suites),
+    ...(config.mail === undefined ? {} : { mail: parseMail(config.mail) }),
+    ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
+  }
+}
+
+function httpUrl(value: string, field: string, label: string): URL {
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    fail(field, `${label} ${JSON.stringify(value)} is not a valid URL`)
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+    fail(field, `${label} ${JSON.stringify(value)} must be an http or https URL`)
+  return parsed
+}
+
+function parseTarget(value: unknown): ProfileTarget {
+  if (!isRecord(value)) fail('target', 'target must be a YAML object with url and health')
+  const url = nonEmptyString(value.url, 'target.url', 'target URL')
+  const base = httpUrl(url, 'target.url', 'target URL')
+  if (!isRecord(value.health)) fail('target.health', 'target.health must be a YAML object with http and timeout')
+  // The health check may be a path on the target, which is the usual case.
+  const http = nonEmptyString(value.health.http, 'target.health.http', 'health URL')
+  const healthUrl = http.startsWith('/') ? new URL(http, base).href : httpUrl(http, 'target.health.http', 'health URL').href
+  const timeout = nonEmptyString(value.health.timeout, 'target.health.timeout', 'health timeout')
+  try {
+    parseDurationMs(timeout)
+  } catch (error) {
+    fail('target.health.timeout', error instanceof Error ? error.message : String(error))
+  }
+  return {
+    url,
+    health: { http: healthUrl, timeout },
+    hosts: value.hosts === undefined ? [] : stringArray(value.hosts, 'target.hosts', 'target hosts'),
   }
 }
 
@@ -236,14 +311,7 @@ function parseSuite(value: unknown, index: number): ProfileSuite {
 function parseMail(value: unknown): ProfileMail {
   if (!isRecord(value)) fail('mail', 'mail must be a YAML object with inbox')
   const inbox = nonEmptyString(value.inbox, 'mail.inbox', 'mail inbox')
-  let parsed: URL
-  try {
-    parsed = new URL(inbox)
-  } catch {
-    fail('mail.inbox', `mail inbox ${JSON.stringify(inbox)} is not a valid URL`)
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
-    fail('mail.inbox', `mail inbox ${JSON.stringify(inbox)} must be an http or https URL`)
+  httpUrl(inbox, 'mail.inbox', 'mail inbox')
   return { inbox }
 }
 

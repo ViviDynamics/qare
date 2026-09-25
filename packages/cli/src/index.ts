@@ -510,6 +510,7 @@ function mergeJudged(
     }),
     ...(loaded.job === undefined ? {} : { job: { id: loaded.job.id } }),
     ...(loaded.waived === undefined ? {} : { waived: loaded.waived }),
+    ...(loaded.target === undefined ? {} : { target: loaded.target }),
   }
 }
 

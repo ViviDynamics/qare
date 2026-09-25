@@ -1,3 +1,4 @@
+import type { EgressAttempt } from './egress.js'
 import type { FlowElement, FlowPage, FlowTrace } from './flow.js'
 
 const NOT_INSTALLED_MESSAGE =
@@ -24,7 +25,7 @@ export async function makePlaywrightFlowSession(
     browserExecutablePath?: string
     loadPlaywright?: () => Promise<PlaywrightModule>
   } = {},
-): Promise<{ page: FlowPage; trace: FlowTrace; dispose: () => Promise<void> }> {
+): Promise<{ page: FlowPage; trace: FlowTrace; dispose: () => Promise<void>; outbound: () => EgressAttempt[] }> {
   const loadPlaywright =
     opts.loadPlaywright ?? ((): Promise<PlaywrightModule> => import('playwright-core'))
   let playwright: PlaywrightModule
@@ -43,12 +44,19 @@ export async function makePlaywrightFlowSession(
   type BrowserPage = Awaited<ReturnType<Context['newPage']>>
 
   let starting: Promise<{ browser: Browser; context: Context; page: BrowserPage }> | null = null
+  // Every request the context makes, so a run against a target can hold the
+  // hosts it reached against the ones its profile declares (#122).
+  const outbound: EgressAttempt[] = []
 
   const start = (): Promise<{ browser: Browser; context: Context; page: BrowserPage }> => {
     starting ??= chromium
       .launch({ headless: true, executablePath: opts.browserExecutablePath })
       .then(async (browser) => {
         const context = await browser.newContext()
+        context.on('request', (request) => {
+          const attempt = attemptOf(request.url())
+          if (attempt !== undefined) outbound.push(attempt)
+        })
         const page = await context.newPage()
         return { browser, context, page }
       })
@@ -118,5 +126,24 @@ export async function makePlaywrightFlowSession(
     await started.browser.close()
   }
 
-  return { page, trace, dispose }
+  return { page, trace, dispose, outbound: () => [...outbound] }
+}
+
+const DEFAULT_PORTS: Record<string, number> = { 'http:': 80, 'https:': 443, 'ws:': 80, 'wss:': 443 }
+
+/** A request that leaves the browser, as a connection attempt; `data:` and `blob:` URLs never do. */
+export function attemptOf(url: string): EgressAttempt | undefined {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return undefined
+  }
+  const defaultPort = DEFAULT_PORTS[parsed.protocol]
+  if (defaultPort === undefined) return undefined
+  return {
+    host: parsed.hostname,
+    port: parsed.port === '' ? defaultPort : Number(parsed.port),
+    protocol: parsed.protocol.slice(0, -1),
+  }
 }

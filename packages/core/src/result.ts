@@ -27,12 +27,23 @@ export interface UnverifiedCriterionResult {
 
 export type CriterionResult = ProvenCriterionResult | FailedCriterionResult | UnverifiedCriterionResult
 
+/**
+ * A run against an app qare did not boot (#122). There is only the one side,
+ * so `comparison` is always `none`: nothing ran at a base revision, and no
+ * regression was looked for.
+ */
+export interface RunTarget {
+  url: string
+  comparison: 'none'
+}
+
 export interface RunResult {
   schemaVersion: string
   verdict: RunVerdict
   criteria: CriterionResult[]
   job?: { id: string }
   waived?: Array<{ criterionId: string; by: string }>
+  target?: RunTarget
 }
 
 const CRITERION_OUTCOMES: CriterionOutcome[] = ['proven', 'failed', 'unverified']
@@ -113,6 +124,7 @@ export function parseResult(input: unknown): RunResult {
 
   const job = parseJobSummary(input.job)
   const waived = parseWaived(input.waived)
+  const target = parseTarget(input.target)
 
   return {
     schemaVersion,
@@ -120,7 +132,17 @@ export function parseResult(input: unknown): RunResult {
     criteria: input.criteria.map((entry, index) => parseCriterionResult(entry, index)),
     ...(job === undefined ? {} : { job }),
     ...(waived === undefined ? {} : { waived }),
+    ...(target === undefined ? {} : { target }),
   }
+}
+
+function parseTarget(value: unknown): RunTarget | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) fail('target', 'result.json target must be a JSON object with url and comparison')
+  const url = nonEmptyString(value.url, 'target.url', 'target URL')
+  if (value.comparison !== 'none')
+    fail('target.comparison', `unknown comparison ${JSON.stringify(value.comparison)} (a run against a target has one side, so it is "none")`)
+  return { url, comparison: 'none' }
 }
 
 function parseWaived(value: unknown): Array<{ criterionId: string; by: string }> | undefined {

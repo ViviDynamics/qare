@@ -7,13 +7,18 @@ export type RunValues = Record<string, string>
  * Values minted once per run and referenced by name as `{{run.<name>}}` from
  * user-authored strings. The mail address embeds the run id, so two concurrent
  * runs never share an address, and a rerun never sees the previous run's mail.
+ *
+ * A run against a target also carries `target_url`, the URL its checks point
+ * at (#122); a profile that boots its own stack does not mint it, so a
+ * reference to it there fails closed at plan time.
  */
-export function mintRunValues(): RunValues {
+export function mintRunValues(opts: { targetUrl?: string } = {}): RunValues {
   const id = randomUUID()
   return {
     id,
     started_at: new Date().toISOString(),
     mail_address: `qare-${id}@localhost`,
+    ...(opts.targetUrl === undefined ? {} : { target_url: opts.targetUrl }),
   }
 }
 

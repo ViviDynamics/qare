@@ -115,6 +115,10 @@ redact:                          # optional: fixture data that must not be publi
   patterns: ['CUST-\d{6}']       # regular expressions
 ```
 
+A profile that checks an app already running (staging, a preview deployment,
+a public site) names a `target` instead of `app`; see [Running against a
+deployed environment](#running-against-a-deployed-environment).
+
 Agent-written stubs are allowed only when flagged: any check that depends on a
 stub QARE wrote itself is shown as such and cannot count as `proven` without a
 human note.
@@ -125,7 +129,8 @@ Strings in the profile, the seed step, commands, flows and checks may carry
 `{{run.<name>}}` references, which the harness substitutes with values minted
 fresh for each run. The first minted value is a per-run mail address
 (`{{run.mail_address}}`), and a run id and started-at timestamp come free with
-it (`{{run.id}}`, `{{run.started_at}}`). Checks may also carry
+it (`{{run.id}}`, `{{run.started_at}}`). A run against a target also mints
+`{{run.target_url}}`, the URL its checks point at. Checks may also carry
 `{{mail.<name>.link}}` references, which the harness substitutes at run time
 with artefacts the run has observed (single-use artefacts, below). This is
 substitution, not a language: no expressions, no conditionals, no nesting. A
@@ -382,6 +387,38 @@ Most runs use a stack QARE boots itself, where every dependency is a stub. A run
 can instead point at a deployed environment such as staging, where the
 dependencies are real. The checks are the same checks; only the profile's target
 and its sources change.
+
+Such a profile names a `target` in place of `app`, and it needs nothing else
+but `QA.md`: no compose file, seed, login fixture, stubs, or `fixtures/` and
+`stubs/` directories. `visual` and `suites` stay optional.
+
+```yaml
+target:
+  url: https://staging.example.com
+  health: { http: /up, timeout: 30s }       # a path on the target, or a full URL
+  hosts: ["*.cdn.example.com"]              # other hosts its checks may reach
+```
+
+The run boots nothing. It proves the target is up with the health check, and a
+target that never answers is `blocked`, naming the URL, with no criterion
+marked `failed`. Command checks reach the target through `{{run.target_url}}`,
+and a flow's `open` action takes a path on the target (`/wiki/Ada_Lovelace`),
+which resolves against its URL. A profile that boots its own stack does not
+mint `{{run.target_url}}`, so a reference to it there fails closed at plan
+time.
+
+Every host a flow's browser reaches is recorded in the check's
+`outbound.json`. The target's own host is always allowed, and `target.hosts`
+names the rest, with the same `*.` wildcards as a stub's hosts. A host that is
+neither refuses the run, as a missing stub does in a booted run, except that no
+stub issue is filed: a target has no stubs. Command checks are not intercepted;
+only the browser's traffic is recorded.
+
+There is only one side, so nothing runs at a base revision and no regression is
+looked for. The result carries `target: { url, comparison: "none" }` and the
+PR comment says so, rather than implying a base comparison that never ran.
+`qare readiness` reports a target profile as ready: without a boot, a compose
+file and stub coverage are not gaps.
 
 The one part that differs in kind is anything QARE has to observe from outside
 the app. Mail is the usual case: locally a sink in the stack catches it, and on a
