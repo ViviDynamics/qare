@@ -120,6 +120,11 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
   const lines = [
     `## QARE run: ${result.verdict}${job}`,
     '',
+    // One side only: say so, so nobody reads the table as base against head.
+    // The URL stays a code span; a comment links only to uploaded files.
+    ...(result.target === undefined
+      ? []
+      : [`Checked against the running target ${codeSpan(result.target.url)}. Nothing ran at a base revision, so there is no base comparison and no regression was looked for.`, '']),
     '| criterion | outcome | reason |',
     '| --- | --- | --- |',
     ...result.criteria.map(

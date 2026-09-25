@@ -7,13 +7,19 @@ export type RunValues = Record<string, string>
  * Values minted once per run and referenced by name as `{{run.<name>}}` from
  * user-authored strings. The mail address embeds the run id, so two concurrent
  * runs never share an address, and a rerun never sees the previous run's mail.
+ *
+ * A run against a target also carries `target_url`, the URL its checks point
+ * at (#122); a profile that boots its own stack does not mint it, so a
+ * reference to it there fails closed at plan time.
  */
-export function mintRunValues(): RunValues {
+export function mintRunValues(opts: { targetUrl?: string } = {}): RunValues {
   const id = randomUUID()
   return {
     id,
     started_at: new Date().toISOString(),
     mail_address: `qare-${id}@localhost`,
+    // No trailing slash, so {{run.target_url}}/path never doubles one.
+    ...(opts.targetUrl === undefined ? {} : { target_url: opts.targetUrl.replace(/\/+$/, '') }),
   }
 }
 
@@ -67,5 +73,19 @@ export function validateValueReferences(
   for (const match of complete) leftover = leftover.replace(match[0], '')
   if (leftover.includes('{{')) {
     throw new JobValidationError(field, 'unterminated run value reference; a reference is "{{run.<name>}}" and must open and close in the same string')
+  }
+}
+
+/**
+ * Fail closed on an unknown `{{run.<name>}}` reference only, leaving every
+ * other `{{...}}` alone. For text that legitimately carries braces of its own:
+ * a suite command (`docker ps --format '{{.Names}}'`), or a value a flow types
+ * or a text it asserts on a page that shows template syntax.
+ */
+export function validateRunReferences(text: string, values: RunValues, field: string): void {
+  for (const match of text.matchAll(REFERENCE)) {
+    const name = match[1] ?? ''
+    if (!name.startsWith('run.') || Object.hasOwn(values, name.slice(4))) continue
+    throw new JobValidationError(field, `unknown run value ${JSON.stringify(match[0])}; minted values are ${Object.keys(values).map((key) => `{{run.${key}}}`).join(', ')}`)
   }
 }

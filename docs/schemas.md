@@ -89,6 +89,7 @@ The run's output and the machine contract other harnesses consume.
 | `evidence` | unverified | optional array of relative paths |
 | `job` | document | optional; when present `job.id` is required non-empty — the caller's job id, echoed back |
 | `waived` | document | optional non-empty array of `{ criterionId, by }` — the human waiver record a `waived` run carries |
+| `target` | document | optional; present when the run checked an app qare did not boot. `target.url` is required non-empty and `target.comparison` must be `"none"`: nothing ran at a base revision, so no regression was looked for |
 
 ## Fail-closed rules shared by both loaders
 

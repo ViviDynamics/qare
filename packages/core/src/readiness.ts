@@ -32,6 +32,8 @@ export interface ReadinessProfileInfo {
   present: boolean
   loadError?: string
   healthUrl?: string
+  /** The running app a target profile checks (#122); such a profile boots nothing. */
+  target?: { url: string; hosts: string[] }
   stubs: Array<{ service: string; hosts: string[] }>
 }
 
@@ -253,10 +255,11 @@ async function loadProfileInfo(repo: string): Promise<ReadinessProfileInfo> {
   }
   try {
     const profile = await loadProfile(dir)
-    const healthUrl = profile.app?.health?.http
+    const healthUrl = profile.app?.health?.http ?? profile.target?.health.http
     return {
       present: true,
       healthUrl: typeof healthUrl === 'string' ? healthUrl : undefined,
+      ...(profile.target === undefined ? {} : { target: { url: profile.target.url, hosts: [...profile.target.hosts] } }),
       stubs: (profile.stubs ?? []).map((stub) => ({ service: stub.service, hosts: [...stub.hosts] })),
     }
   } catch (error) {
@@ -287,6 +290,10 @@ function gapsOf(
   coverage: Array<{ origin: string; coveredBy?: string }>,
 ): string[] {
   const gaps: string[] = []
+  // A target profile checks an app that is already running: qare boots
+  // nothing and stubs nothing, so neither a compose file nor stub coverage is
+  // a gap (#122). What the profile itself needs, loading already checked.
+  if (profile.present && profile.loadError === undefined && profile.target !== undefined) return gaps
   if (boot.length === 0) gaps.push('no compose file found: qare cannot boot this repo for a QA run')
   for (const file of boot) {
     for (const service of file.services) {
@@ -324,7 +331,11 @@ export function buildReadinessReport(inventory: ReadinessInventory): string {
   lines.push(`Repo: ${inventory.repoPath}`)
   lines.push('')
   lines.push('## Boot')
-  if (inventory.boot.length === 0) {
+  const target = inventory.profile.target
+  if (target !== undefined) {
+    lines.push(`- target ${target.url}: already running, so qare boots nothing`)
+    lines.push(target.hosts.length === 0 ? '- other hosts its checks may reach: none' : `- other hosts its checks may reach: ${target.hosts.join(', ')}`)
+  } else if (inventory.boot.length === 0) {
     lines.push('- no compose file found')
   } else {
     for (const file of inventory.boot) {
@@ -348,7 +359,10 @@ export function buildReadinessReport(inventory: ReadinessInventory): string {
   }
   lines.push('')
   lines.push('## Stub coverage')
-  if (!inventory.profile.present) {
+  if (target !== undefined) {
+    lines.push('- a target profile has no stubs: the app runs elsewhere, with its real dependencies')
+    lines.push(inventory.profile.healthUrl ? `- profile health URL: ${inventory.profile.healthUrl}` : '- profile health URL: none')
+  } else if (!inventory.profile.present) {
     lines.push('- no .qa/ profile: no stubs are configured')
   } else if (inventory.profile.loadError) {
     lines.push(`- .qa/ profile could not be loaded: ${inventory.profile.loadError}`)

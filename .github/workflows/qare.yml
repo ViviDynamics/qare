@@ -326,6 +326,14 @@ jobs:
         with:
           name: execute-evidence
           path: evidence
+      # A refused run executed nothing, so judge will not call the verifier,
+      # and a failed install must not stop its stub issues being filed. It is
+      # read before the profile download, which it gates: a gate on a step
+      # that has not run yet reads empty, and always passes.
+      - name: Read the executed verdict
+        id: executed
+        shell: bash
+        run: echo "verdict=$(jq -r '.verdict' evidence/result.json)" >> "$GITHUB_OUTPUT"
       # The profile arrives as an artifact: it is pull-request data, and this
       # job must not check out the pull request tree. Only a run that actually
       # executed has one; a refused run skipped the verifier.
@@ -335,12 +343,6 @@ jobs:
         with:
           name: qa-profile
           path: profile
-      # A refused run executed nothing, so judge will not call the verifier,
-      # and a failed install must not stop its stub issues being filed.
-      - name: Read the executed verdict
-        id: executed
-        shell: bash
-        run: echo "verdict=$(jq -r '.verdict' evidence/result.json)" >> "$GITHUB_OUTPUT"
       - name: Install the pinned nare
         if: steps.executed.outputs.verdict != 'refused'
         shell: bash

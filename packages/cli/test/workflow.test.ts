@@ -218,3 +218,24 @@ test('execute hands the profile to judge as an artifact', () => {
   expect(execute).toContain('name: qa-profile')
   expect(judge).toMatch(/name: qa-profile\n\s+path: profile/)
 })
+
+test('no step reads a step output before the step that sets it has run', () => {
+  // A reference to a step that has not run yet reads empty, so a gate such as
+  // `steps.executed.outputs.verdict != 'refused'` always passes. That once
+  // sent every judge job without a profile to download one that was never
+  // uploaded.
+  for (const job of ['collect', 'plan', 'execute', 'judge']) {
+    // Only the steps list: a job's outputs map reads its steps after they ran.
+    const all = section(job)
+    const start = all.search(/\n\s+steps:\n/)
+    expect(start, `${job} has no steps list, so the check would pass vacuously`).toBeGreaterThanOrEqual(0)
+    const text = all.slice(start)
+    for (const match of text.matchAll(/steps\.([\w-]+)\.(?:outputs|outcome|conclusion)/g)) {
+      const id = match[1] ?? ''
+      // A step may declare its id first (`- id: x`) or on its own line.
+      const declared = text.search(new RegExp(`\\n\\s+(?:- )?id: ${id}\\n`))
+      expect(declared, `${job} reads steps.${id} but no step there has id ${id}`).toBeGreaterThanOrEqual(0)
+      expect(declared, `${job} reads steps.${id} before the step with id ${id} runs`).toBeLessThan(match.index ?? 0)
+    }
+  }
+})

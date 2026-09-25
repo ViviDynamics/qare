@@ -73,7 +73,12 @@ The evidence directory holds everything a run produced:
   checks/<criterion id>/<n>/       # one directory per executed check
     stdout.txt
     stderr.txt
+    outbound.json                  # a flow on a target run: every host its browser reached
 ```
+
+A run against a target (a profile naming `target` rather than `app`) carries
+`target: { url, comparison: "none" }` in result.json: nothing ran at a base
+revision, so no regression was looked for.
 
 Every executed check captures its stdout and stderr there, and the result's
 `criteria[].evidence` arrays name those files. Evidence references are
