@@ -1,7 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
-import { parseDurationMs } from './boot.js'
+import { parseDurationMs } from './duration.js'
 import { RedactionError, redactionRules, type ProfileRedaction } from './redact.js'
 
 export interface ProfileApp {
@@ -213,6 +213,20 @@ function httpUrl(value: string, field: string, label: string): URL {
   return parsed
 }
 
+/**
+ * A path on the target, below its URL: `/login` on a target served at
+ * `https://org.example/app/` is `https://org.example/app/login`, not the
+ * host's root. A path can never leave the target's origin.
+ */
+export function pathOnTarget(targetUrl: string, path: string): string {
+  const base = new URL(targetUrl)
+  base.search = ''
+  base.hash = ''
+  if (!base.pathname.endsWith('/')) base.pathname = `${base.pathname}/`
+  // "./" keeps a colon in the first segment (/Special:Search) from reading as a scheme.
+  return new URL(`./${path.replace(/^\/+/, '')}`, base).href
+}
+
 function parseTarget(value: unknown): ProfileTarget {
   if (!isRecord(value)) fail('target', 'target must be a YAML object with url and health')
   const url = nonEmptyString(value.url, 'target.url', 'target URL')
@@ -220,7 +234,7 @@ function parseTarget(value: unknown): ProfileTarget {
   if (!isRecord(value.health)) fail('target.health', 'target.health must be a YAML object with http and timeout')
   // The health check may be a path on the target, which is the usual case.
   const http = nonEmptyString(value.health.http, 'target.health.http', 'health URL')
-  const healthUrl = http.startsWith('/') ? new URL(http, base).href : httpUrl(http, 'target.health.http', 'health URL').href
+  const healthUrl = http.startsWith('/') ? pathOnTarget(base.href, http) : httpUrl(http, 'target.health.http', 'health URL').href
   const timeout = nonEmptyString(value.health.timeout, 'target.health.timeout', 'health timeout')
   try {
     parseDurationMs(timeout)

@@ -30,7 +30,7 @@ export {
   loadResult,
   parseResult,
 } from './result.js'
-export { ProfileMissingError, ProfileValidationError, loadProfile, validateProfileConfig } from './profile.js'
+export { ProfileMissingError, ProfileValidationError, loadProfile, pathOnTarget, validateProfileConfig } from './profile.js'
 export {
   BUILTIN_REDACTION_RULES,
   REDACTED,
@@ -45,6 +45,7 @@ export type { EvidenceRedaction, ProfileRedaction, RedactionRule } from './redac
 export type {
   QaProfile,
   ProfileApp,
+  ProfileTarget,
   ProfileStub,
   ProfileVisual,
   ProfileSuite,
@@ -58,6 +59,7 @@ export type {
   UnverifiedCriterionResult,
   CriterionResult,
   RunResult,
+  RunTarget,
 } from './result.js'
 export {
   FakeAgentRunner,

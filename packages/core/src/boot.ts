@@ -3,6 +3,7 @@ import http from 'node:http'
 import https from 'node:https'
 import type { ProfileApp, QaProfile } from './profile.js'
 import { VERSION } from './version.js'
+import { parseDurationMs } from './duration.js'
 
 export interface BootOutcome {
   kind: 'up' | 'blocked'
@@ -19,18 +20,6 @@ export interface BootOpts {
 
 const DEFAULT_POLL_INTERVAL_MS = 500
 const NO_DEADLINE_MS = 0
-
-/** A health timeout such as `120s`, `500ms` or `2m`, in milliseconds. */
-export function parseDurationMs(timeout: string): number {
-  const match = /^(\d+)(ms|s|m)$/.exec(timeout.trim())
-  if (!match) {
-    throw new Error(`"${timeout}" is not a duration like 120s`)
-  }
-  const value = Number(match[1])
-  if (match[2] === 'ms') return value
-  if (match[2] === 's') return value * 1000
-  return value * 60000
-}
 
 function defaultRunCompose(args: string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
   void timeoutMs
@@ -84,9 +73,16 @@ async function captureComposeLogs(app: ProfileApp, opts: BootOpts): Promise<stri
   return logs.stdout + logs.stderr
 }
 
-/** Poll the health URL until it answers 200 or the deadline passes. */
-async function waitForHealth(url: string, timeoutMs: number, opts: BootOpts): Promise<boolean> {
-  const probe = opts.probe ?? ((target: string) => defaultProbe(target, 1000))
+const LOCAL_PROBE_TIMEOUT_MS = 1000
+// A remote target can take longer than a local stack to send its headers.
+const REMOTE_PROBE_TIMEOUT_MS = 10000
+
+/**
+ * Poll the health URL until it answers 200 or the deadline passes. Redirects
+ * are not followed: the health URL names the page that answers.
+ */
+async function waitForHealth(url: string, timeoutMs: number, opts: BootOpts, probeTimeoutMs = LOCAL_PROBE_TIMEOUT_MS): Promise<boolean> {
+  const probe = opts.probe ?? ((target: string) => defaultProbe(target, probeTimeoutMs))
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -114,7 +110,7 @@ async function probeTarget(profile: QaProfile, opts: BootOpts): Promise<BootOutc
   } catch (error) {
     return { kind: 'blocked', reason: `target.health.timeout ${error instanceof Error ? error.message : String(error)}`, logs: '' }
   }
-  if (await waitForHealth(target.health.http, timeoutMs, opts)) return { kind: 'up', logs: '' }
+  if (await waitForHealth(target.health.http, timeoutMs, opts, Math.min(timeoutMs, REMOTE_PROBE_TIMEOUT_MS))) return { kind: 'up', logs: '' }
   return {
     kind: 'blocked',
     reason: `target ${target.url} is not reachable: its health check at ${target.health.http} did not pass within ${target.health.timeout}`,

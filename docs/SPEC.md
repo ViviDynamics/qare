@@ -399,16 +399,20 @@ target:
   hosts: ["*.cdn.example.com"]              # other hosts its checks may reach
 ```
 
-The run boots nothing. It proves the target is up with the health check, and a
-target that never answers is `blocked`, naming the URL, with no criterion
-marked `failed`. Command checks reach the target through `{{run.target_url}}`,
-and a flow's `open` action takes a path on the target (`/wiki/Ada_Lovelace`),
-which resolves against its URL. A profile that boots its own stack does not
-mint `{{run.target_url}}`, so a reference to it there fails closed at plan
-time.
+The run boots nothing. It proves the target is up with the health check, which
+must answer 200 (redirects are not followed, so name the page that answers),
+and a target that never answers is `blocked`, naming the URL, with no criterion
+marked `failed`. Command checks, the command of a suite a flow names, and a
+flow's strings (a URL to open, a value to type, a text to assert) reach the
+target through `{{run.target_url}}`. A flow's `open` action also takes a path
+on the target (`/wiki/Ada_Lovelace`), which resolves below its URL, so a target
+served under a sub-path keeps it; a health path resolves the same way. A
+profile that boots its own stack does not mint `{{run.target_url}}`, so a
+reference to it there fails closed at plan time.
 
-Every host a flow's browser reaches is recorded in the check's
-`outbound.json`. The target's own host is always allowed, and `target.hosts`
+Every host a flow's browser reaches, WebSockets included, is recorded in the
+check's `outbound.json`, however the flow ended, a timeout included. A browser
+backend that cannot report what it reached leaves the flow `unverified`. The target's own host is always allowed, and `target.hosts`
 names the rest, with the same `*.` wildcards as a stub's hosts. A host that is
 neither refuses the run, as a missing stub does in a booted run, except that no
 stub issue is filed: a target has no stubs. Command checks are not intercepted;

@@ -58,6 +58,11 @@ export async function makePlaywrightFlowSession(
           if (attempt !== undefined) outbound.push(attempt)
         })
         const page = await context.newPage()
+        // A WebSocket never raises a request event, so the page reports it.
+        page.on('websocket', (socket) => {
+          const attempt = attemptOf(socket.url())
+          if (attempt !== undefined) outbound.push(attempt)
+        })
         return { browser, context, page }
       })
       .catch((error: unknown) => {

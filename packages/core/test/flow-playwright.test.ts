@@ -7,7 +7,8 @@ const NOT_INSTALLED_MESSAGE =
 const APP_URL = ['http:', '//localhost:3000/up'].join('')
 const TRACE_PATH = '/tmp/qare-flow-trace.zip'
 
-function fakeChromium(events: string[], opts: { visible?: boolean; subresources?: string[] } = {}) {
+function fakeChromium(events: string[], opts: { visible?: boolean; subresources?: string[]; sockets?: string[] } = {}) {
+  const onSocket: Array<(socket: { url: () => string }) => void> = []
   const onRequest: Array<(request: { url: () => string }) => void> = []
   const request = (url: string) => {
     for (const handler of onRequest) handler({ url: () => url })
@@ -47,6 +48,10 @@ function fakeChromium(events: string[], opts: { visible?: boolean; subresources?
                 events.push(`open ${url}`)
                 request(url)
                 for (const sub of opts.subresources ?? []) request(sub)
+                for (const socket of opts.sockets ?? []) for (const handler of onSocket) handler({ url: () => socket })
+              },
+              on: (event: string, handler: (socket: { url: () => string }) => void) => {
+                if (event === 'websocket') onSocket.push(handler)
               },
               getByRole: (role: string, options: { name: string }) =>
                 locator(`${role}=${options.name}`),
@@ -127,7 +132,12 @@ test('the session records every connection its page attempted, and nothing that 
   const cdn = ['https:', '//cdn.example.org/app.js'].join('')
   const session = await makePlaywrightFlowSession({
     loadPlaywright: async () =>
-      ({ chromium: fakeChromium(events, { subresources: [cdn, 'data:image/png;base64,AAAA', 'blob:whatever'] }) }) as never,
+      ({
+        chromium: fakeChromium(events, {
+          subresources: [cdn, 'data:image/png;base64,AAAA', 'blob:whatever'],
+          sockets: [['wss:', '//live.example.org/socket'].join('')],
+        }),
+      }) as never,
   })
 
   expect(session.outbound()).toEqual([])
@@ -137,6 +147,7 @@ test('the session records every connection its page attempted, and nothing that 
   expect(session.outbound()).toEqual([
     { host: 'localhost', port: 3000, protocol: 'http' },
     { host: 'cdn.example.org', port: 443, protocol: 'https' },
+    { host: 'live.example.org', port: 443, protocol: 'wss' },
   ])
 })
 

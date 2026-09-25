@@ -4,14 +4,14 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Artefacts } from './artefacts.js'
 import { bootApp, type BootOpts } from './boot.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
-import { runFlowCheck, runSuiteCheck, type FlowPage, type FlowTrace } from './flow.js'
+import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowPage, type FlowTrace } from './flow.js'
 import { makePlaywrightFlowSession } from './flow-playwright.js'
 import { judgeRun, toSideResults } from './judge.js'
 import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck } from './job.js'
 import type { FlowActionStep } from './plan.js'
 import { feedRunLedger } from './ledger-feed.js'
 import { httpMailbox, mailEvidence, runMailCheck, type ReadMail } from './mailbox.js'
-import { ProfileMissingError, loadProfile, validateProfileConfig, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
+import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, redactResult, redactText, redactValue, redactionRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult } from './result.js'
 import { mintRunValues, substituteValues, validateValueReferences, type RunValues, REFERENCE } from './values.js'
@@ -86,7 +86,7 @@ export async function runJob(
     validatePlanValues(job, profile, values)
   } catch (error) {
     if (!(error instanceof JobValidationError)) throw error
-    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, error.message)
+    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, error.message, targetNote)
   }
   const rules = redactionRules(profile.redact)
   const boot = await bootApp(profile, opts)
@@ -128,13 +128,14 @@ async function refuseRun(
   opts: BootOpts & { ledgerFeed?: { dir: string } },
   rules: readonly RedactionRule[],
   reason: string,
+  targetNote: Pick<RunResult, 'target'> = {},
 ): Promise<{ result: RunResult }> {
   const criteria: CriterionResult[] = job.criteria.map((criterion) => ({
     id: criterion.id,
     outcome: 'unverified',
     reason,
   }))
-  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria }, rules)
+  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria, ...targetNote }, rules)
   await feedIfOptedIn(opts, job, finished.result)
   return finished
 }
@@ -162,7 +163,18 @@ function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): vo
         if (check.name !== undefined) mailChecks.set(check.name, (mailChecks.get(check.name) ?? 0) + 1)
         continue
       }
-      if (check.kind === 'flow') continue
+      if (check.kind === 'flow') {
+        // Flow strings and the command of the suite a flow names carry run
+        // values too, such as {{run.target_url}} (#122).
+        for (const [actionIndex, action] of (check.actions ?? []).entries()) {
+          for (const [field, value] of flowStrings(action))
+            validateValueReferences(value, values, `${base}.actions[${actionIndex}].${field}`)
+        }
+        const suiteIndex = check.suite === undefined ? -1 : profile.suites.findIndex((suite) => suite.name === check.suite)
+        const suite = profile.suites[suiteIndex]
+        if (suite !== undefined) validateValueReferences(suite.command, values, `suites[${suiteIndex}].command`)
+        continue
+      }
       const allow = (field: string) => (name: string): boolean => {
         if (!name.startsWith('mail.')) return false
         validateMailArtefactName(name, mailChecks, field)
@@ -286,6 +298,7 @@ async function runCriterion(
         flow.suites,
         flow.session,
         flow.target,
+        values,
         job.repoPath,
         job.evidenceDir,
         checkDir,
@@ -345,9 +358,26 @@ async function runCriterion(
  * walk already refused the run.
  */
 function substituteCheck(check: JobCheck, values: RunValues): JobCheck {
-  // A flow check's vocabulary is fixed and closed; it has no free-form string
-  // that names a run value today, so it passes through unchanged (#121).
-  if (check.kind === 'flow') return check
+  // A flow's vocabulary is fixed and closed, but the strings it carries (a
+  // URL, a typed value, a text to assert) may name run values (#122).
+  if (check.kind === 'flow') {
+    if (check.actions === undefined) return check
+    return {
+      ...check,
+      actions: check.actions.map((action): FlowActionStep => {
+        switch (action.action) {
+          case 'open':
+            return { ...action, url: substituteValues(action.url, values) }
+          case 'type':
+            return { ...action, value: substituteValues(action.value, values) }
+          case 'assert':
+            return { ...action, text: substituteValues(action.text, values) }
+          default:
+            return action
+        }
+      }),
+    }
+  }
   if (check.kind === 'mail') {
     return {
       ...check,
@@ -390,6 +420,7 @@ async function runFlowCheckJob(
   suites: ProfileSuite[],
   session: FlowSessionFactory | undefined,
   target: FlowTargetContext | undefined,
+  values: RunValues,
   repoPath: string,
   evidenceDir: string,
   checkDir: string,
@@ -405,7 +436,12 @@ async function runFlowCheckJob(
         evidence: [],
       }
     }
-    const outcome = await runSuiteCheck(suite, { cwd: repoPath, timeoutMs: check.timeoutMs })
+    // The suite's command names run values like any command check, so a suite
+    // on a target run learns where the target is from {{run.target_url}}.
+    const outcome = await runSuiteCheck(
+      { name: suite.name, command: substituteValues(suite.command, values) },
+      { cwd: repoPath, timeoutMs: check.timeoutMs },
+    )
     const dir = join(evidenceDir, checkDir)
     await mkdir(dir, { recursive: true })
     const text = redactText(
@@ -433,6 +469,16 @@ async function runFlowCheckJob(
     // browser the flow is unverifiable, which is an outcome and not a failure.
     return { status: 'unverified', reason: `the flow backend did not start: ${(error as Error).message}`, evidence: [] }
   }
+  if (target !== undefined && started.outbound === undefined) {
+    // Fail closed: a run against a target holds what its browser reached
+    // against the declared hosts, and a backend that cannot say is not trusted.
+    await started.dispose()
+    return {
+      status: 'unverified',
+      reason: 'the flow backend does not report the hosts its browser reached, so a run against a target cannot vouch for them',
+      evidence: [],
+    }
+  }
   try {
     const work = runFlowCheck({
       actions: target === undefined ? check.actions ?? [] : (check.actions ?? []).map((action) => onTarget(action, target.url)),
@@ -445,7 +491,8 @@ async function runFlowCheckJob(
     // The losing branch of the race is drained, so a flow that finishes late
     // after a timeout does not crash the run with an unhandled rejection.
     void work.catch(() => {})
-    let outcome
+    let outcome: FlowCheckResult | undefined
+    let stopped: string | undefined
     try {
       outcome = await Promise.race([
         work,
@@ -455,9 +502,11 @@ async function runFlowCheckJob(
         }),
       ])
     } catch (error) {
-      return { status: 'unverified', reason: (error as Error).message, evidence: [] }
+      stopped = (error as Error).message
     }
-    const evidence = inEvidence(outcome.evidence)
+    const evidence = outcome === undefined ? [] : inEvidence(outcome.evidence)
+    // Recorded however the flow ended: a flow that timed out has still
+    // reached whatever it reached.
     if (target !== undefined) {
       const undeclared = await recordOutbound(started.outbound?.() ?? [], target, join(evidenceDir, checkDir), rules)
       evidence.push(...inEvidence(['outbound.json']))
@@ -470,6 +519,7 @@ async function runFlowCheckJob(
         }
       }
     }
+    if (outcome === undefined) return { status: 'unverified', reason: stopped ?? 'the flow stopped without an outcome', evidence }
     if (outcome.outcome === 'unverified') return { status: 'unverified', reason: outcome.reason, evidence }
     return { status: outcome.outcome, ...(outcome.reason === undefined ? {} : { reason: outcome.reason }), evidence }
   } finally {
@@ -482,10 +532,24 @@ function targetContext(target: ProfileTarget): FlowTargetContext {
   return { url: target.url, hosts: [new URL(target.url).hostname, ...target.hosts], undeclared: [] }
 }
 
-/** A path in an `open` action is a page on the target: it resolves against the target URL. */
+/** A path in an `open` action is a page on the target: it resolves below the target URL. */
 function onTarget(action: FlowActionStep, url: string): FlowActionStep {
   if (action.action !== 'open' || !action.url.startsWith('/')) return action
-  return { ...action, url: new URL(action.url, url).href }
+  return { ...action, url: pathOnTarget(url, action.url) }
+}
+
+/** The strings in a flow action that may carry run values, by field name. */
+function flowStrings(action: FlowActionStep): Array<[string, string]> {
+  switch (action.action) {
+    case 'open':
+      return [['url', action.url]]
+    case 'type':
+      return [['value', action.value]]
+    case 'assert':
+      return [['text', action.text]]
+    default:
+      return []
+  }
 }
 
 /**

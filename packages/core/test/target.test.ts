@@ -8,6 +8,7 @@ import {
   buildReadinessReport,
   loadProfile,
   loadResult,
+  pathOnTarget,
   readinessInventory,
   renderComment,
   runJob,
@@ -66,7 +67,7 @@ const NEVER_COMPOSE = {
   },
 }
 
-function fakeSession(opened: string[], outbound: EgressAttempt[] = []) {
+function fakeSession(opened: string[], outbound: EgressAttempt[] | null = [], opts: { hang?: boolean } = {}) {
   return async () => {
     const page: FlowPage = {
       open: async (url) => {
@@ -74,11 +75,13 @@ function fakeSession(opened: string[], outbound: EgressAttempt[] = []) {
       },
       click: async () => {},
       type: async () => {},
-      assertText: async () => {},
+      assertText: async () => {
+        if (opts.hang) await new Promise(() => {})
+      },
       screenshot: async (path) => writeFile(path, 'png'),
     }
     const trace: FlowTrace = { start: async () => 'trace', stop: async () => {} }
-    return { page, trace, dispose: async () => {}, outbound: () => outbound }
+    return { page, trace, dispose: async () => {}, ...(outbound === null ? {} : { outbound: () => outbound }) }
   }
 }
 
@@ -300,4 +303,81 @@ test('the Wikipedia example is a target profile that loads with nothing but QA.m
   expect(profile.app).toBeUndefined()
   expect(profile.target?.health.http).toBe(`${profile.target?.url}/wiki/Main_Page`)
   expect(profile.target?.hosts).toContain('*.wikimedia.org')
+})
+
+test('a path on a target served under a sub-path stays below it, and a colon in it is not a scheme', () => {
+  const app = ['https:', '//org.example.test/app/'].join('')
+  expect(pathOnTarget(app, '/login')).toBe(`${app}login`)
+  expect(pathOnTarget(app.slice(0, -1), '/login')).toBe(`${app}login`)
+  expect(pathOnTarget(TARGET_URL, '/wiki/Special:Search?search=Ada')).toBe(`${TARGET_URL}/wiki/Special:Search?search=Ada`)
+  // A protocol-relative path never leaves the target's origin.
+  expect(pathOnTarget(TARGET_URL, '//elsewhere.test/x')).toBe(`${TARGET_URL}/elsewhere.test/x`)
+  expect(validateProfileConfig({ target: { url: app, health: { http: '/up', timeout: '1s' } } }).target?.health.http).toBe(`${app}up`)
+})
+
+test('a flow that times out still has what its browser reached held against the declared hosts', async () => {
+  const job = await makeJob([
+    {
+      id: 'c1',
+      text: 'x',
+      checks: [{ kind: 'flow', timeoutMs: 50, actions: [{ action: 'open', url: '/' }, { action: 'assert', text: 'never' }] }],
+    },
+  ])
+
+  const { result } = await runJob(job, {
+    ...NEVER_COMPOSE,
+    ...UP,
+    flowSession: fakeSession([], [{ host: 'tracker.example.test', port: 443, protocol: 'https' }], { hang: true }),
+  })
+
+  expect(result.verdict).toBe('refused')
+  expect((result.criteria[0] as { reason: string }).reason).toContain('undeclared host: tracker.example.test')
+})
+
+test('a flow backend that cannot report its outbound traffic leaves a target run unverified, never passed', async () => {
+  const job = await makeJob([{ id: 'c1', text: 'x', checks: [{ kind: 'flow', actions: [{ action: 'open', url: '/' }] }] }])
+
+  const { result } = await runJob(job, { ...NEVER_COMPOSE, ...UP, flowSession: fakeSession([], null) })
+
+  expect(result.criteria[0]).toMatchObject({ outcome: 'unverified', reason: expect.stringContaining('does not report the hosts') })
+  expect(result.verdict).not.toBe('passed')
+})
+
+test('flow strings and suite commands take run values, and an unknown one refuses the run at plan time with the target noted', async () => {
+  const opened: string[] = []
+  const withSuite = validateProfileConfig({
+    ...TARGET_CONFIG,
+    suites: [{ name: 'e2e', command: 'node echo-args.mjs {{run.target_url}}', kind: 'flow' }],
+  })
+  const job = await makeJob(
+    [
+      { id: 'c1', text: 'x', checks: [{ kind: 'flow', actions: [{ action: 'open', url: '{{run.target_url}}/wiki/Ada_Lovelace' }] }] },
+      { id: 'c2', text: 'y', checks: [{ kind: 'flow', suite: 'e2e' }] },
+    ],
+    withSuite,
+  )
+
+  const { result } = await runJob(job, { ...NEVER_COMPOSE, ...UP, flowSession: fakeSession(opened) })
+
+  expect(result.verdict).toBe('passed')
+  expect(opened).toEqual([PAGE_URL])
+
+  const bad = await makeJob([{ id: 'c1', text: 'x', checks: [{ kind: 'flow', actions: [{ action: 'assert', text: '{{run.nope}}' }] }] }])
+  const refused = await runJob(bad, { ...NEVER_COMPOSE, ...UP, flowSession: fakeSession([]) })
+  expect(refused.result.verdict).toBe('refused')
+  expect((refused.result.criteria[0] as { reason: string }).reason).toContain('actions[0].text')
+  expect(refused.result.target).toEqual({ url: TARGET_URL, comparison: 'none' })
+})
+
+test('a flow on a target served under a sub-path opens its pages below it', async () => {
+  const app = ['https:', '//org.example.test/app'].join('')
+  const opened: string[] = []
+  const job = await makeJob(
+    [{ id: 'c1', text: 'x', checks: [{ kind: 'flow', actions: [{ action: 'open', url: '/login' }] }] }],
+    validateProfileConfig({ target: { url: app, health: { http: '/up', timeout: '1s' } } }),
+  )
+
+  await runJob(job, { ...NEVER_COMPOSE, ...UP, flowSession: fakeSession(opened) })
+
+  expect(opened).toEqual([`${app}/login`])
 })
