@@ -20,3 +20,4 @@ repo.env
 # re-include its contents.)
 .claude/*
 !.claude/skills/
+qare-evidence/

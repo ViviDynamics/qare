@@ -59,7 +59,8 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
   const criteria: JobCriterion[] = plan.criteria.map((criterion) => {
     if ('unplannable' in criterion) {
       notes.push(`${criterion.id}: nothing to run, the plan called it unplannable (${criterion.unplannable})`)
-      return { id: criterion.id, text: criterion.text }
+      // The planner's reason travels with it, so the result says why nothing ran.
+      return { id: criterion.id, text: criterion.text, unplannable: criterion.unplannable }
     }
     const checks = criterion.checks.map(runnable).filter((check): check is JobCheck => check !== undefined)
     const skipped = criterion.checks.filter((check) => runnable(check) === undefined)

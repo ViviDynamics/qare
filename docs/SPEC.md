@@ -290,6 +290,30 @@ Rules for this mode:
 - Every other rule still holds: the plan is fixed before execution, the harness
   runs the checks, code decides the verdict, missing stubs refuse the run.
 
+### A criterion in a sentence
+
+The smallest request of all is "check that this works". `qare check` takes the
+criterion as a sentence and does the rest: it plans it through nare, runs it,
+and judges it, with no issue, diff, job file or ledger.
+
+```
+qare check "searching Wikipedia for Ada Lovelace shows her article" --profile .qa
+qare check "the home page loads" "the sign-in form rejects an empty password"
+qare check --file criteria.txt          # one criterion per line; # comments
+```
+
+Each sentence becomes a criterion `check-<n>`, and each is reported on its own
+line with its outcome, then `verdict <verdict>; evidence <dir>`. The planner is
+told there is no diff and, for a target profile, where the app runs; the
+verifier is told there is no diff too. A criterion the planner cannot plan is
+`unverified` with the planner's reason, and a planner that cannot run at all
+leaves every criterion `unverified`, naming why; nothing is dropped. The
+evidence directory holds `plan.json`, the executed `result.json` and the
+`judged-result.json`, and the exit code is `qare run`'s for the judged
+verdict. `--runner none` judges from the evidence alone. Nothing is written
+to the ledger. The MCP server offers the same entry as its `check` tool, which
+returns the judged result and the evidence directory.
+
 ### Working small and working large
 
 The same engine serves both ends, and nothing in the pipeline assumes the whole

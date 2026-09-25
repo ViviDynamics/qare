@@ -1,5 +1,5 @@
 import { mergeVerdicts } from './egress.js'
-import type { CriterionOutcome, RunResult, RunVerdict } from './result.js'
+import { RESULT_SCHEMA_VERSION, type CriterionOutcome, type RunResult, type RunVerdict } from './result.js'
 import type { AgentRunRequest, AgentRunner } from './runner.js'
 
 export interface SideResult {
@@ -342,4 +342,48 @@ function parseVerifierFindings(output: unknown): VerifierFinding[] | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * The judged result: the executed result with judge's criteria and verdict
+ * folded in. Evidence is carried from the run, and a reason the run already
+ * gave a failed criterion survives being judged again.
+ */
+export function judgedResult(
+  loaded: RunResult,
+  verdict: RunVerdict,
+  criteria: CriterionVerdict[],
+  evidenceById: Map<string, string[]>,
+): RunResult {
+  const executed = new Map(loaded.criteria.map((criterion) => [criterion.id, criterion]))
+  return {
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict,
+    criteria: criteria.map((criterion) => {
+      const evidence = evidenceById.get(criterion.criterionId) ?? []
+      if (criterion.outcome === 'unverified')
+        return {
+          id: criterion.criterionId,
+          outcome: 'unverified',
+          reason: criterion.reason,
+          ...(evidence.length === 0 ? {} : { evidence }),
+        }
+      if (criterion.outcome === 'failed') {
+        // A check that failed speaks through its evidence. A criterion judge
+        // failed after the check proved it (the verifier) carries the reason,
+        // or the comment would show a failure with nothing saying why, and a
+        // reason the result already carried survives being judged again.
+        const before = executed.get(criterion.criterionId)
+        const reason =
+          before?.outcome !== 'failed' ? criterion.reason : 'reason' in before ? before.reason : undefined
+        return reason === undefined
+          ? { id: criterion.criterionId, outcome: 'failed', evidence }
+          : { id: criterion.criterionId, outcome: 'failed', evidence, reason }
+      }
+      return { id: criterion.criterionId, outcome: criterion.outcome, evidence }
+    }),
+    ...(loaded.job === undefined ? {} : { job: { id: loaded.job.id } }),
+    ...(loaded.waived === undefined ? {} : { waived: loaded.waived }),
+    ...(loaded.target === undefined ? {} : { target: loaded.target }),
+  }
 }

@@ -265,7 +265,11 @@ async function runCriterion(
 ): Promise<CriterionResult> {
   const checks = criterion.checks ?? []
   if (checks.length === 0)
-    return { id: criterion.id, outcome: 'unverified', reason: NO_CHECKS_REASON }
+    return {
+      id: criterion.id,
+      outcome: 'unverified',
+      reason: criterion.unplannable === undefined ? NO_CHECKS_REASON : `the planner could not plan it: ${criterion.unplannable}`,
+    }
 
   const evidence: string[] = []
   let failed = false

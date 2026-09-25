@@ -47,7 +47,7 @@ test('an unplannable criterion is carried, so it is reported rather than forgott
     CONTEXT,
   )
 
-  expect(job.criteria).toEqual([{ id: 'c1', text: 'email arrives' }])
+  expect(job.criteria).toEqual([{ id: 'c1', text: 'email arrives', unplannable: 'needs a mailbox' }])
   expect(notes.join(' ')).toContain('needs a mailbox')
 })
 

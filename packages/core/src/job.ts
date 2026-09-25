@@ -39,6 +39,8 @@ export interface JobCriterion {
   id: string
   text: string
   checks?: JobCheck[]
+  /** Why the planner could not map it to a check: reported as its unverified reason (#123). */
+  unplannable?: string
 }
 
 export type JobPostTarget = 'none' | string
@@ -161,7 +163,13 @@ function parseCriterion(value: unknown, index: number): JobCriterion {
     )
   const text = nonEmptyString(value.text, `${base}.text`, 'text')
   const checks = value.checks === undefined ? undefined : parseChecks(value.checks, base)
-  return checks === undefined ? { id, text } : { id, text, checks }
+  const unplannable = value.unplannable === undefined ? undefined : nonEmptyString(value.unplannable, `${base}.unplannable`, 'unplannable reason')
+  return {
+    id,
+    text,
+    ...(checks === undefined ? {} : { checks }),
+    ...(unplannable === undefined ? {} : { unplannable }),
+  }
 }
 
 function parseChecks(value: unknown, base: string): JobCheck[] {

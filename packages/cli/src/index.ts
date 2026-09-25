@@ -5,12 +5,13 @@ import { pathToFileURL } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import {
   FileLedgerStore,
-  RESULT_SCHEMA_VERSION,
   buildReadinessReport,
   loadJobFromFile,
   loadJobFromText,
   jobFromPlan,
+  checkCriteria,
   judgeRun,
+  judgedResult,
   loadPlan,
   loadResult,
   NareAgentRunner,
@@ -39,11 +40,9 @@ import {
 import type {
   BootOpts,
   CriterionResult,
-  CriterionVerdict,
   Job,
   LedgerEntry,
   RedactionRule,
-  RunResult,
   RunVerdict,
 } from '@qare/core'
 
@@ -63,6 +62,7 @@ export async function main(
     return 0
   }
   if (argv[0] === 'run') return runCommand(argv.slice(1), out, err, boot, stdin)
+  if (argv[0] === 'check') return checkCommand(argv.slice(1), out, err, boot)
   if (argv[0] === 'linked-issues') return linkedIssuesCommand(argv.slice(1), out, err)
   if (argv[0] === 'issue-criteria') return issueCriteriaCommand(argv.slice(1), out, err)
   if (argv[0] === 'plan') return planCommand(argv.slice(1), out, err)
@@ -71,9 +71,68 @@ export async function main(
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>] | qare redact --evidence <dir> [--profile <dir>]\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>] | qare redact --evidence <dir> [--profile <dir>]\n`,
   )
   return 0
+}
+
+const CHECK_FLAGS = new Set(['--file', '--profile', '--repo', '--evidence', '--nare', '--runner', '--id'])
+
+/**
+ * `qare check "<criterion>"`: a criterion in plain words in, a verdict out
+ * (#123). Plans through nare, runs, and judges, with no issue, diff or ledger.
+ * The exit code and result files are the same contract as `qare run` and
+ * `qare judge`: result.json is what ran, judged-result.json the verdict.
+ */
+async function checkCommand(argv: string[], out: Writer, err: Writer, boot: BootOpts): Promise<number> {
+  try {
+    const sentences: string[] = []
+    for (let i = 0; i < argv.length; i += 1) {
+      const arg = argv[i] as string
+      if (CHECK_FLAGS.has(arg)) {
+        i += 1
+        continue
+      }
+      if (arg.startsWith('--')) throw new Error(`unknown check flag ${JSON.stringify(arg)}`)
+      sentences.push(arg)
+    }
+    const file = flag(argv, '--file')
+    if (file !== undefined) {
+      // One criterion per line; blank lines and # comments are skipped.
+      const lines = (await readFile(resolve(file), 'utf8')).split('\n').map((line) => line.trim())
+      sentences.push(...lines.filter((line) => line !== '' && !line.startsWith('#')))
+    }
+    const runnerSpec = flag(argv, '--runner') ?? 'nare'
+    if (runnerSpec !== 'nare' && runnerSpec !== 'none')
+      throw new Error(`unknown --runner ${JSON.stringify(runnerSpec)} (expected "nare" or "none")`)
+    const binary = flag(argv, '--nare')
+    const nare = (dir?: string) =>
+      new NareAgentRunner({ ...(binary === undefined ? {} : { binary }), ...(dir === undefined ? {} : { cwd: dir, root: dir }) })
+    const evidenceDir = resolve(flag(argv, '--evidence') ?? join('qare-evidence', `check-${new Date().toISOString().replace(/[:.]/g, '-')}`))
+
+    const { judged, notes } = await checkCriteria({
+      criteria: sentences,
+      profileDir: resolve(flag(argv, '--profile') ?? '.qa'),
+      repoPath: resolve(flag(argv, '--repo') ?? '.'),
+      evidenceDir,
+      planner: nare(),
+      // The verifier reads evidence, so its file tools reach that and nothing else.
+      verifier: runnerSpec === 'none' ? 'none' : (dir) => nare(dir),
+      ...(flag(argv, '--id') === undefined ? {} : { id: flag(argv, '--id') as string }),
+      run: boot,
+    })
+    for (const note of notes) err.write(`${note}\n`)
+    const texts = new Map(sentences.map((text, index) => [`check-${index + 1}`, text.trim()]))
+    for (const criterion of judged.criteria) {
+      const why = 'reason' in criterion && criterion.reason !== undefined ? ` (${criterion.reason})` : ''
+      out.write(`${criterion.id} ${criterion.outcome}: ${texts.get(criterion.id) ?? ''}${why}\n`)
+    }
+    out.write(`verdict ${judged.verdict}; evidence ${evidenceDir}\n`)
+    return exitCodeFor(judged.verdict)
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 4
+  }
 }
 
 function flag(argv: string[], name: string): string | undefined {
@@ -362,7 +421,7 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     // it back as blocked, and the stub-issue step that acts on refused never
     // fired.
     const verdict = loaded.verdict === 'refused' ? 'refused' : verdictOf(criteria, judged.regressions, waived)
-    const result = redactResult(mergeJudged(loaded, verdict, criteria, evidenceById), rules)
+    const result = redactResult(judgedResult(loaded, verdict, criteria, evidenceById), rules)
     await mkdir(outDir, { recursive: true })
     await writeFile(join(outDir, 'judged-result.json'), `${JSON.stringify(result, null, 2)}\n`, 'utf8')
     await writeFile(join(outDir, 'comment.md'), `${renderComment(result)}\n`, 'utf8')
@@ -473,45 +532,6 @@ async function ledgerStatus(dir: string, out: Writer, err: Writer): Promise<numb
   )
   out.write('integrity: ok\n')
   return 0
-}
-
-function mergeJudged(
-  loaded: RunResult,
-  verdict: RunVerdict,
-  criteria: CriterionVerdict[],
-  evidenceById: Map<string, string[]>,
-): RunResult {
-  const executed = new Map(loaded.criteria.map((criterion) => [criterion.id, criterion]))
-  return {
-    schemaVersion: RESULT_SCHEMA_VERSION,
-    verdict,
-    criteria: criteria.map((criterion) => {
-      const evidence = evidenceById.get(criterion.criterionId) ?? []
-      if (criterion.outcome === 'unverified')
-        return {
-          id: criterion.criterionId,
-          outcome: 'unverified',
-          reason: criterion.reason,
-          ...(evidence.length === 0 ? {} : { evidence }),
-        }
-      if (criterion.outcome === 'failed') {
-        // A check that failed speaks through its evidence. A criterion judge
-        // failed after the check proved it (the verifier) carries the reason,
-        // or the comment would show a failure with nothing saying why, and a
-        // reason the result already carried survives being judged again.
-        const before = executed.get(criterion.criterionId)
-        const reason =
-          before?.outcome !== 'failed' ? criterion.reason : 'reason' in before ? before.reason : undefined
-        return reason === undefined
-          ? { id: criterion.criterionId, outcome: 'failed', evidence }
-          : { id: criterion.criterionId, outcome: 'failed', evidence, reason }
-      }
-      return { id: criterion.criterionId, outcome: criterion.outcome, evidence }
-    }),
-    ...(loaded.job === undefined ? {} : { job: { id: loaded.job.id } }),
-    ...(loaded.waived === undefined ? {} : { waived: loaded.waived }),
-    ...(loaded.target === undefined ? {} : { target: loaded.target }),
-  }
 }
 
 function evidenceOf(criterion: CriterionResult): string[] {
