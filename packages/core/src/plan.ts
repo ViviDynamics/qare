@@ -34,6 +34,8 @@ export interface MailCheck {
   subject?: string
   body?: string
   timeoutMs?: number
+  /** The links in this message are spent when followed, so the harness follows each at most once per run. */
+  singleUse?: boolean
   inferred?: boolean
 }
 
@@ -203,6 +205,7 @@ function parseCheck(value: unknown, base: string): PlanCheck {
       const subject = value.subject === undefined ? undefined : nonEmptyString(value.subject, `${base}.subject`, 'subject')
       const body = value.body === undefined ? undefined : nonEmptyString(value.body, `${base}.body`, 'body')
       const timeoutMs = value.timeoutMs === undefined ? undefined : parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
+      const singleUse = value.singleUse === undefined ? undefined : parseSingleUse(value.singleUse, `${base}.singleUse`)
       return finish(
         {
           kind: 'mail',
@@ -212,6 +215,7 @@ function parseCheck(value: unknown, base: string): PlanCheck {
           ...(subject !== undefined ? { subject } : {}),
           ...(body !== undefined ? { body } : {}),
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          ...(singleUse !== undefined ? { singleUse } : {}),
         },
         inferred,
       )
@@ -222,6 +226,12 @@ function parseCheck(value: unknown, base: string): PlanCheck {
 function parseInferred(value: unknown, field: string): boolean | undefined {
   if (value === undefined) return undefined
   if (typeof value !== 'boolean') fail(field, 'inferred must be a boolean')
+  return value
+}
+
+function parseSingleUse(value: unknown, field: string): boolean | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'boolean') fail(field, 'singleUse must be a boolean')
   return value
 }
 

@@ -14,11 +14,14 @@ export interface JobCommandCheck {
 
 export interface JobMailCheck {
   kind: 'mail'
+  /** The plan-level check name, so later checks can reference its artefacts as `{{mail.<name>.link}}`. */
+  name?: string
   address: string
   from?: string
   subject?: string
   body?: string
   timeoutMs?: number
+  singleUse?: boolean
 }
 
 export type JobCheck = JobCommandCheck | JobMailCheck
@@ -176,18 +179,24 @@ function parseCheck(value: unknown, base: string): JobCheck {
 }
 
 function parseMailCheck(value: Record<string, unknown>, base: string): JobMailCheck {
+  const name = value.name === undefined ? undefined : nonEmptyString(value.name, `${base}.name`, 'name')
   const address = nonEmptyString(value.address, `${base}.address`, 'address')
   const from = value.from === undefined ? undefined : nonEmptyString(value.from, `${base}.from`, 'from')
   const subject = value.subject === undefined ? undefined : nonEmptyString(value.subject, `${base}.subject`, 'subject')
   const body = value.body === undefined ? undefined : nonEmptyString(value.body, `${base}.body`, 'body')
   const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
+  if (value.singleUse !== undefined && typeof value.singleUse !== 'boolean')
+    fail(`${base}.singleUse`, 'singleUse must be a boolean')
+  const singleUse = value.singleUse as boolean | undefined
   return {
     kind: 'mail',
+    ...(name !== undefined ? { name } : {}),
     address,
     ...(from !== undefined ? { from } : {}),
     ...(subject !== undefined ? { subject } : {}),
     ...(body !== undefined ? { body } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(singleUse !== undefined ? { singleUse } : {}),
   }
 }
 

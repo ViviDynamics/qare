@@ -120,12 +120,15 @@ Strings in the profile, the seed step, commands, flows and checks may carry
 `{{run.<name>}}` references, which the harness substitutes with values minted
 fresh for each run. The first minted value is a per-run mail address
 (`{{run.mail_address}}`), and a run id and started-at timestamp come free with
-it (`{{run.id}}`, `{{run.started_at}}`). This is substitution, not a language:
-no expressions, no conditionals, no nesting. A reference to a name the harness
-does not mint, or an unterminated `{{`, fails the run closed at plan time and
-nothing boots. The minted values are written to the run's evidence, so a reader
-can see which address a run used, and two concurrent runs never collide. Flow
-definitions substitute with the flow runner.
+it (`{{run.id}}`, `{{run.started_at}}`). Checks may also carry
+`{{mail.<name>.link}}` references, which the harness substitutes at run time
+with artefacts the run has observed (single-use artefacts, below). This is
+substitution, not a language: no expressions, no conditionals, no nesting. A
+reference to a name the harness does not mint, to an artefact from a mail check
+that has not run yet, or an unterminated `{{`, fails the run closed at plan time
+and nothing boots. The minted values are written to the run's evidence, so a
+reader can see which address a run used, and two concurrent runs never collide.
+Flow definitions substitute with the flow runner.
 
 ### Mail checks
 
@@ -148,6 +151,35 @@ and links extracted from the body, marked as harness-produced data rather than
 claims. A message that never arrives, and a mailbox that cannot be reached, are
 both `unverified` with the reason naming the mailbox — neither is a product
 failure, and neither may be reported as one.
+
+### Single-use artefacts
+
+A confirmation link, a password-setup link and a one-time code are all spent the
+moment they are used. A mail check may declare `singleUse: true`: the links in
+the message it waits for are artefacts, and the harness follows each at most
+once per run.
+
+A later check reads the artefact with a `{{mail.<name>.link}}` reference, which
+resolves at run time to the first link of the message `<name>` read. Plan time
+enforces the ordering before anything boots: a reference must name a mail check
+that runs earlier in the job, must read a field the mail check exposes (`link`
+today), and cannot be ambiguous, so a name shared by two earlier mail checks is
+refused. The seed command and a mail check's own matchers carry `{{run.*}}`
+values only — a mail artefact does not exist before a run starts.
+
+The first consumer to substitute a single-use link consumes it; a later check
+that would substitute the same value is skipped `unverified`, naming the spent
+artefact and the criterion that consumed it, and its command never runs. A retry
+requires a fresh message: the same link is not followed twice inside a run, and
+a mail check without a message, without links, or with its artefact spent is
+`unverified` with the reason naming the artefact — never failed. A mail check
+that does not declare `singleUse` may be read by every consumer.
+
+The consumer's evidence records the consumption in `consumed.json`: the artefact
+and the mail check it came from, the criterion and check that consumed it, and
+the response — the consuming command's status and its stdout and stderr paths.
+Artefact extraction rules beyond the first link, and the flow checks that would
+let a browser step follow the link itself, land with the flow runner.
 
 ## The criteria ledger
 

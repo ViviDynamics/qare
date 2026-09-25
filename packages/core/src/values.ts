@@ -17,7 +17,7 @@ export function mintRunValues(): RunValues {
   }
 }
 
-const REFERENCE = /\{\{([^{}]*)\}\}/g
+export const REFERENCE = /\{\{([^{}]*)\}\}/g
 
 /**
  * Replace every `{{run.<name>}}` in text with the minted value. This is
@@ -41,19 +41,27 @@ export function substituteValues(text: string, values: RunValues): string {
  * unterminated `{{` is refused the same way: half a reference is still a
  * reference, and silently passing it through would publish broken input.
  *
- * Only strings that enter execution through the run pipeline are validated
- * here; suite commands in the profile's `suites` list are substitution sites
- * for the flow runner to inherit deliberately.
+ * `allow` names references outside the mint that a later stage resolves and
+ * validates in full (the run's own validation of mail artefacts): the generic
+ * walk only decides that such a name is not a caller mistake. Only strings that
+ * enter execution through the run pipeline are validated here; suite commands
+ * in the profile's `suites` list are substitution sites for the flow runner to
+ * inherit deliberately.
  */
-export function validateValueReferences(text: string, values: RunValues, field: string): void {
+export function validateValueReferences(
+  text: string,
+  values: RunValues,
+  field: string,
+  allow?: (name: string) => boolean,
+): void {
   const complete = [...text.matchAll(REFERENCE)]
   for (const match of complete) {
     const name = match[1] ?? ''
     // hasOwn: inherited Object.prototype names are not minted values, so
     // {{run.constructor}} is an unknown name, not Object.prototype.constructor.
-    if (!name.startsWith('run.') || !Object.hasOwn(values, name.slice(4))) {
-      throw new JobValidationError(field, `unknown run value ${JSON.stringify(match[0])}; minted values are ${Object.keys(values).map((key) => `{{run.${key}}}`).join(', ')}`)
-    }
+    if (name.startsWith('run.') && Object.hasOwn(values, name.slice(4))) continue
+    if (allow !== undefined && allow(name)) continue
+    throw new JobValidationError(field, `unknown run value ${JSON.stringify(match[0])}; minted values are ${Object.keys(values).map((key) => `{{run.${key}}}`).join(', ')}`)
   }
   let leftover = text
   for (const match of complete) leftover = leftover.replace(match[0], '')

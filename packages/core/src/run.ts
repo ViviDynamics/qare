@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { Artefacts } from './artefacts.js'
 import { bootApp, type BootOpts } from './boot.js'
 import { judgeRun, toSideResults } from './judge.js'
 import { feedRunLedger } from './ledger-feed.js'
@@ -9,7 +10,7 @@ import { httpMailbox, mailEvidence, runMailCheck, type ReadMail } from './mailbo
 import { ProfileMissingError, loadProfile, validateProfileConfig, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, redactResult, redactText, redactValue, redactionRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult } from './result.js'
-import { mintRunValues, substituteValues, validateValueReferences, type RunValues } from './values.js'
+import { mintRunValues, substituteValues, validateValueReferences, type RunValues, REFERENCE } from './values.js'
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 60000
 const NO_CHECKS_REASON = 'no checks: model planning lands when nare integration ships'
@@ -75,7 +76,10 @@ export async function runJob(
     inbox: profile.mail?.inbox,
     readMail: opts.readMail ?? (profile.mail?.inbox === undefined ? undefined : httpMailbox(profile.mail.inbox)),
   }
-  for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail))
+  // Single-use artefacts are a per-run ledger: what was consumed in this run
+  // says nothing about any other run (#69).
+  const artefacts = new Artefacts()
+  for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts))
   // The judge is the verdict decision. Base execution and egress interception
   // land with the orchestrator; today the head side is the whole picture.
   const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: 'allowed' })
@@ -109,6 +113,9 @@ async function refuseRun(
  */
 function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): void {
   validateValueReferences(profile.app.seed.command, values, 'app.seed.command')
+  // Mail artefact names are validated in walk order: a check may only read an
+  // artefact from a mail check that has already waited for its message (#69).
+  const mailChecks = new Map<string, number>()
   for (const [criterionIndex, criterion] of job.criteria.entries()) {
     for (const [checkIndex, check] of (criterion.checks ?? []).entries()) {
       const base = `criteria[${criterionIndex}].checks[${checkIndex}]`
@@ -118,16 +125,43 @@ function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): vo
           const value = check[field]
           if (value !== undefined) validateValueReferences(value, values, `${base}.${field}`)
         }
+        if (check.name !== undefined) mailChecks.set(check.name, (mailChecks.get(check.name) ?? 0) + 1)
         continue
       }
-      validateValueReferences(check.run, values, `${base}.run`)
-      if (check.cwd !== undefined) validateValueReferences(check.cwd, values, `${base}.cwd`)
+      const allow = (field: string) => (name: string): boolean => {
+        if (!name.startsWith('mail.')) return false
+        validateMailArtefactName(name, mailChecks, field)
+        return true
+      }
+      validateValueReferences(check.run, values, `${base}.run`, allow(`${base}.run`))
+      if (check.cwd !== undefined) validateValueReferences(check.cwd, values, `${base}.cwd`, allow(`${base}.cwd`))
       for (const [key, value] of Object.entries(check.env ?? {})) {
         if (key.includes('{{'))
           throw new JobValidationError(`${base}.env.${key}`, 'an env key names a variable and is not a substitution site; put the reference in the value')
-        validateValueReferences(value, values, `${base}.env.${key}`)
+        validateValueReferences(value, values, `${base}.env.${key}`, allow(`${base}.env.${key}`))
       }
     }
+  }
+}
+
+/**
+ * Fail closed on a `{{mail.<name>.<field>}}` reference the runner cannot honor:
+ * an unknown field, a mail check that has not run yet, or a name that two earlier
+ * mail checks share. The seed command and a mail check's own matchers never carry
+ * artefact references at all: a mail artefact does not exist before a run starts.
+ */
+function validateMailArtefactName(name: string, mailChecks: Map<string, number>, field: string): void {
+  const parts = name.split('.')
+  const [kind, checkName, artefact] = parts
+  if (kind !== 'mail' || checkName === undefined || artefact !== 'link' || parts.length !== 3) {
+    throw new JobValidationError(field, `unknown artefact ${JSON.stringify(`{{${name}}}`)}; a mail check exposes {{mail.<name>.link}}, the first link in the message it read, and a mail check name carries no dot`)
+  }
+  const count = mailChecks.get(checkName) ?? 0
+  if (count === 0) {
+    throw new JobValidationError(field, `no mail check named ${checkName} runs before this check; an artefact is read from a mail check that has already waited for its message`)
+  }
+  if (count > 1) {
+    throw new JobValidationError(field, `${count} earlier mail checks are named ${checkName}; the artefact reference is ambiguous, so rename one of them`)
   }
 }
 
@@ -174,6 +208,7 @@ async function runCriterion(
   rules: readonly RedactionRule[],
   values: RunValues,
   mail: { inbox?: string; readMail?: ReadMail },
+  artefacts: Artefacts,
 ): Promise<CriterionResult> {
   const checks = criterion.checks ?? []
   if (checks.length === 0)
@@ -199,27 +234,48 @@ async function runCriterion(
       await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
       // Redacted value by value, before the JSON is built: a text pass over the
       // serialized form can eat a closing quote and publish half the record.
-      const text = JSON.stringify(
-        redactValue(mailEvidence(outcome.message, outcome.waitMs, outcome.polls), rules),
-        null,
-        2,
-      )
+      const messageEvidence = mailEvidence(outcome.message, outcome.waitMs, outcome.polls)
+      const text = JSON.stringify(redactValue(messageEvidence, rules), null, 2)
       await writeFile(join(job.evidenceDir, checkDir, 'message.json'), `${text}\n`)
       evidence.push(`${checkDir}/message.json`)
+      // The artefact a later `{{mail.<name>.link}}` reference reads is the first
+      // link of the message this check waited for (#69).
+      if (substituted.name !== undefined)
+        artefacts.publish(substituted.name, messageEvidence.links[0], substituted.singleUse === true)
       continue
     }
-    const cwd = resolveCheckCwd(substituted.cwd, job.repoPath)
+    // Run-time artefact resolution happens last, immediately before the check
+    // executes: the artefact is observed during this run, not minted at plan
+    // time. A check whose artefact is gone is skipped unverified and never runs.
+    const resolved = resolveArtefactFields(substituted, artefacts, criterion.id)
+    if (!resolved.ok) {
+      if (unverifiedReason === undefined) unverifiedReason = resolved.reason
+      continue
+    }
+    const cwd = resolveCheckCwd(resolved.check.cwd, job.repoPath)
     if (cwd === undefined) {
-      const reason = `check cwd ${JSON.stringify(substituted.cwd ?? '')} escapes the repository path; refusing to run it`
+      const reason = `check cwd ${JSON.stringify(resolved.check.cwd ?? '')} escapes the repository path; refusing to run it`
       if (unverifiedReason === undefined) unverifiedReason = reason
       continue
     }
-    const timeoutMs = substituted.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
-    const outcome = await runCommandCheck(substituted, cwd, timeoutMs)
+    const timeoutMs = resolved.check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
+    const outcome = await runCommandCheck(resolved.check, cwd, timeoutMs)
     await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
     await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), rules))
     await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), redactText(truncationNote(outcome, 'stderr'), rules))
     evidence.push(`${checkDir}/stdout.txt`, `${checkDir}/stderr.txt`)
+    if (resolved.consumed.length > 0) {
+      const consumption = {
+        artefacts: resolved.consumed.map((consumedArtefact) => ({ source: consumedArtefact.source, artefact: consumedArtefact.artefact })),
+        consumed_by: { criterion: criterion.id, check: index },
+        response: { status: outcome.status, evidence: [`${checkDir}/stdout.txt`, `${checkDir}/stderr.txt`] },
+      }
+      await writeFile(
+        join(job.evidenceDir, checkDir, 'consumed.json'),
+        `${JSON.stringify(redactValue(consumption, rules), null, 2)}\n`,
+      )
+      evidence.push(`${checkDir}/consumed.json`)
+    }
     if (outcome.status === 'failed') failed = true
     else if (outcome.status === 'unverified' && unverifiedReason === undefined)
       unverifiedReason = outcome.reason
@@ -256,6 +312,67 @@ function substituteCheck(check: JobCheck, values: RunValues): JobCheck {
             Object.entries(check.env).map(([key, value]) => [key, substituteValues(value, values)]),
           ),
         }),
+  }
+}
+
+interface ResolvedArtefacts {
+  ok: true
+  check: JobCommandCheck
+  consumed: { source: string; artefact: string }[]
+}
+
+/**
+ * Substitute `{{mail.<name>.link}}` references in a command check's strings at
+ * run time, from the artefacts the run has observed so far (#69). A reference
+ * the registry cannot resolve — no message, no links, or a single-use artefact
+ * that is already spent — returns the reason the check is skipped unverified,
+ * and the check never runs.
+ */
+function resolveArtefactFields(
+  check: JobCommandCheck,
+  artefacts: Artefacts,
+  consumer: string,
+): ResolvedArtefacts | { ok: false; reason: string } {
+  const names = new Set<string>()
+  for (const text of [check.run, ...(check.cwd === undefined ? [] : [check.cwd]), ...Object.values(check.env ?? {})]) {
+    for (const match of text.matchAll(REFERENCE)) {
+      const name = match[1] ?? ''
+      if (name.startsWith('mail.')) names.add(name)
+    }
+  }
+  const consumed: { source: string; artefact: string }[] = []
+  const resolved = new Map<string, string>()
+  for (const name of names) {
+    // The reference names the mail check between the `mail.` namespace and the
+    // artefact field: {{mail.<name>.link}} reads from the mail check <name>.
+    // Plan time refuses anything else, so a shape that reaches this point is
+    // the run's own bug, and a literal left in a command is not an option.
+    const [namespace, checkName] = name.split('.')
+    if (namespace !== 'mail' || checkName === undefined) {
+      return { ok: false, reason: `malformed artefact reference {{${name}}}; a reference is {{mail.<name>.link}}` }
+    }
+    const outcome = artefacts.resolve(checkName, consumer)
+    if (!outcome.ok) return outcome
+    resolved.set(name, outcome.artefact)
+    consumed.push({ source: `mail.${checkName}`, artefact: outcome.artefact })
+  }
+  const substitute = (text: string): string =>
+    [...resolved.entries()].reduce((acc, [name, artefact]) => acc.split(`{{${name}}}`).join(artefact), text)
+  return {
+    ok: true,
+    check: {
+      ...check,
+      run: substitute(check.run),
+      ...(check.cwd === undefined ? {} : { cwd: substitute(check.cwd) }),
+      ...(check.env === undefined
+        ? {}
+        : {
+            env: Object.fromEntries(
+              Object.entries(check.env).map(([key, value]) => [key, substitute(value)]),
+            ),
+          }),
+    },
+    consumed,
   }
 }
 

@@ -24,6 +24,23 @@ function planWithCriterion1Checks(checks: unknown[]): Plan {
   })
 }
 
+test('a mail check singleUse declaration is part of the canonical form', () => {
+  const a = parsePlan({
+    schemaVersion: '1',
+    criteria: [{ id: 'c1', text: 't', checks: [{ kind: 'mail', name: 'n', address: 'a@localhost', singleUse: true, timeoutMs: 1000 }] }],
+  })
+  const b = parsePlan({
+    schemaVersion: '1',
+    criteria: [{ id: 'c1', text: 't', checks: [{ timeoutMs: 1000, address: 'a@localhost', name: 'n', kind: 'mail', singleUse: true }] }],
+  })
+  expect(fingerprintPlan(a)).toBe(fingerprintPlan(b))
+  const c = parsePlan({
+    schemaVersion: '1',
+    criteria: [{ id: 'c1', text: 't', checks: [{ kind: 'mail', name: 'n', address: 'a@localhost', singleUse: false, timeoutMs: 1000 }] }],
+  })
+  expect(fingerprintPlan(a)).not.toBe(fingerprintPlan(c))
+})
+
 test('the fingerprint is stable across key insertion order', () => {
   const a: Plan = {
     schemaVersion: '1',

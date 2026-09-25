@@ -26,11 +26,13 @@ function runnable(check: PlanCheck): JobCheck | undefined {
     case 'mail':
       return {
         kind: 'mail',
+        name: check.name,
         address: check.address,
         ...(check.from === undefined ? {} : { from: check.from }),
         ...(check.subject === undefined ? {} : { subject: check.subject }),
         ...(check.body === undefined ? {} : { body: check.body }),
         ...(check.timeoutMs === undefined ? {} : { timeoutMs: check.timeoutMs }),
+        ...(check.singleUse === undefined ? {} : { singleUse: check.singleUse }),
       }
     default:
       return undefined
