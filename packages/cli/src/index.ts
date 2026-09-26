@@ -301,6 +301,7 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       .filter(Boolean)
     const binary = flag(argv, '--nare')
     const flowActions = flowActionKinds(flag(argv, '--flow-actions'))
+    const profilePath = flag(argv, '--profile')
 
     const allowNone = argv.includes('--allow-no-criteria')
     let criteria: { id: string; text: string }[]
@@ -324,7 +325,23 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         throw new Error(`${criteriaPath} must hold a JSON array of {id, text} criteria`)
       criteria = loaded as { id: string; text: string }[]
     }
-    const diff = await readFile(resolve(diffPath), 'utf8')
+    let diff = await readFile(resolve(diffPath), 'utf8')
+    if (profilePath !== undefined) {
+      // The diff can be the very change that seeds the profile, so the seeded
+      // values sweep from the model-facing text before the planner sees it
+      // (#64). No profile means nothing seeded to sweep; a profile that is
+      // there but broken throws, as everywhere else.
+      try {
+        const profile = await loadProfile(resolve(profilePath))
+        const login = profile.app?.login
+        const redacted = redactText(diff, valueRules([login?.totp?.secret, login?.backupCode?.value]))
+        if (redacted !== diff) out.write("the profile's seeded values are redacted from the diff before planning\n")
+        diff = redacted
+      } catch (error) {
+        if (!(error instanceof ProfileMissingError)) throw error
+        out.write(`no usable .qa/ profile at ${profilePath}, so the diff is not swept for seeded values\n`)
+      }
+    }
 
     const runner = new NareAgentRunner(binary === undefined ? {} : { binary })
     const plan = await planRun(runner, {
@@ -423,7 +440,10 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     const evidenceDir = dirname(resultPath)
     const { result, changed } = await judgeExecuted(loaded, {
       texts: Object.fromEntries((plan?.criteria ?? []).map((criterion) => [criterion.id, criterion.text])),
-      diff: verify ? await readFile(resolve(diffPath as string), 'utf8') : '',
+      // The verifier reads the diff, and the diff can carry the seeded values
+      // the profile rules exist for: the model-facing text is swept like any
+      // evidence (#64).
+      diff: verify ? redactText(await readFile(resolve(diffPath as string), 'utf8'), rules) : '',
       rules,
       ...(verify ? { verifier: nareRunners(binary).verifier(evidenceDir) } : {}),
     })

@@ -187,7 +187,7 @@ jobs:
           fi
           node packages/cli/dist/index.js plan \
             --criteria criteria.json --diff change.diff --out plan.json \
-            --nare "$HOME/.local/bin/nare" "${flow_actions[@]}"
+            --nare "$HOME/.local/bin/nare" --profile .qa "${flow_actions[@]}"
       - name: Upload plan.json
         uses: actions/upload-artifact@v4
         with:

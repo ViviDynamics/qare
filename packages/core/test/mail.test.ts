@@ -306,3 +306,8 @@ test('extractCode treats an empty match as no code, so nothing empty is publishe
   expect(extractCode('no code here', 'a*')).toBeUndefined()
   expect(extractCode('no code here', '(x*)')).toBeUndefined()
 })
+
+test('extractCode never publishes the whole match when an optional group did not participate (#64)', () => {
+  expect(extractCode('the body has no code in it', '.*(\\d{6})?')).toBeUndefined()
+  expect(extractCode('code 551234', 'code (\\d{6})?')).toBe('551234')
+})

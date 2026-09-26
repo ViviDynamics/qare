@@ -241,12 +241,12 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
           }
           const window = totpWindow(config.period, now())
           const code = totpCode(config.secret, config, now())
+          // The code is on the page from the moment the type is attempted:
+          // a type that half-succeeds and then throws must not publish a
+          // capture of the input, so the flag is set before the attempt (#64).
+          codeOnPage = true
           await page.type(action.element, code)
           generatedCodes?.push(code)
-          // The code is on the page from the first successful type on: a
-          // later failure must not capture it, so the flag is set before the
-          // boundary retry, whose throw lands in the screenshot path (#64).
-          codeOnPage = true
           line = `action ${index}: totp code generated for window ${window} and typed into ${describeElement(action.element)}`
           // A boundary that crosses while the flow is moving can leave the
           // app validating the old window's code; the code is retried once,
@@ -261,9 +261,11 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
         }
         case 'backupCode': {
           const value = totp!.backupCode!
+          // The recovery value is fail-closed the same way: the capture is
+          // withheld from a type that throws, whatever the seam did first (#64).
+          codeOnPage = true
           await page.type(action.element, value)
           generatedCodes?.push(value)
-          codeOnPage = true
           break
         }
       }

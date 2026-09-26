@@ -162,6 +162,9 @@ export const DEFAULT_CODE_PATTERN = '\\b\\d{6,8}\\b'
 export function extractCode(body: string, pattern?: string): string | undefined {
   const match = new RegExp(pattern ?? DEFAULT_CODE_PATTERN).exec(body)
   if (match === null) return undefined
-  const value = match[1] ?? match[0]
-  return value === '' ? undefined : value
+  // A pattern with a capture group yields the group; a group that did not
+  // participate (an optional one against a body without a code) is no code,
+  // never the whole match, which would publish the body and type it later.
+  const value = match.length > 1 ? match[1] : match[0]
+  return value === undefined || value === '' ? undefined : value
 }
