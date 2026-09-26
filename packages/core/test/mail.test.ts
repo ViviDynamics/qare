@@ -301,3 +301,8 @@ test('extractCode honors a declared pattern, preferring its first capture group 
   expect(extractCode('Code: AB-1234.', 'Code: ([A-Z]{2}-\\d{4})')).toBe('AB-1234')
   expect(extractCode('555 77 2 34', '\\d{2} \\d{2}')).toBe('55 77')
 })
+
+test('extractCode treats an empty match as no code, so nothing empty is published (#64)', () => {
+  expect(extractCode('no code here', 'a*')).toBeUndefined()
+  expect(extractCode('no code here', '(x*)')).toBeUndefined()
+})

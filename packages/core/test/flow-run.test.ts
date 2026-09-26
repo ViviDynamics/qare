@@ -397,6 +397,9 @@ test('a mail-borne one-time code is extracted, typed by a flow, and swept from t
   expect(events).toContain('type 555111')
   const log = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '1', 'actions.log'), 'utf8')
   expect(log).not.toContain('555111')
+  // The typed code may still sit in the page's input, and redaction cannot
+  // read pixels: the flow's captures are withheld, and the evidence says so.
+  expect(log).toContain('final.png withheld: the second-factor code is visible on the page')
   const message = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'message.json'), 'utf8')
   expect(message).not.toContain('555111')
 })

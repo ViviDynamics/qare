@@ -235,9 +235,10 @@ straddles a window while the flow is moving is retried once in the window it
 lands in (RFC 6238 §5.2). A second factor the app keeps rejecting — a
 clock-skewed container, a persistently stale window — is `blocked`, with the
 reason named, never a failed criterion: the change under test is not what
-refused the login. And because redaction cannot read pixels, the failure
-screenshot is withheld while a code is visible on the page, and the evidence
-says so.
+refused the login. And because redaction cannot read pixels, every screenshot
+of a flow whose page carries a code — generated, or read from mail — is
+withheld, and the evidence says so. The same sweep follows the code: a command
+that echoes a mail-borne link or code publishes it redacted.
 
 ## The criteria ledger
 

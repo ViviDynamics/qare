@@ -159,11 +159,13 @@ test('a consumer runs after the mail check, gets the link, and records the consu
   const job = await makeJob(criteria([mailCheck({ singleUse: true }), consumeCheck('{{mail.welcome.link}}')]))
   const { result } = await runJob(job, { ...HEALTHY_BOOT, readMail: reader(() => message()) })
   expect(result.verdict).toBe('passed')
+  // The consumed value is a secret: the evidence names what happened, and the
+  // value itself is redacted (#64).
   const stdout = await evidenceText(job, join('checks', 'criterion-1', '1', 'stdout.txt'))
-  expect(stdout.trim()).toBe(SETUP_URL)
+  expect(stdout.trim()).toBe('[redacted]')
   const consumed = await evidenceText(job, join('checks', 'criterion-1', '1', 'consumed.json'))
   expect(JSON.parse(consumed)).toEqual({
-    artefacts: [{ source: 'mail.welcome', artefact: SETUP_URL }],
+    artefacts: [{ source: 'mail.welcome', artefact: '[redacted]' }],
     consumed_by: { criterion: 'criterion-1', check: 1 },
     response: {
       status: 'passed',
@@ -197,7 +199,7 @@ test('a non-single-use artefact can be read by every consumer', async () => {
   )
   const { result } = await runJob(job, { ...HEALTHY_BOOT, readMail: reader(() => message()) })
   expect(result.verdict).toBe('passed')
-  expect((await evidenceText(job, join('checks', 'criterion-2', '0', 'stdout.txt'))).trim()).toBe(SETUP_URL)
+  expect((await evidenceText(job, join('checks', 'criterion-2', '0', 'stdout.txt'))).trim()).toBe('[redacted]')
 })
 
 test('a message that carries no links leaves the consumer unverified naming the mail check', async () => {
@@ -223,7 +225,7 @@ test('an artefact reference inside an env value substitutes like the run string'
   )
   const { result } = await runJob(job, { ...HEALTHY_BOOT, readMail: reader(() => message()) })
   expect(result.verdict).toBe('passed')
-  expect((await evidenceText(job, join('checks', 'criterion-1', '1', 'stdout.txt'))).trim()).toBe(SETUP_URL)
+  expect((await evidenceText(job, join('checks', 'criterion-1', '1', 'stdout.txt'))).trim()).toBe('[redacted]')
 })
 
 test('the consumed artefact is redacted in the evidence', async () => {

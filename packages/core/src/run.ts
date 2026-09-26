@@ -290,6 +290,10 @@ async function runCriterion(
   const evidence: string[] = []
   let failed = false
   let unverifiedReason: string | undefined
+  // The values a run publishes or consumes — a mail message's link, its
+  // one-time code — are secrets like any other: they join the profile's
+  // redaction rules for every piece of evidence written after them (#64).
+  const sweepRules = [...rules]
   for (const [index, check] of checks.entries()) {
     const substituted = substituteCheck(check, values)
     const checkDir = join('checks', criterion.id, String(index))
@@ -322,9 +326,12 @@ async function runCriterion(
           continue
         }
       }
-      // The extracted code is swept from the message evidence like any secret (#64).
-      const sweep = code === undefined ? rules : [...rules, ...valueRules([code])]
-      const text = JSON.stringify(redactValue(messageEvidence, sweep), null, 2)
+      // The values this check publishes — the message's link, the extracted
+      // code — are swept from the message evidence and from every check that
+      // follows in this criterion, not just here (#64).
+      const published = [...(messageEvidence.links[0] === undefined ? [] : [messageEvidence.links[0]]), ...(code === undefined ? [] : [code])]
+      if (published.length > 0) sweepRules.push(...valueRules(published))
+      const text = JSON.stringify(redactValue(messageEvidence, sweepRules), null, 2)
       await writeFile(join(job.evidenceDir, checkDir, 'message.json'), `${text}\n`)
       evidence.push(`${checkDir}/message.json`)
       // The artefact a later `{{mail.<name>.link}}` reference reads is the first
@@ -342,6 +349,8 @@ async function runCriterion(
         if (unverifiedReason === undefined) unverifiedReason = resolvedActions.reason
         continue
       }
+      // The flow types what it read from mail: those values join the sweep.
+      if (resolvedActions.values.length > 0) sweepRules.push(...valueRules(resolvedActions.values))
       const outcome = await runFlowCheckJob(
         { ...substituted, actions: resolvedActions.actions },
         flow.suites,
@@ -353,7 +362,7 @@ async function runCriterion(
         job.repoPath,
         job.evidenceDir,
         checkDir,
-        rules,
+        sweepRules,
         flow.masks,
       )
       evidence.push(...outcome.evidence)
@@ -377,10 +386,13 @@ async function runCriterion(
       continue
     }
     const timeoutMs = resolved.check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
+    // A command that echoes what it consumed writes it to stdout: the value is
+    // a secret like any other, so the check's evidence is swept with it (#64).
+    if (resolved.consumed.length > 0) sweepRules.push(...valueRules(resolved.consumed.map((consumed) => consumed.artefact)))
     const outcome = await runCommandCheck(resolved.check, cwd, timeoutMs)
     await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
-    await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), rules))
-    await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), redactText(truncationNote(outcome, 'stderr'), rules))
+    await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), sweepRules))
+    await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), redactText(truncationNote(outcome, 'stderr'), sweepRules))
     evidence.push(`${checkDir}/stdout.txt`, `${checkDir}/stderr.txt`)
     if (resolved.consumed.length > 0) {
       const consumption = {
@@ -390,7 +402,7 @@ async function runCriterion(
       }
       await writeFile(
         join(job.evidenceDir, checkDir, 'consumed.json'),
-        `${JSON.stringify(redactValue(consumption, rules), null, 2)}\n`,
+        `${JSON.stringify(redactValue(consumption, sweepRules), null, 2)}\n`,
       )
       evidence.push(`${checkDir}/consumed.json`)
     }
@@ -542,6 +554,7 @@ async function runFlowCheckJob(
       masks,
       totp,
       generatedCodes,
+      codesOnPage: resolvedCodes.length > 0,
     })
     // The losing branch of the race is drained, so a flow that finishes late
     // after a timeout does not crash the run with an unhandled rejection.

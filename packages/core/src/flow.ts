@@ -73,6 +73,8 @@ export interface FlowCheckOpts {
   totp?: FlowTotpConfig
   /** Every code the harness generated, so the caller can sweep them from the evidence (#64). */
   generatedCodes?: string[]
+  /** Whether a code the flow did not generate itself — a mail-borne one — is already on the page (#64). */
+  codesOnPage?: boolean
   /** Injectable clock, so window arithmetic is pinned in tests. */
   now?: () => number
 }
@@ -133,7 +135,7 @@ function describeAction(action: FlowAction, index: number): string {
  * is unverified, never failed: the criterion says nothing about the change.
  */
 export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult> {
-  const { actions, page, trace, outDir, tracesDir, redactLog, masks, totp, generatedCodes, now = Date.now } = opts
+  const { actions, page, trace, outDir, tracesDir, redactLog, masks, totp, generatedCodes, codesOnPage = false, now = Date.now } = opts
 
   if (actions.length === 0) {
     return { outcome: 'unverified', reason: 'flow has no actions', evidence: [] }
@@ -181,9 +183,12 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   const masksNote = masks === undefined || masks.length === 0 ? '' : ` masks: ${masks.join(', ')}`
   // The failure screenshot is evidence an image rule cannot read, so it is
   // withheld while a second-factor code may still sit on the page (#64).
-  let codeOnPage = false
+  // A second-factor code the page has been handed — generated here or read
+  // from mail — may still sit in an input on it, and redaction cannot read
+  // pixels: every capture is withheld until the flow can prove otherwise (#64).
+  let codeOnPage = codesOnPage
   const screenshot = async (name: string): Promise<string | undefined> => {
-    if (codeOnPage && name === FAILURE_SCREENSHOT) {
+    if (codeOnPage) {
       log.push(`${name} withheld: the second-factor code is visible on the page, and redaction cannot read pixels`)
       return undefined
     }
