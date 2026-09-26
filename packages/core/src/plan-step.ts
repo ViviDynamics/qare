@@ -144,7 +144,7 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     suites,
     '',
     'A check is one of:',
-    '- command: {"kind":"command","name":...,"command":"the shell command to run"}',
+    '- command: {"kind":"command","name":...,"command":"the command to run"} — the runner splits it on whitespace and spawns it WITHOUT a shell, so write one program and its arguments only: no pipes, no && or ;, no redirection, no shell syntax of any kind',
     '- flow: {"kind":"flow","name":...,"suite":"an existing suite"} or {"kind":"flow","name":...,"actions":[{"action":"open","url":"the url to open first"},{"action":"type","element":{"role":"searchbox","name":"Search"},"value":"Ada Lovelace"},{"action":"click","element":{"role":"button","name":"Search"}},{"action":"assert","text":"the text that must be visible"}]}',
     '- visual: {"kind":"visual","name":...,"screenshot":"name","widths":[390],"themes":["light"]}',
     '- mail: {"kind":"mail","name":...,"address":"the address a message is waited for","subject":"a substring to match", "timeoutMs":60000}',

@@ -22,6 +22,7 @@ import {
   redactEvidenceDir,
   redactText,
   redactionRules,
+  valueRules,
   criteriaFromIssue,
   criteriaFromIssues,
   IssueCriteriaError,
@@ -243,7 +244,12 @@ async function redactCommand(argv: string[], out: Writer, err: Writer): Promise<
 async function redactionRulesFor(profileDir: string | undefined, out: Writer): Promise<readonly RedactionRule[]> {
   if (profileDir === undefined) return BUILTIN_REDACTION_RULES
   try {
-    return redactionRules((await loadProfile(resolve(profileDir))).redact)
+    const profile = await loadProfile(resolve(profileDir))
+    // The seeded second-factor secret and any backup code sweep in every path
+    // that publishes evidence, judge included: the verifier reads the diff,
+    // and the diff carries the profile change that seeds them (#64).
+    const login = profile.app?.login
+    return [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value])]
   } catch (error) {
     if (!(error instanceof ProfileMissingError)) throw error
     out.write(`no usable .qa/ profile at ${profileDir}, so only the built-in redaction rules apply\n`)

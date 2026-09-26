@@ -262,7 +262,7 @@ function parseFlowAction(value: unknown, base: string, extraFlowActions: readonl
       .join(', ')
     fail(`${base}.action`, `unknown flow action ${JSON.stringify(kind)} (expected ${expected})`)
   }
-  if (extraFlowActions.includes(kind)) {
+  if (!FLOW_ACTION_KINDS.includes(kind as 'open') && extraFlowActions.includes(kind)) {
     // A kind the change under review introduces, so this loader — running at
     // the base revision — has no strict shape for it, and the plan it writes
     // is carried to the head revision's run, whose loader knows its own

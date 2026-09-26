@@ -243,6 +243,10 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
           const code = totpCode(config.secret, config, now())
           await page.type(action.element, code)
           generatedCodes?.push(code)
+          // The code is on the page from the first successful type on: a
+          // later failure must not capture it, so the flag is set before the
+          // boundary retry, whose throw lands in the screenshot path (#64).
+          codeOnPage = true
           line = `action ${index}: totp code generated for window ${window} and typed into ${describeElement(action.element)}`
           // A boundary that crosses while the flow is moving can leave the
           // app validating the old window's code; the code is retried once,
@@ -253,7 +257,6 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
             generatedCodes?.push(retried)
             line = `action ${index}: the code straddled a window boundary; the next window's code is typed in its place into ${describeElement(action.element)}`
           }
-          codeOnPage = true
           break
         }
         case 'backupCode': {

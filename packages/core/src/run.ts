@@ -382,6 +382,16 @@ async function runCriterion(
     // Run-time artefact resolution happens last, immediately before the check
     // executes: the artefact is observed during this run, not minted at plan
     // time. A check whose artefact is gone is skipped unverified and never runs.
+    // The shell-syntax rule judges the AUTHORED command, before artefact
+    // values are substituted: a mail link like a URL with an ampersand is
+    // data for the no-shell spawn, while an authored `&&` is a plan written
+    // for a shell this runner does not provide (#64). Checking here also
+    // leaves an unspent single-use artefact unspent.
+    const shellSyntax = unrunnableCommandReason(substituted.run)
+    if (shellSyntax !== undefined) {
+      if (unverifiedReason === undefined) unverifiedReason = shellSyntax
+      continue
+    }
     const resolved = resolveArtefactFields(substituted, artefacts, criterion.id)
     if (!resolved.ok) {
       if (unverifiedReason === undefined) unverifiedReason = resolved.reason
@@ -391,11 +401,6 @@ async function runCriterion(
     if (cwd === undefined) {
       const reason = `check cwd ${JSON.stringify(resolved.check.cwd ?? '')} escapes the repository path; refusing to run it`
       if (unverifiedReason === undefined) unverifiedReason = reason
-      continue
-    }
-    const shellSyntax = unrunnableCommandReason(resolved.check.run)
-    if (shellSyntax !== undefined) {
-      if (unverifiedReason === undefined) unverifiedReason = shellSyntax
       continue
     }
     const timeoutMs = resolved.check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
