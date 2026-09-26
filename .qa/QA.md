@@ -9,7 +9,15 @@ base revision, because there is none.
 
 What a check looks like: a flow's `open` takes a path on the target, which
 resolves against the target URL, and the typed actions drive the browser.
-Searching for an article:
+Searching for an article and reaching it, where the page shows the name that
+proves it is hers:
+
+    - { action: open, url: /wiki/Main_Page }
+    - { action: type, element: { role: searchbox, name: Search Wikipedia }, value: Ada Lovelace }
+    - { action: click, element: { role: link, name: Ada Lovelace } }
+    - { action: assert, text: Augusta Ada King }
+
+And a check of the results page itself, where the result's snippet names her:
 
     - { action: open, url: /wiki/Main_Page }
     - { action: type, element: { role: searchbox, name: Search Wikipedia }, value: Ada Lovelace }
