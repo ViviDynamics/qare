@@ -233,13 +233,17 @@ the gap named before anything runs.
 A code typed against a window that ends before the app reads it is born stale:
 the harness waits out a boundary that is about to cross, and a code that
 straddles a window while the flow is moving is retried once in the window it
-lands in (RFC 6238 §5.2). A second factor the app keeps rejecting — a
-clock-skewed container, a persistently stale window — is `blocked`, with the
-reason named, never a failed criterion: the change under test is not what
-refused the login. And because redaction cannot read pixels, every screenshot
-of a flow whose page carries a code — generated, or read from mail — is
-withheld, and the evidence says so. The same sweep follows the code: a command
-that echoes a mail-borne link or code publishes it redacted.
+lands in (RFC 6238 §5.2). A factor type that fails is `unverified`, never a
+failed criterion: the login did not complete, and the change under test is not
+what refused it. A step after the factor was typed reports what it observed —
+an assertion that fails once the factor was accepted is a product failure,
+`failed`, with the capture still withheld, because page visibility alone is not
+a rejection signal (#64). And because redaction cannot read pixels, every
+screenshot of a flow whose page carries a code — generated, or read from mail —
+is withheld, and the evidence says so. The same sweep follows the code: a
+command that echoes a mail-borne link or code publishes it redacted, and a flow
+failure whose reason quotes a value the flow put on the page publishes the
+reason redacted.
 
 ## The criteria ledger
 

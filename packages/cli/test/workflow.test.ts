@@ -278,11 +278,12 @@ test('the plan step can carry the planner prompt when the diff is too big for on
 
 test('the model-facing diff copies are scrubbed of the values the change adds (#64)', () => {
   // The seeded totp value lives in a profile the change itself adds, so no
-  // profile handed to the CLI can be trusted to carry it: collect scrubs the
-  // added secret and value lines from the planner's copy, and the verifier
-  // reads that scrubbed copy instead of the raw diff.
+  // profile handed to the CLI can be trusted to carry it: collect scrubs every
+  // added line that carries a secret or a value mapping — wherever it sits on
+  // the line, an inline `totp: { secret: ... }` included — from the planner's
+  // copy, and the verifier reads that scrubbed copy instead of the raw diff.
   const collect = section('collect')
-  expect(collect).toContain("sed -E 's/^(\\+[[:space:]]*(secret|value):).*")
+  expect(collect).toContain("sed -E '/^\\+.*(secret[[:space:]]*:|value[[:space:]]*:)/ s/.*/+ [redacted]/'")
   expect(collect).toContain("mv change-planner.scrubbed change-planner.diff")
   const judge = section('judge')
   expect(judge).toContain('--diff change-planner.diff')

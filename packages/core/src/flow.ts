@@ -245,16 +245,19 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
           // a type that half-succeeds and then throws must not publish a
           // capture of the input, so the flag is set before the attempt (#64).
           codeOnPage = true
-          await page.type(action.element, code)
+          // The sweep knows the value from the moment the seam may: a type
+          // that throws after partially filling the input still has the value
+          // swept from the failure reason (#64).
           generatedCodes?.push(code)
+          await page.type(action.element, code)
           line = `action ${index}: totp code generated for window ${window} and typed into ${describeElement(action.element)}`
           // A boundary that crosses while the flow is moving can leave the
           // app validating the old window's code; the code is retried once,
           // in the window it now sits in (#64).
           if (totpWindow(config.period, now()) !== window) {
             const retried = totpCode(config.secret, config, now())
-            await page.type(action.element, retried)
             generatedCodes?.push(retried)
+            await page.type(action.element, retried)
             line = `action ${index}: the code straddled a window boundary; the next window's code is typed in its place into ${describeElement(action.element)}`
           }
           break
@@ -264,8 +267,8 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
           // The recovery value is fail-closed the same way: the capture is
           // withheld from a type that throws, whatever the seam did first (#64).
           codeOnPage = true
-          await page.type(action.element, value)
           generatedCodes?.push(value)
+          await page.type(action.element, value)
           break
         }
       }
@@ -274,21 +277,16 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
         outcome = 'failed'
         reason = `assert failed: the text ${JSON.stringify(action.text)} is not visible`
       } else {
+        // The failure reason quotes what the action saw, and the action may
+        // have seen a value the flow put on the page: the same sweep that
+        // follows the code through the log follows it into the reason (#64).
         outcome = 'unverified'
-        reason = `action ${index} failed: ${String(error)}`
+        reason = `action ${index} failed: ${redactLog === undefined ? String(error) : redactLog(String(error))}`
       }
       failureScreenshot = await screenshot(FAILURE_SCREENSHOT)
       break
     }
     log.push(line)
-  }
-
-  // A second factor the app keeps rejecting is not the change failing: the
-  // login did not complete, so the criterion is blocked with the reason
-  // named, never failed (#64).
-  if (outcome === 'failed' && codeOnPage) {
-    outcome = 'unverified'
-    reason = 'the second factor was rejected: a code was typed and the login still did not complete (a skewed clock, a stale window, or a value the app does not accept)'
   }
 
   const evidence: string[] = [ACTION_LOG]

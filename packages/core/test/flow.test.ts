@@ -351,7 +351,7 @@ test('a backupCode action types the seeded value, and it is swept like a code (#
   expect(await actionsLog(dir)).not.toContain('4321-9876')
 })
 
-test('a second factor the app keeps rejecting is blocked with the reason named, never failed (#64)', async () => {
+test('a product assertion that fails after the factor was typed is failed, with the capture still withheld (#64)', async () => {
   const { page } = fakePage({ assertText: new Error('no') })
   const dir = await outDir()
   const result = await runFlowCheck({
@@ -366,13 +366,41 @@ test('a second factor the app keeps rejecting is blocked with the reason named, 
     generatedCodes: [],
     now: () => 100_000,
   })
-  expect(result.outcome).toBe('unverified')
-  expect(result.reason).toContain('the second factor was rejected')
+  // The factor was accepted and typed: a later assertion that fails is a
+  // signal about the product, not about the factor, so the outcome is the
+  // failure the assert observed. Page visibility alone is not a rejection
+  // signal (#64).
+  expect(result.outcome).toBe('failed')
+  expect(result.reason).toContain('assert failed')
   expect(result.reason).not.toContain('942')
   // The failure screenshot is withheld while the code sits on the page.
   expect(result.evidence).toEqual(['actions.log'])
   const log = await actionsLog(dir)
   expect(log).toContain('failure.png withheld')
+})
+
+test('a factor type that throws after the seam saw the code is unverified with the value swept (#64)', async () => {
+  const { page } = fakePage()
+  const generatedCodes: string[] = []
+  page.type = async (_what, value) => {
+    // The seam saw the value before it threw: the failure reason quotes it.
+    throw new Error(`the seam rejected ${value}`)
+  }
+  const result = await runFlowCheck({
+    outDir: await outDir(),
+    page,
+    actions: [{ action: 'totp', element: { role: 'textbox', name: 'Verification code' } }],
+    totp: { ...TOTP_CONFIG },
+    generatedCodes,
+    // The sweep a real runner hands the flow: it sees every value the flow
+    // registered at the moment it runs, so the reason is swept only if the
+    // value was registered before the type was attempted (#64).
+    redactLog: (text) => generatedCodes.reduce((out, code) => out.split(code).join('[redacted]'), text),
+    now: () => 100_000,
+  })
+  expect(result.outcome).toBe('unverified')
+  expect(result.reason).not.toContain(generatedCodes[0])
+  expect(result.reason).toContain('[redacted]')
 })
 
 test('a code generated against a closing window is retried once in the next window (#64)', async () => {

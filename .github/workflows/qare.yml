@@ -119,9 +119,10 @@ jobs:
           git diff "${BASE_SHA}...${HEAD_SHA}" -- ':!packages/*/test/*' ':!.agents' ':!.claude' > change-planner.diff
           # Both model-facing copies of the diff are scrubbed of the seeded
           # values the diff itself adds, wherever the profile that carries
-          # them lives: no model sees a secret the change promises to keep
-          # out of model-facing text (#64).
-          sed -E 's/^(\+[[:space:]]*(secret|value):).*/\1 [redacted]/' change-planner.diff > change-planner.scrubbed
+          # them lives and however the mapping is written (a value inside an
+          # inline `totp: { secret: ... }` is on the same line): no model sees
+          # a secret the change promises to keep out of model-facing text (#64).
+          sed -E '/^\+.*(secret[[:space:]]*:|value[[:space:]]*:)/ s/.*/+ [redacted]/' change-planner.diff > change-planner.scrubbed
           mv change-planner.scrubbed change-planner.diff
           echo "criteria=present" >> "$GITHUB_OUTPUT"
           {
