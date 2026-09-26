@@ -15,6 +15,15 @@ function section(job: string): string {
   return lines.slice(start, end === -1 ? undefined : end).join('\n')
 }
 
+// The `push:` trigger block of a workflow file, ending at the next top-level key.
+function pushTrigger(workflow: string): string {
+  const lines = workflow.split('\n')
+  const start = lines.indexOf('  push:')
+  if (start === -1) return ''
+  const end = lines.findIndex((line, index) => index > start && /^ {0,1}\S/.test(line))
+  return lines.slice(start + 1, end === -1 ? undefined : end).join('\n')
+}
+
 test('the workflow declares collect, plan, execute and judge', () => {
   expect(existsSync(workflowPath)).toBe(true)
   for (const job of ['collect', 'plan', 'execute', 'judge']) expect(lines).toContain(`  ${job}:`)
@@ -146,11 +155,39 @@ test('judge posts the evidence with the token alone, linking only to the uploade
   const start = judge.indexOf('- name: Post the evidence')
   const step = judge.slice(start, judge.indexOf('- name:', start + 1))
   expect(step).toContain('post-evidence --result judged-result.json')
+  expect(step).toContain('--evidence evidence')
   expect(step).toContain('secrets.GITHUB_TOKEN')
   expect(step).not.toContain('QARE_PLANNER_KEY')
   expect(step).toContain('needs.execute.outputs.evidence-url')
   expect(judge).toContain('checks: write')
   expect(section('execute')).toContain('evidence-url: ${{ steps.evidence.outputs.artifact-url }}')
+})
+
+// ADR-0002: the run's screenshots are pushed to the orphan qa-assets branch,
+// named by the run (head SHA and date), so evidence links outlive the
+// artifact. The push happens in the judge step, which holds the identity and
+// already runs on the base commit, never on the pull request tree.
+test('judge can push qa-assets: contents write on the token-holding job only', () => {
+  const judge = section('judge')
+  expect(judge).toContain('contents: write')
+  for (const job of ['collect', 'plan', 'execute']) expect(section(job)).not.toContain('contents: write')
+  expect(section('requeue')).not.toContain('contents: write')
+})
+
+// Repository CI must stay quiet when the judge step pushes screenshots: the
+// branch is not a pull request completion, so its pushes re-trigger nothing.
+test('repository CI ignores pushes to qa-assets', () => {
+  const ci = readFileSync(join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8')
+  const release = readFileSync(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8')
+  const qare = readFileSync(workflowPath, 'utf8')
+  // Each push trigger names only main or tags, so a qa-assets push matches
+  // nothing, and no push trigger names qa-assets itself.
+  expect(pushTrigger(ci)).toContain('branches: [main]')
+  expect(pushTrigger(qare)).toContain('branches: [main]')
+  expect(pushTrigger(release)).toContain('tags:')
+  for (const pushed of [pushTrigger(ci), pushTrigger(qare), pushTrigger(release)]) {
+    expect(pushed).not.toContain('qa-assets')
+  }
 })
 
 test('judge leaves no token in the checkout for the model step to find', () => {

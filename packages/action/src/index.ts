@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { loadResult, VERSION } from '@qare/core'
 import { GitHubClient, GitHubClientError } from './github.js'
+import { GitHubQaAssetsPusher } from './qa-assets.js'
 import { fileRefusalStubs, GitHubStubIssuePoster } from './stub-issues.js'
 import { requeueUnblocked, stubKeysFromDiffText } from './requeue.js'
 import { GitHubEvidencePoster, postEvidence } from './post-evidence.js'
@@ -91,7 +92,17 @@ async function postEvidenceCommand(argv: string[], out: Writer): Promise<number>
     tokenEnv: flags.string('token-env'),
   })
   const author = flags.string('author')
-  await postEvidence(new GitHubEvidencePoster(client, pr, headSha, author), result, { artifactUrl })
+  // Screenshots are pushed to qa-assets only when the evidence directory the
+  // judge downloaded is named; without it the comment links to the artifact
+  // alone, which is still where everything else lives.
+  const evidenceDir = flags.string('evidence') || undefined
+  const push =
+    evidenceDir === undefined ? undefined : new GitHubQaAssetsPusher(client, headSha, { branch: flags.string('branch') })
+  await postEvidence(new GitHubEvidencePoster(client, pr, headSha, author), result, {
+    artifactUrl,
+    push,
+    evidenceDir,
+  })
   out.write(`posted verdict ${result.verdict} on pull request #${pr} at ${headSha.slice(0, 12)}\n`)
   return 0
 }

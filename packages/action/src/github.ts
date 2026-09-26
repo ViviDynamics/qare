@@ -43,6 +43,21 @@ export interface GitHubCheckRun {
   output: { title: string; summary: string }
 }
 
+interface GithubRef {
+  object: { sha: string }
+}
+
+interface GithubCommit {
+  tree: { sha: string }
+}
+
+export interface GithubTreeEntry {
+  path: string
+  mode: '100644'
+  type: 'blob'
+  sha: string
+}
+
 export interface GitHubClientOptions {
   repository?: string
   apiRoot?: string
@@ -129,6 +144,65 @@ export class GitHubClient {
 
   async createCheckRun(run: GitHubCheckRun): Promise<void> {
     await this.request('POST', `/repos/${this.repository}/check-runs`, undefined, run)
+  }
+
+  /** The commit a branch head points at, or undefined when the branch does not exist. */
+  async getBranchHead(branch: string): Promise<string | undefined> {
+    try {
+      const ref = await this.request<GithubRef>('GET', `/repos/${this.repository}/git/ref/heads/${branch}`)
+      return ref.object.sha
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) return undefined
+      throw error
+    }
+  }
+
+  async createBlob(content: Buffer): Promise<string> {
+    const blob = await this.request<{ sha: string }>('POST', `/repos/${this.repository}/git/blobs`, undefined, {
+      content: content.toString('base64'),
+      encoding: 'base64',
+    })
+    return blob.sha
+  }
+
+  async createTree(entries: GithubTreeEntry[], baseTree?: string): Promise<string> {
+    const tree = await this.request<{ sha: string }>('POST', `/repos/${this.repository}/git/trees`, undefined, {
+      ...(baseTree === undefined ? {} : { base_tree: baseTree }),
+      tree: entries,
+    })
+    return tree.sha
+  }
+
+  async getCommitTree(sha: string): Promise<string> {
+    const commit = await this.request<GithubCommit>('GET', `/repos/${this.repository}/git/commits/${sha}`)
+    return commit.tree.sha
+  }
+
+  /** One commit with no parents when there is no parent yet, so the branch starts as an orphan. */
+  async createCommit(message: string, tree: string, parents: string[]): Promise<string> {
+    const commit = await this.request<{ sha: string }>('POST', `/repos/${this.repository}/git/commits`, undefined, {
+      message,
+      tree,
+      parents,
+    })
+    return commit.sha
+  }
+
+  /**
+   * Creates the branch on its first commit, or moves it fast-forward onto a
+   * new one. A non-fast-forward (a concurrent run pushed first) is refused by
+   * the default force=false, which fails this push rather than rewriting
+   * history: the branch is append-only.
+   */
+  async pushBranch(branch: string, sha: string, parent: string | undefined): Promise<void> {
+    if (parent === undefined) {
+      await this.request('POST', `/repos/${this.repository}/git/refs`, undefined, {
+        ref: `refs/heads/${branch}`,
+        sha,
+      })
+      return
+    }
+    await this.request('PATCH', `/repos/${this.repository}/git/refs/heads/${branch}`, undefined, { sha })
   }
 
   private async request<T>(method: string, path: string, query?: URLSearchParams, payload?: unknown): Promise<T> {

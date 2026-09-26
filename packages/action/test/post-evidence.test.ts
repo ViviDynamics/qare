@@ -1,10 +1,11 @@
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, test } from 'vitest'
 import { RESULT_SCHEMA_VERSION, type RunResult } from '@qare/core'
 import { GitHubClient, GitHubClientError } from '../src/github.js'
 import { main } from '../src/index.js'
+import { GitHubQaAssetsPusher, screenshotsOf } from '../src/qa-assets.js'
 import { CHECK_RUN_NAME, EVIDENCE_MARKER, GitHubEvidencePoster, postEvidence } from '../src/post-evidence.js'
 import { FAKE_TOKEN, startFakeGithub, type FakeGithub } from './fake-github.js'
 
@@ -188,6 +189,48 @@ test('post-evidence names what is missing', async () => {
   expect(err.lines.join('')).toContain('--result')
 })
 
+test('qare-action post-evidence pushes the evidence screenshots with --evidence, on the named branch', async () => {
+  process.env.QARE_TEST_TOKEN = FAKE_TOKEN
+  try {
+    const dir = await evidenceDirWith({ 'checks/export-csv/1/final.png': 'png bytes' })
+    const code = await main(
+      [
+        'post-evidence', '--result', await resultFile(WITH_SCREENSHOT), '--pr', '12', '--sha', SHA,
+        '--artifact-url', ARTIFACT, '--evidence', dir, '--branch', 'qa-assets-staging',
+        '--repository', 'octocat/qare', '--api-root', fake.url, '--token-env', 'QARE_TEST_TOKEN',
+      ],
+      capture().writer,
+      capture().writer,
+    )
+    expect(code).toBe(0)
+  } finally {
+    delete process.env.QARE_TEST_TOKEN
+  }
+  const comment = fake.issues.get(12)?.comments[0] ?? ''
+  expect(comment).toContain('/raw/qa-assets-staging/runs/')
+  expect(comment).toContain('/final.png>)')
+  expect(fake.refs.get('refs/heads/qa-assets-staging')).toBeDefined()
+})
+
+// With no --evidence, nothing is pushed and the comment is the artifact-only
+// comment of today.
+test('post-evidence without --evidence pushes nothing', async () => {
+  process.env.QARE_TEST_TOKEN = FAKE_TOKEN
+  try {
+    const path = await resultFile(WITH_SCREENSHOT)
+    const code = await main(
+      ['post-evidence', '--result', path, '--pr', '12', '--sha', SHA, '--repository', 'octocat/qare', '--api-root', fake.url, '--token-env', 'QARE_TEST_TOKEN'],
+      capture().writer,
+      capture().writer,
+    )
+    expect(code).toBe(0)
+  } finally {
+    delete process.env.QARE_TEST_TOKEN
+  }
+  expect(fake.refs.get('refs/heads/qa-assets')).toBeUndefined()
+  expect(fake.issues.get(12)?.comments[0]).toContain('`checks/export-csv/1/final.png`')
+})
+
 test('a secret in a reason is redacted before the comment is posted (#52)', async () => {
   const token = ['ghp', '_', 'Qq7'.repeat(12)].join('')
   const leaky: RunResult = {
@@ -201,4 +244,132 @@ test('a secret in a reason is redacted before the comment is posted (#52)', asyn
   const [comment] = fake.issues.get(12)?.comments ?? []
   expect(comment).toContain('compose up rejected [redacted]')
   expect(comment).not.toContain(token)
+})
+
+const WITH_SCREENSHOT: RunResult = {
+  schemaVersion: RESULT_SCHEMA_VERSION,
+  verdict: 'failed',
+  criteria: [
+    {
+      id: 'export-csv',
+      outcome: 'failed',
+      reason: 'export wrote 0 rows',
+      evidence: ['checks/export-csv/1/final.png', 'checks/export-csv/1/stdout.txt'],
+    },
+  ],
+}
+
+// The evidence directory the judge downloaded, holding the screenshot the
+// result lists.
+async function evidenceDirWith(files: Record<string, string>): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-assets-'))
+  for (const [name, content] of Object.entries(files)) {
+    await mkdir(join(dir, name, '..'), { recursive: true })
+    await writeFile(join(dir, name), content, 'utf8')
+  }
+  return dir
+}
+
+test('screenshots are pushed to qa-assets and linked from the comment; the rest names the artifact', async () => {
+  const dir = await evidenceDirWith({ 'checks/export-csv/1/final.png': 'png bytes', 'checks/export-csv/1/stdout.txt': 'log' })
+  const pusher = new GitHubQaAssetsPusher(client, SHA, { runId: '42', today: () => '2026-09-25' })
+  const screenshotUrl = [
+    'https:', '//github.com/octocat/qare/raw/qa-assets/runs/2026-09-25/', SHA, '/42/checks/export-csv/1/final.png',
+  ].join('')
+
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), WITH_SCREENSHOT, {
+    artifactUrl: ARTIFACT,
+    push: pusher,
+    evidenceDir: dir,
+  })
+
+  const comment = fake.issues.get(12)?.comments[0] ?? ''
+  expect(comment).toContain(`[final.png](<${screenshotUrl}>)`)
+  // The non-screenshot file is named, and the artifact it lives in is linked.
+  expect(comment).toContain('`checks/export-csv/1/stdout.txt`')
+  expect(comment).not.toContain('`checks/export-csv/1/final.png`')
+  const links = comment.match(/\]\(<([^>]+)>\)/g) ?? []
+  const linkOf = (url: string): string => '](<' + url + '>)'
+  expect(links).toEqual([linkOf(screenshotUrl), linkOf(ARTIFACT)])
+  expect(fake.refs.get('refs/heads/qa-assets')).toBeDefined()
+})
+
+test('the branch is created on the first run and the second commit chains onto it', async () => {
+  const dir = await evidenceDirWith({ 'checks/export-csv/1/final.png': 'png bytes' })
+  const pusher = new GitHubQaAssetsPusher(client, SHA, { runId: '42', today: () => '2026-09-25' })
+
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), WITH_SCREENSHOT, { push: pusher, evidenceDir: dir })
+  const first = fake.refs.get('refs/heads/qa-assets')
+  expect(first).toBeDefined()
+
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), WITH_SCREENSHOT, { push: pusher, evidenceDir: dir })
+  const second = fake.refs.get('refs/heads/qa-assets')
+  expect(second).not.toBe(first)
+  expect(fake.commits.get(second ?? '')?.parents).toEqual([first])
+  // The two runs name the same file on the branch, so the branch grows by
+  // commits, not by rewrites.
+  expect(fake.commits.size).toBe(2)
+})
+
+test('a rerun of the same commit writes under its own run path', async () => {
+  const dir = await evidenceDirWith({ 'checks/export-csv/1/final.png': 'png bytes' })
+  const urlOfComment = (): string => {
+    const comment = fake.issues.get(12)?.comments[0] ?? ''
+    return comment.match(/\]\(<([^>]+)>\)/)?.[1] ?? ''
+  }
+  const pushWith = (runId: string): GitHubQaAssetsPusher =>
+    new GitHubQaAssetsPusher(client, SHA, { runId, today: () => '2026-09-25' })
+
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), WITH_SCREENSHOT, { push: pushWith('41'), evidenceDir: dir })
+  const firstUrl = urlOfComment()
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), WITH_SCREENSHOT, { push: pushWith('42'), evidenceDir: dir })
+  const secondUrl = urlOfComment()
+
+  expect(firstUrl).toContain('/41/')
+  expect(secondUrl).toContain('/42/')
+  // The rerun writes beside, not over, the first run's path: the first
+  // comment's link keeps serving the first run's screenshot.
+  expect(secondUrl).not.toBe(firstUrl)
+})
+
+test('a png listed but not on disk is named, never pushed and never linked', async () => {
+  const dir = await evidenceDirWith({ 'checks/export-csv/1/stdout.txt': 'log' })
+  const pusher = new GitHubQaAssetsPusher(client, SHA, { runId: '42', today: () => '2026-09-25' })
+
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), WITH_SCREENSHOT, {
+    artifactUrl: ARTIFACT,
+    push: pusher,
+    evidenceDir: dir,
+  })
+
+  expect(fake.refs.get('refs/heads/qa-assets')).toBeUndefined()
+  const comment = fake.issues.get(12)?.comments[0] ?? ''
+  expect(comment).toContain('`checks/export-csv/1/final.png`')
+  expect(comment).not.toContain('raw/qa-assets')
+})
+
+test('a push failure fails the step and posts no comment', async () => {
+  fake.status = 500
+  const dir = await evidenceDirWith({ 'checks/export-csv/1/final.png': 'png bytes' })
+  const pusher = new GitHubQaAssetsPusher(client, SHA)
+
+  await expect(
+    postEvidence(new GitHubEvidencePoster(client, 12, SHA), WITH_SCREENSHOT, { push: pusher, evidenceDir: dir }),
+  ).rejects.toThrow(/responded 500/)
+  expect(fake.issues.get(12)?.comments ?? []).toHaveLength(0)
+  expect(fake.checkRuns).toHaveLength(0)
+})
+
+test('screenshotsOf takes the png paths the result lists, deduplicated and in order', () => {
+  expect(
+    screenshotsOf({
+      schemaVersion: RESULT_SCHEMA_VERSION,
+      verdict: 'failed',
+      criteria: [
+        { id: 'a', outcome: 'failed', evidence: ['checks/a/0/final.png', 'checks/a/0/stdout.txt', 'checks/a/0/final.png'] },
+        { id: 'b', outcome: 'failed', evidence: ['checks/b/0/shot.PNG'] },
+      ],
+    }),
+  ).toEqual(['checks/a/0/final.png', 'checks/b/0/shot.PNG'])
+  expect(screenshotsOf(WITH_SCREENSHOT)).toEqual(['checks/export-csv/1/final.png'])
 })
