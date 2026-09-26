@@ -825,10 +825,19 @@ function resolveCheckCwd(cwd: string | undefined, repoPath: string): string | un
  * reason that has nothing to do with the criterion. Named here, unverified,
  * rather than failed: a check that cannot run disproves nothing.
  */
+/**
+ * The runner's shell-syntax judgment, shared with plan-time validation (#136):
+ * plan-step must reject exactly the commands this runner would, so both sides
+ * read one character class instead of two copies that can drift apart.
+ */
+export function shellCharacter(run: string): string | undefined {
+  return run.match(/[|&;<>$`"'\\()\n\r]/)?.[0]
+}
+
 function unrunnableCommandReason(run: string): string | undefined {
-  const found = run.match(/[|&;<>$`"'\\()\n\r]/)
-  if (found === null) return undefined
-  return `the planned command cannot run: command checks are split on whitespace and spawned without a shell, so ${JSON.stringify(found[0])} is not interpreted`
+  const character = shellCharacter(run)
+  if (character === undefined) return undefined
+  return `the planned command cannot run: command checks are split on whitespace and spawned without a shell, so ${JSON.stringify(character)} is not interpreted`
 }
 
 /**

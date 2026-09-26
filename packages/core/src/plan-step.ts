@@ -1,5 +1,6 @@
 import type { AgentRunner } from './runner.js'
 import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
+import { shellCharacter } from './run.js'
 
 export interface PlanCriterionInput {
   id: string
@@ -151,8 +152,8 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     '',
     'A command check is spawned with no shell: its command is split on whitespace and each token',
     'becomes one argument. Write one executable followed by its arguments, and never cd, &&, ||,',
-    'pipes, semicolons, redirection or quotes; command checks already run in the repository root,',
-    'and an argument containing spaces cannot be expressed.',
+    'pipes, semicolons, redirection, quotes, $, backticks, parentheses or backslashes; command',
+    'checks already run in the repository root, and an argument containing spaces cannot be expressed.',
     '',
     `A flow action is one of ${flowActionKinds.join(', ')}. An element reference is semantic:`,
     '{"role":"the aria role","name":"the accessible name"} or {"testId":"the data-testid value"}.',
@@ -198,7 +199,6 @@ function coverage(plan: Plan, inputs: PlanInputs): string | undefined {
     .join(' and ')
 }
 
-const SHELL_OPERATOR_TOKEN = /^[0-9]*(?:[<>&|;]+[0-9]*)+$/
 const SHELL_BUILTINS = ['cd', 'source', 'eval', 'export', 'exit', 'set', 'unset', 'alias', 'shift', 'local']
 
 function commandContractViolation(command: string): string | undefined {
@@ -206,12 +206,11 @@ function commandContractViolation(command: string): string | undefined {
   const executable = tokens[0]
   if (executable !== undefined && SHELL_BUILTINS.includes(executable))
     return `"${executable}" is a shell builtin, not an executable the runner can spawn`
-  const operator = tokens.find((token) => SHELL_OPERATOR_TOKEN.test(token))
-  if (operator !== undefined)
-    return `"${operator}" is shell syntax the runner does not interpret, so it reaches the program as a literal argument`
-  if (/['"]/.test(command))
+  const character = shellCharacter(command)
+  if (character === undefined) return undefined
+  if (character === '"' || character === "'")
     return 'quoting is not interpreted: the command is split on whitespace, so an argument containing spaces cannot be expressed'
-  return undefined
+  return `"${character}" is shell syntax the runner does not interpret, so it reaches the program as a literal argument`
 }
 
 function commandContractGap(plan: Plan): string | undefined {

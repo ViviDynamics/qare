@@ -239,6 +239,7 @@ test('the prompt describes the no-shell contract for command checks', async () =
   const [request] = runner.requests
   expect(request.prompt).toContain('spawned with no shell')
   expect(request.prompt).toContain('never cd, &&, ||')
+  expect(request.prompt).toContain('backticks, parentheses or backslashes')
   expect(request.prompt).not.toContain('the shell command to run')
 })
 
@@ -290,6 +291,38 @@ test('a command check that relies on quoting is corrected the same way', async (
 
   expect(runner.requests).toHaveLength(2)
   expect(runner.requests[1].prompt).toContain('quoting is not interpreted')
+})
+
+test('a command check that interpolates a variable is corrected the same way', async () => {
+  const interpolated = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'env', command: 'echo $HOME' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(interpolated), completed(planned())])
+
+  await planRun(runner, INPUTS)
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('"$" is shell syntax')
+})
+
+test('a command check with an operator inside a token is corrected the same way', async () => {
+  const embedded = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'tag', command: 'git tag v1&&git push' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(embedded), completed(planned())])
+
+  await planRun(runner, INPUTS)
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('"&" is shell syntax')
 })
 
 test('a second plan the runner cannot run fails loudly', async () => {
