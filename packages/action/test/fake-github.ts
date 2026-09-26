@@ -229,6 +229,14 @@ export function startFakeGithub(): Promise<FakeGithub> {
         }
       }
     }
+    if (parts[0] === 'repos' && parts[3] === 'git' && parts[4] === 'ref' && parts[5] === 'heads' && parts.length === 7) {
+      if (request.method !== 'GET') return respond(response, 404, { message: 'no such ref route' })
+      const branch = `refs/heads/${parts[6]}`
+      const sha = refs.get(branch)
+      if (sha === undefined) return respond(response, 404, { message: 'branch not found' })
+      respond(response, 200, { ref: branch, object: { sha, type: 'commit' } })
+      return
+    }
     respond(response, 404, { message: `fake github has no route for ${request.method} ${url.pathname}` })
   }
 

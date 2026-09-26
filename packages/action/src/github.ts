@@ -149,7 +149,7 @@ export class GitHubClient {
   /** The commit a branch head points at, or undefined when the branch does not exist. */
   async getBranchHead(branch: string): Promise<string | undefined> {
     try {
-      const ref = await this.request<GithubRef>('GET', `/repos/${this.repository}/git/refs/heads/${branch}`)
+      const ref = await this.request<GithubRef>('GET', `/repos/${this.repository}/git/ref/heads/${branch}`)
       return ref.object.sha
     } catch (error) {
       if (error instanceof GitHubApiError && error.status === 404) return undefined

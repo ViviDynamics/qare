@@ -5,10 +5,12 @@ import { GitHubClientError, type GitHubClient, type GithubTreeEntry } from './gi
 
 /**
  * The screenshot push of ADR-0002: the run's screenshots land on an orphan
- * `qa-assets` branch, under a path naming the run (head SHA and date), so
- * evidence links keep resolving after the artifact expires. The branch is
- * append-only: each push is one new commit on top of the branch head, and the
- * history is never rewritten.
+ * `qa-assets` branch, under a path naming the run (date, head SHA and the
+ * Actions run id), so evidence links keep resolving after the artifact
+ * expires. The branch is append-only: each push is one new commit on top of
+ * the branch head, and the history is never rewritten. The run id keeps a
+ * rerun of the same commit on the same day from rewriting the path an earlier
+ * comment links to.
  */
 export const QA_ASSETS_BRANCH = 'qa-assets'
 
@@ -39,14 +41,20 @@ export class GitHubQaAssetsPusher implements ScreenshotPusher {
   private readonly client: GitHubClient
   private readonly headSha: string
   private readonly branch: string
+  private readonly runId: string
   private readonly today: () => string
 
-  constructor(client: GitHubClient, headSha: string, opts: { branch?: string; today?: () => string } = {}) {
+  constructor(
+    client: GitHubClient,
+    headSha: string,
+    opts: { branch?: string; runId?: string; today?: () => string } = {},
+  ) {
     if (!/^[0-9a-f]{40}$/.test(headSha))
       throw new GitHubClientError(`a head SHA is 40 lowercase hex characters (got ${JSON.stringify(headSha)})`)
     this.client = client
     this.headSha = headSha
     this.branch = opts.branch ?? QA_ASSETS_BRANCH
+    this.runId = opts.runId ?? defaultRunId()
     this.today = opts.today ?? defaultToday
   }
 
@@ -89,7 +97,7 @@ export class GitHubQaAssetsPusher implements ScreenshotPusher {
   }
 
   private runPath(evidencePath: string, date: string): string {
-    return `runs/${date}/${this.headSha}/${evidencePath}`
+    return `runs/${date}/${this.headSha}/${this.runId}/${evidencePath}`
   }
 
   private branchUrl(evidencePath: string, date: string): string {
@@ -99,4 +107,11 @@ export class GitHubQaAssetsPusher implements ScreenshotPusher {
 
 function defaultToday(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+/** The workflow run this execution belongs to: run id plus attempt, so a rerun never writes under a previous attempt's path. */
+function defaultRunId(): string {
+  const run = process.env.GITHUB_RUN_ID ?? 'unidentified-run'
+  const attempt = process.env.GITHUB_RUN_ATTEMPT ?? '1'
+  return `${run}-${attempt}`
 }

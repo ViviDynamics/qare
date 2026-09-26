@@ -272,9 +272,9 @@ async function evidenceDirWith(files: Record<string, string>): Promise<string> {
 
 test('screenshots are pushed to qa-assets and linked from the comment; the rest names the artifact', async () => {
   const dir = await evidenceDirWith({ 'checks/export-csv/1/final.png': 'png bytes', 'checks/export-csv/1/stdout.txt': 'log' })
-  const pusher = new GitHubQaAssetsPusher(client, SHA, { today: () => '2026-09-25' })
+  const pusher = new GitHubQaAssetsPusher(client, SHA, { runId: '42', today: () => '2026-09-25' })
   const screenshotUrl = [
-    'https:', '//github.com/octocat/qare/raw/qa-assets/runs/2026-09-25/', SHA, '/checks/export-csv/1/final.png',
+    'https:', '//github.com/octocat/qare/raw/qa-assets/runs/2026-09-25/', SHA, '/42/checks/export-csv/1/final.png',
   ].join('')
 
   await postEvidence(new GitHubEvidencePoster(client, 12, SHA), WITH_SCREENSHOT, {
@@ -296,7 +296,7 @@ test('screenshots are pushed to qa-assets and linked from the comment; the rest 
 
 test('the branch is created on the first run and the second commit chains onto it', async () => {
   const dir = await evidenceDirWith({ 'checks/export-csv/1/final.png': 'png bytes' })
-  const pusher = new GitHubQaAssetsPusher(client, SHA, { today: () => '2026-09-25' })
+  const pusher = new GitHubQaAssetsPusher(client, SHA, { runId: '42', today: () => '2026-09-25' })
 
   await postEvidence(new GitHubEvidencePoster(client, 12, SHA), WITH_SCREENSHOT, { push: pusher, evidenceDir: dir })
   const first = fake.refs.get('refs/heads/qa-assets')
@@ -311,9 +311,30 @@ test('the branch is created on the first run and the second commit chains onto i
   expect(fake.commits.size).toBe(2)
 })
 
+test('a rerun of the same commit writes under its own run path', async () => {
+  const dir = await evidenceDirWith({ 'checks/export-csv/1/final.png': 'png bytes' })
+  const urlOfComment = (): string => {
+    const comment = fake.issues.get(12)?.comments[0] ?? ''
+    return comment.match(/\]\(<([^>]+)>\)/)?.[1] ?? ''
+  }
+  const pushWith = (runId: string): GitHubQaAssetsPusher =>
+    new GitHubQaAssetsPusher(client, SHA, { runId, today: () => '2026-09-25' })
+
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), WITH_SCREENSHOT, { push: pushWith('41'), evidenceDir: dir })
+  const firstUrl = urlOfComment()
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), WITH_SCREENSHOT, { push: pushWith('42'), evidenceDir: dir })
+  const secondUrl = urlOfComment()
+
+  expect(firstUrl).toContain('/41/')
+  expect(secondUrl).toContain('/42/')
+  // The rerun writes beside, not over, the first run's path: the first
+  // comment's link keeps serving the first run's screenshot.
+  expect(secondUrl).not.toBe(firstUrl)
+})
+
 test('a png listed but not on disk is named, never pushed and never linked', async () => {
   const dir = await evidenceDirWith({ 'checks/export-csv/1/stdout.txt': 'log' })
-  const pusher = new GitHubQaAssetsPusher(client, SHA, { today: () => '2026-09-25' })
+  const pusher = new GitHubQaAssetsPusher(client, SHA, { runId: '42', today: () => '2026-09-25' })
 
   await postEvidence(new GitHubEvidencePoster(client, 12, SHA), WITH_SCREENSHOT, {
     artifactUrl: ARTIFACT,

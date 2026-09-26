@@ -535,9 +535,10 @@ Fork PRs are refused outright in the Action.
 - A `qare` check run with the state from the table above.
 - Artifacts: screenshots, traces, logs, `plan.json`, `result.json`.
 - Screenshots also land on the orphan `qa-assets` branch, under a path naming
-  the run (head SHA and date), append-only, so the comment's screenshot links
-  keep resolving after the artifacts expire. The posted comment links each
-  screenshot to its branch path; everything else links to the artifact.
+  the run (date, head SHA and Actions run id), append-only, so the comment's
+  screenshot links keep resolving after the artifacts expire. The posted
+  comment links each screenshot to its branch path; everything else links to
+  the artifact.
   ([ADR-0002](./decisions/adr-0002-screenshot-storage.md))
 - Everything above is redacted before it is published: known token shapes
   (the same rules nare applies to its own events, plus a few more), key and
