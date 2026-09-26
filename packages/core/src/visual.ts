@@ -11,6 +11,12 @@ export interface VisualCheckOpts {
   revisions: VisualRevision[]
   screenshot?: (url: string, width: number, theme: string, revision: VisualRevision) => Promise<Buffer>
   diffImages?: (basePng: Buffer, headPng: Buffer) => Promise<Buffer | null>
+  /**
+   * Profile masks (#119): page regions the screenshot backend blacks out at
+   * capture. They come from the profile, so base and head screenshots carry
+   * the same masks and masking never shows as a visual difference.
+   */
+  masks?: string[]
 }
 
 export interface VisualScreenshot {
@@ -20,6 +26,8 @@ export interface VisualScreenshot {
   path?: string
   outcome: 'captured' | 'unverified'
   reason?: string
+  /** The masks that were in force for this screenshot (#119). */
+  masks?: string[]
 }
 
 export interface VisualDiff {
@@ -36,7 +44,7 @@ export interface VisualCheckResult {
 }
 
 export async function runVisualCheck(opts: VisualCheckOpts): Promise<VisualCheckResult> {
-  const { baseUrl, outDir, widths, themes, revisions, screenshot, diffImages } = opts
+  const { baseUrl, outDir, widths, themes, revisions, screenshot, diffImages, masks } = opts
 
   const screenshots: VisualScreenshot[] = []
   const captured = new Map<string, Partial<Record<VisualRevision, Buffer>>>()
@@ -63,7 +71,7 @@ export async function runVisualCheck(opts: VisualCheckOpts): Promise<VisualCheck
           await writeFile(path, png)
           bucket[revision] = png
           captured.set(key, bucket)
-          screenshots.push({ revision, ...entry, path, outcome: 'captured' })
+          screenshots.push({ revision, ...entry, ...(masks === undefined ? {} : { masks }), path, outcome: 'captured' })
         } catch (error) {
           screenshots.push({ revision, ...entry, outcome: 'unverified', reason: String(error) })
         }

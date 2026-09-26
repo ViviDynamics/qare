@@ -11,6 +11,7 @@ import {
   redactText,
   redactValue,
   redactionRules,
+  validateMaskSelectors,
   type RunResult,
 } from '../src/index.js'
 
@@ -247,4 +248,65 @@ test('a symlink in the evidence stops the sweep', async () => {
 test('a missing evidence directory is an error, not an empty success', async () => {
   const dir = await evidenceDir()
   await expect(redactEvidenceDir(join(dir, 'absent'))).rejects.toThrow(RedactionError)
+})
+
+// The mask grammar mirrors playwright-core's own selector parser, so these
+// cases come from how it decides: the `>>` split, the engine-name inference,
+// the capture part, and the engine registry.
+test('mask selectors playwright can resolve are accepted (#119)', () => {
+  expect(() =>
+    validateMaskSelectors([
+      'css=.fixture-banner',
+      '.fixture-banner',
+      '//div[@class="fixture-banner"]',
+      '(//div)[2]',
+      '..',
+      '"jane@pilot.example"',
+      "'jane@pilot.example'",
+      'text=jane@pilot.example',
+      'id=sign-in',
+      'data-testid=fixture-email',
+      'nth=0',
+      'role=button[name="Sign in"]',
+      'css=.a >> .inner >> button[type="submit"]',
+      // Quotes protect a `>>` from chaining, in text and css alike.
+      'text="a >> b"',
+      'css=[title="a >> b"]',
+      // A quote in a text part's body does not open a quote context, so the
+      // chain still splits; playwright parses this as text `a` and css `b`.
+      'text=a >> b',
+      '*css=.banner',
+    ]),
+  ).not.toThrow()
+})
+
+test('mask selectors playwright cannot resolve are refused, naming the mask (#119)', () => {
+  for (const invalid of [
+    '',
+    '   ',
+    'css=.a >>    ',
+    'css=',
+    'text=',
+    'foo=.fixture-banner',
+    'internal:has=text=x',
+    '*=text',
+    'css=[data-x',
+    'css=[title="unterminated',
+    '*css=.a >> *css=.b',
+  ]) {
+    let message: string | undefined
+    try {
+      validateMaskSelectors([invalid])
+    } catch (error) {
+      message = (error as Error).message
+    }
+    expect(message, invalid).toBeDefined()
+    expect(message!.startsWith('redact mask'), invalid).toBe(true)
+    expect(message, invalid).toContain(JSON.stringify(invalid))
+  }
+})
+
+test('an absent mask list validates to nothing', () => {
+  expect(() => validateMaskSelectors(undefined)).not.toThrow()
+  expect(() => validateMaskSelectors([])).not.toThrow()
 })

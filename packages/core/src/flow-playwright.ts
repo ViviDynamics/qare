@@ -18,12 +18,15 @@ export class PlaywrightFlowSessionError extends Error {
 /**
  * A flow session backed by a real Playwright chromium: one browser, one context
  * and one page, all launched lazily on first use and shared by the page and
- * trace seams. dispose closes the browser.
+ * trace seams. dispose closes the browser. The profile's masks (#119) black out
+ * their page regions while the browser takes a screenshot, so fixture data
+ * never reaches the pixels; they apply to every capture the session takes.
  */
 export async function makePlaywrightFlowSession(
   opts: {
     browserExecutablePath?: string
     loadPlaywright?: () => Promise<PlaywrightModule>
+    masks?: string[]
   } = {},
 ): Promise<{ page: FlowPage; trace: FlowTrace; dispose: () => Promise<void>; outbound: () => EgressAttempt[] }> {
   const loadPlaywright =
@@ -106,7 +109,17 @@ export async function makePlaywrightFlowSession(
     },
     screenshot: async (path) => {
       const started = await start()
-      await started.page.screenshot({ path })
+      // Masks black out their regions at capture, in the browser (#119): the
+      // screenshot on disk never carries the pixels the profile redacts away.
+      await started.page.screenshot(
+        opts.masks === undefined || opts.masks.length === 0
+          ? { path }
+          : {
+              path,
+              mask: opts.masks.map((selector) => started.page.locator(selector)),
+              maskColor: '#000000',
+            },
+      )
     },
   }
 

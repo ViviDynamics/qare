@@ -218,6 +218,35 @@ test('a screenshot that cannot be taken is noted in the log, and the check still
   expect(log).toContain('screenshot final.png failed')
 })
 
+test('the action log names the masks that applied to each screenshot (#119)', async () => {
+  const { page } = fakePage()
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [{ action: 'open', url: APP_URL }],
+    masks: ['css=.fixture-banner', '//img[@alt="fixture"]'],
+  })
+
+  expect(result.outcome).toBe('passed')
+  expect(result.evidence).toEqual(['actions.log', 'final.png'])
+  const log = await actionsLog(dir)
+  expect(log).toContain(
+    `screenshot final.png masks: css=.fixture-banner, //img[@alt="fixture"]`,
+  )
+})
+
+test('without profile masks the action log says nothing about masks (#119)', async () => {
+  const { page } = fakePage()
+  const dir = await outDir()
+
+  await runFlowCheck({ outDir: dir, page, actions: [{ action: 'open', url: APP_URL }] })
+
+  const log = await actionsLog(dir)
+  expect(log).not.toContain('masks:')
+})
+
 async function suiteCwd(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'qare-suite-'))
 }

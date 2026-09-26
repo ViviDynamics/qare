@@ -110,7 +110,7 @@ export async function runJob(
   // says nothing about any other run (#69).
   const artefacts = new Artefacts()
   const target = profile.target === undefined ? undefined : targetContext(profile.target)
-  const flow = { session: opts.flowSession, suites: profile.suites, target }
+  const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target }
   for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow))
   // The judge is the verdict decision. Base execution and egress interception
   // of a booted stack land with the orchestrator; a target run records what its
@@ -261,7 +261,7 @@ async function runCriterion(
   values: RunValues,
   mail: { inbox?: string; readMail?: ReadMail },
   artefacts: Artefacts,
-  flow: { session?: FlowSessionFactory; suites: ProfileSuite[]; target?: FlowTargetContext },
+  flow: { session?: FlowSessionFactory; masks: string[]; suites: ProfileSuite[]; target?: FlowTargetContext },
 ): Promise<CriterionResult> {
   const checks = criterion.checks ?? []
   if (checks.length === 0)
@@ -312,6 +312,7 @@ async function runCriterion(
         job.evidenceDir,
         checkDir,
         rules,
+        flow.masks,
       )
       evidence.push(...outcome.evidence)
       if (outcome.status === 'failed') failed = true
@@ -422,6 +423,7 @@ async function runFlowCheckJob(
   evidenceDir: string,
   checkDir: string,
   rules: readonly RedactionRule[],
+  masks: string[],
 ): Promise<{ status: 'passed' | 'failed' | 'unverified'; reason?: string; evidence: string[] }> {
   const inEvidence = (names: readonly string[]): string[] => names.map((name) => `${checkDir}/${name}`)
   if (check.suite !== undefined) {
@@ -456,7 +458,9 @@ async function runFlowCheckJob(
       evidence: inEvidence(['suite.txt']),
     }
   }
-  const factory = session ?? makePlaywrightFlowSession
+  // The masks are the profile's own (#119): they black out their page regions
+  // in every screenshot the backend takes, and the action log names them.
+  const factory = session ?? (() => makePlaywrightFlowSession({ masks }))
   const timeoutMs = check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
   let started
   try {
@@ -484,6 +488,7 @@ async function runFlowCheckJob(
       outDir: join(evidenceDir, checkDir),
       tracesDir: resolve(evidenceDir, '..', 'traces', checkDir),
       redactLog: (text) => redactText(text, rules),
+      masks,
     })
     // The losing branch of the race is drained, so a flow that finishes late
     // after a timeout does not crash the run with an unhandled rejection.
