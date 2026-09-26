@@ -62,9 +62,9 @@ and the artifacts execute uploaded.
 | Job | Secrets | Network | Does |
 | --- | --- | --- | --- |
 | **collect** | GitHub token | yes | Reads the pull request body, linked issues and diff from the base commit's checkout; writes `criteria.json`. Never executes PR code. |
-| **plan** | model key | yes | Reads the criteria, the diff and `.qa/`; writes `plan.json` mapping each criterion to checks tagged `command`, `flow` or `visual`. Never executes PR code. |
+| **plan** | model key | yes | Reads the criteria, the diff and `.qa/`; writes `plan.json` mapping each criterion to checks tagged `command`, `flow` or `visual`. The planner is also told any flow action kinds the change itself introduces, read from the diff as data. Never executes PR code. |
 | **execute** | none | stub containers only | Boots the app at the merge base and at the head with stubs, runs the plan, saves artifacts and raw results. |
-| **judge** | model key, GitHub token | yes | Computes verdicts in code from raw results, runs the verifier model on the evidence, posts the comment and check. |
+| **judge** | model key, GitHub token | yes | Computes verdicts in code from raw results, runs the verifier model on the evidence, posts the comment and check. The plan is loaded with the same flow action kinds the plan step was given. |
 
 Execute stages, per side (base, head):
 
@@ -78,6 +78,7 @@ Judge:
 - Criterion verdicts come from executed results only.
 - Visual diffs are advisory evidence for the human, never the sole basis for a pass.
 - The verifier model gets the criteria, diff and evidence in a fresh context and reports only criteria the evidence does not actually show. Its findings can downgrade a verdict, never upgrade one. A verifier that gives no readable answer leaves the criteria it was asked about unverified, so the run blocks rather than passing unchecked.
+- A blocked run whose every unverified criterion is one the planner could not plan, or whose planned command cannot run without a shell, reports the criteria by name and the check run comes out neutral: the gap is in the planning vocabulary, and nothing was disproven. Any other blocked run — a check that could not reach the app, an environment that would not boot — is a fault and stays red.
 
 ## The `.qa/` profile (per repo)
 
@@ -97,7 +98,11 @@ app:
   boot: { compose: compose.qa.yaml, service: admin }
   health: { http: "http://localhost:3000/up", timeout: 120s }
   seed: { command: "bin/rails db:seed:qa" }
-  login: { fixture: fixtures/users.yml, role: admin }
+  login:
+    fixture: fixtures/users.yml
+    role: admin
+    totp: { secret: GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ }  # a test-only secret the seed step plants; defaults: 6 digits, 30s, SHA-1
+    # backupCode: { value: 4321-9876 }                  # an alternative factor, for apps that accept one
 stubs:
   - service: billing
     hosts: ["api.billing-vendor.example"]
@@ -151,6 +156,13 @@ and every matcher (`from`, `subject`, `body`) are literal substrings, may carry
 harness considers only messages the source reports after the check's own start,
 so a rerun waits for a new message instead of matching the previous run's mail.
 
+A mail check may declare `code: {}` when its message carries a one-time code
+(#64): the harness extracts the code from the body — by default the first run
+of six to eight digits, or the first capture group of a declared `code.pattern`
+— publishes it as `{{mail.<name>.code}}` for later checks, and sweeps it from
+the evidence like any other secret. A message with no code in it is
+`unverified`, naming the mail check and the pattern it looked for.
+
 Where the messages come from is the profile's business, not the plan's: the
 optional `mail.inbox` setting names a sink that lists what it caught — a GET of
 the inbox URL with `address` and `after` query parameters answers with the
@@ -176,23 +188,62 @@ A later check reads the artefact with a `{{mail.<name>.link}}` reference, which
 resolves at run time to the first link of the message `<name>` read. Plan time
 enforces the ordering before anything boots: a reference must name a mail check
 that runs earlier in the job, must read a field the mail check exposes (`link`
-today), and cannot be ambiguous, so a name shared by two earlier mail checks is
-refused. The seed command and a mail check's own matchers carry `{{run.*}}`
-values only — a mail artefact does not exist before a run starts.
+and `code`, the latter only when the check declares `code`), and cannot be
+ambiguous, so a name shared by two earlier mail checks is refused. The seed
+command and a mail check's own matchers carry `{{run.*}}` values only — a mail
+artefact does not exist before a run starts.
 
-The first consumer to substitute a single-use link consumes it; a later check
-that would substitute the same value is skipped `unverified`, naming the spent
-artefact and the criterion that consumed it, and its command never runs. A retry
-requires a fresh message: the same link is not followed twice inside a run, and
-a mail check without a message, without links, or with its artefact spent is
-`unverified` with the reason naming the artefact — never failed. A mail check
-that does not declare `singleUse` may be read by every consumer.
+The first consumer to substitute a single-use artefact consumes it; a later
+check that would substitute the same value is skipped `unverified`, naming the
+spent artefact and the criterion that consumed it, and its command never runs. A
+retry requires a fresh message: the same value is not used twice inside a run,
+and a mail check without a message, without its artefact, or with its artefact
+spent is `unverified` with the reason naming the artefact — never failed. A mail
+check that does not declare `singleUse` may be read by every consumer.
 
 The consumer's evidence records the consumption in `consumed.json`: the artefact
 and the mail check it came from, the criterion and check that consumed it, and
 the response — the consuming command's status and its stdout and stderr paths.
-Artefact extraction rules beyond the first link, and the flow checks that would
-let a browser step follow the link itself, land with the flow runner.
+Flow checks read artefacts the same way (#64): an `open` action's URL and a
+`type` action's value may carry `{{mail.<name>.link}}` or `{{mail.<name>.code}}`,
+resolved at run time from the message the run observed, and every value that
+landed on the page is swept from the action log like the codes the harness
+generates itself.
+
+### The second factor
+
+An app that signs its users in through a second factor is checked through that
+factor, not around it (#64). The profile's `app.login.totp` carries a test-only
+secret the profile's own seed step plants in the QA database — RFC 6238
+settings, with sane defaults: six digits, a 30-second period, SHA-1, and
+`backupCode` for an app that accepts a recovery code instead. The secret is
+swept from every piece of evidence the run writes, alongside the profile's own
+redaction rules. The guidance to repos is to seed a known secret and let the
+harness log in the way a person does, rather than to disable the second factor
+for QA: a login that skips the factor skips whatever the factor protects.
+
+The plan asks for the second factor with two actions: `{"action":"totp",
+"element":{...}}`, which types the code the harness generates from the seeded
+secret at the moment the flow runs, and `{"action":"backupCode","element":{...}}`,
+which types the seeded recovery value. No plan, and no model, ever carries the
+secret or a code: the plan names an element, the harness does the math. A flow
+that asks for a second factor the profile does not seed is `unverified` with
+the gap named before anything runs.
+
+A code typed against a window that ends before the app reads it is born stale:
+the harness waits out a boundary that is about to cross, and a code that
+straddles a window while the flow is moving is retried once in the window it
+lands in (RFC 6238 §5.2). A factor type that fails is `unverified`, never a
+failed criterion: the login did not complete, and the change under test is not
+what refused it. A step after the factor was typed reports what it observed —
+an assertion that fails once the factor was accepted is a product failure,
+`failed`, with the capture still withheld, because page visibility alone is not
+a rejection signal (#64). And because redaction cannot read pixels, every
+screenshot of a flow whose page carries a code — generated, or read from mail —
+is withheld, and the evidence says so. The same sweep follows the code: a
+command that echoes a mail-borne link or code publishes it redacted, and a flow
+failure whose reason quotes a value the flow put on the page publishes the
+reason redacted.
 
 ## The criteria ledger
 

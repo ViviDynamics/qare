@@ -61,7 +61,7 @@ test('the step that talks to the verifier model holds no GitHub token', () => {
 
 test('judge runs the verifier with the criteria text, the diff and the evidence', () => {
   const judge = section('judge')
-  for (const flag of ['--plan plan.json', '--diff change.diff', '--result evidence/result.json', '--nare'])
+  for (const flag of ['--plan plan.json', '--diff change-planner.diff', '--result evidence/result.json', '--nare'])
     expect(judge).toContain(flag)
   expect(judge).not.toContain('--runner none')
   // The evidence directory is the verifier's file root, so it must be its own.
@@ -238,4 +238,54 @@ test('no step reads a step output before the step that sets it has run', () => {
       expect(declared, `${job} reads steps.${id} before the step with id ${id} runs`).toBeLessThan(match.index ?? 0)
     }
   }
+})
+
+test('plan hands the planner the flow action kinds the change introduces, read from the diff as data', () => {
+  const plan = section('plan')
+
+  expect(plan).toContain("grep '^+.*FLOW_ACTION_KINDS'")
+  expect(plan).toContain('flow_actions=(--flow-actions "$kinds")')
+  expect(plan).toContain('"${flow_actions[@]}"')
+  expect(plan).toContain('FLOW_ACTION_KINDS')
+})
+
+test('judge loads the plan with the same flow action kinds', () => {
+  const judge = section('judge')
+
+  expect(judge).toContain("grep '^+.*FLOW_ACTION_KINDS'")
+  expect(judge).toContain('flow_actions=(--flow-actions "$kinds")')
+  expect(judge).toContain('"${flow_actions[@]}"')
+})
+
+test('a blocked run whose unverified criteria are all planner-unplannable or unrunnable commands is neutral', () => {
+  const execute = section('execute')
+
+  expect(execute).toContain('[ "$code" -eq 2 ]')
+  expect(execute).toContain('the planner could not plan it')
+  expect(execute).toContain('the planned command cannot run')
+})
+
+test('the planner reads the scrubbed, trimmed copy of the diff, never the raw one (nare#29)', () => {
+  // nare takes its prompt as one argument, so a change whose diff exceeds the
+  // Linux argument budget cannot reach the planner whole: collect produces the
+  // planner-sized copy beside the full diff, and the planner always reads that
+  // copy — the scrubbed one — never the raw diff.
+  expect(section('collect')).toContain('change-planner.diff')
+  const plan = section('plan')
+  expect(plan).toContain('--diff change-planner.diff')
+  expect(plan).not.toContain('--diff change.diff')
+})
+
+test('the model-facing diff copies are scrubbed of the values the change adds (#64)', () => {
+  // The seeded totp value lives in a profile the change itself adds, so no
+  // profile handed to the CLI can be trusted to carry it: collect scrubs every
+  // added line that carries a secret or a value mapping — wherever it sits on
+  // the line, an inline `totp: { secret: ... }` included — from the planner's
+  // copy, and the verifier reads that scrubbed copy instead of the raw diff.
+  const collect = section('collect')
+  expect(collect).toContain("sed -E '/^\\+.*(secret[[:space:]]*:|value[[:space:]]*:)/ s/.*/+ [redacted]/'")
+  expect(collect).toContain("mv change-planner.scrubbed change-planner.diff")
+  const judge = section('judge')
+  expect(judge).toContain('--diff change-planner.diff')
+  expect(judge).not.toContain('--diff change.diff')
 })

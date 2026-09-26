@@ -266,6 +266,17 @@ export function redactionRules(profile?: ProfileRedaction): RedactionRule[] {
   return [...BUILTIN_REDACTION_RULES, ...own]
 }
 
+/**
+ * Rules that sweep literals the run itself observed: the profile's seeded
+ * second-factor secret and every one-time code a mail message carried (#64).
+ * They ride alongside the profile's rules wherever evidence is written.
+ */
+export function valueRules(values: (string | undefined)[]): RedactionRule[] {
+  return values
+    .filter((value): value is string => value !== undefined && value !== '')
+    .map((value) => ({ name: 'run value', pattern: new RegExp(escapeRegExp(value), 'g'), replacement: REDACTED }))
+}
+
 function profilePattern(source: string): RedactionRule {
   let pattern: RegExp
   try {

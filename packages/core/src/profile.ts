@@ -4,11 +4,31 @@ import { parse as parseYaml } from 'yaml'
 import { parseDurationMs } from './duration.js'
 import { RedactionError, redactionRules, validateMaskSelectors, type ProfileRedaction } from './redact.js'
 
+/**
+ * The second factor a profile seeds (#64). The secret is a test-only value the
+ * seed step plants in the QA database, so the app's real two-factor path is
+ * exercised rather than disabled.
+ */
+export interface ProfileLoginTotp {
+  secret: string
+  digits: number
+  period: number
+  algorithm: 'SHA1' | 'SHA256' | 'SHA512'
+}
+
+export interface ProfileLogin {
+  fixture: string
+  role: string
+  totp?: ProfileLoginTotp
+  /** A seeded recovery code, for apps that accept one instead of the rotating code (#64). */
+  backupCode?: { value: string }
+}
+
 export interface ProfileApp {
   boot: { compose: string; service: string }
   health: { http: string; timeout: string }
   seed: { command: string }
-  login: { fixture: string; role: string }
+  login: ProfileLogin
 }
 
 /**
@@ -276,11 +296,43 @@ function parseApp(value: unknown): ProfileApp {
     seed: {
       command: nonEmptyString(value.seed.command, 'app.seed.command', 'seed command'),
     },
-    login: {
-      fixture: nonEmptyString(value.login.fixture, 'app.login.fixture', 'login fixture path'),
-      role: nonEmptyString(value.login.role, 'app.login.role', 'login role'),
-    },
+    login: parseLogin(value.login),
   }
+}
+
+const TOTP_DIGITS = [6, 7, 8]
+const TOTP_ALGORITHM_VALUES = ['SHA1', 'SHA256', 'SHA512'] as const
+
+function parseLogin(value: Record<string, unknown>): ProfileLogin {
+  const login: ProfileLogin = {
+    fixture: nonEmptyString(value.fixture, 'app.login.fixture', 'login fixture path'),
+    role: nonEmptyString(value.role, 'app.login.role', 'login role'),
+    ...(value.totp === undefined ? {} : { totp: parseLoginTotp(value.totp) }),
+    ...(value.backupCode === undefined ? {} : { backupCode: parseBackupCode(value.backupCode) }),
+  }
+  if (login.totp === undefined && login.backupCode !== undefined)
+    fail('app.login.backupCode', 'a backup code is an alternative factor, so the profile must also declare login.totp')
+  return login
+}
+
+function parseLoginTotp(value: unknown): ProfileLoginTotp {
+  if (!isRecord(value)) fail('app.login.totp', 'app.login.totp must be a YAML object with secret, digits, period and algorithm')
+  const secret = nonEmptyString(value.secret, 'app.login.totp.secret', 'totp secret')
+  const digits = value.digits === undefined ? 6 : value.digits
+  if (typeof digits !== 'number' || !TOTP_DIGITS.includes(digits))
+    fail('app.login.totp.digits', `totp digits must be one of ${TOTP_DIGITS.join(', ')} (got ${JSON.stringify(digits)})`)
+  const period = value.period === undefined ? 30 : value.period
+  if (typeof period !== 'number' || !Number.isInteger(period) || period <= 0 || period > 3600)
+    fail('app.login.totp.period', 'totp period must be a whole number of seconds between 1 and 3600')
+  const algorithm = value.algorithm === undefined ? 'SHA1' : value.algorithm
+  if (!TOTP_ALGORITHM_VALUES.includes(algorithm as ProfileLoginTotp['algorithm']))
+    fail('app.login.totp.algorithm', `totp algorithm must be one of ${TOTP_ALGORITHM_VALUES.join(', ')} (got ${JSON.stringify(algorithm)})`)
+  return { secret, digits: digits as ProfileLoginTotp['digits'], period, algorithm: algorithm as ProfileLoginTotp['algorithm'] }
+}
+
+function parseBackupCode(value: unknown): { value: string } {
+  if (!isRecord(value)) fail('app.login.backupCode', 'app.login.backupCode must be a YAML object with value')
+  return { value: nonEmptyString(value.value, 'app.login.backupCode.value', 'backup code value') }
 }
 
 function parseStubs(value: unknown): ProfileStub[] {

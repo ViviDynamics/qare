@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
@@ -84,4 +84,40 @@ test('a flag with no value names the command the user actually typed', async () 
 
   expect(err.lines.join('')).not.toContain('qare plan needs a value')
   expect(err.lines.join('')).toMatch(/--plan/)
+})
+
+test('a planned command with shell syntax cannot run, and that is unverified rather than failed', async () => {
+  // A planner without shell freedom invents `&&`-joined commands that the
+  // no-shell contract cannot run (run.ts): calling them failed turned the
+  // whole run red (#64). They are unverified instead, with the reason named,
+  // so the run comes out blocked and the pipeline stays neutral.
+  const { planPath, dir } = await planFile([
+    {
+      id: 'c1',
+      text: 'the evidence carries no code',
+      checks: [{ kind: 'command', name: 'grep evidence', command: "grep -qE 'code' evidence/x.log && exit 1" }],
+    },
+  ])
+  // The checks must run for this test, so the profile needs the files the
+  // loader requires before it reports a refusal.
+  await writeFile(join(dir, '.qa', 'QA.md'), '# QA\n')
+  await writeFile(join(dir, '.qa', 'config.yml'), `target:\n  url: ${HEALTH_URL}\n  health: { http: /health, timeout: 1s }\n`)
+  const err = capture()
+
+  const code = await main(
+    [
+      'run', '--plan', planPath,
+      '--id', 'pr-1', '--repo', dir, '--base', 'abc', '--head', 'def',
+      '--profile', join(dir, '.qa'), '--evidence', join(dir, 'evidence'),
+    ],
+    capture().writer,
+    err.writer,
+    BOOT,
+  )
+
+  expect(code).toBe(2)
+  const result = JSON.parse(await readFile(join(dir, 'evidence', 'result.json'), 'utf8'))
+  expect(result.verdict).toBe('blocked')
+  expect(result.criteria[0]).toMatchObject({ outcome: 'unverified' })
+  expect(result.criteria[0].reason).toMatch(/the planned command cannot run/)
 })

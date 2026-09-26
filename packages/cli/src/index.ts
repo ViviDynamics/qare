@@ -22,6 +22,7 @@ import {
   redactEvidenceDir,
   redactText,
   redactionRules,
+  valueRules,
   criteriaFromIssue,
   criteriaFromIssues,
   IssueCriteriaError,
@@ -243,7 +244,12 @@ async function redactCommand(argv: string[], out: Writer, err: Writer): Promise<
 async function redactionRulesFor(profileDir: string | undefined, out: Writer): Promise<readonly RedactionRule[]> {
   if (profileDir === undefined) return BUILTIN_REDACTION_RULES
   try {
-    return redactionRules((await loadProfile(resolve(profileDir))).redact)
+    const profile = await loadProfile(resolve(profileDir))
+    // The seeded second-factor secret and any backup code sweep in every path
+    // that publishes evidence, judge included: the verifier reads the diff,
+    // and the diff carries the profile change that seeds them (#64).
+    const login = profile.app?.login
+    return [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value])]
   } catch (error) {
     if (!(error instanceof ProfileMissingError)) throw error
     out.write(`no usable .qa/ profile at ${profileDir}, so only the built-in redaction rules apply\n`)
@@ -258,6 +264,27 @@ async function redactionRulesFor(profileDir: string | undefined, out: Writer): P
  * A half-written plan.json would be consumed by execute as though it were the
  * whole run.
  */
+/**
+ * The flow action kinds the change under review introduces (#64), as
+ * `--flow-actions a,b`. They widen the planner's schema at the base revision;
+ * a base revision whose qare has no such flag yet never reads it, and the run
+ * still validates every action against the head revision's own vocabulary.
+ */
+function flowActionKinds(spec: string | undefined): string[] {
+  if (spec === undefined) return []
+  const kinds = spec
+    .split(',')
+    .map((kind) => kind.trim())
+    .filter(Boolean)
+  for (const kind of kinds)
+    if (!/^[A-Za-z][A-Za-z0-9]{0,30}$/.test(kind))
+      throw new Error(
+        `--flow-actions takes comma-separated kind names (letters and digits, starting with a letter), not ${JSON.stringify(kind)}`,
+      )
+  if (kinds.length > 12) throw new Error('--flow-actions takes at most 12 kinds')
+  return [...new Set(kinds)]
+}
+
 async function planCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
   try {
     const criteriaPath = flag(argv, '--criteria')
@@ -273,6 +300,8 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       .map((suite) => suite.trim())
       .filter(Boolean)
     const binary = flag(argv, '--nare')
+    const flowActions = flowActionKinds(flag(argv, '--flow-actions'))
+    const profilePath = flag(argv, '--profile')
 
     const allowNone = argv.includes('--allow-no-criteria')
     let criteria: { id: string; text: string }[]
@@ -296,14 +325,33 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         throw new Error(`${criteriaPath} must hold a JSON array of {id, text} criteria`)
       criteria = loaded as { id: string; text: string }[]
     }
-    const diff = await readFile(resolve(diffPath), 'utf8')
+    let diff = await readFile(resolve(diffPath), 'utf8')
+    if (profilePath !== undefined) {
+      // The diff can be the very change that seeds the profile, so the seeded
+      // values sweep from the model-facing text before the planner sees it
+      // (#64). No profile means nothing seeded to sweep; a profile that is
+      // there but broken throws, as everywhere else.
+      try {
+        const profile = await loadProfile(resolve(profilePath))
+        const login = profile.app?.login
+        const redacted = redactText(diff, valueRules([login?.totp?.secret, login?.backupCode?.value]))
+        if (redacted !== diff) out.write("the profile's seeded values are redacted from the diff before planning\n")
+        diff = redacted
+      } catch (error) {
+        if (!(error instanceof ProfileMissingError)) throw error
+        out.write(`no usable .qa/ profile at ${profilePath}, so the diff is not swept for seeded values\n`)
+      }
+    }
 
     const runner = new NareAgentRunner(binary === undefined ? {} : { binary })
     const plan = await planRun(runner, {
       criteria,
       diff,
       ...(suites === undefined ? {} : { suites }),
+      ...(flowActions.length === 0 ? {} : { flowActions }),
     })
+    if (flowActions.length > 0)
+      out.write(`planning with the change's flow action kinds: ${flowActions.join(', ')}\n`)
 
     await mkdir(dirname(outPath), { recursive: true })
     await writeFile(outPath, `${JSON.stringify(plan, null, 2)}\n`, 'utf8')
@@ -371,6 +419,7 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     const binary = flag(argv, '--nare')
     const planPath = flag(argv, '--plan')
     const diffPath = flag(argv, '--diff')
+    const flowActions = flowActionKinds(flag(argv, '--flow-actions'))
     // Everything judge writes is published, and the verifier's reasons are
     // model text about evidence and a diff that can carry fixture data.
     const rules = await redactionRulesFor(flag(argv, '--profile'), out)
@@ -385,13 +434,16 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
       throw new Error(
         'qare judge checks proven criteria with the verifier, which needs --plan <path> (for the criteria text) and --diff <path>; pass --runner none to judge without it',
       )
-    const plan = verify ? loadPlan(await readFile(resolve(planPath as string), 'utf8')) : undefined
+    const plan = verify ? loadPlan(await readFile(resolve(planPath as string), 'utf8'), flowActions) : undefined
     // Evidence paths in result.json are relative to its directory, and that
     // directory is all the verifier's read tool can reach.
     const evidenceDir = dirname(resultPath)
     const { result, changed } = await judgeExecuted(loaded, {
       texts: Object.fromEntries((plan?.criteria ?? []).map((criterion) => [criterion.id, criterion.text])),
-      diff: verify ? await readFile(resolve(diffPath as string), 'utf8') : '',
+      // The verifier reads the diff, and the diff can carry the seeded values
+      // the profile rules exist for: the model-facing text is swept like any
+      // evidence (#64).
+      diff: verify ? redactText(await readFile(resolve(diffPath as string), 'utf8'), rules) : '',
       rules,
       ...(verify ? { verifier: nareRunners(binary).verifier(evidenceDir) } : {}),
     })

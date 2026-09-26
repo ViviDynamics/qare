@@ -43,6 +43,12 @@ export interface MailCheck {
   timeoutMs?: number
   /** The links in this message are spent when followed, so the harness follows each at most once per run. */
   singleUse?: boolean
+  /**
+   * The message body carries a one-time code the harness extracts at run time
+   * (#64): later checks read it as `{{mail.<name>.code}}`, and it is swept
+   * from the evidence like any other secret.
+   */
+  code?: { pattern?: string }
   inferred?: boolean
 }
 
@@ -109,7 +115,7 @@ function numberArray(value: unknown, field: string, label: string): number[] {
   })
 }
 
-export function loadPlan(text: string): Plan {
+export function loadPlan(text: string, extraFlowActions: readonly string[] = []): Plan {
   let input: unknown
   try {
     input = JSON.parse(text)
@@ -119,10 +125,10 @@ export function loadPlan(text: string): Plan {
       `plan.json is not valid JSON (${error instanceof Error ? error.message : String(error)})`,
     )
   }
-  return parsePlan(input)
+  return parsePlan(input, extraFlowActions)
 }
 
-export function parsePlan(input: unknown): Plan {
+export function parsePlan(input: unknown, extraFlowActions: readonly string[] = []): Plan {
   if (!isRecord(input)) fail('plan', 'plan.json must be a JSON object')
 
   const { schemaVersion } = input
@@ -135,10 +141,13 @@ export function parsePlan(input: unknown): Plan {
   if (input.criteria.length === 0)
     fail('criteria', 'plan is empty: no criterion was planned, and an empty plan passes nothing, so it fails closed')
 
-  return { schemaVersion, criteria: input.criteria.map((entry, index) => parseCriterion(entry, index)) }
+  return {
+    schemaVersion,
+    criteria: input.criteria.map((entry, index) => parseCriterion(entry, index, extraFlowActions)),
+  }
 }
 
-function parseCriterion(value: unknown, index: number): PlanCriterion {
+function parseCriterion(value: unknown, index: number, extraFlowActions: readonly string[]): PlanCriterion {
   const base = `criteria[${index}]`
   if (!isRecord(value)) fail(base, 'criterion must be a JSON object')
 
@@ -161,11 +170,11 @@ function parseCriterion(value: unknown, index: number): PlanCriterion {
   return {
     id,
     text,
-    checks: value.checks.map((check, checkIndex) => parseCheck(check, `${base}.checks[${checkIndex}]`)),
+    checks: value.checks.map((check, checkIndex) => parseCheck(check, `${base}.checks[${checkIndex}]`, extraFlowActions)),
   }
 }
 
-function parseCheck(value: unknown, base: string): PlanCheck {
+function parseCheck(value: unknown, base: string, extraFlowActions: readonly string[]): PlanCheck {
   if (!isRecord(value)) fail(base, 'check must be a JSON object')
 
   const kind = value.kind
@@ -190,7 +199,7 @@ function parseCheck(value: unknown, base: string): PlanCheck {
         const suite = nonEmptyString(value.suite, `${base}.suite`, 'suite')
         return finish({ kind: 'flow', name, suite }, inferred)
       }
-      const actions = parseFlowActions(value.actions, `${base}.actions`)
+      const actions = parseFlowActions(value.actions, `${base}.actions`, extraFlowActions)
       return finish({ kind: 'flow', name, actions }, inferred)
     }
     case 'visual': {
@@ -213,6 +222,7 @@ function parseCheck(value: unknown, base: string): PlanCheck {
       const body = value.body === undefined ? undefined : nonEmptyString(value.body, `${base}.body`, 'body')
       const timeoutMs = value.timeoutMs === undefined ? undefined : parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
       const singleUse = value.singleUse === undefined ? undefined : parseSingleUse(value.singleUse, `${base}.singleUse`)
+      const code = parseCode(value.code, `${base}.code`)
       return finish(
         {
           kind: 'mail',
@@ -223,6 +233,7 @@ function parseCheck(value: unknown, base: string): PlanCheck {
           ...(body !== undefined ? { body } : {}),
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
           ...(singleUse !== undefined ? { singleUse } : {}),
+          ...(code !== undefined ? { code } : {}),
         },
         inferred,
       )
@@ -235,21 +246,30 @@ function parseCheck(value: unknown, base: string): PlanCheck {
  * are instructions a human improvises is rejected here, where it loads, so
  * nothing downstream is left to interpret them.
  */
-export function parseFlowActions(value: unknown, base: string): FlowActionStep[] {
+export function parseFlowActions(value: unknown, base: string, extraFlowActions: readonly string[] = []): FlowActionStep[] {
   if (!Array.isArray(value)) fail(base, 'actions must be an array of typed actions')
-  return value.map((entry, index) => parseFlowAction(entry, `${base}[${index}]`))
+  return value.map((entry, index) => parseFlowAction(entry, `${base}[${index}]`, extraFlowActions))
 }
 
-const FLOW_ACTION_KINDS = ['open', 'type', 'click', 'assert'] as const
+export const FLOW_ACTION_KINDS = ['open', 'type', 'click', 'assert', 'totp', 'backupCode'] as const
 
-function parseFlowAction(value: unknown, base: string): FlowActionStep {
+function parseFlowAction(value: unknown, base: string, extraFlowActions: readonly string[] = []): FlowActionStep {
   if (!isRecord(value)) fail(base, 'a flow action must be an object, not a free-form string')
   const kind = value.action
-  if (typeof kind !== 'string' || !FLOW_ACTION_KINDS.includes(kind as 'open'))
-    fail(
-      `${base}.action`,
-      `unknown flow action ${JSON.stringify(kind)} (expected ${FLOW_ACTION_KINDS.map((k) => `"${k}"`).join(', ')})`,
-    )
+  if (typeof kind !== 'string' || (!FLOW_ACTION_KINDS.includes(kind as 'open') && !extraFlowActions.includes(kind))) {
+    const expected = [...FLOW_ACTION_KINDS, ...extraFlowActions.filter((extra) => !FLOW_ACTION_KINDS.includes(extra as 'open'))]
+      .map((k) => `"${k}"`)
+      .join(', ')
+    fail(`${base}.action`, `unknown flow action ${JSON.stringify(kind)} (expected ${expected})`)
+  }
+  if (!FLOW_ACTION_KINDS.includes(kind as 'open') && extraFlowActions.includes(kind)) {
+    // A kind the change under review introduces, so this loader — running at
+    // the base revision — has no strict shape for it, and the plan it writes
+    // is carried to the head revision's run, whose loader knows its own
+    // vocabulary and is the authority for the shape. The cast is the seam:
+    // every kind this revision knows is validated strictly below.
+    return { ...value, action: kind } as unknown as FlowActionStep
+  }
   switch (kind) {
     case 'open': {
       const url = nonEmptyString(value.url, `${base}.url`, 'url')
@@ -267,6 +287,16 @@ function parseFlowAction(value: unknown, base: string): FlowActionStep {
     case 'assert': {
       const text = nonEmptyString(value.text, `${base}.text`, 'asserted text')
       return { action: 'assert', text }
+    }
+    case 'totp': {
+      // The element only: the code comes from the profile's seeded secret at
+      // run time, so no plan carries a secret or a code (#64).
+      const element = parseFlowElement(value.element, `${base}.element`)
+      return { action: 'totp', element }
+    }
+    case 'backupCode': {
+      const element = parseFlowElement(value.element, `${base}.element`)
+      return { action: 'backupCode', element }
     }
     default:
       throw new Error(`unreachable: ${String(kind)} was validated against the vocabulary above`)
@@ -301,6 +331,25 @@ function parseSingleUse(value: unknown, field: string): boolean | undefined {
   if (value === undefined) return undefined
   if (typeof value !== 'boolean') fail(field, 'singleUse must be a boolean')
   return value
+}
+
+/**
+ * The `code` section of a mail check: a one-time code is extracted from the
+ * message body at run time (#64). The pattern is compiled here, so an
+ * unusable one is named at load rather than in the middle of a run.
+ */
+function parseCode(value: unknown, field: string): { pattern?: string } | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) fail(field, 'code must be a YAML object with an optional pattern')
+  const pattern = value.pattern === undefined ? undefined : nonEmptyString(value.pattern, `${field}.pattern`, 'code pattern')
+  if (pattern !== undefined) {
+    try {
+      new RegExp(pattern)
+    } catch {
+      fail(`${field}.pattern`, `code pattern ${JSON.stringify(pattern)} is not a valid regular expression`)
+    }
+  }
+  return pattern === undefined ? {} : { pattern }
 }
 
 function parseTimeoutMs(value: unknown, field: string): number {

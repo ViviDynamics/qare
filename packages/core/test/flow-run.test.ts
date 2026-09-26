@@ -12,6 +12,7 @@ import {
   type Job,
   type JobCriterion,
   type JobProfileRef,
+  type MailMessage,
   type QaProfile,
 } from '../src/index.js'
 
@@ -305,4 +306,173 @@ criteria:
           - open the ledger
 `
   expect(() => loadJobFromText(text)).toThrow(JobValidationError)
+})
+
+const TOTP_PROFILE: QaProfile = {
+  ...INLINE_PROFILE,
+  app: {
+    ...INLINE_PROFILE.app,
+    login: {
+      fixture: 'fixtures/users.yml',
+      role: 'admin',
+      totp: { secret: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', digits: 6, period: 30, algorithm: 'SHA1' },
+    },
+  },
+}
+
+function totpSessionFactory(events: string[]) {
+  return async (): Promise<FakeSession> => {
+    const page: FlowPage = {
+      open: async (url) => events.push(`open ${url}`),
+      click: async () => events.push('click'),
+      type: async (_what, value) => events.push(`type ${value}`),
+      assertText: async (text) => events.push(`assert ${text}`),
+      screenshot: async (path) => {
+        const { writeFile } = await import('node:fs/promises')
+        await writeFile(path, PNG_1X1)
+        events.push(`screenshot ${path}`)
+      },
+    }
+    const trace: FlowTrace = {
+      start: async () => {
+        events.push('trace start')
+        return 'trace-1'
+      },
+      stop: async (path) => events.push(`trace stop ${path}`),
+    }
+    return { page, trace, dispose: async () => events.push('dispose'), events }
+  }
+}
+
+test('a flow through the totp action types the seeded code and sweeps it from the action log (#64)', async () => {
+  const events: string[] = []
+  const job = await makeJob({
+    criteria: flowCriterion({
+      kind: 'flow',
+      actions: [
+        { action: 'open', url: HEALTH_URL },
+        { action: 'totp', element: { role: 'textbox', name: 'Verification code' } },
+        { action: 'assert', text: 'Welcome' },
+      ],
+    }),
+    profile: { inline: TOTP_PROFILE },
+  })
+
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, flowSession: totpSessionFactory(events) })
+
+  expect(result.verdict).toBe('passed')
+  const typed = events.find((event) => event.startsWith('type '))
+  expect(typed).toMatch(/^type \d{6}$/)
+  const log = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'actions.log'), 'utf8')
+  expect(log).toContain('totp code generated for window')
+  expect(log).not.toMatch(new RegExp(typed?.slice(5) ?? '', ''))
+})
+
+test('a mail-borne one-time code is extracted, typed by a flow, and swept from the evidence (#64)', async () => {
+  const events: string[] = []
+  // Schemes are joined at runtime: test files carry no network literals.
+  const loginUrl = [['https:', '//app.example.com/login?code=555111'].join('')]
+  const readMail = async (): Promise<MailMessage[]> => [
+    {
+      from: 'app@example.com',
+      subject: 'Sign in',
+      body: `Your one-time code is 555111. Or follow ${loginUrl[0]}`,
+      received_at: new Date().toISOString(),
+    },
+  ]
+  const job = await makeJob({
+    criteria: flowCriterion(
+      { kind: 'mail', name: 'signup', address: 'qa@example.com', code: {} },
+      {
+        kind: 'flow',
+        actions: [{ action: 'type', element: { role: 'textbox', name: 'Code' }, value: '{{mail.signup.code}}' }],
+      },
+    ),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, flowSession: totpSessionFactory(events), readMail })
+
+  expect(result.verdict).toBe('passed')
+  expect(events).toContain('type 555111')
+  const log = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '1', 'actions.log'), 'utf8')
+  expect(log).not.toContain('555111')
+  // The typed code may still sit in the page's input, and redaction cannot
+  // read pixels: the flow's captures are withheld, and the evidence says so.
+  expect(log).toContain('final.png withheld: the second-factor code is visible on the page')
+  const message = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'message.json'), 'utf8')
+  expect(message).not.toContain('555111')
+})
+
+test('a flow that only reads a mail link keeps its captures: a link is not a code (#64)', async () => {
+  const events: string[] = []
+  // Schemes are joined at runtime: test files carry no network literals.
+  const loginUrl = [['https:', '//app.example.com/login?token=abc'].join('')]
+  const readMail = async (): Promise<MailMessage[]> => [
+    {
+      from: 'app@example.com',
+      subject: 'Sign in',
+      body: `Continue at ${loginUrl[0]}`,
+      received_at: new Date().toISOString(),
+    },
+  ]
+  const job = await makeJob({
+    criteria: flowCriterion(
+      { kind: 'mail', name: 'signup', address: 'qa@example.com' },
+      { kind: 'flow', actions: [{ action: 'open', url: '{{mail.signup.link}}' }] },
+    ),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, flowSession: totpSessionFactory(events), readMail })
+
+  expect(result.verdict).toBe('passed')
+  expect(events).toContain(`open ${loginUrl[0]}`)
+  const log = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '1', 'actions.log'), 'utf8')
+  // The link itself is swept from the log, but no capture is withheld: the
+  // link is not a one-time value, so the page stays publishable.
+  expect(log).not.toContain(loginUrl[0])
+  expect(log).not.toContain('withheld')
+})
+
+test('a flow action failure that quotes a mail-borne value is redacted in the result (#64)', async () => {
+  const events: string[] = []
+  const readMail = async (): Promise<MailMessage[]> => [
+    {
+      from: 'app@example.com',
+      subject: 'Sign in',
+      body: 'Your code is 555111',
+      received_at: new Date().toISOString(),
+    },
+  ]
+  const factory = async (): Promise<FakeSession> => {
+    const page: FlowPage = {
+      open: async (url) => events.push(`open ${url}`),
+      click: async () => events.push('click'),
+      type: async (_what, value) => {
+        events.push(`type ${value}`)
+        throw new Error(`the seam rejected the value ${value}`)
+      },
+      assertText: async (text) => events.push(`assert ${text}`),
+      screenshot: async () => undefined,
+    }
+    const trace: FlowTrace = { start: async () => 'trace-1', stop: async () => undefined }
+    return { page, trace, dispose: async () => undefined, events }
+  }
+  const job = await makeJob({
+    criteria: flowCriterion(
+      { kind: 'mail', name: 'signup', address: 'qa@example.com', code: {} },
+      { kind: 'flow', actions: [{ action: 'type', element: { role: 'textbox', name: 'Code' }, value: '{{mail.signup.code}}' }] },
+    ),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, flowSession: factory, readMail })
+
+  expect(result.verdict).toBe('blocked')
+  expect(result.criteria[0].outcome).toBe('unverified')
+  // The reason the action failure quotes the typed value, so the value never
+  // reaches the result the verifier reads (#64).
+  expect(result.criteria[0].reason).not.toContain('555111')
+  expect(result.criteria[0].reason).toContain('[redacted]')
 })

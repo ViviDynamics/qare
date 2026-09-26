@@ -40,6 +40,7 @@ export {
   redactText,
   redactValue,
   redactionRules,
+  valueRules,
   validateMaskSelectors,
 } from './redact.js'
 export type { EvidenceRedaction, ProfileRedaction, RedactionRule } from './redact.js'
@@ -90,16 +91,18 @@ export { NO_DIFF, PLAN_OUTPUT_SCHEMA, PlanStepError, planRun } from './plan-step
 export type { PlanCriterionInput, PlanInputs } from './plan-step.js'
 export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'
 export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobCheck, JobPostTarget } from './job.js'
-export { httpMailbox, mailEvidence, runMailCheck } from './mailbox.js'
+export { httpMailbox, mailEvidence, runMailCheck, extractCode, DEFAULT_CODE_PATTERN } from './mailbox.js'
 export type { MailMessage, MailEvidenceMessage, MailOutcome, ReadMail } from './mailbox.js'
 export { Artefacts } from './artefacts.js'
+export type { ArtefactField } from './artefacts.js'
 export { bootApp, stopApp } from './boot.js'
 export type { BootOutcome, BootOpts } from './boot.js'
 export { runJob } from './run.js'
 export type { FlowSessionFactory } from './run.js'
 export { runVisualCheck, type VisualRevision, type VisualCheckOpts, type VisualScreenshot, type VisualDiff, type VisualCheckResult } from './visual.js'
 export { runFlowCheck, runSuiteCheck } from './flow.js'
-export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult } from './flow.js'
+export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult, FlowTotpConfig } from './flow.js'
+export { decodeBase32, totpCode, totpWindow, windowRemaining } from './totp.js'
 export {
   makePlaywrightScreenshot,
   disposeBrowser,

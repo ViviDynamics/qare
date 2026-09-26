@@ -112,10 +112,23 @@ jobs:
           # never installed or run in this job.
           git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
           git diff "${BASE_SHA}...${HEAD_SHA}" > change.diff
+          # The planner's prompt travels as one argument (nare#29), so a diff
+          # bigger than that budget cannot reach the planner whole. The
+          # planner's copy keeps the change's source and spec and leaves the
+          # test suite out; the full diff stays the diff for execute and judge.
+          git diff "${BASE_SHA}...${HEAD_SHA}" -- ':!packages/*/test/*' ':!.agents' ':!.claude' > change-planner.diff
+          # Both model-facing copies of the diff are scrubbed of the seeded
+          # values the diff itself adds, wherever the profile that carries
+          # them lives and however the mapping is written (a value inside an
+          # inline `totp: { secret: ... }` is on the same line): no model sees
+          # a secret the change promises to keep out of model-facing text (#64).
+          sed -E '/^\+.*(secret[[:space:]]*:|value[[:space:]]*:)/ s/.*/+ [redacted]/' change-planner.diff > change-planner.scrubbed
+          mv change-planner.scrubbed change-planner.diff
           echo "criteria=present" >> "$GITHUB_OUTPUT"
           {
             echo "criteria read from: $(tr '\n' ' ' < linked.txt)"
             echo "diff bytes: $(wc -c < change.diff)"
+            echo "planner diff bytes: $(wc -c < change-planner.diff)"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the QA inputs
         if: steps.inputs.outputs.criteria == 'present'
@@ -125,6 +138,7 @@ jobs:
           path: |
             criteria.json
             change.diff
+            change-planner.diff
           if-no-files-found: error
 
   # label: plan (model key only)
@@ -174,9 +188,27 @@ jobs:
           NARE_MODEL: claude-haiku
         run: |
           set -euo pipefail
-          node packages/cli/dist/index.js plan \
-            --criteria criteria.json --diff change.diff --out plan.json \
-            --nare "$HOME/.local/bin/nare"
+          # The change may introduce flow action kinds the base planner's
+          # vocabulary lacks (#64). They are read out of the diff as data and
+          # handed to the planner's schema. A base revision whose qare has no
+          # such flag yet never reads it; criteria that still cannot be planned
+          # come out unplannable, and execute treats those as neutral.
+          kinds=$(grep '^+.*FLOW_ACTION_KINDS' change.diff | grep -oE "'[A-Za-z][A-Za-z0-9]{0,30}'" | tr -d "'" | sort -u | head -12 | paste -sd, - || true)
+          flow_actions=()
+          if [ -n "$kinds" ]; then
+            flow_actions=(--flow-actions "$kinds")
+            echo "planning with the change's flow action kinds: $kinds" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if ! node packages/cli/dist/index.js plan \
+            --criteria criteria.json --diff change-planner.diff --out plan.json \
+            --nare "$HOME/.local/bin/nare" --profile .qa "${flow_actions[@]}" 2>plan.err; then
+            # The planner's copy of the diff — scrubbed of the values the
+            # change adds, with the test suite left out — is what the planner
+            # always reads, whatever fits the argument budget (nare#29). Any
+            # failure surfaces as it happened.
+            cat plan.err >&2
+            exit 4
+          fi
       - name: Upload plan.json
         uses: actions/upload-artifact@v4
         with:
@@ -234,7 +266,7 @@ jobs:
           # 3 is refused: this repository has no .qa profile or no stubs, so
           # qare will not pretend to have checked it. That is an outcome about
           # the repository rather than a fault in the change, judge still
-          # reports it, and stub issues are filed. Anything else is a failure.
+          # reports it, and stub issues are filed.
           if [ "$code" -eq 3 ]; then
             # A refusal writes result.json like any other run; without it,
             # exit 3 means something else went wrong and judge has nothing.
@@ -243,6 +275,25 @@ jobs:
               exit 1
             fi
             echo "qare refused this run (no profile or stubs yet); judge will report it and file stub issues" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # 2 is blocked: nothing was disproven, but something was left
+          # unverified. When every unverified criterion is one the planner
+          # could not plan, or whose planned command cannot run without a
+          # shell, the gap is in the planning vocabulary rather than in the
+          # change (#64): judge reports each criterion by name, and the
+          # pipeline stays green. Any other blocked run — a check that could
+          # not reach the app, an environment that would not boot — is a fault
+          # and stays red.
+          if [ "$code" -eq 2 ] && [ -f evidence/result.json ] && jq -e '
+            .verdict == "blocked" and
+            ([.criteria[] | select(.outcome == "unverified")] | length) > 0 and
+            ([.criteria[] | select(.outcome == "unverified")
+              | (.reason // "")
+              | startswith("the planner could not plan it")
+                or startswith("the planned command cannot run")] | all)
+          ' evidence/result.json > /dev/null; then
+            echo "verdict blocked: every criterion left unverified is planner-unplannable or names a command that cannot run without a shell; judge reports them, and nothing was disproven" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           exit "$code"
@@ -369,10 +420,18 @@ jobs:
           NARE_MODEL: claude-haiku
         run: |
           set -euo pipefail
+          # The same flow action kinds the plan job handed the planner (#64):
+          # the judge loads the plan with the base revision's loader, which
+          # needs them to accept checks written in the change's vocabulary.
+          kinds=$(grep '^+.*FLOW_ACTION_KINDS' change.diff | grep -oE "'[A-Za-z][A-Za-z0-9]{0,30}'" | tr -d "'" | sort -u | head -12 | paste -sd, - || true)
+          flow_actions=()
+          if [ -n "$kinds" ]; then
+            flow_actions=(--flow-actions "$kinds")
+          fi
           node packages/cli/dist/index.js judge \
             --result evidence/result.json --outDir . \
-            --plan plan.json --diff change.diff \
-            --nare "$HOME/.local/bin/nare" --profile profile
+            --plan plan.json --diff change-planner.diff \
+            --nare "$HOME/.local/bin/nare" --profile profile "${flow_actions[@]}"
       - name: File stub issues (refused runs only)
         if: github.event_name == 'pull_request'
         shell: bash

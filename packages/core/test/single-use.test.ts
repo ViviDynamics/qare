@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
 import {
+  Artefacts,
   PlanValidationError,
   parsePlan,
   runJob,
@@ -125,11 +126,21 @@ test('an artefact reference placed before the mail check refuses the run at plan
   expect(result.criteria[0]?.reason).toContain('no mail check named welcome runs before this check')
 })
 
-test('an artefact reference to an unknown field refuses the run at plan time', async () => {
-  const job = await makeJob(criteria([mailCheck()], [consumeCheck('{{mail.welcome.code}}')]))
+test('a code artefact from a mail check that declares no code section refuses the run at plan time', async () => {
+  // The declared fields are what the plan locks: reading a code the mail check
+  // never extracts would otherwise surface only as a runtime miss, after the
+  // plan was judged to be honest (#64).
+  const job = await makeJob(criteria([mailCheck({ timeoutMs: 30 }), consumeCheck('{{mail.welcome.code}}')]))
   const { result } = await runJob(job)
   expect(result.verdict).toBe('refused')
-  expect(result.criteria[0]?.reason).toContain('unknown artefact "{{mail.welcome.code}}"')
+  expect(result.criteria[0]?.reason).toContain('the mail check named welcome declares no code section')
+})
+
+test('an artefact reference to an unknown field refuses the run at plan time', async () => {
+  const job = await makeJob(criteria([mailCheck()], [consumeCheck('{{mail.welcome.attachment}}')]))
+  const { result } = await runJob(job)
+  expect(result.verdict).toBe('refused')
+  expect(result.criteria[0]?.reason).toContain('unknown artefact "{{mail.welcome.attachment}}"')
 })
 
 test('a reference naming two earlier mail checks refuses the run at plan time', async () => {
@@ -159,11 +170,13 @@ test('a consumer runs after the mail check, gets the link, and records the consu
   const job = await makeJob(criteria([mailCheck({ singleUse: true }), consumeCheck('{{mail.welcome.link}}')]))
   const { result } = await runJob(job, { ...HEALTHY_BOOT, readMail: reader(() => message()) })
   expect(result.verdict).toBe('passed')
+  // The consumed value is a secret: the evidence names what happened, and the
+  // value itself is redacted (#64).
   const stdout = await evidenceText(job, join('checks', 'criterion-1', '1', 'stdout.txt'))
-  expect(stdout.trim()).toBe(SETUP_URL)
+  expect(stdout.trim()).toBe('[redacted]')
   const consumed = await evidenceText(job, join('checks', 'criterion-1', '1', 'consumed.json'))
   expect(JSON.parse(consumed)).toEqual({
-    artefacts: [{ source: 'mail.welcome', artefact: SETUP_URL }],
+    artefacts: [{ source: 'mail.welcome', artefact: '[redacted]' }],
     consumed_by: { criterion: 'criterion-1', check: 1 },
     response: {
       status: 'passed',
@@ -197,7 +210,7 @@ test('a non-single-use artefact can be read by every consumer', async () => {
   )
   const { result } = await runJob(job, { ...HEALTHY_BOOT, readMail: reader(() => message()) })
   expect(result.verdict).toBe('passed')
-  expect((await evidenceText(job, join('checks', 'criterion-2', '0', 'stdout.txt'))).trim()).toBe(SETUP_URL)
+  expect((await evidenceText(job, join('checks', 'criterion-2', '0', 'stdout.txt'))).trim()).toBe('[redacted]')
 })
 
 test('a message that carries no links leaves the consumer unverified naming the mail check', async () => {
@@ -223,7 +236,7 @@ test('an artefact reference inside an env value substitutes like the run string'
   )
   const { result } = await runJob(job, { ...HEALTHY_BOOT, readMail: reader(() => message()) })
   expect(result.verdict).toBe('passed')
-  expect((await evidenceText(job, join('checks', 'criterion-1', '1', 'stdout.txt'))).trim()).toBe(SETUP_URL)
+  expect((await evidenceText(job, join('checks', 'criterion-1', '1', 'stdout.txt'))).trim()).toBe('[redacted]')
 })
 
 test('the consumed artefact is redacted in the evidence', async () => {
@@ -235,4 +248,18 @@ test('the consumed artefact is redacted in the evidence', async () => {
   const consumed = await evidenceText(job, join('checks', 'criterion-1', '1', 'consumed.json'))
   expect(consumed).toContain('token=[redacted]')
   expect(consumed).not.toContain('token=abc')
+})
+
+test('a resolution failure on a later reference does not burn an earlier single-use artefact (#64)', () => {
+  const artefacts = new Artefacts()
+  artefacts.publish('welcome', { link: 'confirmation-link' }, true)
+  artefacts.publish('goodbye', {}, true)
+  // A consumer that reads two references resolves them all before any one is
+  // spent: the failure on the later reference burns nothing.
+  expect(artefacts.peek('welcome', 'link')).toEqual({ ok: true, artefact: 'confirmation-link', singleUse: true })
+  expect(artefacts.peek('goodbye', 'link').ok).toBe(false)
+  expect(artefacts.peek('welcome', 'link').ok).toBe(true)
+  // The consumption is committed only when the consumer decides to spend.
+  artefacts.spend('welcome', 'link', 'criterion-1')
+  expect(artefacts.peek('welcome', 'link').ok).toBe(false)
 })

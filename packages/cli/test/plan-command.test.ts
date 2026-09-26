@@ -161,3 +161,106 @@ test('qare plan refuses an issue that states no criteria', async () => {
   expect(code).toBe(4)
   expect(err.lines.join('')).toMatch(/acceptance criteria|done when/i)
 })
+
+test('--flow-actions takes kind names, not free-form text', async () => {
+  const { criteriaPath, diffPath } = await inputs()
+  const err = capture()
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--flow-actions', 'totp login'],
+    capture().writer,
+    err.writer,
+  )
+
+  expect(code).toBe(4)
+  expect(err.lines.join('')).toContain('--flow-actions takes comma-separated kind names')
+})
+
+test('planning hands the planner the change\'s own flow action kinds, and the plan the loader accepts', async () => {
+  const { criteriaPath, diffPath, outPath } = await inputs()
+  const answer = {
+    schemaVersion: '1',
+    criteria: [
+      {
+        id: 'c1',
+        text: CRITERIA[0].text,
+        checks: [{ kind: 'flow', name: 'magic login', actions: [{ action: 'magicLink', element: { testId: 'sign-in' } }] }],
+      },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+    ],
+  }
+  const out = capture()
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', outPath, '--nare', await fakeNare(answer), '--flow-actions', 'magicLink'],
+    out.writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  const plan = JSON.parse(await readFile(outPath, 'utf8'))
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ actions: [{ action: 'magicLink' }] }] })
+  expect(out.lines.join('')).toContain('magicLink')
+})
+
+test('the planner never sees the seeded values the diff carries (#64)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-plan-in-'))
+  const secret = 'totp-seed-secret-9876'
+  const criteriaPath = join(dir, 'criteria.json')
+  const diffPath = join(dir, 'change.diff')
+  await writeFile(criteriaPath, JSON.stringify(CRITERIA), 'utf8')
+  // The diff is the very change that seeds the profile: the planner gets the
+  // profile path, so the seeded values sweep from the model-facing text (#64).
+  await writeFile(diffPath, `diff --git a/.qa/config.yml b/.qa/config.yml\n+      secret: ${secret}\n`, 'utf8')
+  const { mkdir } = await import('node:fs/promises')
+  const { chmod } = await import('node:fs/promises')
+  const healthUrl = ['http:', '//127.0.0.1:1/health'].join('')
+  await mkdir(join(dir, '.qa', 'fixtures'), { recursive: true })
+  await mkdir(join(dir, '.qa', 'stubs'), { recursive: true })
+  await writeFile(join(dir, '.qa', 'QA.md'), '# QA\n', 'utf8')
+  await writeFile(join(dir, '.qa', 'fixtures', 'seed.sql'), '', 'utf8')
+  await writeFile(
+    join(dir, '.qa', 'config.yml'),
+    `app:\n  boot: { compose: compose.yml, service: app }\n  health: { http: ${healthUrl}, timeout: 1s }\n  seed: { command: "true" }\n  login:\n    fixture: seed.sql\n    role: admin\n    totp:\n      secret: ${secret}\nstubs: []\nvisual:\n  widths: [390]\n  themes: [light]\nsuites: []\n`,
+    'utf8',
+  )
+  const argvPath = join(dir, 'argv.json')
+  const binary = join(dir, 'nare')
+  const script = [
+    '#!/usr/bin/env node',
+    `import { writeFileSync } from 'node:fs'`,
+    `writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)))`,
+    `const answer = ${JSON.stringify(JSON.stringify(PLAN))}`,
+    `console.log(JSON.stringify({ type: 'output', text: answer, detail: {} }))`,
+    `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
+    `  stop_reason: 'end_turn', turns: 1, contract: 1, output: JSON.parse(answer), error: null }))`,
+  ].join('\n')
+  await writeFile(`${binary}.mjs`, script, 'utf8')
+  await writeFile(binary, `#!/bin/sh\nexec node ${binary}.mjs "$@"\n`, 'utf8')
+  await chmod(binary, 0o755)
+  const out = capture()
+
+  const code = await main(
+    [
+      'plan',
+      '--criteria',
+      criteriaPath,
+      '--diff',
+      diffPath,
+      '--out',
+      join(dir, 'plan.json'),
+      '--nare',
+      binary,
+      '--profile',
+      join(dir, '.qa'),
+    ],
+    out.writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  expect(out.lines.join('')).toContain("the profile's seeded values are redacted from the diff before planning")
+  const argv = JSON.parse(await readFile(argvPath, 'utf8')) as string[]
+  expect(argv[1]).not.toContain(secret)
+  expect(argv[1]).toContain('[redacted]')
+})

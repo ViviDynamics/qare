@@ -1,18 +1,18 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { Artefacts } from './artefacts.js'
+import { Artefacts, type ArtefactField } from './artefacts.js'
 import { bootApp, type BootOpts } from './boot.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
-import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowPage, type FlowTrace } from './flow.js'
+import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
 import { makePlaywrightFlowSession } from './flow-playwright.js'
 import { judgeRun, toSideResults } from './judge.js'
 import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck } from './job.js'
 import type { FlowActionStep } from './plan.js'
 import { feedRunLedger } from './ledger-feed.js'
-import { httpMailbox, mailEvidence, runMailCheck, type ReadMail } from './mailbox.js'
+import { extractCode, httpMailbox, mailEvidence, runMailCheck, type ReadMail } from './mailbox.js'
 import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
-import { BUILTIN_REDACTION_RULES, redactResult, redactText, redactValue, redactionRules, type RedactionRule } from './redact.js'
+import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult } from './result.js'
 import { mintRunValues, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
 
@@ -90,7 +90,10 @@ export async function runJob(
     if (!(error instanceof JobValidationError)) throw error
     return refuseRun(job, opts, BUILTIN_REDACTION_RULES, error.message, targetNote)
   }
-  const rules = redactionRules(profile.redact)
+  // The seeded second-factor secret and any backup code never reach the
+  // evidence either: they sweep alongside the profile's own rules (#64).
+  const login = profile.app?.login
+  const rules = [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value])]
   const boot = await bootApp(profile, opts)
   if (boot.kind === 'blocked') {
     const criteria: CriterionResult[] = job.criteria.map((criterion) => ({
@@ -112,7 +115,11 @@ export async function runJob(
   // says nothing about any other run (#69).
   const artefacts = new Artefacts()
   const target = profile.target === undefined ? undefined : targetContext(profile.target)
-  const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target }
+  // The flow types the code the profile's seeded secret generates; the secret
+  // itself never crosses into the plan (#64).
+  const totp =
+    login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
+  const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target, totp }
   for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow))
   // The judge is the verdict decision. Base execution and egress interception
   // of a booted stack land with the orchestrator; a target run records what its
@@ -151,8 +158,9 @@ async function refuseRun(
 function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): void {
   if (profile.app !== undefined) validateValueReferences(profile.app.seed.command, values, 'app.seed.command')
   // Mail artefact names are validated in walk order: a check may only read an
-  // artefact from a mail check that has already waited for its message (#69).
-  const mailChecks = new Map<string, number>()
+  // artefact from a mail check that has already waited for its message (#69),
+  // and only for the fields that check actually exposes (#64).
+  const mailChecks = new Map<string, { count: number; code: boolean }>()
   for (const [criterionIndex, criterion] of job.criteria.entries()) {
     for (const [checkIndex, check] of (criterion.checks ?? []).entries()) {
       const base = `criteria[${criterionIndex}].checks[${checkIndex}]`
@@ -162,16 +170,26 @@ function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): vo
           const value = check[field]
           if (value !== undefined) validateValueReferences(value, values, `${base}.${field}`)
         }
-        if (check.name !== undefined) mailChecks.set(check.name, (mailChecks.get(check.name) ?? 0) + 1)
+        if (check.name !== undefined) {
+          const seen = mailChecks.get(check.name) ?? { count: 0, code: false }
+          mailChecks.set(check.name, { count: seen.count + 1, code: seen.code || check.code !== undefined })
+        }
         continue
       }
       if (check.kind === 'flow') {
         // Flow strings and the command of the suite a flow names carry run
-        // values too, such as {{run.target_url}} (#122). Only run references
-        // are held to the mint: other braces are the page's or the suite's own.
+        // values too, such as {{run.target_url}} (#122), and may read a mail
+        // check's one-time code or link (#64). Braces that are neither are
+        // the page's or the suite's own, and pass through untouched.
+        const allow = (field: string) => (name: string): boolean => {
+          if (name.startsWith('run.')) return false
+          if (!name.startsWith('mail.')) return true
+          validateMailArtefactName(name, mailChecks, field)
+          return true
+        }
         for (const [actionIndex, action] of (check.actions ?? []).entries()) {
           mapFlowStrings(action, (value, field) => {
-            validateRunReferences(value, values, `${base}.actions[${actionIndex}].${field}`)
+            validateValueReferences(value, values, `${base}.actions[${actionIndex}].${field}`, allow(`${base}.actions[${actionIndex}].${field}`))
             return value
           })
           if (profile.target !== undefined && action.action === 'open' && action.url.startsWith('/') && pathOnTarget(profile.target.url, action.url) === undefined)
@@ -204,18 +222,21 @@ function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): vo
  * mail checks share. The seed command and a mail check's own matchers never carry
  * artefact references at all: a mail artefact does not exist before a run starts.
  */
-function validateMailArtefactName(name: string, mailChecks: Map<string, number>, field: string): void {
+function validateMailArtefactName(name: string, mailChecks: Map<string, { count: number; code: boolean }>, field: string): void {
   const parts = name.split('.')
   const [kind, checkName, artefact] = parts
-  if (kind !== 'mail' || checkName === undefined || artefact !== 'link' || parts.length !== 3) {
-    throw new JobValidationError(field, `unknown artefact ${JSON.stringify(`{{${name}}}`)}; a mail check exposes {{mail.<name>.link}}, the first link in the message it read, and a mail check name carries no dot`)
+  if (kind !== 'mail' || checkName === undefined || (artefact !== 'link' && artefact !== 'code') || parts.length !== 3) {
+    throw new JobValidationError(field, `unknown artefact ${JSON.stringify(`{{${name}}}`)}; a mail check exposes {{mail.<name>.link}}, the first link in the message it read, and {{mail.<name>.code}}, the one-time code read from its body, and a mail check name carries no dot`)
   }
-  const count = mailChecks.get(checkName) ?? 0
-  if (count === 0) {
+  const entry = mailChecks.get(checkName)
+  if (entry === undefined) {
     throw new JobValidationError(field, `no mail check named ${checkName} runs before this check; an artefact is read from a mail check that has already waited for its message`)
   }
-  if (count > 1) {
-    throw new JobValidationError(field, `${count} earlier mail checks are named ${checkName}; the artefact reference is ambiguous, so rename one of them`)
+  if (entry.count > 1) {
+    throw new JobValidationError(field, `${entry.count} earlier mail checks are named ${checkName}; the artefact reference is ambiguous, so rename one of them`)
+  }
+  if (artefact === 'code' && !entry.code) {
+    throw new JobValidationError(field, `the mail check named ${checkName} declares no code section, so it exposes no {{mail.${checkName}.code}}; give it a code section with a pattern, or read {{mail.${checkName}.link}}`)
   }
 }
 
@@ -263,7 +284,7 @@ async function runCriterion(
   values: RunValues,
   mail: { inbox?: string; readMail?: ReadMail },
   artefacts: Artefacts,
-  flow: { session?: FlowSessionFactory; masks: string[]; suites: ProfileSuite[]; target?: FlowTargetContext },
+  flow: { session?: FlowSessionFactory; masks: string[]; suites: ProfileSuite[]; target?: FlowTargetContext; totp?: FlowTotpConfig },
 ): Promise<CriterionResult> {
   const checks = criterion.checks ?? []
   if (checks.length === 0)
@@ -276,6 +297,10 @@ async function runCriterion(
   const evidence: string[] = []
   let failed = false
   let unverifiedReason: string | undefined
+  // The values a run publishes or consumes — a mail message's link, its
+  // one-time code — are secrets like any other: they join the profile's
+  // redaction rules for every piece of evidence written after them (#64).
+  const sweepRules = [...rules]
   for (const [index, check] of checks.entries()) {
     const substituted = substituteCheck(check, values)
     const checkDir = join('checks', criterion.id, String(index))
@@ -294,37 +319,82 @@ async function runCriterion(
       // Redacted value by value, before the JSON is built: a text pass over the
       // serialized form can eat a closing quote and publish half the record.
       const messageEvidence = mailEvidence(outcome.message, outcome.waitMs, outcome.polls)
-      const text = JSON.stringify(redactValue(messageEvidence, rules), null, 2)
+      // A mail check that reads a one-time code publishes it for later checks
+      // as {{mail.<name>.code}} (#64). A message with no code in it is
+      // unverified, named: the check cannot vouch for a code it never saw.
+      let code: string | undefined
+      if (substituted.code !== undefined) {
+        code = extractCode(outcome.message.body, substituted.code.pattern)
+        if (code === undefined) {
+          if (unverifiedReason === undefined)
+            unverifiedReason = `the message read by mail check ${substituted.name ?? substituted.address} carries no one-time code${
+              substituted.code.pattern === undefined ? '' : ` matching ${JSON.stringify(substituted.code.pattern)}`
+            }`
+          continue
+        }
+      }
+      // The values this check publishes — the message's link, the extracted
+      // code — are swept from the message evidence and from every check that
+      // follows in this criterion, not just here (#64).
+      const published = [...(messageEvidence.links[0] === undefined ? [] : [messageEvidence.links[0]]), ...(code === undefined ? [] : [code])]
+      if (published.length > 0) sweepRules.push(...valueRules(published))
+      const text = JSON.stringify(redactValue(messageEvidence, sweepRules), null, 2)
       await writeFile(join(job.evidenceDir, checkDir, 'message.json'), `${text}\n`)
       evidence.push(`${checkDir}/message.json`)
       // The artefact a later `{{mail.<name>.link}}` reference reads is the first
       // link of the message this check waited for (#69).
       if (substituted.name !== undefined)
-        artefacts.publish(substituted.name, messageEvidence.links[0], substituted.singleUse === true)
+        artefacts.publish(substituted.name, { link: messageEvidence.links[0], ...(code === undefined ? {} : { code }) }, substituted.singleUse === true)
       continue
     }
     if (substituted.kind === 'flow') {
+      // A flow can read a mail check's one-time code or link the way a command
+      // does, at run time and per run (#64). An artefact that is gone skips
+      // the flow unverified, and the flow never runs.
+      const resolvedActions = resolveFlowArtefacts(substituted.actions ?? [], artefacts, criterion.id)
+      if (!resolvedActions.ok) {
+        if (unverifiedReason === undefined) unverifiedReason = resolvedActions.reason
+        continue
+      }
+      // The flow types what it read from mail: those values join the sweep.
+      if (resolvedActions.values.length > 0) sweepRules.push(...valueRules(resolvedActions.values))
       const outcome = await runFlowCheckJob(
-        substituted,
+        { ...substituted, actions: resolvedActions.actions },
         flow.suites,
         flow.session,
         flow.target,
+        flow.totp,
+        resolvedActions.values,
+        resolvedActions.codes,
         values,
         job.repoPath,
         job.evidenceDir,
         checkDir,
-        rules,
+        sweepRules,
         flow.masks,
       )
       evidence.push(...outcome.evidence)
       if (outcome.status === 'failed') failed = true
       else if (outcome.status === 'unverified' && unverifiedReason === undefined)
-        unverifiedReason = outcome.reason
+        // The flow's reason quotes what the action saw, and the flow types
+        // what it read from mail: the dynamic sweep covers model- and
+        // evidence-facing text alike, result.json included (#64).
+        unverifiedReason = outcome.reason === undefined ? undefined : redactText(outcome.reason, sweepRules)
       continue
     }
     // Run-time artefact resolution happens last, immediately before the check
     // executes: the artefact is observed during this run, not minted at plan
     // time. A check whose artefact is gone is skipped unverified and never runs.
+    // The shell-syntax rule judges the AUTHORED command, before artefact
+    // values are substituted: a mail link like a URL with an ampersand is
+    // data for the no-shell spawn, while an authored `&&` is a plan written
+    // for a shell this runner does not provide (#64). Checking here also
+    // leaves an unspent single-use artefact unspent.
+    const shellSyntax = unrunnableCommandReason(substituted.run)
+    if (shellSyntax !== undefined) {
+      if (unverifiedReason === undefined) unverifiedReason = shellSyntax
+      continue
+    }
     const resolved = resolveArtefactFields(substituted, artefacts, criterion.id)
     if (!resolved.ok) {
       if (unverifiedReason === undefined) unverifiedReason = resolved.reason
@@ -337,10 +407,13 @@ async function runCriterion(
       continue
     }
     const timeoutMs = resolved.check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
+    // A command that echoes what it consumed writes it to stdout: the value is
+    // a secret like any other, so the check's evidence is swept with it (#64).
+    if (resolved.consumed.length > 0) sweepRules.push(...valueRules(resolved.consumed.map((consumed) => consumed.artefact)))
     const outcome = await runCommandCheck(resolved.check, cwd, timeoutMs)
     await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
-    await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), rules))
-    await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), redactText(truncationNote(outcome, 'stderr'), rules))
+    await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), sweepRules))
+    await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), redactText(truncationNote(outcome, 'stderr'), sweepRules))
     evidence.push(`${checkDir}/stdout.txt`, `${checkDir}/stderr.txt`)
     if (resolved.consumed.length > 0) {
       const consumption = {
@@ -350,7 +423,7 @@ async function runCriterion(
       }
       await writeFile(
         join(job.evidenceDir, checkDir, 'consumed.json'),
-        `${JSON.stringify(redactValue(consumption, rules), null, 2)}\n`,
+        `${JSON.stringify(redactValue(consumption, sweepRules), null, 2)}\n`,
       )
       evidence.push(`${checkDir}/consumed.json`)
     }
@@ -420,6 +493,9 @@ async function runFlowCheckJob(
   suites: ProfileSuite[],
   session: FlowSessionFactory | undefined,
   target: FlowTargetContext | undefined,
+  totp: FlowTotpConfig | undefined,
+  mailArtefacts: string[],
+  mailCodes: string[],
   values: RunValues,
   repoPath: string,
   evidenceDir: string,
@@ -483,14 +559,26 @@ async function runFlowCheckJob(
     }
   }
   try {
+    // Every artefact the flow lays on the page, generated or read from mail,
+    // is swept from the action log at write time (#64). Screenshots are
+    // withheld while a CODE is on the page: a mail link is not a secret, a
+    // one-time value is (#64).
+    const generatedCodes: string[] = [...mailArtefacts]
     const work = runFlowCheck({
       actions: target === undefined ? check.actions ?? [] : (check.actions ?? []).map((action) => onTarget(action, target.url)),
       page: started.page,
       trace: started.trace,
       outDir: join(evidenceDir, checkDir),
       tracesDir: resolve(evidenceDir, '..', 'traces', checkDir),
-      redactLog: (text) => redactText(text, rules),
+      redactLog: (text) => {
+        let out = redactText(text, rules)
+        for (const code of generatedCodes) out = out.split(code).join(REDACTED)
+        return out
+      },
       masks,
+      totp,
+      generatedCodes,
+      codesOnPage: mailCodes.length > 0,
     })
     // The losing branch of the race is drained, so a flow that finishes late
     // after a timeout does not crash the run with an unhandled rejection.
@@ -610,19 +698,28 @@ function resolveArtefactFields(
   }
   const consumed: { source: string; artefact: string }[] = []
   const resolved = new Map<string, string>()
+  // Every reference is resolved before any one is spent: a failure on a
+  // later reference must not burn earlier single-use values (#64).
   for (const name of names) {
     // The reference names the mail check between the `mail.` namespace and the
     // artefact field: {{mail.<name>.link}} reads from the mail check <name>.
     // Plan time refuses anything else, so a shape that reaches this point is
     // the run's own bug, and a literal left in a command is not an option.
-    const [namespace, checkName] = name.split('.')
-    if (namespace !== 'mail' || checkName === undefined) {
-      return { ok: false, reason: `malformed artefact reference {{${name}}}; a reference is {{mail.<name>.link}}` }
+    const [namespace, checkName, field] = name.split('.')
+    if (namespace !== 'mail' || checkName === undefined || (field !== 'link' && field !== 'code') || name.split('.').length !== 3) {
+      return { ok: false, reason: `malformed artefact reference {{${name}}}; a reference is {{mail.<name>.link}} or {{mail.<name>.code}}` }
     }
-    const outcome = artefacts.resolve(checkName, consumer)
+  }
+  for (const name of names) {
+    const [, checkName, field] = name.split('.') as [string, string, ArtefactField]
+    const outcome = artefacts.peek(checkName, field)
     if (!outcome.ok) return outcome
     resolved.set(name, outcome.artefact)
     consumed.push({ source: `mail.${checkName}`, artefact: outcome.artefact })
+  }
+  for (const name of names) {
+    const [, checkName, field] = name.split('.') as [string, string, ArtefactField]
+    artefacts.spend(checkName, field, consumer)
   }
   const substitute = (text: string): string =>
     [...resolved.entries()].reduce((acc, [name, artefact]) => acc.split(`{{${name}}}`).join(artefact), text)
@@ -642,6 +739,56 @@ function resolveArtefactFields(
     },
     consumed,
   }
+}
+
+/**
+ * Substitute `{{mail.<name>.<field>}}` references in a flow's open URLs and
+ * typed values at run time (#64). Returns the resolved actions with the values
+ * substituted, plus every artefact value that landed on the page, so the
+ * caller sweeps them from the action log like the flow's own codes.
+ */
+function resolveFlowArtefacts(
+  actions: FlowActionStep[],
+  artefacts: Artefacts,
+  consumer: string,
+): { ok: true; actions: FlowActionStep[]; values: string[]; codes: string[] } | { ok: false; reason: string } {
+  const names = new Set<string>()
+  for (const action of actions) {
+    mapFlowStrings(action, (value) => {
+      for (const match of value.matchAll(REFERENCE)) {
+        const name = match[1] ?? ''
+        if (name.startsWith('mail.')) names.add(name)
+      }
+      return value
+    })
+  }
+  const resolved = new Map<string, string>()
+  const values: string[] = []
+  const codes: string[] = []
+  // The shape of every reference first, then every reference resolved before
+  // any one is spent: a failure on a later reference must not burn earlier
+  // single-use values (#64).
+  for (const name of names) {
+    const [namespace, checkName, field] = name.split('.')
+    if (namespace !== 'mail' || checkName === undefined || (field !== 'link' && field !== 'code') || name.split('.').length !== 3) {
+      return { ok: false, reason: `malformed artefact reference {{${name}}}; a reference is {{mail.<name>.link}} or {{mail.<name>.code}}` }
+    }
+  }
+  for (const name of names) {
+    const [, checkName, field] = name.split('.') as [string, string, ArtefactField]
+    const outcome = artefacts.peek(checkName, field)
+    if (!outcome.ok) return outcome
+    resolved.set(name, outcome.artefact)
+    values.push(outcome.artefact)
+    if (field === 'code') codes.push(outcome.artefact)
+  }
+  for (const name of names) {
+    const [, checkName, field] = name.split('.') as [string, string, ArtefactField]
+    artefacts.spend(checkName, field, consumer)
+  }
+  const substitute = (text: string): string =>
+    [...resolved.entries()].reduce((acc, [name, artefact]) => acc.split(`{{${name}}}`).join(artefact), text)
+  return { ok: true, actions: actions.map((action) => mapFlowStrings(action, (value) => substitute(value))), values, codes }
 }
 
 interface CheckOutcome {
@@ -669,6 +816,19 @@ function resolveCheckCwd(cwd: string | undefined, repoPath: string): string | un
   const rel = relative(repoPath, full)
   if (rel === '..' || rel.startsWith(`..${sep}`)) return undefined
   return full
+}
+
+/**
+ * Command checks are split on whitespace and spawned without a shell, so a
+ * character with shell meaning cannot reach the intent it was written with
+ * (#64): the command would run with it as a literal token and fail for a
+ * reason that has nothing to do with the criterion. Named here, unverified,
+ * rather than failed: a check that cannot run disproves nothing.
+ */
+function unrunnableCommandReason(run: string): string | undefined {
+  const found = run.match(/[|&;<>$`"'\\()\n\r]/)
+  if (found === null) return undefined
+  return `the planned command cannot run: command checks are split on whitespace and spawned without a shell, so ${JSON.stringify(found[0])} is not interpreted`
 }
 
 /**

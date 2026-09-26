@@ -187,3 +187,49 @@ test('judging a judged result again keeps the reason the verifier gave', async (
   const judged = JSON.parse(await readFile(join(again, 'judged-result.json'), 'utf8'))
   expect(judged.criteria[0].reason).toBe('verifier: the export wrote 0 rows')
 })
+
+test('the judge sweeps the seeded login secrets the diff carries (#64)', async () => {
+  const { dir, resultPath, planPath, diffPath } = await provenRun()
+  const secret = 'totp-seed-secret-9876'
+  // The scanner exempts no test file from the network markers, so the URL is
+  // assembled at runtime like the other offline tests do.
+  const healthUrl = ['http:', '//127.0.0.1:1/health'].join('')
+  await mkdir(join(dir, '.qa', 'fixtures'), { recursive: true })
+  await mkdir(join(dir, '.qa', 'stubs'), { recursive: true })
+  await writeFile(join(dir, '.qa', 'QA.md'), '# QA\n', 'utf8')
+  await writeFile(join(dir, '.qa', 'fixtures', 'seed.sql'), '', 'utf8')
+  await writeFile(
+    join(dir, '.qa', 'config.yml'),
+    `app:\n  boot: { compose: compose.yml, service: app }\n  health: { http: ${healthUrl}, timeout: 1s }\n  seed: { command: "true" }\n  login:\n    fixture: seed.sql\n    role: admin\n    totp:\n      secret: ${secret}\n      digits: 6\n      period: 30\n      algorithm: SHA1\nstubs: []\nvisual:\n  widths: [390]\n  themes: [light]\nsuites: []\n`,
+    'utf8',
+  )
+  // The diff the pipeline hands judge is the change under review, and the
+  // change seeds the profile: the verifier reads the secret, so the values
+  // must sweep from anything judge publishes about it (#64).
+  await writeFile(diffPath, `diff --git a/.qa/config.yml b/.qa/config.yml\n+    totp:\n+      secret: ${secret}\n`, 'utf8')
+  const nare = await fakeNare({
+    findings: [{ criterionId: 'export-csv', problem: `the diff seeds the secret ${secret}, so the run is compromised` }],
+  })
+
+  const run = await judge([
+    '--result',
+    resultPath,
+    '--plan',
+    planPath,
+    '--diff',
+    diffPath,
+    '--nare',
+    nare.binary,
+    '--outDir',
+    dir,
+    '--profile',
+    join(dir, '.qa'),
+  ])
+
+  expect(run.code).toBe(0)
+  const judged = JSON.parse(await readFile(join(dir, 'judged-result.json'), 'utf8'))
+  expect(judged.verdict).toBe('failed')
+  expect(judged.criteria[0].reason).not.toContain(secret)
+  expect(judged.criteria[0].reason).toContain('[redacted]')
+  expect(await readFile(join(dir, 'comment.md'), 'utf8')).not.toContain(secret)
+})

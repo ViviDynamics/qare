@@ -148,3 +148,81 @@ test('a mask selector that does not parse fails the profile when it loads, namin
   expect(error.message).toContain('foo=.fixture-banner')
   rmSync(dir, { recursive: true })
 })
+
+const LOGIN_TOTP_YAML = `login:
+    fixture: fixtures/users.yml
+    role: admin
+    totp:
+      secret: GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ`
+
+const LOGIN_FULL_TOTP_YAML = `login:
+    fixture: fixtures/users.yml
+    role: admin
+    totp:
+      secret: GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ
+      digits: 8
+      period: 60
+      algorithm: SHA256`
+
+const LOGIN_BAD_DIGITS_YAML = `login:
+    fixture: fixtures/users.yml
+    role: admin
+    totp:
+      secret: GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ
+      digits: 5`
+
+const LOGIN_BACKUP_ONLY_YAML = `login:
+    fixture: fixtures/users.yml
+    role: admin
+    backupCode:
+      value: 4321-9876`
+
+test('a login.totp section loads with sane defaults for digits, period and algorithm (#64)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), fixtureConfig().replace('login: { fixture: fixtures/users.yml, role: admin }', LOGIN_TOTP_YAML.trimEnd()))
+
+  const profile = await loadProfile(dir)
+  expect(profile.app?.login.totp).toEqual({
+    secret: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ',
+    digits: 6,
+    period: 30,
+    algorithm: 'SHA1',
+  })
+
+  rmSync(dir, { recursive: true })
+})
+
+test('a login.totp section honors the digits, period and algorithm it declares (#64)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), fixtureConfig().replace('login: { fixture: fixtures/users.yml, role: admin }', LOGIN_FULL_TOTP_YAML.trimEnd()))
+
+  const profile = await loadProfile(dir)
+  expect(profile.app?.login.totp).toEqual({
+    secret: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ',
+    digits: 8,
+    period: 60,
+    algorithm: 'SHA256',
+  })
+
+  rmSync(dir, { recursive: true })
+})
+
+test('a login.totp with a nonsensical digit count fails naming the field (#64)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), fixtureConfig().replace('login: { fixture: fixtures/users.yml, role: admin }', LOGIN_BAD_DIGITS_YAML.trimEnd()))
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('app.login.totp.digits')
+
+  rmSync(dir, { recursive: true })
+})
+
+test('a backup code without a totp section fails: it is an alternative, not a substitute (#64)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), fixtureConfig().replace('login: { fixture: fixtures/users.yml, role: admin }', LOGIN_BACKUP_ONLY_YAML.trimEnd()))
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('app.login.backupCode')
+
+  rmSync(dir, { recursive: true })
+})

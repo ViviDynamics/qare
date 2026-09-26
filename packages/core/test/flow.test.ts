@@ -5,6 +5,7 @@ import { expect, test } from 'vitest'
 import {
   runFlowCheck,
   runSuiteCheck,
+  totpCode,
   type FlowAction,
   type FlowPage,
   type FlowTrace,
@@ -276,4 +277,150 @@ test('runSuiteCheck stays unverified when the suite binary is missing', async ()
 
   expect(result.outcome).toBe('unverified')
   expect(result.reason).toContain('could not start')
+})
+
+const TOTP_SECRET = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
+const TOTP_CONFIG = { secret: TOTP_SECRET, digits: 6, period: 30, algorithm: 'SHA1' as const }
+
+test('a totp action types the code the seeded secret generates, and the log names the window, never the code (#64)', async () => {
+  const { page, calls } = fakePage()
+  const dir = await outDir()
+  const generatedCodes: string[] = []
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [
+      { action: 'open', url: APP_URL },
+      { action: 'totp', element: { role: 'textbox', name: 'Verification code' } },
+      { action: 'click', element: { testId: 'sign-in' } },
+    ],
+    totp: { ...TOTP_CONFIG },
+    generatedCodes,
+    now: () => 100_000,
+  })
+
+  const expected = totpCode(TOTP_SECRET, TOTP_CONFIG, 100_000)
+  expect(result.outcome).toBe('passed')
+  expect(generatedCodes).toEqual([expected])
+  expect(calls).toContain(`type textbox:Verification code=${expected}`)
+  // The code itself never reaches the action log; the window does.
+  const log = await actionsLog(dir)
+  expect(log).toContain('totp code generated for window 3')
+  expect(log).not.toContain(expected)
+})
+
+test('a totp action without a seeded secret is unverified before anything runs (#64)', async () => {
+  const { page, calls } = fakePage()
+  const result = await runFlowCheck({
+    outDir: await outDir(),
+    page,
+    actions: [{ action: 'totp', element: { role: 'textbox', name: 'Verification code' } }],
+  })
+  expect(result.outcome).toBe('unverified')
+  expect(result.reason).toContain('the profile declares no login.totp')
+  expect(calls).toEqual([])
+})
+
+test('a backupCode action without a seeded backup code is unverified (#64)', async () => {
+  const result = await runFlowCheck({
+    outDir: await outDir(),
+    page: fakePage().page,
+    actions: [{ action: 'backupCode', element: { role: 'textbox', name: 'Recovery code' } }],
+    totp: { ...TOTP_CONFIG },
+  })
+  expect(result.outcome).toBe('unverified')
+  expect(result.reason).toContain('no login.backupCode')
+})
+
+test('a backupCode action types the seeded value, and it is swept like a code (#64)', async () => {
+  const { page, calls } = fakePage()
+  const dir = await outDir()
+  const generatedCodes: string[] = []
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [{ action: 'backupCode', element: { role: 'textbox', name: 'Recovery code' } }],
+    totp: { ...TOTP_CONFIG, backupCode: '4321-9876' },
+    generatedCodes,
+    now: () => 100_000,
+  })
+  expect(result.outcome).toBe('passed')
+  expect(generatedCodes).toEqual(['4321-9876'])
+  expect(calls).toContain('type textbox:Recovery code=4321-9876')
+  expect(await actionsLog(dir)).not.toContain('4321-9876')
+})
+
+test('a product assertion that fails after the factor was typed is failed, with the capture still withheld (#64)', async () => {
+  const { page } = fakePage({ assertText: new Error('no') })
+  const dir = await outDir()
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [
+      { action: 'open', url: APP_URL },
+      { action: 'totp', element: { role: 'textbox', name: 'Verification code' } },
+      { action: 'assert', text: 'Welcome' },
+    ],
+    totp: { ...TOTP_CONFIG },
+    generatedCodes: [],
+    now: () => 100_000,
+  })
+  // The factor was accepted and typed: a later assertion that fails is a
+  // signal about the product, not about the factor, so the outcome is the
+  // failure the assert observed. Page visibility alone is not a rejection
+  // signal (#64).
+  expect(result.outcome).toBe('failed')
+  expect(result.reason).toContain('assert failed')
+  expect(result.reason).not.toContain('942')
+  // The failure screenshot is withheld while the code sits on the page.
+  expect(result.evidence).toEqual(['actions.log'])
+  const log = await actionsLog(dir)
+  expect(log).toContain('failure.png withheld')
+})
+
+test('a factor type that throws after the seam saw the code is unverified with the value swept (#64)', async () => {
+  const { page } = fakePage()
+  const generatedCodes: string[] = []
+  page.type = async (_what, value) => {
+    // The seam saw the value before it threw: the failure reason quotes it.
+    throw new Error(`the seam rejected ${value}`)
+  }
+  const result = await runFlowCheck({
+    outDir: await outDir(),
+    page,
+    actions: [{ action: 'totp', element: { role: 'textbox', name: 'Verification code' } }],
+    totp: { ...TOTP_CONFIG },
+    generatedCodes,
+    // The sweep a real runner hands the flow: it sees every value the flow
+    // registered at the moment it runs, so the reason is swept only if the
+    // value was registered before the type was attempted (#64).
+    redactLog: (text) => generatedCodes.reduce((out, code) => out.split(code).join('[redacted]'), text),
+    now: () => 100_000,
+  })
+  expect(result.outcome).toBe('unverified')
+  expect(result.reason).not.toContain(generatedCodes[0])
+  expect(result.reason).toContain('[redacted]')
+})
+
+test('a code generated against a closing window is retried once in the next window (#64)', async () => {
+  const { page, calls } = fakePage()
+  const generatedCodes: string[] = []
+  // The clock reads 29900ms into window 0 for the first calls and 30100ms by
+  // the straddle check, so the boundary crossed while the flow was typing.
+  const times = [29_900, 29_900, 29_900, 30_100, 30_100]
+  const result = await runFlowCheck({
+    outDir: await outDir(),
+    page,
+    actions: [{ action: 'totp', element: { role: 'textbox', name: 'Verification code' } }],
+    totp: { ...TOTP_CONFIG },
+    generatedCodes,
+    now: () => times.shift() ?? 30_100,
+  })
+  expect(result.outcome).toBe('passed')
+  expect(generatedCodes).toEqual([
+    totpCode(TOTP_SECRET, TOTP_CONFIG, 29_900),
+    totpCode(TOTP_SECRET, TOTP_CONFIG, 30_100),
+  ])
+  expect(calls.filter((call) => call.startsWith('type '))).toHaveLength(2)
 })

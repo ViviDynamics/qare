@@ -173,3 +173,122 @@ test('a valid inline plan round-trips with inferred omitted when absent', () => 
   expect('inferred' in plan.criteria[0]).toBe(false)
   expect('unplannable' in plan.criteria[0]).toBe(false)
 })
+
+test('totp and backupCode flow actions parse with their element only: no secret and no code travels in the plan (#64)', () => {
+  const plan = parsePlan({
+    schemaVersion: '1',
+    criteria: [
+      {
+        id: 'c1',
+        text: 'a seeded profile logs in through the second factor',
+        checks: [
+          {
+            kind: 'flow',
+            name: 'two-factor sign in',
+            actions: [
+              { action: 'totp', element: { role: 'textbox', name: 'Verification code' } },
+              { action: 'backupCode', element: { testId: 'recovery-code' } },
+            ],
+          },
+        ],
+      },
+    ],
+  })
+  expect(plan.criteria[0]?.checks[0]).toEqual({
+    kind: 'flow',
+    name: 'two-factor sign in',
+    actions: [
+      { action: 'totp', element: { role: 'textbox', name: 'Verification code' } },
+      { action: 'backupCode', element: { testId: 'recovery-code' } },
+    ],
+  })
+})
+
+test('a mail check that reads a one-time code parses with an optional pattern, and a bad pattern fails closed (#64)', () => {
+  const plan = parsePlan({
+    schemaVersion: '1',
+    criteria: [
+      {
+        id: 'c1',
+        text: 'a mail-borne code is read',
+        checks: [{ kind: 'mail', name: 'signup', address: 'qa@localhost', code: { pattern: '\\d{4}' } }],
+      },
+    ],
+  })
+  expect(plan.criteria[0]?.checks[0]).toEqual({ kind: 'mail', name: 'signup', address: 'qa@localhost', code: { pattern: '\\d{4}' } })
+
+  const error = planError(() =>
+    parsePlan({
+      schemaVersion: '1',
+      criteria: [
+        {
+          id: 'c1',
+          text: 'a mail-borne code is read',
+          checks: [{ kind: 'mail', name: 'signup', address: 'qa@localhost', code: { pattern: '([a]+' } }],
+        },
+      ],
+    }),
+  )
+  expect(error.field).toBe('criteria[0].checks[0].code.pattern')
+})
+
+test('a flow action in the change\'s own vocabulary is carried verbatim when the loader is told about it', () => {
+  // The base revision's loader has no shape for a kind the change introduces
+  // (#64): it carries the object as planned, and the head revision's loader,
+  // which knows its own vocabulary, is the authority for the shape.
+  const plan = parsePlan(
+    {
+      schemaVersion: '1',
+      criteria: [
+        {
+          id: 'c1',
+          text: 'the second factor signs in',
+          checks: [{ kind: 'flow', name: 'totp-login', actions: [{ action: 'magicLink', element: { testId: 'sign-in' } }] }],
+        },
+      ],
+    },
+    ['magicLink'],
+  )
+
+  expect(plan.criteria[0]).toMatchObject({
+    checks: [{ kind: 'flow', name: 'totp-login', actions: [{ action: 'magicLink', element: { testId: 'sign-in' } }] }],
+  })
+})
+
+test('a flow action outside the declared vocabulary is refused, naming what was offered', () => {
+  const error = planError(() =>
+    parsePlan({
+      schemaVersion: '1',
+      criteria: [
+        {
+          id: 'c1',
+          text: 'the second factor signs in',
+          checks: [{ kind: 'flow', name: 'totp-login', actions: [{ action: 'magicLink', element: { testId: 'sign-in' } }] }],
+        },
+      ],
+    }),
+  )
+
+  expect(error.field).toBe('criteria[0].checks[0].actions[0].action')
+  expect(error.message).toContain('"magicLink"')
+})
+
+test('the refusal names the whole vocabulary it was offered, including the change\'s kinds', () => {
+  const error = planError(() =>
+    parsePlan(
+      {
+        schemaVersion: '1',
+        criteria: [
+          {
+            id: 'c1',
+            text: 'the second factor signs in',
+            checks: [{ kind: 'flow', name: 'totp-login', actions: [{ action: 'smoke', element: { testId: 'sign-in' } }] }],
+          },
+        ],
+      },
+      ['magicLink'],
+    ),
+  )
+
+  expect(error.message).toContain('"totp", "backupCode", "magicLink"')
+})
