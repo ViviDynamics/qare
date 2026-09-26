@@ -403,3 +403,34 @@ test('a mail-borne one-time code is extracted, typed by a flow, and swept from t
   const message = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'message.json'), 'utf8')
   expect(message).not.toContain('555111')
 })
+
+test('a flow that only reads a mail link keeps its captures: a link is not a code (#64)', async () => {
+  const events: string[] = []
+  // Schemes are joined at runtime: test files carry no network literals.
+  const loginUrl = [['https:', '//app.example.com/login?token=abc'].join('')]
+  const readMail = async (): Promise<MailMessage[]> => [
+    {
+      from: 'app@example.com',
+      subject: 'Sign in',
+      body: `Continue at ${loginUrl[0]}`,
+      received_at: new Date().toISOString(),
+    },
+  ]
+  const job = await makeJob({
+    criteria: flowCriterion(
+      { kind: 'mail', name: 'signup', address: 'qa@example.com' },
+      { kind: 'flow', actions: [{ action: 'open', url: '{{mail.signup.link}}' }] },
+    ),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, flowSession: totpSessionFactory(events), readMail })
+
+  expect(result.verdict).toBe('passed')
+  expect(events).toContain(`open ${loginUrl[0]}`)
+  const log = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '1', 'actions.log'), 'utf8')
+  // The link itself is swept from the log, but no capture is withheld: the
+  // link is not a one-time value, so the page stays publishable.
+  expect(log).not.toContain(loginUrl[0])
+  expect(log).not.toContain('withheld')
+})

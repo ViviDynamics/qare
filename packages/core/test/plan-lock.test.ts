@@ -41,6 +41,31 @@ test('a mail check singleUse declaration is part of the canonical form', () => {
   expect(fingerprintPlan(a)).not.toBe(fingerprintPlan(c))
 })
 
+test('a mail check code section is part of the canonical form and the lock', () => {
+  // The code section decides what the run extracts from the message (#64), so
+  // a locked plan that dropped it would let the extraction change without a
+  // fingerprint mismatch.
+  const a = parsePlan({
+    schemaVersion: '1',
+    criteria: [{ id: 'c1', text: 't', checks: [{ kind: 'mail', name: 'n', address: 'a@localhost', code: { pattern: '([a]+)' } }] }],
+  })
+  const b = parsePlan({
+    schemaVersion: '1',
+    criteria: [{ id: 'c1', text: 't', checks: [{ address: 'a@localhost', kind: 'mail', name: 'n', code: { pattern: '([a]+)' } }] }],
+  })
+  expect(fingerprintPlan(a)).toBe(fingerprintPlan(b))
+  const c = parsePlan({
+    schemaVersion: '1',
+    criteria: [{ id: 'c1', text: 't', checks: [{ kind: 'mail', name: 'n', address: 'a@localhost', code: { pattern: '([0-9]+)' } }] }],
+  })
+  expect(fingerprintPlan(a)).not.toBe(fingerprintPlan(c))
+  const d = parsePlan({
+    schemaVersion: '1',
+    criteria: [{ id: 'c1', text: 't', checks: [{ kind: 'mail', name: 'n', address: 'a@localhost' }] }],
+  })
+  expect(fingerprintPlan(a)).not.toBe(fingerprintPlan(d))
+})
+
 test('the fingerprint is stable across key insertion order', () => {
   const a: Plan = {
     schemaVersion: '1',

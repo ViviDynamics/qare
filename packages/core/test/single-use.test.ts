@@ -125,6 +125,16 @@ test('an artefact reference placed before the mail check refuses the run at plan
   expect(result.criteria[0]?.reason).toContain('no mail check named welcome runs before this check')
 })
 
+test('a code artefact from a mail check that declares no code section refuses the run at plan time', async () => {
+  // The declared fields are what the plan locks: reading a code the mail check
+  // never extracts would otherwise surface only as a runtime miss, after the
+  // plan was judged to be honest (#64).
+  const job = await makeJob(criteria([mailCheck({ timeoutMs: 30 }), consumeCheck('{{mail.welcome.code}}')]))
+  const { result } = await runJob(job)
+  expect(result.verdict).toBe('refused')
+  expect(result.criteria[0]?.reason).toContain('the mail check named welcome declares no code section')
+})
+
 test('an artefact reference to an unknown field refuses the run at plan time', async () => {
   const job = await makeJob(criteria([mailCheck()], [consumeCheck('{{mail.welcome.attachment}}')]))
   const { result } = await runJob(job)

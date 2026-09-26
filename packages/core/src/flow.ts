@@ -283,7 +283,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   // named, never failed (#64).
   if (outcome === 'failed' && codeOnPage) {
     outcome = 'unverified'
-    reason = 'the second factor was rejected: a generated code was typed and the login still did not complete (a clock-skewed container or a persistently stale window)'
+    reason = 'the second factor was rejected: a code was typed and the login still did not complete (a skewed clock, a stale window, or a value the app does not accept)'
   }
 
   const evidence: string[] = [ACTION_LOG]

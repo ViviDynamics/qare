@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Plan, PlanCheck, PlanCriterion } from './plan.js'
 
-const CHECK_FIELDS = ['kind', 'name', 'command', 'suite', 'actions', 'screenshot', 'widths', 'themes', 'address', 'from', 'subject', 'body', 'timeoutMs', 'singleUse', 'inferred']
+const CHECK_FIELDS = ['kind', 'name', 'command', 'suite', 'actions', 'screenshot', 'widths', 'themes', 'address', 'from', 'subject', 'body', 'code', 'timeoutMs', 'singleUse', 'inferred']
 
 export interface PlanComparison {
   matches: boolean
@@ -31,6 +31,7 @@ function canonicalCheck(check: PlanCheck): PlanCheck {
     if (check.from !== undefined) canonical.from = check.from
     if (check.subject !== undefined) canonical.subject = check.subject
     if (check.body !== undefined) canonical.body = check.body
+    if (check.code !== undefined) canonical.code = { ...check.code }
     if (check.timeoutMs !== undefined) canonical.timeoutMs = check.timeoutMs
     if (check.singleUse !== undefined) canonical.singleUse = check.singleUse
   } else {

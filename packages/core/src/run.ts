@@ -158,8 +158,9 @@ async function refuseRun(
 function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): void {
   if (profile.app !== undefined) validateValueReferences(profile.app.seed.command, values, 'app.seed.command')
   // Mail artefact names are validated in walk order: a check may only read an
-  // artefact from a mail check that has already waited for its message (#69).
-  const mailChecks = new Map<string, number>()
+  // artefact from a mail check that has already waited for its message (#69),
+  // and only for the fields that check actually exposes (#64).
+  const mailChecks = new Map<string, { count: number; code: boolean }>()
   for (const [criterionIndex, criterion] of job.criteria.entries()) {
     for (const [checkIndex, check] of (criterion.checks ?? []).entries()) {
       const base = `criteria[${criterionIndex}].checks[${checkIndex}]`
@@ -169,7 +170,10 @@ function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): vo
           const value = check[field]
           if (value !== undefined) validateValueReferences(value, values, `${base}.${field}`)
         }
-        if (check.name !== undefined) mailChecks.set(check.name, (mailChecks.get(check.name) ?? 0) + 1)
+        if (check.name !== undefined) {
+          const seen = mailChecks.get(check.name) ?? { count: 0, code: false }
+          mailChecks.set(check.name, { count: seen.count + 1, code: seen.code || check.code !== undefined })
+        }
         continue
       }
       if (check.kind === 'flow') {
@@ -218,18 +222,21 @@ function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): vo
  * mail checks share. The seed command and a mail check's own matchers never carry
  * artefact references at all: a mail artefact does not exist before a run starts.
  */
-function validateMailArtefactName(name: string, mailChecks: Map<string, number>, field: string): void {
+function validateMailArtefactName(name: string, mailChecks: Map<string, { count: number; code: boolean }>, field: string): void {
   const parts = name.split('.')
   const [kind, checkName, artefact] = parts
   if (kind !== 'mail' || checkName === undefined || (artefact !== 'link' && artefact !== 'code') || parts.length !== 3) {
     throw new JobValidationError(field, `unknown artefact ${JSON.stringify(`{{${name}}}`)}; a mail check exposes {{mail.<name>.link}}, the first link in the message it read, and {{mail.<name>.code}}, the one-time code read from its body, and a mail check name carries no dot`)
   }
-  const count = mailChecks.get(checkName) ?? 0
-  if (count === 0) {
+  const entry = mailChecks.get(checkName)
+  if (entry === undefined) {
     throw new JobValidationError(field, `no mail check named ${checkName} runs before this check; an artefact is read from a mail check that has already waited for its message`)
   }
-  if (count > 1) {
-    throw new JobValidationError(field, `${count} earlier mail checks are named ${checkName}; the artefact reference is ambiguous, so rename one of them`)
+  if (entry.count > 1) {
+    throw new JobValidationError(field, `${entry.count} earlier mail checks are named ${checkName}; the artefact reference is ambiguous, so rename one of them`)
+  }
+  if (artefact === 'code' && !entry.code) {
+    throw new JobValidationError(field, `the mail check named ${checkName} declares no code section, so it exposes no {{mail.${checkName}.code}}; give it a code section with a pattern, or read {{mail.${checkName}.link}}`)
   }
 }
 
@@ -358,6 +365,7 @@ async function runCriterion(
         flow.target,
         flow.totp,
         resolvedActions.values,
+        resolvedActions.codes,
         values,
         job.repoPath,
         job.evidenceDir,
@@ -478,7 +486,8 @@ async function runFlowCheckJob(
   session: FlowSessionFactory | undefined,
   target: FlowTargetContext | undefined,
   totp: FlowTotpConfig | undefined,
-  resolvedCodes: string[],
+  mailArtefacts: string[],
+  mailCodes: string[],
   values: RunValues,
   repoPath: string,
   evidenceDir: string,
@@ -542,9 +551,11 @@ async function runFlowCheckJob(
     }
   }
   try {
-    // Every code the flow lays on the page, generated or read from mail, is
-    // swept from the action log at write time (#64).
-    const generatedCodes: string[] = [...resolvedCodes]
+    // Every artefact the flow lays on the page, generated or read from mail,
+    // is swept from the action log at write time (#64). Screenshots are
+    // withheld while a CODE is on the page: a mail link is not a secret, a
+    // one-time value is (#64).
+    const generatedCodes: string[] = [...mailArtefacts]
     const work = runFlowCheck({
       actions: target === undefined ? check.actions ?? [] : (check.actions ?? []).map((action) => onTarget(action, target.url)),
       page: started.page,
@@ -559,7 +570,7 @@ async function runFlowCheckJob(
       masks,
       totp,
       generatedCodes,
-      codesOnPage: resolvedCodes.length > 0,
+      codesOnPage: mailCodes.length > 0,
     })
     // The losing branch of the race is drained, so a flow that finishes late
     // after a timeout does not crash the run with an unhandled rejection.
@@ -723,7 +734,7 @@ function resolveFlowArtefacts(
   actions: FlowActionStep[],
   artefacts: Artefacts,
   consumer: string,
-): { ok: true; actions: FlowActionStep[]; values: string[] } | { ok: false; reason: string } {
+): { ok: true; actions: FlowActionStep[]; values: string[]; codes: string[] } | { ok: false; reason: string } {
   const names = new Set<string>()
   for (const action of actions) {
     mapFlowStrings(action, (value) => {
@@ -736,6 +747,7 @@ function resolveFlowArtefacts(
   }
   const resolved = new Map<string, string>()
   const values: string[] = []
+  const codes: string[] = []
   for (const name of names) {
     const [namespace, checkName, field] = name.split('.')
     if (namespace !== 'mail' || checkName === undefined || (field !== 'link' && field !== 'code') || name.split('.').length !== 3) {
@@ -745,10 +757,11 @@ function resolveFlowArtefacts(
     if (!outcome.ok) return outcome
     resolved.set(name, outcome.artefact)
     values.push(outcome.artefact)
+    if (field === 'code') codes.push(outcome.artefact)
   }
   const substitute = (text: string): string =>
     [...resolved.entries()].reduce((acc, [name, artefact]) => acc.split(`{{${name}}}`).join(artefact), text)
-  return { ok: true, actions: actions.map((action) => mapFlowStrings(action, (value) => substitute(value))), values }
+  return { ok: true, actions: actions.map((action) => mapFlowStrings(action, (value) => substitute(value))), values, codes }
 }
 
 interface CheckOutcome {
