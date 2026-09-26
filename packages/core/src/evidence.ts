@@ -13,9 +13,15 @@ export interface CheckRunPayload {
  * comment.md), so relative links resolve. `artifact`: the comment is posted on
  * a pull request, where a relative path resolves to nothing; files are named,
  * and the only link is to the run's evidence artifact, when one was uploaded.
- * Nothing links to a file that is not there to open (CONSTITUTION rule 4).
+ * `screenshots` holds the evidence paths the run's screenshots were pushed to
+ * the `qa-assets` branch for, keyed by evidence path and valued at the branch
+ * link; those outlive the artifact. Nothing links to a file that is not there
+ * to open (CONSTITUTION rule 4), so a screenshot is linked only when it was
+ * actually pushed, and every other file stays named but held by the artifact.
  */
-export type EvidenceLinks = { kind: 'relative' } | { kind: 'artifact'; url?: string | undefined }
+export type EvidenceLinks =
+  | { kind: 'relative' }
+  | { kind: 'artifact'; url?: string | undefined; screenshots?: Record<string, string> | undefined }
 
 export interface EvidencePoster {
   postComment(body: string): Promise<void>
@@ -78,10 +84,17 @@ function detailLinks(criteria: CriterionResult[]): string[] {
   return lines
 }
 
-function detailNames(criteria: CriterionResult[]): string[] {
+function detailNames(criteria: CriterionResult[], screenshots: Record<string, string> | undefined): string[] {
   const lines: string[] = []
   for (const criterion of criteria) {
-    const names = (criterion.evidence ?? []).filter(path => path !== '').map(codeSpan)
+    const names = (criterion.evidence ?? [])
+      .filter(path => path !== '')
+      .map(path => {
+        const url = screenshots?.[path]
+        // A pushed screenshot keeps resolving after the artifact expires; the
+        // link is written only for the file that was pushed (rule 4).
+        return url === undefined ? codeSpan(path) : `[${escapeLinkText(basename(path))}](<${url}>)`
+      })
     if (names.length > 0) lines.push(`- ${codeSpan(criterion.id)}: ${names.join(', ')}`)
   }
   return lines
@@ -135,7 +148,7 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
     const details = detailLinks(result.criteria)
     if (details.length > 0) lines.push('', 'Details:', '', ...details)
   } else {
-    const details = detailNames(result.criteria)
+    const details = detailNames(result.criteria, links.screenshots)
     if (details.length > 0) lines.push('', 'Details:', '', ...details)
     // The artifact holds result.json and the logs even when no criterion
     // lists a file, so it is linked whenever it was uploaded.

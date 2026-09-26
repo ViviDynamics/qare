@@ -4,9 +4,12 @@ A QA agent harness. Given a pull request and the issue it closes, qare boots the
 app before and after the change against stubbed services, checks every
 acceptance criterion, and posts the evidence on the pull request: a
 per-criterion table with screenshots, logs and traces, and a verdict decided by
-code rather than by a model. It can also check an app it did not boot, such as
-staging or a public site, when the profile names a target instead of a boot
-recipe. The shortest way in is a sentence:
+code rather than by a model. Screenshots are also pushed to an orphan
+`qa-assets` branch under a path naming the run, so the evidence comment's
+screenshot links keep resolving after the run's artifact expires. It can also
+check an app it did not boot, such as staging or a public site, when the
+profile names a target instead of a boot recipe. The shortest way in is a
+sentence:
 `qare check "searching Wikipedia for Ada Lovelace shows her article" --profile examples/wikipedia/.qa`.
 
 qare sits beside [nare](https://github.com/ViviDynamics/nare) in the Coordinare

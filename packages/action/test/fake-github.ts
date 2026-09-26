@@ -32,6 +32,10 @@ export interface FakeGithub {
   /** Every comment with its id, in the order written; issue.comments mirrors the bodies. */
   commentRecords: FakeComment[]
   checkRuns: unknown[]
+  /** Branch heads: refs/heads/&lt;branch&gt; to the head commit sha. */
+  refs: Map<string, string>
+  /** Every commit the fake has accepted, sha to its tree and parents. */
+  commits: Map<string, { tree: string; parents: string[] }>
   status: number | undefined
   close(): Promise<void>
 }
@@ -40,14 +44,23 @@ const TOKEN = 'qa-test-token'
 const TOKEN_LOGIN = 'github-actions[bot]'
 const AUTH_HEADER = `Bearer ${TOKEN}`
 
+interface FakeCommit {
+  tree: string
+  parents: string[]
+}
+
 export function startFakeGithub(): Promise<FakeGithub> {
   const issues = new Map<number, FakeIssue>()
   const calls: FakeCall[] = []
   const commentRecords: FakeComment[] = []
   const checkRuns: unknown[] = []
+  const refs = new Map<string, string>()
+  const commits = new Map<string, FakeCommit>()
   const state = { status: undefined as number | undefined }
   let nextNumber = 100
   let nextCommentId = 5000
+  let nextObject = 1
+  const objectSha = (prefix: string) => `${prefix}-${nextObject++}`
 
   const server: Server = createServer((request, response) => {
     void handle(request, response)
@@ -164,6 +177,58 @@ export function startFakeGithub(): Promise<FakeGithub> {
       respond(response, 201, { id: checkRuns.length, ...(body as object) })
       return
     }
+    // A small git data API: blobs, trees, commits and refs are stored in
+    // memory so a push can be followed from blob to ref.
+    if (parts[0] === 'repos' && parts[3] === 'git' && parts[4] === 'blobs' && parts.length === 5) {
+      if (request.method !== 'POST') return respond(response, 404, { message: 'no such blob route' })
+      respond(response, 201, { sha: objectSha('blob') })
+      return
+    }
+    if (parts[0] === 'repos' && parts[3] === 'git' && parts[4] === 'trees' && parts.length === 5) {
+      if (request.method !== 'POST') return respond(response, 404, { message: 'no such tree route' })
+      respond(response, 201, { sha: objectSha('tree') })
+      return
+    }
+    if (parts[0] === 'repos' && parts[3] === 'git' && parts[4] === 'commits') {
+      if (request.method === 'POST' && parts.length === 5) {
+        const sha = objectSha('commit')
+        const payload = body as { tree: string; parents?: string[] }
+        commits.set(sha, { tree: payload.tree, parents: payload.parents ?? [] })
+        respond(response, 201, { sha, tree: { sha: payload.tree } })
+        return
+      }
+      if (request.method === 'GET' && parts.length === 6) {
+        const commit = commits.get(parts[5])
+        if (commit === undefined) return respond(response, 404, { message: 'commit not found' })
+        respond(response, 200, { sha: parts[5], tree: { sha: commit.tree }, parents: commit.parents })
+        return
+      }
+    }
+    if (parts[0] === 'repos' && parts[3] === 'git' && parts[4] === 'refs') {
+      if (request.method === 'POST' && parts.length === 5) {
+        const payload = body as { ref: string; sha: string }
+        if (refs.has(payload.ref)) return respond(response, 422, { message: 'reference already exists' })
+        refs.set(payload.ref, payload.sha)
+        respond(response, 201, { ref: payload.ref, object: { sha: payload.sha, type: 'commit' } })
+        return
+      }
+      if (parts[5] === 'heads' && parts.length === 7) {
+        const branch = `refs/heads/${parts[6]}`
+        if (request.method === 'GET') {
+          const sha = refs.get(branch)
+          if (sha === undefined) return respond(response, 404, { message: 'branch not found' })
+          respond(response, 200, { ref: branch, object: { sha, type: 'commit' } })
+          return
+        }
+        if (request.method === 'PATCH') {
+          const sha = refs.get(branch)
+          if (sha === undefined) return respond(response, 404, { message: 'branch not found' })
+          refs.set(branch, (body as { sha: string }).sha)
+          respond(response, 200, { ref: branch, object: { sha: (body as { sha: string }).sha, type: 'commit' } })
+          return
+        }
+      }
+    }
     respond(response, 404, { message: `fake github has no route for ${request.method} ${url.pathname}` })
   }
 
@@ -183,6 +248,8 @@ export function startFakeGithub(): Promise<FakeGithub> {
         issues,
         commentRecords,
         checkRuns,
+        refs,
+        commits,
         get status(): number | undefined {
           return state.status
         },

@@ -1,6 +1,7 @@
 import { redactResult, renderCheckRun, renderComment } from '@qare/core'
 import type { CheckRunPayload, EvidencePoster, RunResult } from '@qare/core'
 import { GitHubApiError, GitHubClientError, type GitHubClient } from './github.js'
+import type { ScreenshotPusher } from './qa-assets.js'
 
 /** Marks qare's evidence comment, so a later run updates it instead of adding another. */
 export const EVIDENCE_MARKER = '<!-- qare:evidence -->'
@@ -66,15 +67,21 @@ export class GitHubEvidencePoster implements EvidencePoster {
 
 /**
  * Post a judged result where reviewers look. The comment names evidence and
- * links only to the run's uploaded evidence artifact. Reasons are redacted
- * here with the built-in rules as a last pass: judge has already applied the
- * profile's, and this is the point where they are published.
+ * links only to the run's uploaded evidence artifact, while each screenshot the
+ * caller pushed to the `qa-assets` branch links there, so it keeps resolving
+ * after the artifact expires (ADR-0002). Reasons are redacted here with the
+ * built-in rules as a last pass: judge has already applied the profile's, and
+ * this is the point where they are published.
  */
 export async function postEvidence(
   poster: EvidencePoster,
   result: RunResult,
-  opts: { artifactUrl?: string | undefined } = {},
+  opts: { artifactUrl?: string | undefined; push?: ScreenshotPusher; evidenceDir?: string } = {},
 ): Promise<void> {
-  await poster.postComment(renderComment(redactResult(result), { kind: 'artifact', url: opts.artifactUrl }))
+  const screenshots =
+    opts.push === undefined || opts.evidenceDir === undefined ? undefined : await opts.push.push(result, opts.evidenceDir)
+  await poster.postComment(
+    renderComment(redactResult(result), { kind: 'artifact', url: opts.artifactUrl, screenshots }),
+  )
   await poster.createCheckRun(renderCheckRun(result))
 }

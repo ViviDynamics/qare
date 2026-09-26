@@ -1,5 +1,8 @@
 name: CI
 
+# Pushes are filtered to main, so pushes to the orphan qa-assets branch (the
+# screenshot store of ADR-0002) never run this workflow, and the branch's
+# append-only history stays quiet.
 on:
   pull_request:
   push:

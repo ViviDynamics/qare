@@ -237,3 +237,31 @@ test('the uploaded artifact is linked even when no criterion lists a file', () =
 
   expect(body).toContain(`[evidence artifact](<${url}>)`)
 })
+
+// A screenshot pushed to the qa-assets branch links there, so it keeps
+// resolving after the artifact expires (ADR-0002). Files that were not pushed
+// have no entry, so they stay named but never linked (rule 4).
+test('a pushed screenshot links to the branch; a file that was not pushed does not', () => {
+  const url = ['https:', '//github.com/octocat/qare/actions/runs/1/artifacts/2'].join('')
+  const screenshot = ['https:', '//github.com/octocat/qare/raw/qa-assets/runs/2026-09-25/abc/page.png'].join('')
+  const body = renderComment(allProven, {
+    kind: 'artifact',
+    url,
+    screenshots: { 'checks/payout-1099-notice/2/page.png': screenshot },
+  })
+
+  expect(body).toContain(`[page.png](<${screenshot}>)`)
+  expect(body).toContain('`checks/payout-1099-notice/1/stdout.txt`, [page.png](')
+  expect(body).not.toContain('`checks/payout-1099-notice/2/page.png`')
+  expect(body.match(/\]\(/g)).toHaveLength(2)
+})
+
+test('a screenshot link text is escaped like the other link texts', () => {
+  const screenshot = ['https:', '//github.com/octocat/qare/raw/qa-assets/runs/2026-09-25/x.png'].join('')
+  const body = renderComment(
+    result('failed', [failed('c1', ['checks/c1/0/pa[ge].png'])]),
+    { kind: 'artifact', screenshots: { 'checks/c1/0/pa[ge].png': screenshot } },
+  )
+
+  expect(body).toContain(`[pa ge .png](<${screenshot}>)`)
+})
