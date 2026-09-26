@@ -116,7 +116,7 @@ jobs:
           # bigger than that budget cannot reach the planner whole. The
           # planner's copy keeps the change's source and spec and leaves the
           # test suite out; the full diff stays the diff for execute and judge.
-          git diff "${BASE_SHA}...${HEAD_SHA}" -- ':!packages/*/test' ':!.agents' ':!.claude' > change-planner.diff
+          git diff "${BASE_SHA}...${HEAD_SHA}" -- ':!packages/*/test/*' ':!.agents' ':!.claude' > change-planner.diff
           echo "criteria=present" >> "$GITHUB_OUTPUT"
           {
             echo "criteria read from: $(tr '\n' ' ' < linked.txt)"
