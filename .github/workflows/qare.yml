@@ -279,6 +279,10 @@ jobs:
         with:
           name: qa-profile
           path: .qa
+          # .qa is a hidden directory, and upload-artifact@v4 matches no
+          # hidden path unless it is told to: without this flag the upload
+          # silently uploads nothing and judge has no profile to read.
+          include-hidden-files: true
           if-no-files-found: ignore
 
   # label: judge (model key + GitHub token only)
