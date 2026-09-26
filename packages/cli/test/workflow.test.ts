@@ -265,15 +265,15 @@ test('a blocked run whose unverified criteria are all planner-unplannable or unr
   expect(execute).toContain('the planned command cannot run')
 })
 
-test('the plan step can carry the planner prompt when the diff is too big for one argument (nare#29)', () => {
+test('the planner reads the scrubbed, trimmed copy of the diff, never the raw one (nare#29)', () => {
   // nare takes its prompt as one argument, so a change whose diff exceeds the
-  // Linux argument budget cannot reach the planner whole. Collect produces a
-  // planner-sized copy beside the full diff, and the plan step falls back to
-  // it only on that capacity error.
+  // Linux argument budget cannot reach the planner whole: collect produces the
+  // planner-sized copy beside the full diff, and the planner always reads that
+  // copy — the scrubbed one — never the raw diff.
   expect(section('collect')).toContain('change-planner.diff')
   const plan = section('plan')
-  expect(plan).toContain('one argument can carry')
   expect(plan).toContain('--diff change-planner.diff')
+  expect(plan).not.toContain('--diff change.diff')
 })
 
 test('the model-facing diff copies are scrubbed of the values the change adds (#64)', () => {

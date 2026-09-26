@@ -200,22 +200,14 @@ jobs:
             echo "planning with the change's flow action kinds: $kinds" >> "$GITHUB_STEP_SUMMARY"
           fi
           if ! node packages/cli/dist/index.js plan \
-            --criteria criteria.json --diff change.diff --out plan.json \
+            --criteria criteria.json --diff change-planner.diff --out plan.json \
             --nare "$HOME/.local/bin/nare" --profile .qa "${flow_actions[@]}" 2>plan.err; then
-            # A prompt over the one-argument budget (nare#29) is a capacity
-            # limit, not a plan verdict: the planner's copy of the diff, with
-            # the test suite left out, fits the budget. Any other failure
-            # surfaces as it happened, and a retry that still cannot fit
-            # fails the job.
-            if grep -q "one argument can carry" plan.err; then
-              echo "the planner's prompt exceeded the argument budget, retrying with the diff trimmed to the change's source" >> "$GITHUB_STEP_SUMMARY"
-              node packages/cli/dist/index.js plan \
-                --criteria criteria.json --diff change-planner.diff --out plan.json \
-                --nare "$HOME/.local/bin/nare" --profile .qa "${flow_actions[@]}"
-            else
-              cat plan.err >&2
-              exit 4
-            fi
+            # The planner's copy of the diff — scrubbed of the values the
+            # change adds, with the test suite left out — is what the planner
+            # always reads, whatever fits the argument budget (nare#29). Any
+            # failure surfaces as it happened.
+            cat plan.err >&2
+            exit 4
           fi
       - name: Upload plan.json
         uses: actions/upload-artifact@v4
