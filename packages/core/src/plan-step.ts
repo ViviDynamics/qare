@@ -1,5 +1,6 @@
 import type { AgentRunner } from './runner.js'
 import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
+import { shellCharacter } from './run.js'
 
 export interface PlanCriterionInput {
   id: string
@@ -144,10 +145,15 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     suites,
     '',
     'A check is one of:',
-    '- command: {"kind":"command","name":...,"command":"the command to run"} — the runner splits it on whitespace and spawns it WITHOUT a shell, so write one program and its arguments only: no pipes, no && or ;, no redirection, no shell syntax of any kind',
+    '- command: {"kind":"command","name":...,"command":"an executable followed by its arguments"}',
     '- flow: {"kind":"flow","name":...,"suite":"an existing suite"} or {"kind":"flow","name":...,"actions":[{"action":"open","url":"the url to open first"},{"action":"type","element":{"role":"searchbox","name":"Search"},"value":"Ada Lovelace"},{"action":"click","element":{"role":"button","name":"Search"}},{"action":"assert","text":"the text that must be visible"}]}',
     '- visual: {"kind":"visual","name":...,"screenshot":"name","widths":[390],"themes":["light"]}',
     '- mail: {"kind":"mail","name":...,"address":"the address a message is waited for","subject":"a substring to match", "timeoutMs":60000}',
+    '',
+    'A command check is spawned with no shell: its command is split on whitespace and each token',
+    'becomes one argument. Write one executable followed by its arguments, and never cd, &&, ||,',
+    'pipes, semicolons, redirection, quotes, $, backticks, parentheses or backslashes; command',
+    'checks already run in the repository root, and an argument containing spaces cannot be expressed.',
     '',
     `A flow action is one of ${flowActionKinds.join(', ')}. An element reference is semantic:`,
     '{"role":"the aria role","name":"the accessible name"} or {"testId":"the data-testid value"}.',
@@ -193,6 +199,32 @@ function coverage(plan: Plan, inputs: PlanInputs): string | undefined {
     .join(' and ')
 }
 
+const SHELL_BUILTINS = ['cd', 'source', 'eval', 'export', 'exit', 'set', 'unset', 'alias', 'shift', 'local']
+
+function commandContractViolation(command: string): string | undefined {
+  const tokens = command.split(/\s+/).filter((token) => token !== '')
+  const executable = tokens[0]
+  if (executable !== undefined && SHELL_BUILTINS.includes(executable))
+    return `"${executable}" is a shell builtin, not an executable the runner can spawn`
+  const character = shellCharacter(command)
+  if (character === undefined) return undefined
+  if (character === '"' || character === "'")
+    return 'quoting is not interpreted: the command is split on whitespace, so an argument containing spaces cannot be expressed'
+  return `"${character}" is shell syntax the runner does not interpret, so it reaches the program as a literal argument`
+}
+
+function commandContractGap(plan: Plan): string | undefined {
+  for (const criterion of plan.criteria) {
+    if (!('checks' in criterion)) continue
+    for (const check of criterion.checks) {
+      if (check.kind !== 'command') continue
+      const violation = commandContractViolation(check.command)
+      if (violation !== undefined) return `criterion ${criterion.id} command check "${check.name}": ${violation}`
+    }
+  }
+  return undefined
+}
+
 /**
  * The plan step (#9): criteria and a diff in, a parsed plan out.
  *
@@ -233,8 +265,16 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
       continue
     }
     const gap = coverage(plan, inputs)
-    if (gap === undefined) return plan
-    correction = `${gap}. Every criterion must appear exactly once, under the id given.`
+    if (gap !== undefined) {
+      correction = `${gap}. Every criterion must appear exactly once, under the id given.`
+      continue
+    }
+    const violation = commandContractGap(plan)
+    if (violation !== undefined) {
+      correction = `${violation}. The command is split on whitespace and spawned directly, with no shell.`
+      continue
+    }
+    return plan
   }
 
   throw new PlanStepError(`the model could not produce a usable plan: ${correction}`)

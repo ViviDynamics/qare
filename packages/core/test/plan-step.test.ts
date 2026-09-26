@@ -230,3 +230,110 @@ test('an answer written in a vocabulary the change did not declare is corrected,
   // The correction carries the refusal, so the planner knows what to fix.
   expect(runner.requests[1].prompt).toContain('unknown flow action "magicLink"')
 })
+
+test('the prompt describes the no-shell contract for command checks', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, INPUTS)
+
+  const [request] = runner.requests
+  expect(request.prompt).toContain('spawned with no shell')
+  expect(request.prompt).toContain('never cd, &&, ||')
+  expect(request.prompt).toContain('backticks, parentheses or backslashes')
+  expect(request.prompt).not.toContain('the shell command to run')
+})
+
+test('a command check written as shell syntax is corrected against the runner contract', async () => {
+  const shell = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'tests', command: 'cd e2e && npm test' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(shell), completed(planned())])
+
+  const plan = await planRun(runner, INPUTS)
+
+  expect(plan.criteria).toHaveLength(2)
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('criterion c1 command check "tests"')
+  expect(runner.requests[1].prompt).toContain('spawned directly, with no shell')
+})
+
+test('a command check with a pipe is corrected the same way', async () => {
+  const piped = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'remote', command: 'git ls-remote origin | grep -q .' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(piped), completed(planned())])
+
+  await planRun(runner, INPUTS)
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('"|" is shell syntax')
+})
+
+test('a command check that relies on quoting is corrected the same way', async () => {
+  const quoted = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'grep', command: "grep -q 'a b' out.txt" }] },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no visual baseline exists for the dashboard' },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(quoted), completed(planned())])
+
+  await planRun(runner, INPUTS)
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('quoting is not interpreted')
+})
+
+test('a command check that interpolates a variable is corrected the same way', async () => {
+  const interpolated = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'env', command: 'echo $HOME' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(interpolated), completed(planned())])
+
+  await planRun(runner, INPUTS)
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('"$" is shell syntax')
+})
+
+test('a command check with an operator inside a token is corrected the same way', async () => {
+  const embedded = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'tag', command: 'git tag v1&&git push' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(embedded), completed(planned())])
+
+  await planRun(runner, INPUTS)
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('"&" is shell syntax')
+})
+
+test('a second plan the runner cannot run fails loudly', async () => {
+  const shell = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'tests', command: 'cd e2e && npm test' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'command', name: 'phone', command: 'npm test' }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(shell), completed(shell)])
+
+  await expect(planRun(runner, INPUTS)).rejects.toThrow(/criterion c1 command check "tests"/)
+})
