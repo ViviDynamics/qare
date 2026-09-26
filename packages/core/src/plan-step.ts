@@ -1,5 +1,5 @@
 import type { AgentRunner } from './runner.js'
-import { PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
+import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
 
 export interface PlanCriterionInput {
   id: string
@@ -18,6 +18,13 @@ export interface PlanInputs {
   suites?: string[]
   /** The URL of a running target the profile names (#122), which checks reach it at. */
   target?: string
+  /**
+   * Flow action kinds the change under review introduces (#64), so the schema,
+   * the prompt and the plan loader accept them at the base revision. Kinds the
+   * head revision does not know are refused by its own loader when the run
+   * loads the plan.
+   */
+  flowActions?: string[]
 }
 
 /** What the planner and the verifier are told when there is no change under review. */
@@ -39,16 +46,18 @@ const SYSTEM = [
 ].join(' ')
 
 /**
- * The schema nare enforces on the answer.
- *
- * It is deliberately looser than `parsePlan`. nare validates a documented
+ * The schema nare enforces on the answer, over the given flow action kinds: the
+ * planner's own vocabulary plus any kind the change under review introduces
+ * (#64). It is deliberately looser than `parsePlan`. nare validates a documented
  * subset of JSON Schema (type, properties, required, items, enum,
  * additionalProperties) and refuses a schema using anything else at startup, so
  * the union over check kinds cannot be expressed here. This catches the shape;
  * `parsePlan` remains the authority, which is also the constitution's rule that
  * code decides rather than the model.
  */
-export const PLAN_OUTPUT_SCHEMA = {
+export function planOutputSchema(extraFlowActions: readonly string[] = []) {
+  const kinds = [...new Set([...FLOW_ACTION_KINDS, ...extraFlowActions])]
+  return {
   type: 'object',
   properties: {
     schemaVersion: { type: 'string' },
@@ -74,7 +83,7 @@ export const PLAN_OUTPUT_SCHEMA = {
                   items: {
                     type: 'object',
                     properties: {
-                      action: { type: 'string', enum: ['open', 'type', 'click', 'assert', 'totp', 'backupCode'] },
+                      action: { type: 'string', enum: kinds },
                       url: { type: 'string' },
                       element: {
                         type: 'object',
@@ -110,12 +119,16 @@ export const PLAN_OUTPUT_SCHEMA = {
     },
   },
   required: ['schemaVersion', 'criteria'],
+  }
 }
+
+export const PLAN_OUTPUT_SCHEMA = planOutputSchema()
 
 function prompt(inputs: PlanInputs, correction?: string): string {
   const criteria = inputs.criteria
     .map((criterion) => `- ${criterion.id}: ${criterion.text}`)
     .join('\n')
+  const flowActionKinds = [...new Set([...FLOW_ACTION_KINDS, ...(inputs.flowActions ?? [])])]
   const suites = inputs.suites?.length
     ? `Suites this repository declares, which a check may name:\n${inputs.suites.map((suite) => `- ${suite}`).join('\n')}`
     : 'This repository declares no suites, so every check must stand on its own.'
@@ -136,12 +149,18 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     '- visual: {"kind":"visual","name":...,"screenshot":"name","widths":[390],"themes":["light"]}',
     '- mail: {"kind":"mail","name":...,"address":"the address a message is waited for","subject":"a substring to match", "timeoutMs":60000}',
     '',
-    'A flow action is one of open, type, click, assert, totp, backupCode. An element reference is semantic:',
+    `A flow action is one of ${flowActionKinds.join(', ')}. An element reference is semantic:`,
     '{"role":"the aria role","name":"the accessible name"} or {"testId":"the data-testid value"}.',
     'Never a CSS selector, never coordinates, never a free-form instruction.',
     'A totp action types the second-factor code the harness generates from the profile\'s seeded login.totp secret:',
     '{"action":"totp","element":{"role":"textbox","name":"Verification code"}}. A backupCode action types the profile\'s seeded',
     'backup code the same way. Never write a secret, a code or a recovery value into the plan: the profile seeds them.',
+    ...(inputs.flowActions?.length
+      ? [
+          `The change under test introduces the flow actions ${inputs.flowActions.join(', ')}: plan them as`,
+          '{"action":"<name>", ...} with the element the change\'s own docs say applies.',
+        ]
+      : []),
     'When a criterion\'s second factor arrives by email instead, give the mail check "code": {} and later checks read',
     '{"action":"type","element":{...},"value":"{{mail.<name>.code}}"}, or follow {{mail.<name>.link}} in an open action.',
     '',
@@ -195,7 +214,7 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
       prompt: prompt(inputs, correction),
       system: SYSTEM,
       toolPolicy: 'none',
-      outputSchema: JSON.stringify(PLAN_OUTPUT_SCHEMA),
+      outputSchema: JSON.stringify(planOutputSchema(inputs.flowActions ?? [])),
       budget: { maxOutputTokens: 4096 },
     })
     if (run.status !== 'completed')
@@ -208,7 +227,7 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
 
     let plan: Plan
     try {
-      plan = parsePlan(JSON.parse(run.output))
+      plan = parsePlan(JSON.parse(run.output), inputs.flowActions ?? [])
     } catch (error) {
       correction = error instanceof Error ? error.message : String(error)
       continue

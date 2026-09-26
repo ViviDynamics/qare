@@ -385,6 +385,11 @@ async function runCriterion(
       if (unverifiedReason === undefined) unverifiedReason = reason
       continue
     }
+    const shellSyntax = unrunnableCommandReason(resolved.check.run)
+    if (shellSyntax !== undefined) {
+      if (unverifiedReason === undefined) unverifiedReason = shellSyntax
+      continue
+    }
     const timeoutMs = resolved.check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
     // A command that echoes what it consumed writes it to stdout: the value is
     // a secret like any other, so the check's evidence is swept with it (#64).
@@ -771,6 +776,19 @@ function resolveCheckCwd(cwd: string | undefined, repoPath: string): string | un
   const rel = relative(repoPath, full)
   if (rel === '..' || rel.startsWith(`..${sep}`)) return undefined
   return full
+}
+
+/**
+ * Command checks are split on whitespace and spawned without a shell, so a
+ * character with shell meaning cannot reach the intent it was written with
+ * (#64): the command would run with it as a literal token and fail for a
+ * reason that has nothing to do with the criterion. Named here, unverified,
+ * rather than failed: a check that cannot run disproves nothing.
+ */
+function unrunnableCommandReason(run: string): string | undefined {
+  const found = run.match(/[|&;<>$`"'\\()\n\r]/)
+  if (found === null) return undefined
+  return `the planned command cannot run: command checks are split on whitespace and spawned without a shell, so ${JSON.stringify(found[0])} is not interpreted`
 }
 
 /**

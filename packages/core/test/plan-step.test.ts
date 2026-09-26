@@ -177,3 +177,56 @@ test('planning nothing is refused before a model is called', async () => {
   await expect(planRun(runner, { ...INPUTS, criteria: [] })).rejects.toThrow(/no criteria/i)
   expect(runner.requests).toHaveLength(0)
 })
+
+test('the flow action kinds the change introduces widen the schema and the prompt', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, { ...INPUTS, flowActions: ['magicLink'] })
+
+  const [request] = runner.requests
+  expect(request.prompt).toContain('A flow action is one of open, type, click, assert, totp, backupCode, magicLink')
+  const schema = JSON.parse(request.outputSchema)
+  const kinds =
+    schema.properties.criteria.items.properties.checks.items.properties.actions.items.properties.action.enum
+  expect(kinds).toContain('magicLink')
+  expect(kinds).toContain('totp')
+})
+
+test('an answer written in the change\'s declared vocabulary is accepted', async () => {
+  const answer = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      {
+        id: 'c1',
+        text: CRITERIA[0].text,
+        checks: [{ kind: 'flow', name: 'totp login', actions: [{ action: 'magicLink', element: { testId: 'sign-in' } }] }],
+      },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(answer)])
+
+  const plan = await planRun(runner, { ...INPUTS, flowActions: ['magicLink'] })
+
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ actions: [{ action: 'magicLink' }] }] })
+})
+
+test('an answer written in a vocabulary the change did not declare is corrected, then refused', async () => {
+  const answer = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      {
+        id: 'c1',
+        text: CRITERIA[0].text,
+        checks: [{ kind: 'flow', name: 'totp login', actions: [{ action: 'magicLink', element: { testId: 'sign-in' } }] }],
+      },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(answer), completed(answer)])
+
+  await expect(planRun(runner, { ...INPUTS })).rejects.toThrow(/unknown flow action "magicLink"/)
+  expect(runner.requests).toHaveLength(2)
+  // The correction carries the refusal, so the planner knows what to fix.
+  expect(runner.requests[1].prompt).toContain('unknown flow action "magicLink"')
+})

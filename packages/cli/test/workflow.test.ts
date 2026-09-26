@@ -239,3 +239,28 @@ test('no step reads a step output before the step that sets it has run', () => {
     }
   }
 })
+
+test('plan hands the planner the flow action kinds the change introduces, read from the diff as data', () => {
+  const plan = section('plan')
+
+  expect(plan).toContain("grep '^+.*FLOW_ACTION_KINDS'")
+  expect(plan).toContain('flow_actions=(--flow-actions "$kinds")')
+  expect(plan).toContain('"${flow_actions[@]}"')
+  expect(plan).toContain('FLOW_ACTION_KINDS')
+})
+
+test('judge loads the plan with the same flow action kinds', () => {
+  const judge = section('judge')
+
+  expect(judge).toContain("grep '^+.*FLOW_ACTION_KINDS'")
+  expect(judge).toContain('flow_actions=(--flow-actions "$kinds")')
+  expect(judge).toContain('"${flow_actions[@]}"')
+})
+
+test('a blocked run whose unverified criteria are all planner-unplannable or unrunnable commands is neutral', () => {
+  const execute = section('execute')
+
+  expect(execute).toContain('[ "$code" -eq 2 ]')
+  expect(execute).toContain('the planner could not plan it')
+  expect(execute).toContain('the planned command cannot run')
+})

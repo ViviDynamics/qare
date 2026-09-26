@@ -161,3 +161,44 @@ test('qare plan refuses an issue that states no criteria', async () => {
   expect(code).toBe(4)
   expect(err.lines.join('')).toMatch(/acceptance criteria|done when/i)
 })
+
+test('--flow-actions takes kind names, not free-form text', async () => {
+  const { criteriaPath, diffPath } = await inputs()
+  const err = capture()
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--flow-actions', 'totp login'],
+    capture().writer,
+    err.writer,
+  )
+
+  expect(code).toBe(4)
+  expect(err.lines.join('')).toContain('--flow-actions takes comma-separated kind names')
+})
+
+test('planning hands the planner the change\'s own flow action kinds, and the plan the loader accepts', async () => {
+  const { criteriaPath, diffPath, outPath } = await inputs()
+  const answer = {
+    schemaVersion: '1',
+    criteria: [
+      {
+        id: 'c1',
+        text: CRITERIA[0].text,
+        checks: [{ kind: 'flow', name: 'magic login', actions: [{ action: 'magicLink', element: { testId: 'sign-in' } }] }],
+      },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+    ],
+  }
+  const out = capture()
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', outPath, '--nare', await fakeNare(answer), '--flow-actions', 'magicLink'],
+    out.writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  const plan = JSON.parse(await readFile(outPath, 'utf8'))
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ actions: [{ action: 'magicLink' }] }] })
+  expect(out.lines.join('')).toContain('magicLink')
+})

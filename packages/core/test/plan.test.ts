@@ -231,3 +231,64 @@ test('a mail check that reads a one-time code parses with an optional pattern, a
   )
   expect(error.field).toBe('criteria[0].checks[0].code.pattern')
 })
+
+test('a flow action in the change\'s own vocabulary is carried verbatim when the loader is told about it', () => {
+  // The base revision's loader has no shape for a kind the change introduces
+  // (#64): it carries the object as planned, and the head revision's loader,
+  // which knows its own vocabulary, is the authority for the shape.
+  const plan = parsePlan(
+    {
+      schemaVersion: '1',
+      criteria: [
+        {
+          id: 'c1',
+          text: 'the second factor signs in',
+          checks: [{ kind: 'flow', name: 'totp-login', actions: [{ action: 'magicLink', element: { testId: 'sign-in' } }] }],
+        },
+      ],
+    },
+    ['magicLink'],
+  )
+
+  expect(plan.criteria[0]).toMatchObject({
+    checks: [{ kind: 'flow', name: 'totp-login', actions: [{ action: 'magicLink', element: { testId: 'sign-in' } }] }],
+  })
+})
+
+test('a flow action outside the declared vocabulary is refused, naming what was offered', () => {
+  const error = planError(() =>
+    parsePlan({
+      schemaVersion: '1',
+      criteria: [
+        {
+          id: 'c1',
+          text: 'the second factor signs in',
+          checks: [{ kind: 'flow', name: 'totp-login', actions: [{ action: 'magicLink', element: { testId: 'sign-in' } }] }],
+        },
+      ],
+    }),
+  )
+
+  expect(error.field).toBe('criteria[0].checks[0].actions[0].action')
+  expect(error.message).toContain('"magicLink"')
+})
+
+test('the refusal names the whole vocabulary it was offered, including the change\'s kinds', () => {
+  const error = planError(() =>
+    parsePlan(
+      {
+        schemaVersion: '1',
+        criteria: [
+          {
+            id: 'c1',
+            text: 'the second factor signs in',
+            checks: [{ kind: 'flow', name: 'totp-login', actions: [{ action: 'smoke', element: { testId: 'sign-in' } }] }],
+          },
+        ],
+      },
+      ['magicLink'],
+    ),
+  )
+
+  expect(error.message).toContain('"totp", "backupCode", "magicLink"')
+})

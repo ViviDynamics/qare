@@ -258,6 +258,27 @@ async function redactionRulesFor(profileDir: string | undefined, out: Writer): P
  * A half-written plan.json would be consumed by execute as though it were the
  * whole run.
  */
+/**
+ * The flow action kinds the change under review introduces (#64), as
+ * `--flow-actions a,b`. They widen the planner's schema at the base revision;
+ * a base revision whose qare has no such flag yet never reads it, and the run
+ * still validates every action against the head revision's own vocabulary.
+ */
+function flowActionKinds(spec: string | undefined): string[] {
+  if (spec === undefined) return []
+  const kinds = spec
+    .split(',')
+    .map((kind) => kind.trim())
+    .filter(Boolean)
+  for (const kind of kinds)
+    if (!/^[A-Za-z][A-Za-z0-9]{0,30}$/.test(kind))
+      throw new Error(
+        `--flow-actions takes comma-separated kind names (letters and digits, starting with a letter), not ${JSON.stringify(kind)}`,
+      )
+  if (kinds.length > 12) throw new Error('--flow-actions takes at most 12 kinds')
+  return [...new Set(kinds)]
+}
+
 async function planCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
   try {
     const criteriaPath = flag(argv, '--criteria')
@@ -273,6 +294,7 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       .map((suite) => suite.trim())
       .filter(Boolean)
     const binary = flag(argv, '--nare')
+    const flowActions = flowActionKinds(flag(argv, '--flow-actions'))
 
     const allowNone = argv.includes('--allow-no-criteria')
     let criteria: { id: string; text: string }[]
@@ -303,7 +325,10 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       criteria,
       diff,
       ...(suites === undefined ? {} : { suites }),
+      ...(flowActions.length === 0 ? {} : { flowActions }),
     })
+    if (flowActions.length > 0)
+      out.write(`planning with the change's flow action kinds: ${flowActions.join(', ')}\n`)
 
     await mkdir(dirname(outPath), { recursive: true })
     await writeFile(outPath, `${JSON.stringify(plan, null, 2)}\n`, 'utf8')
@@ -371,6 +396,7 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     const binary = flag(argv, '--nare')
     const planPath = flag(argv, '--plan')
     const diffPath = flag(argv, '--diff')
+    const flowActions = flowActionKinds(flag(argv, '--flow-actions'))
     // Everything judge writes is published, and the verifier's reasons are
     // model text about evidence and a diff that can carry fixture data.
     const rules = await redactionRulesFor(flag(argv, '--profile'), out)
@@ -385,7 +411,7 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
       throw new Error(
         'qare judge checks proven criteria with the verifier, which needs --plan <path> (for the criteria text) and --diff <path>; pass --runner none to judge without it',
       )
-    const plan = verify ? loadPlan(await readFile(resolve(planPath as string), 'utf8')) : undefined
+    const plan = verify ? loadPlan(await readFile(resolve(planPath as string), 'utf8'), flowActions) : undefined
     // Evidence paths in result.json are relative to its directory, and that
     // directory is all the verifier's read tool can reach.
     const evidenceDir = dirname(resultPath)

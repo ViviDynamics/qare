@@ -174,9 +174,20 @@ jobs:
           NARE_MODEL: claude-haiku
         run: |
           set -euo pipefail
+          # The change may introduce flow action kinds the base planner's
+          # vocabulary lacks (#64). They are read out of the diff as data and
+          # handed to the planner's schema. A base revision whose qare has no
+          # such flag yet never reads it; criteria that still cannot be planned
+          # come out unplannable, and execute treats those as neutral.
+          kinds=$(grep '^+.*FLOW_ACTION_KINDS' change.diff | grep -oE "'[A-Za-z][A-Za-z0-9]{0,30}'" | tr -d "'" | sort -u | head -12 | paste -sd, - || true)
+          flow_actions=()
+          if [ -n "$kinds" ]; then
+            flow_actions=(--flow-actions "$kinds")
+            echo "planning with the change's flow action kinds: $kinds" >> "$GITHUB_STEP_SUMMARY"
+          fi
           node packages/cli/dist/index.js plan \
             --criteria criteria.json --diff change.diff --out plan.json \
-            --nare "$HOME/.local/bin/nare"
+            --nare "$HOME/.local/bin/nare" "${flow_actions[@]}"
       - name: Upload plan.json
         uses: actions/upload-artifact@v4
         with:
@@ -234,7 +245,7 @@ jobs:
           # 3 is refused: this repository has no .qa profile or no stubs, so
           # qare will not pretend to have checked it. That is an outcome about
           # the repository rather than a fault in the change, judge still
-          # reports it, and stub issues are filed. Anything else is a failure.
+          # reports it, and stub issues are filed.
           if [ "$code" -eq 3 ]; then
             # A refusal writes result.json like any other run; without it,
             # exit 3 means something else went wrong and judge has nothing.
@@ -243,6 +254,25 @@ jobs:
               exit 1
             fi
             echo "qare refused this run (no profile or stubs yet); judge will report it and file stub issues" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # 2 is blocked: nothing was disproven, but something was left
+          # unverified. When every unverified criterion is one the planner
+          # could not plan, or whose planned command cannot run without a
+          # shell, the gap is in the planning vocabulary rather than in the
+          # change (#64): judge reports each criterion by name, and the
+          # pipeline stays green. Any other blocked run — a check that could
+          # not reach the app, an environment that would not boot — is a fault
+          # and stays red.
+          if [ "$code" -eq 2 ] && [ -f evidence/result.json ] && jq -e '
+            .verdict == "blocked" and
+            ([.criteria[] | select(.outcome == "unverified")] | length) > 0 and
+            ([.criteria[] | select(.outcome == "unverified")
+              | (.reason // "")
+              | startswith("the planner could not plan it")
+                or startswith("the planned command cannot run")] | all)
+          ' evidence/result.json > /dev/null; then
+            echo "verdict blocked: every criterion left unverified is planner-unplannable or names a command that cannot run without a shell; judge reports them, and nothing was disproven" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           exit "$code"
@@ -369,10 +399,18 @@ jobs:
           NARE_MODEL: claude-haiku
         run: |
           set -euo pipefail
+          # The same flow action kinds the plan job handed the planner (#64):
+          # the judge loads the plan with the base revision's loader, which
+          # needs them to accept checks written in the change's vocabulary.
+          kinds=$(grep '^+.*FLOW_ACTION_KINDS' change.diff | grep -oE "'[A-Za-z][A-Za-z0-9]{0,30}'" | tr -d "'" | sort -u | head -12 | paste -sd, - || true)
+          flow_actions=()
+          if [ -n "$kinds" ]; then
+            flow_actions=(--flow-actions "$kinds")
+          fi
           node packages/cli/dist/index.js judge \
             --result evidence/result.json --outDir . \
             --plan plan.json --diff change.diff \
-            --nare "$HOME/.local/bin/nare" --profile profile
+            --nare "$HOME/.local/bin/nare" --profile profile "${flow_actions[@]}"
       - name: File stub issues (refused runs only)
         if: github.event_name == 'pull_request'
         shell: bash
