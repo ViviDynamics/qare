@@ -61,7 +61,7 @@ test('the step that talks to the verifier model holds no GitHub token', () => {
 
 test('judge runs the verifier with the criteria text, the diff and the evidence', () => {
   const judge = section('judge')
-  for (const flag of ['--plan plan.json', '--diff change.diff', '--result evidence/result.json', '--nare'])
+  for (const flag of ['--plan plan.json', '--diff change-planner.diff', '--result evidence/result.json', '--nare'])
     expect(judge).toContain(flag)
   expect(judge).not.toContain('--runner none')
   // The evidence directory is the verifier's file root, so it must be its own.
@@ -274,4 +274,17 @@ test('the plan step can carry the planner prompt when the diff is too big for on
   const plan = section('plan')
   expect(plan).toContain('one argument can carry')
   expect(plan).toContain('--diff change-planner.diff')
+})
+
+test('the model-facing diff copies are scrubbed of the values the change adds (#64)', () => {
+  // The seeded totp value lives in a profile the change itself adds, so no
+  // profile handed to the CLI can be trusted to carry it: collect scrubs the
+  // added secret and value lines from the planner's copy, and the verifier
+  // reads that scrubbed copy instead of the raw diff.
+  const collect = section('collect')
+  expect(collect).toContain("sed -E 's/^(\\+[[:space:]]*(secret|value):).*")
+  expect(collect).toContain("mv change-planner.scrubbed change-planner.diff")
+  const judge = section('judge')
+  expect(judge).toContain('--diff change-planner.diff')
+  expect(judge).not.toContain('--diff change.diff')
 })

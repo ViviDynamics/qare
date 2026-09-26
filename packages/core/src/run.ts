@@ -376,7 +376,10 @@ async function runCriterion(
       evidence.push(...outcome.evidence)
       if (outcome.status === 'failed') failed = true
       else if (outcome.status === 'unverified' && unverifiedReason === undefined)
-        unverifiedReason = outcome.reason
+        // The flow's reason quotes what the action saw, and the flow types
+        // what it read from mail: the dynamic sweep covers model- and
+        // evidence-facing text alike, result.json included (#64).
+        unverifiedReason = outcome.reason === undefined ? undefined : redactText(outcome.reason, sweepRules)
       continue
     }
     // Run-time artefact resolution happens last, immediately before the check

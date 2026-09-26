@@ -434,3 +434,45 @@ test('a flow that only reads a mail link keeps its captures: a link is not a cod
   expect(log).not.toContain(loginUrl[0])
   expect(log).not.toContain('withheld')
 })
+
+test('a flow action failure that quotes a mail-borne value is redacted in the result (#64)', async () => {
+  const events: string[] = []
+  const readMail = async (): Promise<MailMessage[]> => [
+    {
+      from: 'app@example.com',
+      subject: 'Sign in',
+      body: 'Your code is 555111',
+      received_at: new Date().toISOString(),
+    },
+  ]
+  const factory = async (): Promise<FakeSession> => {
+    const page: FlowPage = {
+      open: async (url) => events.push(`open ${url}`),
+      click: async () => events.push('click'),
+      type: async (_what, value) => {
+        events.push(`type ${value}`)
+        throw new Error(`the seam rejected the value ${value}`)
+      },
+      assertText: async (text) => events.push(`assert ${text}`),
+      screenshot: async () => undefined,
+    }
+    const trace: FlowTrace = { start: async () => 'trace-1', stop: async () => undefined }
+    return { page, trace, dispose: async () => undefined, events }
+  }
+  const job = await makeJob({
+    criteria: flowCriterion(
+      { kind: 'mail', name: 'signup', address: 'qa@example.com', code: {} },
+      { kind: 'flow', actions: [{ action: 'type', element: { role: 'textbox', name: 'Code' }, value: '{{mail.signup.code}}' }] },
+    ),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, flowSession: factory, readMail })
+
+  expect(result.verdict).toBe('blocked')
+  expect(result.criteria[0].outcome).toBe('unverified')
+  // The reason the action failure quotes the typed value, so the value never
+  // reaches the result the verifier reads (#64).
+  expect(result.criteria[0].reason).not.toContain('555111')
+  expect(result.criteria[0].reason).toContain('[redacted]')
+})
