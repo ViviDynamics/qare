@@ -112,10 +112,16 @@ jobs:
           # never installed or run in this job.
           git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
           git diff "${BASE_SHA}...${HEAD_SHA}" > change.diff
+          # The planner's prompt travels as one argument (nare#29), so a diff
+          # bigger than that budget cannot reach the planner whole. The
+          # planner's copy keeps the change's source and spec and leaves the
+          # test suite out; the full diff stays the diff for execute and judge.
+          git diff "${BASE_SHA}...${HEAD_SHA}" -- ':!packages/*/test' ':!.agents' ':!.claude' > change-planner.diff
           echo "criteria=present" >> "$GITHUB_OUTPUT"
           {
             echo "criteria read from: $(tr '\n' ' ' < linked.txt)"
             echo "diff bytes: $(wc -c < change.diff)"
+            echo "planner diff bytes: $(wc -c < change-planner.diff)"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the QA inputs
         if: steps.inputs.outputs.criteria == 'present'
@@ -125,6 +131,7 @@ jobs:
           path: |
             criteria.json
             change.diff
+            change-planner.diff
           if-no-files-found: error
 
   # label: plan (model key only)
@@ -185,9 +192,24 @@ jobs:
             flow_actions=(--flow-actions "$kinds")
             echo "planning with the change's flow action kinds: $kinds" >> "$GITHUB_STEP_SUMMARY"
           fi
-          node packages/cli/dist/index.js plan \
+          if ! node packages/cli/dist/index.js plan \
             --criteria criteria.json --diff change.diff --out plan.json \
-            --nare "$HOME/.local/bin/nare" --profile .qa "${flow_actions[@]}"
+            --nare "$HOME/.local/bin/nare" --profile .qa "${flow_actions[@]}" 2>plan.err; then
+            # A prompt over the one-argument budget (nare#29) is a capacity
+            # limit, not a plan verdict: the planner's copy of the diff, with
+            # the test suite left out, fits the budget. Any other failure
+            # surfaces as it happened, and a retry that still cannot fit
+            # fails the job.
+            if grep -q "one argument can carry" plan.err; then
+              echo "the planner's prompt exceeded the argument budget, retrying with the diff trimmed to the change's source" >> "$GITHUB_STEP_SUMMARY"
+              node packages/cli/dist/index.js plan \
+                --criteria criteria.json --diff change-planner.diff --out plan.json \
+                --nare "$HOME/.local/bin/nare" --profile .qa "${flow_actions[@]}"
+            else
+              cat plan.err >&2
+              exit 4
+            fi
+          fi
       - name: Upload plan.json
         uses: actions/upload-artifact@v4
         with:
