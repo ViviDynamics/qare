@@ -85,6 +85,47 @@ test('an injected loader that fails rejects deterministically with the named err
   await expect(session).rejects.toThrow(NOT_INSTALLED_MESSAGE)
 })
 
+test('session screenshots black out the profile masks at capture (#119)', async () => {
+  const screenshotOpts: unknown[] = []
+  const locators: string[] = []
+  const chromium = {
+    launch: () =>
+      Promise.resolve({
+        newContext: async () => ({
+          on: () => undefined,
+          newPage: async () => ({
+            goto: async () => undefined,
+            locator: (selector: string) => {
+              locators.push(selector)
+              return { selector }
+            },
+            screenshot: async (capture: unknown) => {
+              screenshotOpts.push(capture)
+              return undefined
+            },
+          }),
+        }),
+        close: async () => undefined,
+      }),
+  }
+  const session = await makePlaywrightFlowSession({
+    loadPlaywright: async () => ({ chromium }) as never,
+    masks: ['css=.fixture-banner', 'text="jane@pilot.example"'],
+  })
+
+  await session.page.screenshot('/tmp/qare-flow-final.png')
+  await session.dispose()
+
+  expect(locators).toEqual(['css=.fixture-banner', 'text="jane@pilot.example"'])
+  expect(screenshotOpts).toEqual([
+    {
+      path: '/tmp/qare-flow-final.png',
+      mask: [{ selector: 'css=.fixture-banner' }, { selector: 'text="jane@pilot.example"' }],
+      maskColor: '#000000',
+    },
+  ])
+})
+
 test('an injected loader crashing with a non-NotFound code names the load failure', async () => {
   const session = makePlaywrightFlowSession({
     loadPlaywright: async () => {

@@ -125,3 +125,26 @@ test('a redact section that is not a mapping fails naming it', async () => {
   expect((await profileError(() => loadProfile(dir))).field).toBe('redact')
   rmSync(dir, { recursive: true })
 })
+
+test('a redact section loads its mask selectors (#119)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(
+    join(dir, 'config.yml'),
+    `${fixtureConfig()}\nredact:\n  masks:\n    - css=.fixture-banner\n    - 'text="jane@pilot.example"'\n`,
+  )
+
+  const profile = await loadProfile(dir)
+
+  expect(profile.redact?.masks).toEqual(['css=.fixture-banner', 'text="jane@pilot.example"'])
+  rmSync(dir, { recursive: true })
+})
+
+test('a mask selector that does not parse fails the profile when it loads, naming redact (#119)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\nredact:\n  masks:\n    - foo=.fixture-banner\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('redact')
+  expect(error.message).toContain('foo=.fixture-banner')
+  rmSync(dir, { recursive: true })
+})

@@ -45,6 +45,12 @@ export interface FlowCheckOpts {
    * published evidence.
    */
   redactLog?: (text: string) => string
+  /**
+   * Profile masks (#119): page regions the browser blacks out while it takes
+   * every screenshot of this check, so fixture data never reaches the pixels.
+   * The action log names them beside each screenshot they applied to.
+   */
+  masks?: string[]
 }
 
 export interface FlowCheckResult {
@@ -91,7 +97,7 @@ function describeAction(action: FlowAction, index: number): string {
  * is unverified, never failed: the criterion says nothing about the change.
  */
 export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult> {
-  const { actions, page, trace, outDir, tracesDir, redactLog } = opts
+  const { actions, page, trace, outDir, tracesDir, redactLog, masks } = opts
 
   if (actions.length === 0) {
     return { outcome: 'unverified', reason: 'flow has no actions', evidence: [] }
@@ -115,9 +121,14 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
     const text = log.join('\n')
     await writeFile(join(outDir, ACTION_LOG), `${redactLog === undefined ? text : redactLog(text)}\n`)
   }
+  // Evidence says which masks applied to each screenshot (#119): the masks are
+  // the profile's own, so the note is the same for every capture, and user-
+  // authored strings like the selectors are redacted with the log.
+  const masksNote = masks === undefined || masks.length === 0 ? '' : ` masks: ${masks.join(', ')}`
   const screenshot = async (name: string): Promise<string | undefined> => {
     try {
       await page.screenshot(join(outDir, name))
+      log.push(`screenshot ${name}${masksNote}`)
       return name
     } catch (error) {
       log.push(`screenshot ${name} failed: ${String(error)}`)

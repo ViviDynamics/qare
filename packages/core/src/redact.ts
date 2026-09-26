@@ -75,6 +75,169 @@ export interface ProfileRedaction {
   values?: string[]
   /** Regular expressions (JavaScript syntax, no flags), redacted wherever they match. */
   patterns?: string[]
+  /**
+   * Playwright selectors naming page regions masked at capture (#119): the
+   * regions are blacked out while a screenshot is taken, so fixture data never
+   * reaches the pixels a text rule cannot read. The same masks apply to every
+   * screenshot of the run, at base and head alike.
+   */
+  masks?: string[]
+}
+
+// The engines playwright-core 1.63 resolves a selector part with, the user
+// facing ones from the evaluator's registry. An unknown engine is one a
+// screenshot can never resolve, so it is refused at load.
+const MASK_ENGINES = new Set([
+  'css',
+  'css:light',
+  'xpath',
+  'xpath:light',
+  'text',
+  'text:light',
+  'id',
+  'id:light',
+  'data-testid',
+  'data-testid:light',
+  'data-test-id',
+  'data-test-id:light',
+  'data-test',
+  'data-test:light',
+  'nth',
+  'role',
+  'visible',
+])
+
+// The engine-name shape parseSelectorString accepts before it decides a part
+// is `engine=body` rather than CSS; `*` prefixes a capture part.
+const MASK_ENGINE_NAME = /^[a-zA-Z_0-9-+:*]+$/
+
+/**
+ * Split on `>>` the way Playwright's own selector parser does: outside quotes,
+ * with backslash escapes, and no opening quote in a `text=` part's body, where
+ * a `>>` stays inside the text rather than chaining the selector.
+ */
+function maskSelectorParts(selector: string): string[] {
+  const parts: string[] = []
+  let quote: string | undefined
+  let index = 0
+  const textPartStarted = (): boolean => /^\s*text\s*=(.)/.test(selector.slice(0, index))
+  while (index < selector.length) {
+    const c = selector[index]
+    if (c === '\\' && index + 1 < selector.length) index += 2
+    else if (c === quote) {
+      quote = undefined
+      index++
+    } else if (!quote && (c === '"' || c === "'" || c === '`') && !textPartStarted()) {
+      quote = c
+      index++
+    } else if (!quote && c === '>' && selector[index + 1] === '>') {
+      parts.push(selector.slice(0, index))
+      selector = selector.slice(index + 2)
+      index = 0
+    } else index++
+  }
+  parts.push(selector)
+  return parts
+}
+
+/**
+ * A selector that does not parse fails the profile when it loads, like a bad
+ * redact pattern (#119): a mask that only failed at capture time would publish
+ * the screenshot it was supposed to guard. The check follows playwright-core's
+ * selector parser for the parts it decides without a page — `>>` parts, engine
+ * names, capture parts, quoting and bracketing — and refuses `internal:*`
+ * engines, which are not a surface for profiles. Deeper CSS syntax is the
+ * browser's to reject at capture.
+ */
+export function validateMaskSelectors(selectors: readonly string[] | undefined): void {
+  for (const selector of selectors ?? []) {
+    if (selector.trim() === '')
+      throw new RedactionError(`redact mask ${JSON.stringify(selector)} is not a valid Playwright selector (a selector must not be empty)`)
+    let captures = 0
+    for (const part of maskSelectorParts(selector)) {
+      const trimmed = part.trim()
+      if (trimmed === '') {
+        throw new RedactionError(
+          `redact mask ${JSON.stringify(selector)} is not a valid Playwright selector (a part of a >> chain is empty)`,
+        )
+      }
+      let name: string | undefined
+      let body: string
+      const eqIndex = trimmed.indexOf('=')
+      if (eqIndex !== -1 && MASK_ENGINE_NAME.test(trimmed.slice(0, eqIndex).trim())) {
+        name = trimmed.slice(0, eqIndex).trim()
+        body = trimmed.slice(eqIndex + 1)
+      } else if (
+        (trimmed.length > 1 && trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+        (trimmed.length > 1 && trimmed.startsWith("'") && trimmed.endsWith("'"))
+      ) {
+        name = 'text'
+        body = trimmed
+      } else if (/^\(*\/\//.test(trimmed) || trimmed.startsWith('..')) {
+        name = 'xpath'
+        body = trimmed
+      } else {
+        name = 'css'
+        body = trimmed
+      }
+      if (name.startsWith('*')) {
+        name = name.slice(1)
+        captures += 1
+      }
+      if (name.startsWith('internal:'))
+        throw new RedactionError(
+          `redact mask ${JSON.stringify(selector)} names the internal engine ${JSON.stringify(name)}, which is not a surface for profiles`,
+        )
+      if (!MASK_ENGINES.has(name)) {
+        throw new RedactionError(
+          `redact mask ${JSON.stringify(selector)} names the unknown engine ${JSON.stringify(name)} (known engines: ${[...MASK_ENGINES].join(', ')})`,
+        )
+      }
+      if (body.trim() === '') {
+        throw new RedactionError(
+          `redact mask ${JSON.stringify(selector)} has an empty ${JSON.stringify(name)} body`,
+        )
+      }
+      if (name === 'css') {
+        let quote: string | undefined
+        let squares = 0
+        let parens = 0
+        for (let i = 0; i < body.length; i++) {
+          const c = body[i]
+          if (c === '\\') {
+            i++
+            continue
+          }
+          if (quote !== undefined) {
+            if (c === quote) quote = undefined
+            continue
+          }
+          if (c === '"' || c === "'") {
+            quote = c
+            continue
+          }
+          if (c === '[') squares++
+          else if (c === ']') squares--
+          else if (c === '(') parens++
+          else if (c === ')') parens--
+        }
+        if (quote !== undefined) {
+          throw new RedactionError(
+            `redact mask ${JSON.stringify(selector)} has an unterminated quote in its css part`,
+          )
+        }
+        if (squares !== 0 || parens !== 0) {
+          throw new RedactionError(
+            `redact mask ${JSON.stringify(selector)} has unbalanced brackets in its css part`,
+          )
+        }
+      }
+    }
+    if (captures > 1)
+      throw new RedactionError(
+        `redact mask ${JSON.stringify(selector)} captures more than once (only one part of a >> chain may start with *)`,
+      )
+  }
 }
 
 export class RedactionError extends Error {

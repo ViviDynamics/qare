@@ -113,6 +113,9 @@ suites:
 redact:                          # optional: fixture data that must not be published
   values: ["jane@pilot.example"] # literal strings
   patterns: ['CUST-\d{6}']       # regular expressions
+  masks:                         # page regions blacked out in every screenshot
+    - css=.fixture-banner        # at capture (#119); a selector that does not
+    - '[data-testid="fixture-email"]' # parse fails the profile when it loads
 ```
 
 A profile that checks an app already running (staging, a preview deployment,
@@ -485,8 +488,13 @@ Fork PRs are refused outright in the Action.
   password assignments, passwords in URLs, and the profile's `redact` values
   and patterns. A run redacts what it writes; the pipeline sweeps the evidence
   directory again before uploading it, and a file the sweep cannot vouch for (a
-  binary that is not an image, a symlink) stops the upload. Screenshots are
-  published as captured, because text rules cannot read pixels.
+  binary that is not an image, a symlink) stops the upload.
+- Screenshots are masked at capture (#119): the profile's `redact.masks`
+  selectors name page regions the browser blacks out while it takes the
+  screenshot, so fixture data never reaches the pixels text rules cannot read.
+  The same masks apply to base and head screenshots alike, so masking never
+  shows as a visual difference, and the evidence names the masks that applied
+  to each screenshot. What a mask cannot cover, text redaction still covers.
 - `result.json` is the machine contract other harnesses consume.
 - Both artifact schemas are documented in [schemas.md](./schemas.md); the
   orchestrator contract (invocation, exit codes and reaction per verdict) in

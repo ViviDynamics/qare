@@ -40,6 +40,7 @@ export {
   redactText,
   redactValue,
   redactionRules,
+  validateMaskSelectors,
 } from './redact.js'
 export type { EvidenceRedaction, ProfileRedaction, RedactionRule } from './redact.js'
 export type {

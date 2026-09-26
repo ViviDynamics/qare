@@ -20,6 +20,7 @@ export async function makePlaywrightScreenshot(
   opts: {
     browserExecutablePath?: string
     loadPlaywright?: () => Promise<PlaywrightModule>
+    masks?: string[]
   } = {},
 ): Promise<ScreenshotFn> {
   const loadPlaywright =
@@ -70,7 +71,18 @@ export async function makePlaywrightScreenshot(
     try {
       const page = await context.newPage()
       await page.goto(url, { waitUntil: 'networkidle' })
-      return await page.screenshot({ type: 'png' })
+      // The masks are the profile's own, revision-blind (#119): base and head
+      // screenshots black out the same regions, so masking never shows as a
+      // visual difference. They black out at capture, in the browser.
+      return await page.screenshot(
+        opts.masks === undefined || opts.masks.length === 0
+          ? { type: 'png' }
+          : {
+              type: 'png',
+              mask: opts.masks.map((selector) => page.locator(selector)),
+              maskColor: '#000000',
+            },
+      )
     } finally {
       await context.close()
     }

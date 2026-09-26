@@ -2,7 +2,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { parseDurationMs } from './duration.js'
-import { RedactionError, redactionRules, type ProfileRedaction } from './redact.js'
+import { RedactionError, redactionRules, validateMaskSelectors, type ProfileRedaction } from './redact.js'
 
 export interface ProfileApp {
   boot: { compose: string; service: string }
@@ -340,17 +340,20 @@ function parseMail(value: unknown): ProfileMail {
 }
 
 function parseRedact(value: unknown): ProfileRedaction {
-  if (!isRecord(value)) fail('redact', 'redact must be a YAML object with values and/or patterns')
+  if (!isRecord(value)) fail('redact', 'redact must be a YAML object with values, patterns and/or masks')
   const redact: ProfileRedaction = {
     ...(value.values === undefined ? {} : { values: stringArray(value.values, 'redact.values', 'redact values') }),
     ...(value.patterns === undefined
       ? {}
       : { patterns: stringArray(value.patterns, 'redact.patterns', 'redact patterns') }),
+    ...(value.masks === undefined ? {} : { masks: stringArray(value.masks, 'redact.masks', 'redact masks') }),
   }
   // Compiled here so a bad pattern stops the profile loading, not the upload
-  // at the end of a run.
+  // at the end of a run. A mask selector that does not parse fails the same
+  // way: a screenshot a mask cannot resolve would publish unmasked.
   try {
     redactionRules(redact)
+    validateMaskSelectors(redact.masks)
   } catch (error) {
     if (error instanceof RedactionError) fail('redact', error.message)
     throw error

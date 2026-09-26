@@ -22,10 +22,12 @@ const NO_CHECKS_REASON = 'no checks were given for this criterion, so nothing ra
 /**
  * Where the flow check gets its browser: the run hands over a session factory,
  * and tests hand over a fake, so the runner never imports the backend twice (#121).
+ * The factory receives the profile's masks (#119), so an injected backend takes
+ * them like the playwright one and the action log's masks note stays honest.
  * `outbound` lists every connection the session's page attempted, which a run
  * against a target checks against the hosts the profile declares (#122).
  */
-export type FlowSessionFactory = () => Promise<{
+export type FlowSessionFactory = (opts: { masks: string[] }) => Promise<{
   page: FlowPage
   trace: FlowTrace
   dispose: () => Promise<void>
@@ -110,7 +112,7 @@ export async function runJob(
   // says nothing about any other run (#69).
   const artefacts = new Artefacts()
   const target = profile.target === undefined ? undefined : targetContext(profile.target)
-  const flow = { session: opts.flowSession, suites: profile.suites, target }
+  const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target }
   for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow))
   // The judge is the verdict decision. Base execution and egress interception
   // of a booted stack land with the orchestrator; a target run records what its
@@ -261,7 +263,7 @@ async function runCriterion(
   values: RunValues,
   mail: { inbox?: string; readMail?: ReadMail },
   artefacts: Artefacts,
-  flow: { session?: FlowSessionFactory; suites: ProfileSuite[]; target?: FlowTargetContext },
+  flow: { session?: FlowSessionFactory; masks: string[]; suites: ProfileSuite[]; target?: FlowTargetContext },
 ): Promise<CriterionResult> {
   const checks = criterion.checks ?? []
   if (checks.length === 0)
@@ -312,6 +314,7 @@ async function runCriterion(
         job.evidenceDir,
         checkDir,
         rules,
+        flow.masks,
       )
       evidence.push(...outcome.evidence)
       if (outcome.status === 'failed') failed = true
@@ -422,6 +425,7 @@ async function runFlowCheckJob(
   evidenceDir: string,
   checkDir: string,
   rules: readonly RedactionRule[],
+  masks: string[],
 ): Promise<{ status: 'passed' | 'failed' | 'unverified'; reason?: string; evidence: string[] }> {
   const inEvidence = (names: readonly string[]): string[] => names.map((name) => `${checkDir}/${name}`)
   if (check.suite !== undefined) {
@@ -456,11 +460,13 @@ async function runFlowCheckJob(
       evidence: inEvidence(['suite.txt']),
     }
   }
+  // The masks are the profile's own (#119): they black out their page regions
+  // in every screenshot the backend takes, and the action log names them.
   const factory = session ?? makePlaywrightFlowSession
   const timeoutMs = check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
   let started
   try {
-    started = await factory()
+    started = await factory({ masks })
   } catch (error) {
     // A backend that will not start says nothing about the change: without a
     // browser the flow is unverifiable, which is an outcome and not a failure.
@@ -484,6 +490,7 @@ async function runFlowCheckJob(
       outDir: join(evidenceDir, checkDir),
       tracesDir: resolve(evidenceDir, '..', 'traces', checkDir),
       redactLog: (text) => redactText(text, rules),
+      masks,
     })
     // The losing branch of the race is drained, so a flow that finishes late
     // after a timeout does not crash the run with an unhandled rejection.

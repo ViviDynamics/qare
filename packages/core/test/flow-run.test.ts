@@ -146,6 +146,37 @@ test('an actions flow that proves its criterion publishes the log, the final scr
   expect(existsSync(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'final.png'))).toBe(true)
 })
 
+test('the profile masks reach the action log of the screenshots they applied to (#119)', async () => {
+  const events: string[] = []
+  const { factory } = fakeSessionFactory(events)
+  let receivedMasks: string[] | undefined
+  const job = await makeJob({
+    criteria: flowCriterion({
+      kind: 'flow',
+      actions: [
+        { action: 'open', url: HEALTH_URL },
+        { action: 'assert', text: 'Welcome' },
+      ],
+    }),
+    profile: { inline: { ...INLINE_PROFILE, redact: { masks: ['css=.fixture-banner'] } } },
+  })
+
+  const { result } = await runJob(job, {
+    ...HEALTHY_BOOT,
+    // An injected backend receives the profile's masks like the playwright one
+    // does: the action log's masks note must stay honest for every backend.
+    flowSession: async (opts) => {
+      receivedMasks = opts.masks
+      return factory()
+    },
+  })
+
+  expect(result.verdict).toBe('passed')
+  expect(receivedMasks).toEqual(['css=.fixture-banner'])
+  const log = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'actions.log'), 'utf8')
+  expect(log).toContain('screenshot final.png masks: css=.fixture-banner')
+})
+
 test('a failed assert fails its criterion, with the failure screenshot as evidence', async () => {
   const events: string[] = []
   const { factory } = fakeSessionFactory(events, { assertFails: new Error('text absent') })

@@ -154,3 +154,38 @@ test('without a screenshot backend every capture is unverified with a named reas
     },
   ])
 })
+
+test('the result says which masks were in force for each capture (#119)', async () => {
+  const opts = await optsWith(
+    new Map([
+      ['1440/light', [PNG_A, PNG_B]],
+      ['1440/dark', [PNG_A, PNG_B]],
+      ['390/light', [PNG_A, PNG_B]],
+      ['390/dark', [PNG_A, PNG_B]],
+    ]),
+    { masks: ['css=.fixture-banner', 'text="jane@pilot.example"'] },
+  )
+
+  const result = await runVisualCheck(opts)
+
+  expect(result.screenshots).toHaveLength(8)
+  for (const screenshot of result.screenshots) {
+    expect(screenshot.outcome).toBe('captured')
+    expect(screenshot.masks).toEqual(['css=.fixture-banner', 'text="jane@pilot.example"'])
+  }
+})
+
+test('without profile masks the screenshots record none (#119)', async () => {
+  const opts = await optsWith(
+    new Map([
+      ['1440/light', [PNG_A, PNG_B]],
+      ['1440/dark', [PNG_A, PNG_B]],
+      ['390/light', [PNG_A, PNG_B]],
+      ['390/dark', [PNG_A, PNG_B]],
+    ]),
+  )
+
+  const result = await runVisualCheck(opts)
+
+  expect(result.screenshots.every((screenshot) => screenshot.masks === undefined)).toBe(true)
+})
