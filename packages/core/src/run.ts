@@ -22,10 +22,12 @@ const NO_CHECKS_REASON = 'no checks were given for this criterion, so nothing ra
 /**
  * Where the flow check gets its browser: the run hands over a session factory,
  * and tests hand over a fake, so the runner never imports the backend twice (#121).
+ * The factory receives the profile's masks (#119), so an injected backend takes
+ * them like the playwright one and the action log's masks note stays honest.
  * `outbound` lists every connection the session's page attempted, which a run
  * against a target checks against the hosts the profile declares (#122).
  */
-export type FlowSessionFactory = () => Promise<{
+export type FlowSessionFactory = (opts: { masks: string[] }) => Promise<{
   page: FlowPage
   trace: FlowTrace
   dispose: () => Promise<void>
@@ -460,11 +462,11 @@ async function runFlowCheckJob(
   }
   // The masks are the profile's own (#119): they black out their page regions
   // in every screenshot the backend takes, and the action log names them.
-  const factory = session ?? (() => makePlaywrightFlowSession({ masks }))
+  const factory = session ?? makePlaywrightFlowSession
   const timeoutMs = check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
   let started
   try {
-    started = await factory()
+    started = await factory({ masks })
   } catch (error) {
     // A backend that will not start says nothing about the change: without a
     // browser the flow is unverifiable, which is an outcome and not a failure.

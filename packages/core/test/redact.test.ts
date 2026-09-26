@@ -257,6 +257,7 @@ test('mask selectors playwright can resolve are accepted (#119)', () => {
   expect(() =>
     validateMaskSelectors([
       'css=.fixture-banner',
+      'css:light=.fixture-banner',
       '.fixture-banner',
       '//div[@class="fixture-banner"]',
       '(//div)[2]',

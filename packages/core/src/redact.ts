@@ -89,6 +89,7 @@ export interface ProfileRedaction {
 // screenshot can never resolve, so it is refused at load.
 const MASK_ENGINES = new Set([
   'css',
+  'css:light',
   'xpath',
   'xpath:light',
   'text',
