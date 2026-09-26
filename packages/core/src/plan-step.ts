@@ -74,7 +74,7 @@ export const PLAN_OUTPUT_SCHEMA = {
                   items: {
                     type: 'object',
                     properties: {
-                      action: { type: 'string', enum: ['open', 'type', 'click', 'assert'] },
+                      action: { type: 'string', enum: ['open', 'type', 'click', 'assert', 'totp', 'backupCode'] },
                       url: { type: 'string' },
                       element: {
                         type: 'object',
@@ -98,6 +98,7 @@ export const PLAN_OUTPUT_SCHEMA = {
                 subject: { type: 'string' },
                 body: { type: 'string' },
                 timeoutMs: { type: 'integer' },
+                code: { type: 'object', properties: { pattern: { type: 'string' } } },
                 inferred: { type: 'boolean' },
               },
               required: ['kind', 'name'],
@@ -135,9 +136,14 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     '- visual: {"kind":"visual","name":...,"screenshot":"name","widths":[390],"themes":["light"]}',
     '- mail: {"kind":"mail","name":...,"address":"the address a message is waited for","subject":"a substring to match", "timeoutMs":60000}',
     '',
-    'A flow action is one of open, type, click, assert. An element reference is semantic:',
+    'A flow action is one of open, type, click, assert, totp, backupCode. An element reference is semantic:',
     '{"role":"the aria role","name":"the accessible name"} or {"testId":"the data-testid value"}.',
     'Never a CSS selector, never coordinates, never a free-form instruction.',
+    'A totp action types the second-factor code the harness generates from the profile\'s seeded login.totp secret:',
+    '{"action":"totp","element":{"role":"textbox","name":"Verification code"}}. A backupCode action types the profile\'s seeded',
+    'backup code the same way. Never write a secret, a code or a recovery value into the plan: the profile seeds them.',
+    'When a criterion\'s second factor arrives by email instead, give the mail check "code": {} and later checks read',
+    '{"action":"type","element":{...},"value":"{{mail.<name>.code}}"}, or follow {{mail.<name>.link}} in an open action.',
     '',
     ...(inputs.target === undefined
       ? []

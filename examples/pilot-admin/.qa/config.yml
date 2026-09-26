@@ -2,7 +2,13 @@ app:
   boot: { compose: compose.qa.yaml, service: admin }
   health: { http: "http://localhost:3000/up", timeout: 120s }
   seed: { command: "bin/rails db:seed:qa" }
-  login: { fixture: fixtures/users.yml, role: admin }
+  login:
+    fixture: fixtures/users.yml
+    role: admin
+    # A test-only secret the seed step plants for the admin fixture user, so
+    # QA signs in through the app's real two-factor prompt. Defaults:
+    # six digits, a 30-second period, SHA-1.
+    totp: { secret: GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ }
 stubs:
   - service: billing
     hosts: ["api.stripe.example", "files.stripe.example"]

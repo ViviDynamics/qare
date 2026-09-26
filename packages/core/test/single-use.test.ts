@@ -126,10 +126,10 @@ test('an artefact reference placed before the mail check refuses the run at plan
 })
 
 test('an artefact reference to an unknown field refuses the run at plan time', async () => {
-  const job = await makeJob(criteria([mailCheck()], [consumeCheck('{{mail.welcome.code}}')]))
+  const job = await makeJob(criteria([mailCheck()], [consumeCheck('{{mail.welcome.attachment}}')]))
   const { result } = await runJob(job)
   expect(result.verdict).toBe('refused')
-  expect(result.criteria[0]?.reason).toContain('unknown artefact "{{mail.welcome.code}}"')
+  expect(result.criteria[0]?.reason).toContain('unknown artefact "{{mail.welcome.attachment}}"')
 })
 
 test('a reference naming two earlier mail checks refuses the run at plan time', async () => {

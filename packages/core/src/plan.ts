@@ -43,6 +43,12 @@ export interface MailCheck {
   timeoutMs?: number
   /** The links in this message are spent when followed, so the harness follows each at most once per run. */
   singleUse?: boolean
+  /**
+   * The message body carries a one-time code the harness extracts at run time
+   * (#64): later checks read it as `{{mail.<name>.code}}`, and it is swept
+   * from the evidence like any other secret.
+   */
+  code?: { pattern?: string }
   inferred?: boolean
 }
 
@@ -213,6 +219,7 @@ function parseCheck(value: unknown, base: string): PlanCheck {
       const body = value.body === undefined ? undefined : nonEmptyString(value.body, `${base}.body`, 'body')
       const timeoutMs = value.timeoutMs === undefined ? undefined : parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
       const singleUse = value.singleUse === undefined ? undefined : parseSingleUse(value.singleUse, `${base}.singleUse`)
+      const code = parseCode(value.code, `${base}.code`)
       return finish(
         {
           kind: 'mail',
@@ -223,6 +230,7 @@ function parseCheck(value: unknown, base: string): PlanCheck {
           ...(body !== undefined ? { body } : {}),
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
           ...(singleUse !== undefined ? { singleUse } : {}),
+          ...(code !== undefined ? { code } : {}),
         },
         inferred,
       )
@@ -240,7 +248,7 @@ export function parseFlowActions(value: unknown, base: string): FlowActionStep[]
   return value.map((entry, index) => parseFlowAction(entry, `${base}[${index}]`))
 }
 
-const FLOW_ACTION_KINDS = ['open', 'type', 'click', 'assert'] as const
+const FLOW_ACTION_KINDS = ['open', 'type', 'click', 'assert', 'totp', 'backupCode'] as const
 
 function parseFlowAction(value: unknown, base: string): FlowActionStep {
   if (!isRecord(value)) fail(base, 'a flow action must be an object, not a free-form string')
@@ -267,6 +275,16 @@ function parseFlowAction(value: unknown, base: string): FlowActionStep {
     case 'assert': {
       const text = nonEmptyString(value.text, `${base}.text`, 'asserted text')
       return { action: 'assert', text }
+    }
+    case 'totp': {
+      // The element only: the code comes from the profile's seeded secret at
+      // run time, so no plan carries a secret or a code (#64).
+      const element = parseFlowElement(value.element, `${base}.element`)
+      return { action: 'totp', element }
+    }
+    case 'backupCode': {
+      const element = parseFlowElement(value.element, `${base}.element`)
+      return { action: 'backupCode', element }
     }
     default:
       throw new Error(`unreachable: ${String(kind)} was validated against the vocabulary above`)
@@ -301,6 +319,25 @@ function parseSingleUse(value: unknown, field: string): boolean | undefined {
   if (value === undefined) return undefined
   if (typeof value !== 'boolean') fail(field, 'singleUse must be a boolean')
   return value
+}
+
+/**
+ * The `code` section of a mail check: a one-time code is extracted from the
+ * message body at run time (#64). The pattern is compiled here, so an
+ * unusable one is named at load rather than in the middle of a run.
+ */
+function parseCode(value: unknown, field: string): { pattern?: string } | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) fail(field, 'code must be a YAML object with an optional pattern')
+  const pattern = value.pattern === undefined ? undefined : nonEmptyString(value.pattern, `${field}.pattern`, 'code pattern')
+  if (pattern !== undefined) {
+    try {
+      new RegExp(pattern)
+    } catch {
+      fail(`${field}.pattern`, `code pattern ${JSON.stringify(pattern)} is not a valid regular expression`)
+    }
+  }
+  return pattern === undefined ? {} : { pattern }
 }
 
 function parseTimeoutMs(value: unknown, field: string): number {

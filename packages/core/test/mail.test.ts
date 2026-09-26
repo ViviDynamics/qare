@@ -5,6 +5,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { expect, test } from 'vitest'
 import {
   PlanValidationError,
+  extractCode,
   httpMailbox,
   loadJobFromText,
   mailEvidence,
@@ -289,4 +290,14 @@ test('the profile refuses a mail inbox that is not an http URL', () => {
     mail: { inbox: INBOX_URL },
   })
   expect(ok.mail).toEqual({ inbox: INBOX_URL })
+})
+
+test('extractCode reads the first digit run the default pattern matches (#64)', () => {
+  expect(extractCode('Your one-time code is 551234 and it expires soon.')).toBe('551234')
+  expect(extractCode('no code here')).toBeUndefined()
+})
+
+test('extractCode honors a declared pattern, preferring its first capture group (#64)', () => {
+  expect(extractCode('Code: AB-1234.', 'Code: ([A-Z]{2}-\\d{4})')).toBe('AB-1234')
+  expect(extractCode('555 77 2 34', '\\d{2} \\d{2}')).toBe('55 77')
 })

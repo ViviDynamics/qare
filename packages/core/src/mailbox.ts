@@ -146,3 +146,20 @@ export function mailEvidence(message: MailMessage, waitMs: number, polls: number
     polls,
   }
 }
+
+/**
+ * Most one-time codes are short digit runs; a plan that reads codes of another
+ * shape declares its own pattern (#64).
+ */
+export const DEFAULT_CODE_PATTERN = '\\b\\d{6,8}\\b'
+
+/**
+ * Pull the one-time code out of a message body (#64). A pattern with a capture
+ * group yields the group; otherwise the whole match is the code. A body with
+ * no code in it is the caller's `unverified`, named in run.ts.
+ */
+export function extractCode(body: string, pattern?: string): string | undefined {
+  const match = new RegExp(pattern ?? DEFAULT_CODE_PATTERN).exec(body)
+  if (match === null) return undefined
+  return match[1] ?? match[0]
+}

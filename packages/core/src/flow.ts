@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DEFAULT_CHECK_TIMEOUT_MS, runCommandCheck } from './run.js'
+import { totpCode, totpWindow, windowRemaining } from './totp.js'
 
 /**
  * The fixed flow vocabulary a plan may ask for (#70, #121). The driver resolves
@@ -13,6 +14,19 @@ export type FlowAction =
   | { action: 'type'; element: FlowElement; value: string }
   | { action: 'click'; element: FlowElement }
   | { action: 'assert'; text: string }
+  /** Types the code the harness generates from the profile's seeded secret (#64). */
+  | { action: 'totp'; element: FlowElement }
+  /** Types the profile's seeded backup code, where the app accepts one (#64). */
+  | { action: 'backupCode'; element: FlowElement }
+
+/** The profile's `login.totp` section, carried to the flow that types its codes. */
+export interface FlowTotpConfig {
+  secret: string
+  digits: number
+  period: number
+  algorithm: 'SHA1' | 'SHA256' | 'SHA512'
+  backupCode?: string
+}
 
 export interface FlowPage {
   open(url: string): Promise<void>
@@ -51,6 +65,16 @@ export interface FlowCheckOpts {
    * The action log names them beside each screenshot they applied to.
    */
   masks?: string[]
+  /**
+   * The profile's seeded second factor (#64). A `totp` or `backupCode` action
+   * without it is unverified before anything runs: the code path cannot run
+   * without the secret the profile seeds.
+   */
+  totp?: FlowTotpConfig
+  /** Every code the harness generated, so the caller can sweep them from the evidence (#64). */
+  generatedCodes?: string[]
+  /** Injectable clock, so window arithmetic is pinned in tests. */
+  now?: () => number
 }
 
 export interface FlowCheckResult {
@@ -59,7 +83,15 @@ export interface FlowCheckResult {
   evidence: string[]
 }
 
-const KNOWN_KINDS: readonly string[] = ['open', 'type', 'click', 'assert']
+const KNOWN_KINDS: readonly string[] = ['open', 'type', 'click', 'assert', 'totp', 'backupCode']
+
+/**
+ * A code typed this close to a window boundary is generated for the next
+ * window instead: the app validating it across the boundary would reject it
+ * (RFC 6238 §5.2), and the retry below only covers a boundary that crosses
+ * while the flow is moving (#64).
+ */
+const BOUNDARY_GUARD_MS = 1000
 
 const FAILURE_SCREENSHOT = 'failure.png'
 const FINAL_SCREENSHOT = 'final.png'
@@ -84,6 +116,10 @@ function describeAction(action: FlowAction, index: number): string {
       return `action ${index}: click ${describeElement(action.element)}`
     case 'assert':
       return `action ${index}: assert text "${action.text}" is visible`
+    case 'totp':
+      return `action ${index}: totp code generated from the profile's seeded secret and typed into ${describeElement(action.element)}`
+    case 'backupCode':
+      return `action ${index}: backup code from the profile's seeded value typed into ${describeElement(action.element)}`
   }
 }
 
@@ -97,7 +133,7 @@ function describeAction(action: FlowAction, index: number): string {
  * is unverified, never failed: the criterion says nothing about the change.
  */
 export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult> {
-  const { actions, page, trace, outDir, tracesDir, redactLog, masks } = opts
+  const { actions, page, trace, outDir, tracesDir, redactLog, masks, totp, generatedCodes, now = Date.now } = opts
 
   if (actions.length === 0) {
     return { outcome: 'unverified', reason: 'flow has no actions', evidence: [] }
@@ -114,6 +150,24 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
     }
   }
 
+  // A second factor the profile does not seed is a gap the flow cannot run
+  // past: named before anything runs, like an unknown action (#64).
+  const needsTotp = actions.some((action) => action.action === 'totp' || action.action === 'backupCode')
+  if (needsTotp && totp === undefined) {
+    return {
+      outcome: 'unverified',
+      reason: 'the flow types a second factor, but the profile declares no login.totp; the code path cannot run without the secret the profile seeds',
+      evidence: [],
+    }
+  }
+  if (totp !== undefined && actions.some((action) => action.action === 'backupCode') && totp.backupCode === undefined) {
+    return {
+      outcome: 'unverified',
+      reason: 'the flow types a backup code, but the profile declares no login.backupCode value; the alternative factor cannot run without a seeded code',
+      evidence: [],
+    }
+  }
+
   await mkdir(outDir, { recursive: true })
 
   const log: string[] = []
@@ -125,7 +179,14 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   // the profile's own, so the note is the same for every capture, and user-
   // authored strings like the selectors are redacted with the log.
   const masksNote = masks === undefined || masks.length === 0 ? '' : ` masks: ${masks.join(', ')}`
+  // The failure screenshot is evidence an image rule cannot read, so it is
+  // withheld while a second-factor code may still sit on the page (#64).
+  let codeOnPage = false
   const screenshot = async (name: string): Promise<string | undefined> => {
+    if (codeOnPage && name === FAILURE_SCREENSHOT) {
+      log.push(`${name} withheld: the second-factor code is visible on the page, and redaction cannot read pixels`)
+      return undefined
+    }
     try {
       await page.screenshot(join(outDir, name))
       log.push(`screenshot ${name}${masksNote}`)
@@ -149,6 +210,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   let failureScreenshot: string | undefined
 
   for (const [index, action] of actions.entries()) {
+    let line = describeAction(action, index)
     try {
       switch (action.action) {
         case 'open':
@@ -163,6 +225,39 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
         case 'assert':
           await page.assertText(action.text)
           break
+        case 'totp': {
+          const config = totp!
+          // A code generated against a window that ends before the app reads
+          // it is born stale: wait out the boundary and mint the next
+          // window's code instead (#64).
+          const remaining = windowRemaining(config.period, now())
+          if (remaining < BOUNDARY_GUARD_MS) {
+            await new Promise((resolve) => setTimeout(resolve, remaining))
+          }
+          const window = totpWindow(config.period, now())
+          const code = totpCode(config.secret, config, now())
+          await page.type(action.element, code)
+          generatedCodes?.push(code)
+          line = `action ${index}: totp code generated for window ${window} and typed into ${describeElement(action.element)}`
+          // A boundary that crosses while the flow is moving can leave the
+          // app validating the old window's code; the code is retried once,
+          // in the window it now sits in (#64).
+          if (totpWindow(config.period, now()) !== window) {
+            const retried = totpCode(config.secret, config, now())
+            await page.type(action.element, retried)
+            generatedCodes?.push(retried)
+            line = `action ${index}: the code straddled a window boundary; the next window's code is typed in its place into ${describeElement(action.element)}`
+          }
+          codeOnPage = true
+          break
+        }
+        case 'backupCode': {
+          const value = totp!.backupCode!
+          await page.type(action.element, value)
+          generatedCodes?.push(value)
+          codeOnPage = true
+          break
+        }
       }
     } catch (error) {
       if (action.action === 'assert') {
@@ -175,7 +270,15 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
       failureScreenshot = await screenshot(FAILURE_SCREENSHOT)
       break
     }
-    log.push(describeAction(action, index))
+    log.push(line)
+  }
+
+  // A second factor the app keeps rejecting is not the change failing: the
+  // login did not complete, so the criterion is blocked with the reason
+  // named, never failed (#64).
+  if (outcome === 'failed' && codeOnPage) {
+    outcome = 'unverified'
+    reason = 'the second factor was rejected: a generated code was typed and the login still did not complete (a clock-skewed container or a persistently stale window)'
   }
 
   const evidence: string[] = [ACTION_LOG]

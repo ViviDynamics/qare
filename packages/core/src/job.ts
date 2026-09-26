@@ -23,6 +23,8 @@ export interface JobMailCheck {
   body?: string
   timeoutMs?: number
   singleUse?: boolean
+  /** One-time code extraction from the message body (#64). */
+  code?: { pattern?: string }
 }
 
 export interface JobFlowCheck {
@@ -250,6 +252,7 @@ function parseMailCheck(value: Record<string, unknown>, base: string): JobMailCh
   if (value.singleUse !== undefined && typeof value.singleUse !== 'boolean')
     fail(`${base}.singleUse`, 'singleUse must be a boolean')
   const singleUse = value.singleUse as boolean | undefined
+  const code = parseJobCode(value.code, `${base}.code`)
   return {
     kind: 'mail',
     ...(name !== undefined ? { name } : {}),
@@ -259,7 +262,24 @@ function parseMailCheck(value: Record<string, unknown>, base: string): JobMailCh
     ...(body !== undefined ? { body } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(singleUse !== undefined ? { singleUse } : {}),
+    ...(code !== undefined ? { code } : {}),
   }
+}
+
+/** Mirrors plan.ts's parseCode: the pattern must compile before the run needs it (#64). */
+function parseJobCode(value: unknown, field: string): { pattern?: string } | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) fail(field, 'code must be an object with an optional pattern')
+  const record = value as Record<string, unknown>
+  const pattern = record.pattern === undefined ? undefined : nonEmptyString(record.pattern, `${field}.pattern`, 'code pattern')
+  if (pattern !== undefined) {
+    try {
+      new RegExp(pattern)
+    } catch {
+      fail(`${field}.pattern`, `code pattern ${JSON.stringify(pattern)} is not a valid regular expression`)
+    }
+  }
+  return pattern === undefined ? {} : { pattern }
 }
 
 function parseCheckEnv(value: unknown, field: string): Record<string, string> {

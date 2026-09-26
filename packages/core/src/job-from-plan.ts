@@ -39,6 +39,7 @@ function runnable(check: PlanCheck): JobCheck | undefined {
         ...(check.body === undefined ? {} : { body: check.body }),
         ...(check.timeoutMs === undefined ? {} : { timeoutMs: check.timeoutMs }),
         ...(check.singleUse === undefined ? {} : { singleUse: check.singleUse }),
+        ...(check.code === undefined ? {} : { code: check.code }),
       }
     default:
       return undefined

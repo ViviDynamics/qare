@@ -173,3 +173,61 @@ test('a valid inline plan round-trips with inferred omitted when absent', () => 
   expect('inferred' in plan.criteria[0]).toBe(false)
   expect('unplannable' in plan.criteria[0]).toBe(false)
 })
+
+test('totp and backupCode flow actions parse with their element only: no secret and no code travels in the plan (#64)', () => {
+  const plan = parsePlan({
+    schemaVersion: '1',
+    criteria: [
+      {
+        id: 'c1',
+        text: 'a seeded profile logs in through the second factor',
+        checks: [
+          {
+            kind: 'flow',
+            name: 'two-factor sign in',
+            actions: [
+              { action: 'totp', element: { role: 'textbox', name: 'Verification code' } },
+              { action: 'backupCode', element: { testId: 'recovery-code' } },
+            ],
+          },
+        ],
+      },
+    ],
+  })
+  expect(plan.criteria[0]?.checks[0]).toEqual({
+    kind: 'flow',
+    name: 'two-factor sign in',
+    actions: [
+      { action: 'totp', element: { role: 'textbox', name: 'Verification code' } },
+      { action: 'backupCode', element: { testId: 'recovery-code' } },
+    ],
+  })
+})
+
+test('a mail check that reads a one-time code parses with an optional pattern, and a bad pattern fails closed (#64)', () => {
+  const plan = parsePlan({
+    schemaVersion: '1',
+    criteria: [
+      {
+        id: 'c1',
+        text: 'a mail-borne code is read',
+        checks: [{ kind: 'mail', name: 'signup', address: 'qa@localhost', code: { pattern: '\\d{4}' } }],
+      },
+    ],
+  })
+  expect(plan.criteria[0]?.checks[0]).toEqual({ kind: 'mail', name: 'signup', address: 'qa@localhost', code: { pattern: '\\d{4}' } })
+
+  const error = planError(() =>
+    parsePlan({
+      schemaVersion: '1',
+      criteria: [
+        {
+          id: 'c1',
+          text: 'a mail-borne code is read',
+          checks: [{ kind: 'mail', name: 'signup', address: 'qa@localhost', code: { pattern: '([a]+' } }],
+        },
+      ],
+    }),
+  )
+  expect(error.field).toBe('criteria[0].checks[0].code.pattern')
+})

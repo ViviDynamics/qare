@@ -80,7 +80,7 @@ test('the schema types flow actions and the prompt names the element vocabulary'
 
   const schema = JSON.parse(runner.requests[0].outputSchema)
   const actions = schema.properties.criteria.items.properties.checks.items.properties.actions
-  expect(actions.items.properties.action.enum).toEqual(['open', 'type', 'click', 'assert'])
+  expect(actions.items.properties.action.enum).toEqual(['open', 'type', 'click', 'assert', 'totp', 'backupCode'])
   expect(actions.items.properties.element).toMatchObject({ type: 'object' })
 
   const [request] = runner.requests
