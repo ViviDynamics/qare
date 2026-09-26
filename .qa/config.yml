@@ -1,0 +1,9 @@
+# The repository's own target profile (#122): qare checks a site that is
+# already running, so there is no compose file, seed, login, stubs or
+# fixtures. The health check may be a path on the target. Every host a
+# flow's browser reaches must be the target's own or listed in hosts;
+# anything else refuses the run.
+target:
+  url: https://en.wikipedia.org
+  health: { http: /wiki/Main_Page, timeout: 30s }
+  hosts: ["*.wikipedia.org", "*.wikimedia.org", "wikipedia.org", "wikimedia.org"]
