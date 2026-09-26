@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { Artefacts } from './artefacts.js'
+import { Artefacts, type ArtefactField } from './artefacts.js'
 import { bootApp, type BootOpts } from './boot.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
 import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
@@ -698,6 +698,8 @@ function resolveArtefactFields(
   }
   const consumed: { source: string; artefact: string }[] = []
   const resolved = new Map<string, string>()
+  // Every reference is resolved before any one is spent: a failure on a
+  // later reference must not burn earlier single-use values (#64).
   for (const name of names) {
     // The reference names the mail check between the `mail.` namespace and the
     // artefact field: {{mail.<name>.link}} reads from the mail check <name>.
@@ -707,10 +709,17 @@ function resolveArtefactFields(
     if (namespace !== 'mail' || checkName === undefined || (field !== 'link' && field !== 'code') || name.split('.').length !== 3) {
       return { ok: false, reason: `malformed artefact reference {{${name}}}; a reference is {{mail.<name>.link}} or {{mail.<name>.code}}` }
     }
-    const outcome = artefacts.resolve(checkName, field, consumer)
+  }
+  for (const name of names) {
+    const [, checkName, field] = name.split('.') as [string, string, ArtefactField]
+    const outcome = artefacts.peek(checkName, field)
     if (!outcome.ok) return outcome
     resolved.set(name, outcome.artefact)
     consumed.push({ source: `mail.${checkName}`, artefact: outcome.artefact })
+  }
+  for (const name of names) {
+    const [, checkName, field] = name.split('.') as [string, string, ArtefactField]
+    artefacts.spend(checkName, field, consumer)
   }
   const substitute = (text: string): string =>
     [...resolved.entries()].reduce((acc, [name, artefact]) => acc.split(`{{${name}}}`).join(artefact), text)
@@ -756,16 +765,26 @@ function resolveFlowArtefacts(
   const resolved = new Map<string, string>()
   const values: string[] = []
   const codes: string[] = []
+  // The shape of every reference first, then every reference resolved before
+  // any one is spent: a failure on a later reference must not burn earlier
+  // single-use values (#64).
   for (const name of names) {
     const [namespace, checkName, field] = name.split('.')
     if (namespace !== 'mail' || checkName === undefined || (field !== 'link' && field !== 'code') || name.split('.').length !== 3) {
       return { ok: false, reason: `malformed artefact reference {{${name}}}; a reference is {{mail.<name>.link}} or {{mail.<name>.code}}` }
     }
-    const outcome = artefacts.resolve(checkName, field, consumer)
+  }
+  for (const name of names) {
+    const [, checkName, field] = name.split('.') as [string, string, ArtefactField]
+    const outcome = artefacts.peek(checkName, field)
     if (!outcome.ok) return outcome
     resolved.set(name, outcome.artefact)
     values.push(outcome.artefact)
     if (field === 'code') codes.push(outcome.artefact)
+  }
+  for (const name of names) {
+    const [, checkName, field] = name.split('.') as [string, string, ArtefactField]
+    artefacts.spend(checkName, field, consumer)
   }
   const substitute = (text: string): string =>
     [...resolved.entries()].reduce((acc, [name, artefact]) => acc.split(`{{${name}}}`).join(artefact), text)

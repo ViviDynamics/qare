@@ -26,6 +26,18 @@ export class Artefacts {
    * product's.
    */
   resolve(name: string, field: ArtefactField, consumer: string): { ok: true; artefact: string } | { ok: false; reason: string } {
+    const outcome = this.peek(name, field)
+    if (!outcome.ok) return outcome
+    if (outcome.singleUse) this.spend(name, field, consumer)
+    return { ok: true, artefact: outcome.artefact }
+  }
+
+  /**
+   * The resolution without the consumption. A consumer that reads several
+   * references peeks them all before any one is spent, so a failure on a
+   * later reference does not burn earlier single-use values (#64).
+   */
+  peek(name: string, field: ArtefactField): { ok: true; artefact: string; singleUse: boolean } | { ok: false; reason: string } {
     const entry = this.ready.get(name)
     if (entry === undefined) {
       return { ok: false, reason: `no message was read by mail check ${name}, so no ${field} is available to substitute` }
@@ -41,8 +53,13 @@ export class Artefacts {
         const verb = field === 'link' ? 'follow' : 'use'
         return { ok: false, reason: `the single-use ${field} from mail check ${name} was already consumed by criterion ${spentBy}; a retry requires a fresh message, and this run will not ${verb} the same ${field} twice` }
       }
-      this.spent.set(`${field}:${value}`, consumer)
     }
-    return { ok: true, artefact: value }
+    return { ok: true, artefact: value, singleUse: entry.singleUse }
+  }
+
+  /** Commit the consumption of an artefact a peek resolved as available. */
+  spend(name: string, field: ArtefactField, consumer: string): void {
+    const value = this.ready.get(name)?.[field]
+    if (value !== undefined) this.spent.set(`${field}:${value}`, consumer)
   }
 }

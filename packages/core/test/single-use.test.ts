@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
 import {
+  Artefacts,
   PlanValidationError,
   parsePlan,
   runJob,
@@ -247,4 +248,18 @@ test('the consumed artefact is redacted in the evidence', async () => {
   const consumed = await evidenceText(job, join('checks', 'criterion-1', '1', 'consumed.json'))
   expect(consumed).toContain('token=[redacted]')
   expect(consumed).not.toContain('token=abc')
+})
+
+test('a resolution failure on a later reference does not burn an earlier single-use artefact (#64)', () => {
+  const artefacts = new Artefacts()
+  artefacts.publish('welcome', { link: 'confirmation-link' }, true)
+  artefacts.publish('goodbye', {}, true)
+  // A consumer that reads two references resolves them all before any one is
+  // spent: the failure on the later reference burns nothing.
+  expect(artefacts.peek('welcome', 'link')).toEqual({ ok: true, artefact: 'confirmation-link', singleUse: true })
+  expect(artefacts.peek('goodbye', 'link').ok).toBe(false)
+  expect(artefacts.peek('welcome', 'link').ok).toBe(true)
+  // The consumption is committed only when the consumer decides to spend.
+  artefacts.spend('welcome', 'link', 'criterion-1')
+  expect(artefacts.peek('welcome', 'link').ok).toBe(false)
 })
