@@ -636,7 +636,6 @@ async function profilesCommand(argv: string[], out: Writer, err: Writer): Promis
       out.write(`report ${outSpec}\n`)
     }
     return 0
->>>>>>> 0ca1e39 (Monorepo support: several profiles in one repo (#55))
   } catch (error) {
     err.write(`${formatError(error)}\n`)
     return 4
