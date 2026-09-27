@@ -834,3 +834,27 @@ test('one SIGINT cancels every run in the process, and the exit waits for every 
     exit.mockRestore()
   }
 })
+
+test('a cancel override of zero is normalized to the cancellation bound, so no caller can opt the exit out of its deadline (#53)', async () => {
+  const timeouts: number[] = []
+  const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+  const cleanup = installCancelCleanup(INLINE_PROFILE, {
+    runCompose: (_args, timeoutMs) => {
+      timeouts.push(timeoutMs)
+      return new Promise(() => {})
+    },
+    downTimeoutMs: 0,
+    isolation: { runId: 'run-1', project: 'qare-run-1', startedAt: '2026-01-01T00:00:00.000Z', port: 4321 },
+  })
+  try {
+    process.emit('SIGINT')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    // The zero override reaches the down as the cancellation bound, not as no
+    // deadline: the exit cannot be opted out of its guarantee.
+    expect(timeouts).toEqual([30000])
+  } finally {
+    cleanup()
+    exit.mockRestore()
+  }
+})

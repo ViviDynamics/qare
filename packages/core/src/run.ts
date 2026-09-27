@@ -263,26 +263,25 @@ export function installCancelCleanup(profile: QaProfile, opts: BootOpts): () => 
     // is never addressed: neither the kill nor the down touches it (#53).
     const isolation = opts.isolation
     if (isolation !== undefined && hasMintedProject(isolation)) killActiveCompose(isolation.project)
-    const downTimeoutMs = opts.downTimeoutMs ?? CANCEL_DOWN_TIMEOUT_MS
+    // A caller override at or below 0 would opt the cancellation out of its
+    // own guarantee, so it is normalized to the default bound.
+    const downTimeoutMs = opts.downTimeoutMs !== undefined && opts.downTimeoutMs > 0 ? opts.downTimeoutMs : CANCEL_DOWN_TIMEOUT_MS
     const stopped = stopApp(profile, { ...opts, downTimeoutMs }).catch(() => {})
     // The deadline is the exit guarantee: when the down hangs past it, the
     // timeout is reported, the wait resolves anyway, and the exit runs,
     // leaving the stack to reap (#53).
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined
-    const entry =
-      downTimeoutMs > 0
-        ? Promise.race([
-            stopped,
-            new Promise<void>((resolve) => {
-              timeoutTimer = setTimeout(() => {
-                console.error(
-                  `canceled run ${isolation?.runId ?? ''}: the compose down did not settle within ${downTimeoutMs}ms; the leftover stack is left for reap`,
-                )
-                resolve()
-              }, downTimeoutMs)
-            }),
-          ])
-        : stopped
+    const entry = Promise.race([
+      stopped,
+      new Promise<void>((resolve) => {
+        timeoutTimer = setTimeout(() => {
+          console.error(
+            `canceled run ${isolation?.runId ?? ''}: the compose down did not settle within ${downTimeoutMs}ms; the leftover stack is left for reap`,
+          )
+          resolve()
+        }, downTimeoutMs)
+      }),
+    ])
     pendingStops.add(entry)
     void entry.finally(() => {
       if (timeoutTimer !== undefined) clearTimeout(timeoutTimer)
