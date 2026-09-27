@@ -29,6 +29,8 @@ import {
   IssueCriteriaError,
   linkedIssues,
   planRun,
+  PlanStepError,
+  PLAN_SCHEMA_VERSION,
   renderCheckRun,
   renderComment,
   readinessInventory,
@@ -43,6 +45,7 @@ import type {
   FlowDriverCapabilities,
   Job,
   LedgerEntry,
+  Plan,
   RedactionRule,
   ReplayDifference,
   RunVerdict,
@@ -295,7 +298,10 @@ async function redactionRulesFor(profileDir: string | undefined, out: Writer): P
  *
  * It writes nothing unless the whole plan parsed and covered every criterion.
  * A half-written plan.json would be consumed by execute as though it were the
- * whole run.
+ * whole run. The one exception is the neutral fallback (#64): a plan the
+ * loader rejects through its correction round is written with every criterion
+ * unplannable, naming why, so execute and judge report the planning gap
+ * instead of the pipeline going red.
  */
 /**
  * The flow action kinds the change under review introduces (#64), as
@@ -316,6 +322,20 @@ function flowActionKinds(spec: string | undefined): string[] {
       )
   if (kinds.length > 12) throw new Error('--flow-actions takes at most 12 kinds')
   return [...new Set(kinds)]
+}
+
+/**
+ * The neutral fallback for a planner that had its correction round and still
+ * produced nothing the loader accepts (#64): every criterion is carried,
+ * marked unplannable with the reason, so execute reports it unverified and
+ * judge reports it by name. The gap is in the planning vocabulary, and nothing
+ * was disproven. Mirrors the one-off check path's `planOrReport`.
+ */
+function unplannedPlan(criteria: { id: string; text: string }[], reason: string): Plan {
+  return {
+    schemaVersion: PLAN_SCHEMA_VERSION,
+    criteria: criteria.map((criterion) => ({ ...criterion, unplannable: reason })),
+  }
 }
 
 async function planCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
@@ -383,13 +403,25 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       flowActions.length === 0
         ? BROWSER_FLOW_DRIVER
         : { ...BROWSER_FLOW_DRIVER, actions: [...BROWSER_FLOW_DRIVER.actions, ...flowActions] }
-    const plan = await planRun(runner, {
-      criteria,
-      diff,
-      driver,
-      ...(suites === undefined ? {} : { suites }),
-      ...(flowActions.length === 0 ? {} : { flowActions }),
-    })
+    let plan: Plan
+    try {
+      plan = await planRun(runner, {
+        criteria,
+        diff,
+        driver,
+        ...(suites === undefined ? {} : { suites }),
+        ...(flowActions.length === 0 ? {} : { flowActions }),
+      })
+    } catch (error) {
+      // planRun already gave the planner its one correction round, carrying
+      // the loader's reason. Still nothing usable, so the fallback applies
+      // (#64): every criterion is marked unplannable naming why, and the
+      // pipeline's later jobs report the planning gap instead of going red.
+      if (!(error instanceof PlanStepError)) throw error
+      const named = `${error.name}: ${error.message}`
+      out.write(`the planner could not produce a usable plan, so every criterion is marked unplannable: ${named}\n`)
+      plan = unplannedPlan(criteria, `planning failed (${named})`)
+    }
     if (flowActions.length > 0)
       out.write(`planning with the change's flow action kinds: ${flowActions.join(', ')}\n`)
 

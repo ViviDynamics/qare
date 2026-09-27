@@ -62,7 +62,7 @@ and the artifacts execute uploaded.
 | Job | Secrets | Network | Does |
 | --- | --- | --- | --- |
 | **collect** | GitHub token | yes | Reads the pull request body, linked issues and diff from the base commit's checkout; writes `criteria.json`. Never executes PR code. |
-| **plan** | model key | yes | Reads the criteria, the diff and `.qa/`; writes `plan.json` mapping each criterion to checks tagged `command`, `flow` or `visual`. The planner is also told any flow action kinds the change itself introduces, read from the diff as data. Never executes PR code. |
+| **plan** | model key | yes | Reads the criteria, the diff and `.qa/`; writes `plan.json` mapping each criterion to checks tagged `command`, `flow` or `visual`. The planner is also told any flow action kinds the change itself introduces, read from the diff as data. A plan the loader still rejects after its correction round comes out with every criterion marked `unplannable` naming why (#64), so the pipeline reports the planning gap instead of failing red. Never executes PR code. |
 | **execute** | none | stub containers only | Boots the app at the merge base and at the head with stubs, runs the plan, saves artifacts and raw results. |
 | **judge** | model key, GitHub token | yes | Computes verdicts in code from raw results, runs the verifier model on the evidence, posts the comment and check. The plan is loaded with the same flow action kinds the plan step was given. |
 
@@ -79,6 +79,7 @@ Judge:
 - Visual diffs are advisory evidence for the human, never the sole basis for a pass.
 - The verifier model gets the criteria, diff and evidence in a fresh context and reports only criteria the evidence does not actually show. Its findings can downgrade a verdict, never upgrade one. A verifier that gives no readable answer leaves the criteria it was asked about unverified, so the run blocks rather than passing unchecked.
 - A blocked run whose every unverified criterion is one the planner could not plan, or whose planned command cannot run without a shell, reports the criteria by name and the check run comes out neutral: the gap is in the planning vocabulary, and nothing was disproven. Any other blocked run — a check that could not reach the app, an environment that would not boot — is a fault and stays red.
+- A planner whose plan the loader rejects through its correction round ends in the same neutral path: the plan command writes every criterion as `unplannable` naming the rejection, and the run reports rather than fails red.
 
 ## The `.qa/` profile (per repo)
 

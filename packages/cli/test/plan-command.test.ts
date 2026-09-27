@@ -84,9 +84,9 @@ test('qare plan reports the unplannable criteria it wrote', async () => {
   expect(out.lines.join('')).toContain('1 unplannable')
 })
 
-test('qare plan fails loudly rather than writing half a plan', async () => {
+test('a plan the loader rejects after its correction round marks every criterion unplannable, not red (#159)', async () => {
   const { criteriaPath, diffPath, outPath } = await inputs()
-  const err = capture()
+  const out = capture()
 
   const code = await main(
     [
@@ -100,13 +100,73 @@ test('qare plan fails loudly rather than writing half a plan', async () => {
       '--nare',
       await fakeNare({ schemaVersion: '1', criteria: [PLAN.criteria[0]] }),
     ],
+    out.writer,
     capture().writer,
-    err.writer,
   )
 
-  expect(code).toBe(4)
-  expect(existsSync(outPath)).toBe(false)
-  expect(err.lines.join('')).toContain('c2')
+  expect(code).toBe(0)
+  const plan = JSON.parse(await readFile(outPath, 'utf8'))
+  expect(plan.criteria).toEqual([
+    { id: 'c1', text: CRITERIA[0].text, unplannable: expect.stringContaining('it left out c2') },
+    { id: 'c2', text: CRITERIA[1].text, unplannable: expect.stringContaining('it left out c2') },
+  ])
+  expect(out.lines.join('')).toContain('could not produce a usable plan')
+})
+
+test('a command check the no-shell loader rejects twice comes out neutral, not red (#159)', async () => {
+  const { criteriaPath, diffPath, outPath } = await inputs()
+  const answer = {
+    schemaVersion: '1',
+    criteria: [
+      {
+        id: 'c1',
+        text: CRITERIA[0].text,
+        checks: [{ kind: 'command', name: 'login', command: 'npm test -- "an argument with spaces"' }],
+      },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+    ],
+  }
+  const out = capture()
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', outPath, '--nare', await fakeNare(answer)],
+    out.writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  const plan = JSON.parse(await readFile(outPath, 'utf8'))
+  expect(plan.criteria[0].unplannable).toContain('quoting is not interpreted')
+  expect(plan.criteria[0].unplannable).toContain('planning failed')
+  expect(plan.criteria[1].unplannable).toContain('planning failed')
+})
+
+test('a schema-invalid plan the loader rejects twice comes out neutral, not red (#159)', async () => {
+  const { criteriaPath, diffPath, outPath } = await inputs()
+  const answer = {
+    schemaVersion: '1',
+    criteria: [
+      {
+        id: 'c1',
+        text: CRITERIA[0].text,
+        checks: [{ kind: 'command', name: 'login', command: 'npm test' }],
+        unplannable: 'both carried',
+      },
+    ],
+  }
+  const out = capture()
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', outPath, '--nare', await fakeNare(answer)],
+    out.writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  const plan = JSON.parse(await readFile(outPath, 'utf8'))
+  expect(plan.criteria[0].unplannable).toContain('planned or unplannable, not both')
+  expect(plan.criteria[1].unplannable).toContain('planned or unplannable, not both')
+  expect(out.lines.join('')).toContain('could not produce a usable plan')
 })
 
 test('qare plan needs criteria and a diff', async () => {
