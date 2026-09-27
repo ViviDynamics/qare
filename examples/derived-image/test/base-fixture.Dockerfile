@@ -13,6 +13,7 @@ RUN addgroup -g 1000 qare \
 COPY qare /opt/qare/bin/qare
 COPY VERSION /opt/qare/config/VERSION
 RUN chmod +x /opt/qare/bin/qare
+ENV PATH=/opt/qare/bin:$PATH
 
 USER qare
 WORKDIR /work

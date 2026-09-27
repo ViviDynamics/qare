@@ -1,5 +1,5 @@
-# The example image builds on the release line by default, so it stays current
-# without edits, and a build that must not move pins the exact release tag:
+# The example builds on the newest release by default, so a plain build works,
+# and a build that must not move pins its base through the same argument:
 #   docker build --build-arg QARE_IMAGE=ghcr.io/vividynamics/qare-core:2026.9.0 .
 ARG QARE_IMAGE=ghcr.io/vividynamics/qare-core:latest
 FROM $QARE_IMAGE

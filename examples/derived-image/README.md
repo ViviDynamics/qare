@@ -13,8 +13,8 @@ docker run --rm scale-driver /opt/qare/drivers/scale-driver/probe
 docker run --rm scale-driver /opt/qare/tools/measure
 ```
 
-The default base is the release line. A build that must not move pins the
-exact release tag:
+The default base is the newest release, the `latest` tag. A build that must
+not move pins the exact release tag:
 
 ```sh
 docker build --build-arg QARE_IMAGE=ghcr.io/vividynamics/qare-core:2026.9.0 -t scale-driver examples/derived-image

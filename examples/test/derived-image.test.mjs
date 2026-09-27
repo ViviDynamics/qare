@@ -36,7 +36,7 @@ test('the example builds FROM an overridable base and never runs as root', async
   const dockerfile = await readFile(join(EXAMPLE, 'Dockerfile'), 'utf8')
   assert.match(dockerfile, /^ARG QARE_IMAGE=/m, 'the base is an ARG, so a build pins it')
   assert.match(dockerfile, /^FROM \$QARE_IMAGE$/m, 'the image builds FROM the overridable base')
-  assert.match(dockerfile, /ghcr\.io\/vividynamics\/qare-core:latest/, 'the default follows the release line')
+  assert.match(dockerfile, /ghcr\.io\/vividynamics\/qare-core:latest/, 'the default is the latest tag, overridable through the ARG')
   assert.match(dockerfile, /COPY .+\/opt\/qare\/drivers\//, 'the driver lands on the contract path')
   assert.match(dockerfile, /COPY .+\/opt\/qare\/tools\//, 'the host tool lands on the contract path')
   const userLines = dockerfile.match(/^USER .+$/gm) ?? []
@@ -47,9 +47,11 @@ test('the example builds FROM an overridable base and never runs as root', async
 test('the release workflow builds the example on every release', async () => {
   const workflow = await readFile(join(ROOT, '.github', 'workflows', 'release.yml'), 'utf8')
   assert.match(workflow, /derived-image:/, 'a derived-image job exists')
+  assert.match(workflow, /needs: \[derived-image\]/, 'the release publishes only after the guard passes')
   assert.match(workflow, /--build-arg QARE_IMAGE=/, 'the example builds through the contract ARG')
   assert.match(workflow, /base-fixture\.Dockerfile/, 'the base is the contract fixture')
-  assert.match(workflow, /\/opt\/qare\/bin\/qare --version/, 'the smoke check runs the entry point')
+  assert.match(workflow, / qare --version/, 'the smoke check runs the entry point on PATH')
+  assert.match(workflow, /docker pull ghcr\.io\/vividynamics\/qare-core/, 'the published base is exercised on releases where it exists')
 })
 
 test('the example builds against a contract-conformant base and runs as the qare user', async () => {
@@ -81,8 +83,23 @@ test('the example builds against a contract-conformant base and runs as the qare
     'the host tool runs',
   )
   assert.equal(
+    sh('docker', ['run', '--rm', 'qare-derived:contract-test', 'qare', '--version']).trim(),
+    version,
+    'the entry point answers on PATH, not just at its absolute path',
+  )
+  assert.equal(
     sh('docker', ['run', '--rm', 'qare-derived:contract-test', 'id', '-un']).trim(),
     'qare',
     'the container runs as the qare user, not root',
+  )
+  assert.equal(
+    sh('docker', ['run', '--rm', 'qare-derived:contract-test', 'id', '-u']).trim(),
+    '1000',
+    'the qare user has uid 1000, as the contract fixes',
+  )
+  assert.equal(
+    sh('docker', ['run', '--rm', 'qare-derived:contract-test', 'id', '-g']).trim(),
+    '1000',
+    'the qare user has gid 1000, as the contract fixes',
   )
 })

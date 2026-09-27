@@ -49,8 +49,10 @@ The base images are published to the GitHub container registry under
 | `latest` | The newest release. Convenient, never pinned. |
 
 A derived image that must not move pins the exact release tag. One that
-prefers staying current pins the release line and rebuilds on release, which is
-what the worked example does.
+prefers staying current pins the release line and rebuilds on release. The
+worked example defaults to `latest` so it builds anywhere, and pins its base
+through the same `--build-arg`: the release guard builds it against the exact
+release.
 
 ## The worked example
 
@@ -71,7 +73,14 @@ contract's.
 
 ## The release guard
 
-Every release builds the worked example from the release's own images and runs
-a smoke check inside the container: the entry point answers, the driver runs,
-and the tool runs, all as the `qare` user. A release that breaks the contract
-goes red there, so a release cannot break derived images silently.
+Every release builds the worked example and runs a smoke check inside the
+container: the entry point answers, the driver runs, and the tool runs, all as
+the `qare` user with uid and gid 1000. The release publishes only after the
+guard passes, so a release that breaks the contract is refused rather than
+shipped.
+
+Until the base images publish (#88), the guard builds against a
+contract-conformant fixture stamped with the release version, so the check is
+about the example and the contract rather than the base. On any release where
+the published base exists, the same job also builds the example against it and
+runs the smoke check there.
