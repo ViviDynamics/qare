@@ -151,8 +151,14 @@ subdirectory of `.qa/` (#55):
 Discovery finds the single root profile at `.qa/config.yml`, or named profiles
 in the subdirectories that carry a `config.yml`. The two forms do not mix: a
 `.qa/` that holds both is a layout nobody can select from, and loading it fails
-closed. A subdirectory without a `config.yml` is not a profile; it is fixtures,
-stubs or learned notes the profiles share.
+closed. The root form is present exactly when `.qa/config.yml` is, so a root
+profile whose `QA.md` is missing is malformed, not absent, and fails closed
+rather than reading as a named-profile layout. The name `default` is reserved
+for the root form: a `.qa/default/config.yml` is a layout nobody can select
+from, so it fails closed too. A subdirectory without a `config.yml` is not a
+profile; it is fixtures, stubs or learned notes the profiles share. A boot
+profile keeps its `fixtures/` and `stubs/` beside its own `config.yml`, or
+shares the ones the `.qa/` root keeps when it has none of its own.
 
 Selection follows what a change touches: the root profile is always selected,
 and a named profile is selected when a touched path falls under an area its
@@ -169,12 +175,17 @@ before anything runs.
 A run may also check several apps in one run: its job carries named profiles,
 one group per app, each with its own criteria. Every app of the group boots
 under an isolation of its own (its own compose project, network and host
-port), the run writes one result carrying a verdict per app, and the comment
-reports them in one comment, one section per app. Criterion ids must be unique
-across every group of the job, because a criterion's id names its evidence
-directory. A group that cannot run (a profile that is not there, an isolation
-that will not mint, a boot that never came up) reports its criteria unverified
-with the reason named, and the other apps still run.
+port) — a run over several apps always mints each isolation itself, so a
+caller-carried isolation is refused instead of shared — and the run hands
+every app's isolation back, so a caller can stop each stack it booted. The run
+writes one result carrying a verdict per app, and the comment reports them in
+one comment, one section per app. Every app's redaction rules are known before
+any app runs, so a secret any app declares is swept from the whole run's
+evidence, not just its own. Criterion ids must be unique across every group of
+the job, because a criterion's id names its evidence directory. A group that
+cannot run (a profile that is not there, an isolation that will not mint, a
+boot that never came up) reports its criteria unverified with the reason named,
+and the other apps still run.
 
 ### Run-scoped values
 

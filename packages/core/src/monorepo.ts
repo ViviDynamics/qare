@@ -1,4 +1,4 @@
-import { readdir } from 'node:fs/promises'
+import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ProfileMissingError, ProfileValidationError, loadProfile, type QaProfile } from './profile.js'
 
@@ -22,16 +22,21 @@ export const DEFAULT_PROFILE_NAME = 'default'
  * one app or several, and a `.qa/` that holds both is a mistake somebody has
  * to settle, so loading fails closed.
  *
- * A malformed profile still fails the load — only absence is discovery.
+ * The root form is present exactly when `.qa/config.yml` is: a root profile
+ * whose QA.md is missing is malformed, not absent, so it fails the load
+ * instead of quietly reading as a named-profile layout. The name `default` is
+ * reserved for the root form: a named profile directory of that name is a
+ * layout nobody can select from, so it fails closed too.
+ *
+ * A malformed profile still fails the load — only absence is discovery. A
+ * named profile shares the root's fixtures and stubs when it keeps none of
+ * its own (#55).
  */
 export async function discoverProfiles(qaDir: string): Promise<NamedProfile[]> {
-  let root: NamedProfile | undefined
-  try {
-    const profile = await loadProfile(qaDir)
-    root = { name: DEFAULT_PROFILE_NAME, dir: qaDir, profile }
-  } catch (error) {
-    if (!(error instanceof ProfileMissingError)) throw error
-  }
+  const isFile = async (path: string): Promise<boolean> => (await stat(path).then((info) => info.isFile()).catch(() => false))
+  const root: NamedProfile | undefined = (await isFile(join(qaDir, 'config.yml')))
+    ? { name: DEFAULT_PROFILE_NAME, dir: qaDir, profile: await loadProfile(qaDir) }
+    : undefined
   const entries = await readdir(qaDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return []
     throw error
@@ -39,10 +44,18 @@ export async function discoverProfiles(qaDir: string): Promise<NamedProfile[]> {
   const named: NamedProfile[] = []
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
+    if (entry.name === DEFAULT_PROFILE_NAME) {
+      if (await isFile(join(qaDir, entry.name, 'config.yml')))
+        throw new ProfileValidationError(
+          'config.yml',
+          `a named profile cannot be called ${DEFAULT_PROFILE_NAME}: the name is reserved for the single root profile, so a ${join(qaDir, entry.name, 'config.yml')} is a layout nobody can select from; rename the directory to the app it checks`,
+        )
+      continue
+    }
     const dir = join(qaDir, entry.name)
     let profile: QaProfile
     try {
-      profile = await loadProfile(dir)
+      profile = await loadProfile(dir, { resources: qaDir })
     } catch (error) {
       // A subdirectory without a config.yml is not a profile: it is a
       // directory of fixtures, stubs or learned notes the root form keeps.

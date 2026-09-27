@@ -126,6 +126,20 @@ function escapeLinkText(text: string): string {
   return text.replace(/[\[\]]/g, ' ')
 }
 
+/**
+ * A profile name is repository content, so it is escaped before it becomes a
+ * heading: a name that carries Markdown or HTML cannot reshape the comment or
+ * inject markup into it (#55).
+ */
+function escapeHeading(text: string): string {
+  return text
+    .replaceAll('\\', '\\\\')
+    .replaceAll('`', '\\`')
+    .replaceAll('|', '\\|')
+    .replaceAll('<', '\\<')
+    .replaceAll('>', '\\>')
+}
+
 export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 'relative' }): string {
   const posted = links.kind === 'artifact'
   const cell = posted ? cellSpan : escapeCell
@@ -160,7 +174,7 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
           `This run checked ${result.profiles.length} apps, each under a profile of its own; each verdict is that app's alone.`,
           '',
           ...result.profiles.flatMap(summary => [
-            `### ${summary.name} — verdict ${summary.verdict}`,
+            `### ${escapeHeading(summary.name)} — verdict ${summary.verdict}`,
             '',
             ...table(result.criteria.filter(criterion => summary.criteria.includes(criterion.id))),
             '',

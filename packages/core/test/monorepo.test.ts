@@ -7,6 +7,7 @@ import {
   JobValidationError,
   ProfileValidationError,
   discoverProfiles,
+  judgeExecuted,
   loadJobFromText,
   loadResult,
   pathUnderArea,
@@ -50,6 +51,17 @@ const TARGET_CONFIG = [
   `    http: ${HEALTH_URL}`,
   '    timeout: 30s',
   '  hosts: []',
+].join('\n')
+
+const APP_BOOT_CONFIG = [
+  'app:',
+  '  boot: { compose: compose.qa.yaml, service: admin }',
+  `  health: { http: '${HEALTH_URL}', timeout: 120s }`,
+  '  seed: { command: bin/rails db:seed:qa }',
+  '  login: { fixture: fixtures/users.yml, role: admin }',
+  'stubs: []',
+  'visual: { widths: [], themes: [] }',
+  'suites: []',
 ].join('\n')
 
 async function writeProfile(dir: string, config: string): Promise<void> {
@@ -186,7 +198,7 @@ test('one run checks two apps under two isolations and reports a verdict per app
     { name: 'storefront', profile: { inline: APP_PROFILE }, criteria: [commandCriterion('storefront-c1')] },
   ])
 
-  const { result } = await runJob(job, HEALTHY_BOOT)
+  const { result, isolations } = await runJob(job, HEALTHY_BOOT)
 
   expect(result.verdict).toBe('passed')
   expect(result.profiles).toEqual([
@@ -201,6 +213,50 @@ test('one run checks two apps under two isolations and reports a verdict per app
   expect(await readFile(join(job.evidenceDir, 'values-admin.json'), 'utf8')).toBeTruthy()
   const written = loadResult(await readFile(join(job.evidenceDir, 'result.json'), 'utf8'))
   expect(written.profiles).toEqual(result.profiles)
+  // The run hands back every app's isolation, so a caller can stop each stack
+  // the run booted (#55).
+  expect(isolations).toEqual([
+    { name: 'admin', isolation: expect.objectContaining({ project: adminIsolation.project }) },
+    { name: 'storefront', isolation: expect.objectContaining({ project: storefrontIsolation.project }) },
+  ])
+})
+
+test('a several-profile run refuses a caller-carried isolation instead of sharing it', async () => {
+  const job = await makeSeveralJob([
+    { name: 'admin', profile: { inline: APP_PROFILE }, criteria: [commandCriterion('admin-c1')] },
+    { name: 'storefront', profile: { inline: APP_PROFILE }, criteria: [commandCriterion('storefront-c1')] },
+  ])
+  const isolation = { runId: 'r1', project: 'qare-r1', startedAt: '2026-01-01T00:00:00Z', port: 3000 }
+
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, isolation })
+
+  expect(result.verdict).toBe('refused')
+  expect(result.profiles?.map((profile) => profile.verdict)).toEqual(['refused', 'refused'])
+  expect(result.criteria.every((criterion) => criterion.outcome === 'unverified' && criterion.reason.includes('an isolation of its own'))).toBe(true)
+})
+
+test("every app's evidence is swept with every app's redaction rules", async () => {
+  const secret = 's3cr3t-token'
+  const job = await makeSeveralJob([
+    {
+      name: 'storefront',
+      profile: { inline: APP_PROFILE },
+      criteria: [{ id: 'storefront-c1', text: 'c', checks: [{ kind: 'command', run: `echo ${secret}` }] }],
+    },
+    { name: 'admin', profile: { inline: { ...APP_PROFILE, redact: { values: [secret] } } }, criteria: [commandCriterion('admin-c1')] },
+  ])
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('passed')
+  const stdout = await readFile(join(job.evidenceDir, 'checks', 'storefront-c1', '0', 'stdout.txt'), 'utf8')
+  expect(stdout).not.toContain(secret)
+  expect(stdout).toContain('[redacted]')
+})
+
+test('the per-app report survives judging and replay', async () => {
+  const { result } = await judgeExecuted(severalResult(), { texts: {}, diff: '' })
+  expect(result.profiles).toEqual(severalResult().profiles)
 })
 
 test('a group whose profile is not there is refused for that app alone', async () => {
@@ -287,6 +343,38 @@ test('a profile name may not carry the namespace separator', () => {
   expect(() => loadJobFromText(SEVERAL_JOB_TEXT.replace('name: admin', 'name: a:admin'))).toThrow(JobValidationError)
 })
 
+test('a named boot profile shares the fixtures and stubs the root keeps when it has none of its own', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'qare-mono-'))
+  await writeProfile(join(repo, '.qa', 'admin'), APP_BOOT_CONFIG)
+  await mkdir(join(repo, '.qa', 'fixtures'), { recursive: true })
+  await mkdir(join(repo, '.qa', 'stubs'), { recursive: true })
+  const found = await discoverProfiles(join(repo, '.qa'))
+  expect(found.map((profile) => profile.name)).toEqual(['admin'])
+})
+
+test('a named boot profile that keeps its own fixtures needs none from the root', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'qare-mono-'))
+  await writeProfile(join(repo, '.qa', 'admin'), APP_BOOT_CONFIG)
+  await mkdir(join(repo, '.qa', 'admin', 'fixtures'), { recursive: true })
+  await mkdir(join(repo, '.qa', 'admin', 'stubs'), { recursive: true })
+  const found = await discoverProfiles(join(repo, '.qa'))
+  expect(found.map((profile) => profile.name)).toEqual(['admin'])
+})
+
+test('a root profile that is there but malformed fails instead of reading as a named layout', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'qare-mono-'))
+  await mkdir(join(repo, '.qa'), { recursive: true })
+  await writeFile(join(repo, '.qa', 'config.yml'), 'stubs: []\n', 'utf8')
+  await writeProfile(join(repo, '.qa', 'admin'), TARGET_CONFIG)
+  await expect(discoverProfiles(join(repo, '.qa'))).rejects.toThrow(ProfileValidationError)
+})
+
+test('a named profile directory called default fails closed', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'qare-mono-'))
+  await writeProfile(join(repo, '.qa', 'default'), TARGET_CONFIG)
+  await expect(discoverProfiles(join(repo, '.qa'))).rejects.toThrow(/reserved for the single root profile/)
+})
+
 function severalResult(): RunResult {
   return {
     schemaVersion: '1',
@@ -314,6 +402,16 @@ test('the comment reports one section per app when a run checked several', () =>
   expect(adminSection).toContain('admin-c1')
   expect(adminSection).not.toContain('storefront-c1')
   expect(storefrontSection).toContain('storefront-c1')
+})
+
+test('a profile name that carries Markdown is escaped in the heading, not rendered', () => {
+  const result: RunResult = {
+    ...severalResult(),
+    profiles: [{ name: 'a`d|min<b>', verdict: 'failed', criteria: ['admin-c1'] }],
+  }
+  const comment = renderComment(result)
+  expect(comment).toContain('### a\\`d\\|min\\<b\\> — verdict failed')
+  expect(comment).not.toContain('<b>')
 })
 
 test('the comment of a single-profile run has no per-app sections', () => {

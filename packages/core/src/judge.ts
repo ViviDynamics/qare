@@ -389,6 +389,9 @@ export function judgedResult(
     // Where the run executed is evidence like the verdict is, so judging it
     // again does not erase it (issue #91).
     ...(loaded.environment === undefined ? {} : { environment: loaded.environment }),
+    // The per-app report survives judging and replay, or `qare judge` and the
+    // action would render the single-table comment over a several-app run (#55).
+    ...(loaded.profiles === undefined ? {} : { profiles: loaded.profiles }),
   }
 }
 
