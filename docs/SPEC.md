@@ -370,7 +370,10 @@ own under `qare-evidence/` where qare runs, never into the repository
 checked. The
 evidence directory holds `plan.json`, the executed `result.json` and the
 `judged-result.json`, and the exit code is `qare run`'s for the judged
-verdict. `--runner none` judges from the evidence alone. Nothing is written
+verdict. `--runner none` judges from the evidence alone. `qare replay` re-runs
+that judgment later from the same artifacts, with no model and nothing to
+reach: the verdict is either byte-identical with the one the run judged, or
+the difference is printed criterion by criterion. Nothing is written
 to the ledger. The MCP server offers the same entry as its `check` tool, which
 returns the judged result and the evidence directory.
 
@@ -581,7 +584,7 @@ One TypeScript codebase, one core, thin adapters:
 | Package | Purpose |
 | --- | --- |
 | `@qare/core` | plan, execute, judge, report; provider interface; `result.json` schema |
-| `@qare/cli` | `qare init`, `qare readiness`, `qare run`, `qare run --job`, `qare judge`, `qare ledger`, `qare sweep` |
+| `@qare/cli` | `qare init`, `qare readiness`, `qare run`, `qare run --job`, `qare judge`, `qare replay`, `qare ledger`, `qare sweep` |
 | `@qare/action` | GitHub Action wrapping the three jobs |
 | `@qare/mcp` | MCP server so orchestrators, Codex, OpenCode and others can call it |
 | `plugin/claude-code` | skill, verifier subagent, Stop hook for local runs |
