@@ -58,19 +58,42 @@ export interface PlannedCriterion {
   id: string
   text: string
   checks: PlanCheck[]
+  /**
+   * The app this criterion is checked against, named after the plan's
+   * `profiles`. A plan that names its profiles must name one on every
+   * criterion, or nothing runs (#55).
+   */
+  profile?: string
 }
 
 export interface UnplannableCriterion {
   id: string
   text: string
   unplannable: string
+  profile?: string
 }
 
 export type PlanCriterion = PlannedCriterion | UnplannableCriterion
 
+/**
+ * The apps a plan is planned against (#55). The paths are repo-relative
+ * directories under `.qa/`, so the same plan runs wherever the repository is.
+ */
+export interface PlanProfileRef {
+  name: string
+  path: string
+}
+
 export interface Plan {
   schemaVersion: string
   criteria: PlanCriterion[]
+  /**
+   * The apps the plan is planned against, named and repo-relative (#55). When
+   * it is present, every criterion names the app it is checked against, and
+   * `qare run --plan` builds one run that checks them all and reports them in
+   * one comment.
+   */
+  profiles?: PlanProfileRef[]
 }
 
 const CHECK_KINDS: CheckKind[] = ['command', 'flow', 'visual', 'mail']
@@ -147,18 +170,51 @@ function parseLoose(input: unknown, extraFlowActions: readonly string[]): Plan {
   if (input.criteria.length === 0)
     fail('criteria', 'plan is empty: no criterion was planned, and an empty plan passes nothing, so it fails closed')
 
-  return {
-    schemaVersion,
-    criteria: input.criteria.map((entry, index) => parseCriterion(entry, index, extraFlowActions)),
+  const profiles = input.profiles === undefined ? undefined : parseProfiles(input.profiles)
+  const criteria = input.criteria.map((entry, index) => parseCriterion(entry, index, extraFlowActions, profiles))
+  if (profiles !== undefined) {
+    for (const [index, criterion] of criteria.entries()) {
+      if (criterion.profile === undefined)
+        fail(`criteria[${index}]`, `criterion "${criterion.id}" names no profile; a plan that names its profiles checks every criterion against the app it names`)
+    }
   }
+  return { schemaVersion, criteria, ...(profiles === undefined ? {} : { profiles }) }
 }
 
-function parseCriterion(value: unknown, index: number, extraFlowActions: readonly string[]): PlanCriterion {
+function parseProfiles(value: unknown): PlanProfileRef[] {
+  if (!Array.isArray(value)) fail('profiles', 'profiles must be an array of { name, path }')
+  if (value.length === 0) fail('profiles', 'profiles is empty: a plan that names its profiles names at least one app')
+  const seen = new Set<string>()
+  const profiles = value.map((entry, index) => {
+    const base = `profiles[${index}]`
+    if (!isRecord(entry)) fail(base, 'a planned profile must be a JSON object with a name and a path')
+    const name = nonEmptyString(entry.name, `${base}.name`, 'name')
+    if (seen.has(name)) fail(`${base}.name`, `two planned profiles are named ${JSON.stringify(name)}; a plan names each app once`)
+    seen.add(name)
+    const path = nonEmptyString(entry.path, `${base}.path`, 'path')
+    if (path.includes('\\')) fail(`${base}.path`, `profile path ${JSON.stringify(path)} must use "/" as its separator; a git diff path never carries a backslash`)
+    if (path.startsWith('/')) fail(`${base}.path`, `profile path ${JSON.stringify(path)} must be repo-relative, not absolute`)
+    if (path.split('/').includes('..'))
+      fail(`${base}.path`, `profile path ${JSON.stringify(path)} climbs out of the repository (".." is not allowed)`)
+    if (path !== '.' && path.split('/').includes('.'))
+      fail(`${base}.path`, `profile path ${JSON.stringify(path)} carries a "." segment, which no git diff path can match (write the path without it)`)
+    return { name, path }
+  })
+  return profiles
+}
+
+function parseCriterion(value: unknown, index: number, extraFlowActions: readonly string[], profiles?: PlanProfileRef[]): PlanCriterion {
   const base = `criteria[${index}]`
   if (!isRecord(value)) fail(base, 'criterion must be a JSON object')
 
   const id = nonEmptyString(value.id, `${base}.id`, 'id')
   const text = nonEmptyString(value.text, `${base}.text`, 'text')
+  let profile: string | undefined
+  if (value.profile !== undefined) {
+    profile = nonEmptyString(value.profile, `${base}.profile`, 'profile')
+    if (profiles !== undefined && !profiles.some((planned) => planned.name === profile))
+      fail(`${base}.profile`, `criterion "${id}" names ${JSON.stringify(profile)}, which the plan does not plan; a criterion is checked against one of the apps the plan names`)
+  }
 
   const hasChecks = value.checks !== undefined
   const hasUnplannable = value.unplannable !== undefined
@@ -167,7 +223,12 @@ function parseCriterion(value: unknown, index: number, extraFlowActions: readonl
   if (hasChecks && hasUnplannable)
     fail(base, `criterion "${id}" carries both checks and unplannable; a criterion is planned or unplannable, not both`)
   if (hasUnplannable)
-    return { id, text, unplannable: nonEmptyString(value.unplannable, `${base}.unplannable`, 'unplannable reason') }
+    return {
+      id,
+      text,
+      unplannable: nonEmptyString(value.unplannable, `${base}.unplannable`, 'unplannable reason'),
+      ...(profile === undefined ? {} : { profile }),
+    }
 
   if (!Array.isArray(value.checks)) fail(`${base}.checks`, 'checks must be an array')
   if (value.checks.length === 0)
@@ -177,6 +238,7 @@ function parseCriterion(value: unknown, index: number, extraFlowActions: readonl
     id,
     text,
     checks: value.checks.map((check, checkIndex) => parseCheck(check, `${base}.checks[${checkIndex}]`, extraFlowActions)),
+    ...(profile === undefined ? {} : { profile }),
   }
 }
 

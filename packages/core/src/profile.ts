@@ -99,6 +99,8 @@ function parseProfilePaths(value: unknown, field: string): string[] {
     if (path.endsWith('/')) fail(base, `area path ${JSON.stringify(path)} must not end in "/"`)
     if (path.split('/').includes('..'))
       fail(base, `area path ${JSON.stringify(path)} climbs out of the repository (".." is not allowed)`)
+    if (path !== '.' && path.split('/').includes('.'))
+      fail(base, `area path ${JSON.stringify(path)} carries a "." segment, which no git diff path can match (write the path without it)`)
     if (path !== '.' && path.split('/').some((segment) => segment === ''))
       fail(base, `area path ${JSON.stringify(path)} carries an empty path segment`)
     // Evidence is published: a control character in a path is one way to

@@ -175,8 +175,8 @@ before anything runs.
 A run may also check several apps in one run: its job carries named profiles,
 one group per app, each with its own criteria. Every app of the group boots
 under an isolation of its own (its own compose project, network and host
-port) — a run over several apps always mints each isolation itself, so a
-caller-carried isolation is refused instead of shared — and the run hands
+port); a run over several apps always mints each isolation itself, so a
+caller-carried isolation is refused instead of shared, and the run hands
 every app's isolation back, so a caller can stop each stack it booted. The run
 writes one result carrying a verdict per app, and the comment reports them in
 one comment, one section per app. Every app's redaction rules are known before
@@ -186,6 +186,11 @@ the job, because a criterion's id names its evidence directory. A group that
 cannot run (a profile that is not there, an isolation that will not mint, a
 boot that never came up) reports its criteria unverified with the reason named,
 and the other apps still run.
+
+A plan may name the apps it is planned against: `profiles`, one
+`{ name, path }` per app, with a repo-relative path under `.qa/`, and every
+criterion names the app it is checked against. `qare run --plan` builds the
+several-app run from such a plan and takes no `--profile` for it.
 
 ### Run-scoped values
 

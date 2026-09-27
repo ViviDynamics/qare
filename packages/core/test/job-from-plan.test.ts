@@ -167,3 +167,119 @@ test('a job criterion carrying both checks and an unrunnable reason is refused a
   }
   expect(() => parseJob(job)).toThrow(/criteria\[0\]\.unrunnable/)
 })
+
+test('a plan that names its profiles builds one run over several apps, each with its own criteria', () => {
+  const { job, notes } = jobFromPlan(
+    parsePlan({
+      schemaVersion: '1',
+      profiles: [
+        { name: 'admin', path: 'apps/admin/.qa' },
+        { name: 'docs', path: 'apps/docs/.qa' },
+      ],
+      criteria: [
+        { id: 'c1', text: 'admin boots', checks: [COMMAND], profile: 'admin' },
+        { id: 'c2', text: 'docs boots', checks: [COMMAND], profile: 'docs' },
+      ],
+    }),
+    CONTEXT,
+  )
+
+  expect('profiles' in job).toBe(true)
+  if (!('profiles' in job)) throw new Error('expected the several-profile job form')
+  expect(job.profiles).toEqual([
+    {
+      name: 'admin',
+      profile: { path: '/work/apps/admin/.qa' },
+      criteria: [{ id: 'c1', text: 'admin boots', checks: [{ kind: 'command', run: 'npm test -- login' }] }],
+    },
+    {
+      name: 'docs',
+      profile: { path: '/work/apps/docs/.qa' },
+      criteria: [{ id: 'c2', text: 'docs boots', checks: [{ kind: 'command', run: 'npm test -- login' }] }],
+    },
+  ])
+  expect(notes).toEqual([])
+})
+
+test('an app the plan planned no criterion against takes no part in the run, and the run says so', () => {
+  const { job, notes } = jobFromPlan(
+    parsePlan({
+      schemaVersion: '1',
+      profiles: [
+        { name: 'admin', path: 'apps/admin/.qa' },
+        { name: 'docs', path: 'apps/docs/.qa' },
+      ],
+      criteria: [{ id: 'c1', text: 'admin boots', checks: [COMMAND], profile: 'admin' }],
+    }),
+    CONTEXT,
+  )
+
+  expect('profiles' in job && job.profiles.map((group) => group.name)).toEqual(['admin'])
+  expect(notes.join(' ')).toContain('docs')
+  expect(notes.join(' ')).toContain('no criterion in the plan is checked against this app')
+})
+
+test('a plan that names several apps refuses a criterion that names no app', () => {
+  expect(() =>
+    parsePlan({
+      schemaVersion: '1',
+      profiles: [
+        { name: 'admin', path: 'apps/admin/.qa' },
+        { name: 'docs', path: 'apps/docs/.qa' },
+      ],
+      criteria: [
+        { id: 'c1', text: 'admin boots', checks: [COMMAND], profile: 'admin' },
+        { id: 'c2', text: 'nobody planned me', checks: [COMMAND] },
+      ],
+    }),
+  ).toThrow(/criterion "c2" names no profile/)
+})
+
+test('a criterion naming an app the plan does not plan is refused at load', () => {
+  expect(() =>
+    parsePlan({
+      schemaVersion: '1',
+      profiles: [{ name: 'admin', path: 'apps/admin/.qa' }],
+      criteria: [{ id: 'c1', text: 'x', checks: [COMMAND], profile: 'docs' }],
+    }),
+  ).toThrow(/names "docs", which the plan does not plan/)
+})
+
+test('a planned profile path that carries a dot segment is refused, because no git diff path matches it', () => {
+  expect(() =>
+    parsePlan({
+      schemaVersion: '1',
+      profiles: [{ name: 'admin', path: './apps/admin/.qa' }],
+      criteria: [{ id: 'c1', text: 'x', checks: [COMMAND], profile: 'admin' }],
+    }),
+  ).toThrow(/carries a "\." segment/)
+})
+
+test('an unplannable criterion names its app too, so it is reported against the right app', () => {
+  const { job } = jobFromPlan(
+    parsePlan({
+      schemaVersion: '1',
+      profiles: [
+        { name: 'admin', path: 'apps/admin/.qa' },
+        { name: 'docs', path: 'apps/docs/.qa' },
+      ],
+      criteria: [
+        { id: 'c1', text: 'admin mail', unplannable: 'needs a mailbox', profile: 'admin' },
+        { id: 'c2', text: 'docs boots', checks: [COMMAND], profile: 'docs' },
+      ],
+    }),
+    CONTEXT,
+  )
+
+  expect('profiles' in job && job.profiles[0]).toMatchObject({
+    name: 'admin',
+    criteria: [{ id: 'c1', text: 'admin mail', unrunnable: 'the planner could not plan it: needs a mailbox' }],
+  })
+})
+
+test('a plan that names no profiles and a context that names no profile cannot build a job', () => {
+  const contextWithoutProfile = { ...CONTEXT, profile: undefined }
+  expect(() =>
+    jobFromPlan(plan([{ id: 'c1', text: 'x', checks: [COMMAND] }]), contextWithoutProfile),
+  ).toThrow(/names no profile/)
+})

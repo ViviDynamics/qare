@@ -332,16 +332,24 @@ async function runSeveralProfiles(
   const recorded: Array<{ name: string; values: RunValues }> = []
   const isolations: Array<{ name: string; isolation: RunIsolation }> = []
   let egressRefused = false
-  for (const entry of planned) {
-    const outcome: ProfileGroupOutcome =
-      entry.refusal !== undefined
-        ? { criteria: entry.group.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified' as const, reason: entry.refusal! })), verdict: 'refused' }
-        : await runProfileGroup(job, entry.group, entry.profile!, rules, opts, execution)
-    criteria.push(...outcome.criteria)
-    profiles.push({ name: entry.group.name, verdict: outcome.verdict, criteria: outcome.criteria.map((criterion) => criterion.id) })
-    if (outcome.values !== undefined) recorded.push({ name: entry.group.name, values: outcome.values })
-    if (outcome.isolation !== undefined) isolations.push({ name: entry.group.name, isolation: outcome.isolation })
-    if (outcome.egressRefused === true) egressRefused = true
+  // Every started group's cancellation disposer is collected here and released
+  // only when the whole run is over, so a SIGINT at any point of the run tears
+  // down every app the run has booted (#55).
+  const cleanups: Array<() => void> = []
+  try {
+    for (const entry of planned) {
+      const outcome: ProfileGroupOutcome =
+        entry.refusal !== undefined
+          ? { criteria: entry.group.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified' as const, reason: entry.refusal! })), verdict: 'refused' }
+          : await runProfileGroup(job, entry.group, entry.profile!, rules, opts, cleanups, execution)
+      criteria.push(...outcome.criteria)
+      profiles.push({ name: entry.group.name, verdict: outcome.verdict, criteria: outcome.criteria.map((criterion) => criterion.id) })
+      if (outcome.values !== undefined) recorded.push({ name: entry.group.name, values: outcome.values })
+      if (outcome.isolation !== undefined) isolations.push({ name: entry.group.name, isolation: outcome.isolation })
+      if (outcome.egressRefused === true) egressRefused = true
+    }
+  } finally {
+    for (const cleanup of cleanups) cleanup()
   }
   // The minted values of each app are written through the same redaction sweep
   // as everything else the run publishes, with every app's rules applied: the
@@ -370,6 +378,7 @@ async function runProfileGroup(
     flowSession?: FlowSessionFactory
     flowDriver?: FlowDriverCapabilities
   },
+  cleanups: Array<() => void>,
   execution: ExecutionKind = detectExecution(),
 ): Promise<ProfileGroupOutcome> {
   const unverifiedAll = (reason: string): CriterionResult[] =>
@@ -457,7 +466,11 @@ async function runProfileGroup(
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
     return { criteria, verdict, values, ...(isolation === undefined ? {} : { isolation }), egressRefused }
   } finally {
-    cancelCleanup?.()
+    // The disposer stays installed until the whole several-app run ends, not
+    // just this group: the earlier apps' stacks are still up while a later
+    // group runs, so a SIGINT mid-run must tear down every started app, not
+    // only the one in flight (#55).
+    if (cancelCleanup !== undefined) cleanups.push(cancelCleanup)
   }
 }
 

@@ -75,6 +75,40 @@ test('--job still works, because a job file is how a run is driven by hand', asy
   expect(err.lines.join('')).toMatch(/--job|--plan/)
 })
 
+test('qare run --plan over a plan that names its profiles takes no --profile', async () => {
+  // A plan that names its apps carries them (repo-relative), so the
+  // single-profile flag has nothing to attach to (#55).
+  const { planPath, dir } = await planFile([
+    { id: 'c1', text: 'admin boots', checks: [{ kind: 'command', name: 'n', command: 'true' }], profile: 'admin' },
+  ])
+  await writeFile(
+    planPath,
+    JSON.stringify({
+      schemaVersion: '1',
+      profiles: [{ name: 'admin', path: '.qa/admin' }],
+      criteria: [
+        { id: 'c1', text: 'admin boots', checks: [{ kind: 'command', name: 'n', command: 'true' }], profile: 'admin' },
+      ],
+    }),
+    'utf8',
+  )
+  const err = capture()
+
+  const code = await main(
+    [
+      'run', '--plan', planPath,
+      '--id', 'pr-1', '--repo', dir, '--base', 'abc', '--head', 'def',
+      '--profile', join(dir, '.qa'), '--evidence', join(dir, 'evidence'),
+    ],
+    capture().writer,
+    err.writer,
+    BOOT,
+  )
+
+  expect(code).toBe(4)
+  expect(err.lines.join('')).toMatch(/already names the profiles/)
+})
+
 test('a flag with no value names the command the user actually typed', async () => {
   // The helper is shared by four commands now; saying "qare plan" to someone
   // running "qare run" sends them to the wrong usage line.

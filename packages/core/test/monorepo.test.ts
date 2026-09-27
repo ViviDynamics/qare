@@ -131,6 +131,12 @@ test('a named directory that carries a config.yml but no QA.md fails discovery c
   await expect(discoverProfiles(join(repo, '.qa'))).rejects.toThrow(/QA\.md/)
 })
 
+test('a profile whose area path carries a dot segment fails when it loads, because no git diff path matches it', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'qare-mono-'))
+  await writeProfile(join(repo, '.qa', 'admin'), `${TARGET_CONFIG}\npaths:\n  - ./apps/admin\n`)
+  await expect(discoverProfiles(join(repo, '.qa'))).rejects.toThrow(/carries a "\." segment/)
+})
+
 test('a repository without .qa/ discovers nothing', async () => {
   const repo = await mkdtemp(join(tmpdir(), 'qare-mono-'))
   expect(await discoverProfiles(join(repo, '.qa'))).toEqual([])

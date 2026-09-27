@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import type { Job, JobCheck, JobCriterion, JobProfileRef, JobPostTarget } from './job.js'
 import type { Plan, PlanCheck } from './plan.js'
 
@@ -13,7 +14,8 @@ export interface RunContext {
   repoPath: string
   baseRef: string
   headRef: string
-  profile: JobProfileRef
+  /** The single form's profile. A plan that names its profiles carries them instead. */
+  profile?: JobProfileRef
   evidenceDir: string
   post?: JobPostTarget
 }
@@ -91,6 +93,37 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
     notes.push(
       'nothing in this plan can be run: every criterion will report unverified, which is an outcome and not a pass',
     )
+
+  // A plan that names its profiles runs as one run over several apps (#55):
+  // one group per planned app, its profile resolved from the repo it names,
+  // and only the criteria planned against it. The planned paths are relative
+  // to the repository, so the same plan runs wherever the repository is.
+  if (plan.profiles !== undefined) {
+    const plannedProfiles = plan.criteria.map((criterion) => criterion.profile)
+    const groups = plan.profiles.map((planned) => ({
+      name: planned.name,
+      profile: { path: resolve(context.repoPath, planned.path) },
+      criteria: criteria.filter((_criterion, index) => plannedProfiles[index] === planned.name),
+    }))
+    for (const group of groups.filter((group) => group.criteria.length === 0))
+      notes.push(
+        `${group.name}: no criterion in the plan is checked against this app, so it takes no part in the run`,
+      )
+    return {
+      job: {
+        id: context.id,
+        repoPath: context.repoPath,
+        baseRef: context.baseRef,
+        headRef: context.headRef,
+        profiles: groups.filter((group) => group.criteria.length > 0),
+        evidenceDir: context.evidenceDir,
+        post: context.post ?? 'none',
+      },
+      notes,
+    }
+  }
+  if (context.profile === undefined)
+    throw new Error('the plan names no profiles and the run context names no profile, so nothing can be planned to run')
 
   return {
     job: {
