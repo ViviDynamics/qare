@@ -48,6 +48,13 @@ export interface RunResult {
   target?: RunTarget
   /** Where and with which versions this run executed (issue #91). */
   environment?: RunEnvironment
+  /**
+   * The profiles a several-profile run checked, in the order the job named
+   * them (#55): one verdict per app, and the criterion ids that belong to it,
+   * so a reader can see what each app was asked and which app a criterion
+   * checked. Absent when the run checked one profile.
+   */
+  profiles?: Array<{ name: string; verdict: RunVerdict; criteria: string[] }>
 }
 
 const CRITERION_OUTCOMES: CriterionOutcome[] = ['proven', 'failed', 'unverified']
@@ -130,6 +137,7 @@ export function parseResult(input: unknown): RunResult {
   const waived = parseWaived(input.waived)
   const target = parseTarget(input.target)
   const environment = parseEnvironment(input.environment)
+  const profiles = parseProfiles(input.profiles)
 
   return {
     schemaVersion,
@@ -139,6 +147,7 @@ export function parseResult(input: unknown): RunResult {
     ...(waived === undefined ? {} : { waived }),
     ...(target === undefined ? {} : { target }),
     ...(environment === undefined ? {} : { environment }),
+    ...(profiles === undefined ? {} : { profiles }),
   }
 }
 
@@ -163,6 +172,29 @@ function parseEnvironment(value: unknown): RunEnvironment | undefined {
         : fail('environment.versions.nareContract', 'nare contract must be a number'),
     },
   }
+}
+
+function parseProfiles(value: unknown): Array<{ name: string; verdict: RunVerdict; criteria: string[] }> | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value))
+    fail('profiles', 'result.json profiles must be an array of { name, verdict, criteria }')
+  if (value.length === 0) fail('profiles', 'result.json profiles must not be empty when present')
+  return value.map((entry, index) => {
+    if (!isRecord(entry)) fail(`profiles[${index}]`, 'profile entry must be a JSON object')
+    const name = nonEmptyString(entry.name, `profiles[${index}].name`, 'profile name')
+    const verdict = entry.verdict
+    if (typeof verdict !== 'string' || !RUN_VERDICTS.includes(verdict as RunVerdict))
+      fail(`profiles[${index}].verdict`, `unknown verdict ${JSON.stringify(verdict)} (expected "passed", "failed", "blocked", "refused" or "waived")`)
+    if (!Array.isArray(entry.criteria))
+      fail(`profiles[${index}].criteria`, 'profile entry must carry the criterion ids the profile checked')
+    return {
+      name,
+      verdict: verdict as RunVerdict,
+      criteria: entry.criteria.map((criterion, criterionIndex) =>
+        nonEmptyString(criterion, `profiles[${index}].criteria[${criterionIndex}]`, 'criterion id'),
+      ),
+    }
+  })
 }
 
 function parseTarget(value: unknown): RunTarget | undefined {

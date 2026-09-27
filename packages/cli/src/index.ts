@@ -38,6 +38,9 @@ import {
   reapProjects,
   runDoctor,
   runJob,
+  discoverProfiles,
+  selectProfiles,
+  touchedPathsFromDiff,
   VERSION,
 } from '@qare/core'
 import type {
@@ -76,11 +79,12 @@ export async function main(
   if (argv[0] === 'replay') return replayCommand(argv.slice(1), out, err)
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
+  if (argv[0] === 'profiles') return profilesCommand(argv.slice(1), out, err)
   if (argv[0] === 'doctor') return doctorCommand(argv.slice(1), out, err)
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -553,6 +557,86 @@ async function doctorCommand(argv: string[], out: Writer, err: Writer): Promise<
       out.write(report.ready ? 'this host can run qare natively\n' : 'this host is missing what the run needs\n')
     }
     return report.ready ? 0 : 1
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 4
+  }
+}
+
+/**
+ * `qare profiles`: say which `.qa/` profiles a run would select, before any
+ * check runs. Reads the same selection a several-profile run does (#55): all
+ * profiles when no diff or paths are given, the profiles whose areas (or own
+ * directory) a change touches otherwise. A repository without `.qa/` is not
+ * an error here — the report says so; a malformed profile is (#107).
+ */
+async function profilesCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
+  try {
+    let path: string | undefined
+    let outSpec: string | undefined
+    let qaDir: string | undefined
+    let diffSpec: string | undefined
+    let paths: string[] | undefined
+    for (let i = 0; i < argv.length; i += 1) {
+      const arg = argv[i]
+      if (arg === '--out') {
+        outSpec = argv[i + 1]
+        if (outSpec === undefined) throw new Error('qare profiles requires a file value after --out')
+        i += 1
+        continue
+      }
+      if (arg === '--diff') {
+        diffSpec = argv[i + 1]
+        if (diffSpec === undefined) throw new Error('qare profiles requires a file value after --diff')
+        i += 1
+        continue
+      }
+      if (arg === '--paths') {
+        const spec = argv[i + 1]
+        if (spec === undefined) throw new Error('qare profiles requires a comma-separated list after --paths')
+        paths = spec.split(',').filter(entry => entry !== '')
+        i += 1
+        continue
+      }
+      if (arg === '--qa') {
+        qaDir = argv[i + 1]
+        if (qaDir === undefined) throw new Error('qare profiles requires a directory value after --qa')
+        i += 1
+        continue
+      }
+      if (arg === '--help' || arg === '-h') {
+        out.write('qare profiles [path] [--diff <path> | --paths a,b] [--out <file>]\n  report which .qa/ profiles a run would select; never runs checks\n')
+        return 0
+      }
+      if (arg!.startsWith('-')) throw new Error(`unknown profiles flag ${JSON.stringify(arg)}`)
+      if (path !== undefined) throw new Error('qare profiles accepts at most one path argument')
+      path = arg
+    }
+    if (diffSpec !== undefined && paths !== undefined)
+      throw new Error('qare profiles takes --diff or --paths, not both: one change selects profiles one way')
+    const repoPath = path === undefined ? process.cwd() : resolve(path)
+    const qa = resolve(qaDir ?? join(repoPath, '.qa'))
+    const all = await discoverProfiles(qa)
+    // Without a diff or paths this reports every profile the repository
+    // holds; with one, it reports the profiles a change touching those
+    // paths would run (#55).
+    const selected =
+      diffSpec === undefined && paths === undefined
+        ? all
+        : selectProfiles(all, diffSpec !== undefined ? touchedPathsFromDiff(await readFile(resolve(diffSpec), 'utf8')) : (paths ?? []))
+    const lines =
+      selected.length === 0
+        ? ['no .qa/ profile matches what this change touches']
+        : selected.map(profile => `${profile.name}\t${profile.dir}`)
+    const report = `${lines.join('\n')}\n`
+    out.write(report)
+    if (outSpec !== undefined) {
+      await mkdir(dirname(outSpec), { recursive: true })
+      await writeFile(outSpec, report, 'utf8')
+      out.write(`report ${outSpec}\n`)
+    }
+    return 0
+>>>>>>> 0ca1e39 (Monorepo support: several profiles in one repo (#55))
   } catch (error) {
     err.write(`${formatError(error)}\n`)
     return 4

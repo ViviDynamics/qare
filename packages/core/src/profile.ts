@@ -73,6 +73,39 @@ export interface QaProfile {
   mail?: ProfileMail
   /** Fixture data that must not be published in evidence (#52). */
   redact?: ProfileRedaction
+  /**
+   * The areas of the repository this profile covers (#55): the touched paths
+   * that select it when `.qa/` holds several profiles. A single root profile
+   * covers the whole repository and is selected without them.
+   */
+  paths?: string[]
+}
+
+/**
+ * The profile's criteria areas (#55): repo-relative paths, matched as
+ * prefixes at a path-segment boundary, so `apps/admin` covers `apps/admin/src`
+ * but never `apps/admin-ui`. `.` covers the whole repository. A path that
+ * climbs out of the repository, or that no git diff path can carry, is a
+ * profile mistake and fails the profile when it loads.
+ */
+function parseProfilePaths(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) fail(field, `${field} must be an array of repo-relative paths`)
+  const paths = stringArray(value, field, 'area path')
+  for (const [index, path] of paths.entries()) {
+    const base = `${field}[${index}]`
+    if (path.includes('\\'))
+      fail(base, `area path ${JSON.stringify(path)} must use "/" as its separator; a git diff path never carries a backslash`)
+    if (path.startsWith('/')) fail(base, `area path ${JSON.stringify(path)} must be repo-relative, not absolute`)
+    if (path.endsWith('/')) fail(base, `area path ${JSON.stringify(path)} must not end in "/"`)
+    if (path.split('/').includes('..'))
+      fail(base, `area path ${JSON.stringify(path)} climbs out of the repository (".." is not allowed)`)
+    if (path !== '.' && path.split('/').some((segment) => segment === ''))
+      fail(base, `area path ${JSON.stringify(path)} carries an empty path segment`)
+    // Evidence is published: a control character in a path is one way to
+    // write something a reader cannot name.
+    if (/[\x00-\x1f\x7f]/.test(path)) fail(base, `area path ${JSON.stringify(path)} carries control characters`)
+  }
+  return paths
 }
 
 export interface ProfileMail {
@@ -196,6 +229,7 @@ export function validateProfileConfig(config: unknown): QaProfile {
     suites: parseSuites(config.suites),
     ...(config.mail === undefined ? {} : { mail: parseMail(config.mail) }),
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
+    ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
   }
 }
 
@@ -218,6 +252,7 @@ function validateTargetConfig(config: Record<string, unknown>): QaProfile {
     suites: config.suites === undefined ? [] : parseSuites(config.suites),
     ...(config.mail === undefined ? {} : { mail: parseMail(config.mail) }),
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
+    ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
   }
 }
 

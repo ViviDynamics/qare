@@ -57,16 +57,50 @@ export interface JobCriterion {
 
 export type JobPostTarget = 'none' | string
 
-export interface Job {
+/**
+ * One named profile of a several-profile job (#55). The job carries a group
+ * per app it checks, each with its own profile and its own criteria, so one
+ * run boots every selected app and reports them in one comment.
+ */
+export interface JobProfileGroup {
+  /** The profile's name in the report; unique across the job. */
+  name: string
+  profile: JobProfileRef
+  criteria: JobCriterion[]
+}
+
+interface JobBase {
   id: string
   repoPath: string
   baseRef: string
   headRef: string
-  profile: JobProfileRef
-  criteria: JobCriterion[]
   evidenceDir: string
   post: JobPostTarget
 }
+
+/**
+ * The job of one profile: one app, one criteria list. This is the only form
+ * `qare plan` and the single-run path know.
+ */
+export interface SingleProfileJob extends JobBase {
+  profile: JobProfileRef
+  criteria: JobCriterion[]
+}
+
+/**
+ * The job of several profiles (#55): one group per app it checks. Criterion
+ * ids must be unique across every group, so evidence directories never
+ * collide between apps.
+ */
+export interface SeveralProfilesJob extends JobBase {
+  profiles: JobProfileGroup[]
+}
+
+/**
+ * Exactly one of the two forms: a job carries either one profile with its
+ * criteria, or named profiles each with their own criteria — never both.
+ */
+export type Job = SingleProfileJob | SeveralProfilesJob
 
 export class JobValidationError extends Error {
   readonly field: string
@@ -121,16 +155,68 @@ export function loadJobFromText(text: string): Job {
 export function parseJob(input: unknown): Job {
   if (!isRecord(input))
     fail('job', 'job must be a YAML object with id, repoPath, baseRef, headRef, profile, criteria, evidenceDir and post')
-  return {
+  const base = {
     id: nonEmptyString(input.id, 'id', 'id'),
     repoPath: nonEmptyString(input.repoPath, 'repoPath', 'repo path'),
     baseRef: nonEmptyString(input.baseRef, 'baseRef', 'base ref'),
     headRef: nonEmptyString(input.headRef, 'headRef', 'head ref'),
-    profile: parseProfileRef(input.profile),
-    criteria: parseCriteria(input.criteria),
-    evidenceDir: nonEmptyString(input.evidenceDir, 'evidenceDir', 'evidence output directory'),
-    post: parsePost(input.post),
   }
+  // The fields are validated in the order a job file names them, so the first
+  // mistake a plan made is the first one reported.
+  if (input.profiles !== undefined) {
+    if (input.profile !== undefined)
+      fail('profile', 'a job carries either one profile, or named profiles for several apps, not both')
+    if (input.criteria !== undefined)
+      fail('criteria', "a job with named profiles carries each group's criteria inside it, so a top-level criteria list has nothing to attach to")
+    const profiles = parseProfileGroups(input.profiles)
+    const evidenceDir = nonEmptyString(input.evidenceDir, 'evidenceDir', 'evidence output directory')
+    return { ...base, evidenceDir, post: parsePost(input.post), profiles }
+  }
+  const profile = parseProfileRef(input.profile)
+  const criteria = parseCriteria(input.criteria)
+  const evidenceDir = nonEmptyString(input.evidenceDir, 'evidenceDir', 'evidence output directory')
+  return { ...base, profile, criteria, evidenceDir, post: parsePost(input.post) }
+}
+
+/**
+ * The groups of a several-profile job (#55). Names and criterion ids are
+ * unique across the whole job: a group's criteria become evidence directories,
+ * and two apps writing the same directory would overwrite each other.
+ */
+function parseProfileGroups(value: unknown): JobProfileGroup[] {
+  if (!Array.isArray(value)) fail('profiles', 'profiles must be an array of { name, profile, criteria } groups')
+  if (value.length === 0)
+    fail('profiles', 'profiles is empty: a job that names no profile checks nothing, so it fails closed')
+  const groups = value.map((entry, index) => {
+    const base = `profiles[${index}]`
+    if (!isRecord(entry)) fail(base, 'profile group must be a YAML object with name, profile and criteria')
+    const name = nonEmptyString(entry.name, `${base}.name`, 'profile name')
+    if (name.includes(':'))
+      fail(`${base}.name`, `profile name "${name}" contains ":"; ":" is reserved for namespace prefixes, so it cannot appear in a profile name`)
+    if (/[/\\]|\.\./.test(name) || /[\x00-\x1f\x7f]/.test(name))
+      fail(`${base}.name`, `profile name ${JSON.stringify(name)} must not contain path separators, ".." or control characters`)
+    return {
+      name,
+      profile: parseProfileRef(entry.profile),
+      criteria: parseCriteria(entry.criteria),
+    }
+  })
+  const seenNames = new Set<string>()
+  for (const group of groups) {
+    if (seenNames.has(group.name))
+      fail('profiles', `duplicate profile name "${group.name}"; profile names must be unique within a job`)
+    seenNames.add(group.name)
+  }
+  const owners = new Map<string, string>()
+  for (const group of groups) {
+    for (const criterion of group.criteria) {
+      const owner = owners.get(criterion.id)
+      if (owner !== undefined)
+        fail('profiles', `duplicate criterion id "${criterion.id}" in profiles ${owner} and ${group.name}; criterion ids must be unique across every profile of a job, so evidence directories never collide`)
+      owners.set(criterion.id, group.name)
+    }
+  }
+  return groups
 }
 
 function parseProfileRef(value: unknown): JobProfileRef {

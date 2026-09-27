@@ -9,13 +9,13 @@ import { matchesStub, type EgressAttempt } from './egress.js'
 import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
 import { BROWSER_FLOW_DRIVER, makePlaywrightFlowSession } from './flow-playwright.js'
 import { judgeRun, toSideResults } from './judge.js'
-import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck } from './job.js'
+import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck, type JobProfileGroup, type JobProfileRef, type SeveralProfilesJob, type SingleProfileJob } from './job.js'
 import type { FlowActionStep } from './plan.js'
 import { feedRunLedger } from './ledger-feed.js'
 import { extractCode, httpMailbox, mailEvidence, runMailCheck, type ReadMail } from './mailbox.js'
 import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
-import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult } from './result.js'
+import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult, type RunVerdict } from './result.js'
 import { mintRunValues, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 60000
@@ -101,9 +101,10 @@ export async function runJob(
   // result.json with the version set, so a host run and an image run are
   // readable side by side (issue #91).
   const execution = opts.execution ?? detectExecution()
+  if ('profiles' in job) return runSeveralProfiles(job, opts, execution)
   let profile: QaProfile
   try {
-    profile = await resolveProfile(job)
+    profile = await resolveProfileRef(job.repoPath, job.profile)
   } catch (error) {
     if (!(error instanceof ProfileMissingError)) throw error
     // A repository that has not onboarded is refused, not a caller mistake
@@ -169,7 +170,7 @@ export async function runJob(
   // than implying a base comparison it never made (#122).
   const targetNote = profile.target === undefined ? {} : { target: { url: profile.target.url, comparison: 'none' as const } }
   try {
-    validatePlanValues(job, profile, values, opts.flowDriver ?? BROWSER_FLOW_DRIVER)
+    validatePlanValues(job.criteria, profile, values, opts.flowDriver ?? BROWSER_FLOW_DRIVER)
   } catch (error) {
     if (!(error instanceof JobValidationError)) throw error
     return refuseRun(job, opts, BUILTIN_REDACTION_RULES, error.message, targetNote, isolation, execution)
@@ -239,9 +240,182 @@ export async function runJob(
   }
 }
 
+/**
+ * A several-profile job (#55): one run boots and checks every app the job
+ * names, one after another, and writes one result that carries a verdict per
+ * app, in the order the job named them. Each group runs exactly as a
+ * single-profile run does, under an isolation of its own — its own compose
+ * project, network and host port — so one app's stack is never another's, and
+ * every project the run boots is one the reap sweep finds.
+ *
+ * A group that cannot run — a profile that is not there, an isolation that
+ * will not mint, a plan value the harness does not mint, a boot that never
+ * came up — reports its criteria unverified with the reason named, and the
+ * other apps still run: the comment says what happened per app, and the
+ * verdict judges the whole from every criterion it saw.
+ */
+interface ProfileGroupOutcome {
+  criteria: CriterionResult[]
+  verdict: RunVerdict
+  rules: RedactionRule[]
+  values?: RunValues
+  isolation?: RunIsolation
+  egressRefused?: boolean
+}
+
+async function runSeveralProfiles(
+  job: SeveralProfilesJob,
+  opts: BootOpts & {
+    ledgerFeed?: { dir: string }
+    readMail?: ReadMail
+    flowSession?: FlowSessionFactory
+    flowDriver?: FlowDriverCapabilities
+  },
+  execution: ExecutionKind = detectExecution(),
+): Promise<{ result: RunResult; isolation?: RunIsolation }> {
+  const groups = job.profiles
+  const flowDriver = opts.flowDriver ?? BROWSER_FLOW_DRIVER
+  const criteria: CriterionResult[] = []
+  const profiles: Array<{ name: string; verdict: RunVerdict; criteria: string[] }> = []
+  const rules: RedactionRule[] = [...BUILTIN_REDACTION_RULES]
+  const recorded: Array<{ name: string; values: RunValues }> = []
+  let egressRefused = false
+  for (const group of groups) {
+    const outcome = await runProfileGroup(job, group, flowDriver, opts, execution)
+    criteria.push(...outcome.criteria)
+    profiles.push({ name: group.name, verdict: outcome.verdict, criteria: outcome.criteria.map((criterion) => criterion.id) })
+    rules.push(...outcome.rules)
+    if (outcome.values !== undefined) recorded.push({ name: group.name, values: outcome.values })
+    if (outcome.egressRefused === true) egressRefused = true
+  }
+  // The minted values of each app are written through the same redaction sweep
+  // as everything else the run publishes, with every app's rules applied: the
+  // evidence says which app ran under which project, and nothing else (#68).
+  for (const entry of recorded) {
+    await mkdir(job.evidenceDir, { recursive: true })
+    await writeFile(
+      join(job.evidenceDir, `values-${entry.name}.json`),
+      `${redactText(JSON.stringify(entry.values, null, 2), rules)}\n`,
+    )
+  }
+  const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
+  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, profiles }, rules, undefined, execution)
+  await feedIfOptedIn(opts, job, finished.result)
+  return { result: finished.result }
+}
+
+async function runProfileGroup(
+  job: SeveralProfilesJob,
+  group: JobProfileGroup,
+  flowDriver: FlowDriverCapabilities,
+  opts: BootOpts & {
+    ledgerFeed?: { dir: string }
+    readMail?: ReadMail
+    flowSession?: FlowSessionFactory
+    flowDriver?: FlowDriverCapabilities
+  },
+  execution: ExecutionKind = detectExecution(),
+): Promise<ProfileGroupOutcome> {
+  const unverifiedAll = (reason: string): CriterionResult[] =>
+    group.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified' as const, reason }))
+  let profile: QaProfile
+  try {
+    profile = await resolveProfileRef(job.repoPath, group.profile)
+  } catch (error) {
+    if (!(error instanceof ProfileMissingError)) throw error
+    // Absent is refusal — for this app alone, so the other apps still run (#107).
+    return { criteria: unverifiedAll(`this repository has no usable .qa/ profile for ${group.name} yet, so qare will not claim to have checked it: ${error.message}`), verdict: 'refused', rules: [] }
+  }
+  // One compose project per app (#53), minted before anything boots, so two
+  // apps of one run never share a stack, a network, or a port.
+  let isolation: RunIsolation | undefined
+  if (profile.app !== undefined) {
+    try {
+      isolation = opts.isolation ?? (await isolateRun())
+    } catch (error) {
+      return { criteria: unverifiedAll(`the harness could not isolate the run for ${group.name}, so it will not boot an app: ${error instanceof Error ? error.message : String(error)}`), verdict: 'refused', rules: [] }
+    }
+    if (!hasUsablePort(isolation.port)) {
+      return {
+        criteria: unverifiedAll(`the run isolation for ${group.name} carries no usable app port, so two runs could publish their apps on the same host port; a run that boots an app needs an isolation with a host port in 1..65535 (isolateRun)`),
+        verdict: 'refused',
+        rules: [],
+      }
+    }
+    if (!hasMintedProject(isolation)) {
+      return {
+        criteria: unverifiedAll(`the run isolation for ${group.name} does not carry a usable project: the compose project is qare-<run id>, so a leftover stack is always findable by reap and a project qare never minted is never touched`),
+        verdict: 'refused',
+        rules: [],
+      }
+    }
+  }
+  // Run values are minted per app: the address a mail check waits for, the
+  // port an app is published on, and the target it points at name that app's
+  // run, while `{{run.id}}` names the run that booted it (#68).
+  const values = mintRunValues({
+    ...(profile.target === undefined ? {} : { targetUrl: profile.target.url }),
+    ...(isolation === undefined ? {} : { runId: isolation.runId }),
+    ...(isolation?.port === undefined ? {} : { appPort: String(isolation.port) }),
+  })
+  try {
+    validatePlanValues(group.criteria, profile, values, flowDriver)
+  } catch (error) {
+    if (!(error instanceof JobValidationError)) throw error
+    return { criteria: unverifiedAll(error.message), verdict: 'refused', rules: [], values, ...(isolation === undefined ? {} : { isolation }) }
+  }
+  const login = profile.app?.login
+  const rules = [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value])]
+  // One isolation file per app, written before anything boots: it names the
+  // compose project a leftover stack runs under, which is what an orchestrator
+  // needs to reap it (#53).
+  if (isolation !== undefined) {
+    await mkdir(job.evidenceDir, { recursive: true })
+    await writeFile(
+      join(job.evidenceDir, `isolation-${group.name}.json`),
+      `${JSON.stringify({ run_id: isolation.runId, project: isolation.project, started_at: isolation.startedAt, ...(isolation.port === undefined ? {} : { port: isolation.port }) }, null, 2)}\n`,
+    )
+  }
+  const bootedProfile =
+    isolation === undefined || profile.app === undefined
+      ? profile
+      : { ...profile, app: { ...profile.app, health: { ...profile.app.health, http: isolatedHealthUrl(substituteValues(profile.app.health.http, values), isolation.port) } } }
+  const cancelCleanup = isolation === undefined ? undefined : installCancelCleanup(bootedProfile, { ...opts, isolation })
+  try {
+    const boot = await bootApp(bootedProfile, { ...opts, isolation })
+    if (boot.kind === 'blocked') {
+      return {
+        criteria: unverifiedAll(boot.reason ?? 'boot did not come up'),
+        verdict: 'blocked',
+        rules,
+        values,
+        ...(isolation === undefined ? {} : { isolation }),
+      }
+    }
+    const criteria: CriterionResult[] = []
+    const mail = {
+      inbox: profile.mail?.inbox,
+      readMail: opts.readMail ?? (profile.mail?.inbox === undefined ? undefined : httpMailbox(profile.mail.inbox)),
+    }
+    // Single-use artefacts are a per-run ledger; per app, the ledger starts
+    // empty, so one app's checks cannot spend another app's artefacts (#69).
+    const artefacts = new Artefacts()
+    const target = profile.target === undefined ? undefined : targetContext(profile.target)
+    const totp =
+      login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
+    const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target, totp }
+    for (const criterion of group.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow, execution))
+    const egressRefused = target !== undefined && target.undeclared.length > 0
+    const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
+    return { criteria, verdict, rules, values, ...(isolation === undefined ? {} : { isolation }), egressRefused }
+  } finally {
+    cancelCleanup?.()
+  }
+}
+
 /** Refuse the whole run without booting: every criterion is reported unverified, naming the gap. */
 async function refuseRun(
-  job: Job,
+  job: SingleProfileJob,
   opts: BootOpts & { ledgerFeed?: { dir: string } },
   rules: readonly RedactionRule[],
   reason: string,
@@ -323,7 +497,7 @@ export function installCancelCleanup(profile: QaProfile, opts: BootOpts): () => 
  * same way: a flow naming an action the driver lacks refuses the run before
  * anything boots, naming the action and the driver (#70).
  */
-function validatePlanValues(job: Job, profile: QaProfile, values: RunValues, flowDriver: FlowDriverCapabilities): void {
+function validatePlanValues(criteria: JobCriterion[], profile: QaProfile, values: RunValues, flowDriver: FlowDriverCapabilities): void {
   if (profile.app !== undefined) {
     validateValueReferences(profile.app.seed.command, values, 'app.seed.command')
     // The health URL may name the port the run publishes the app on (#53).
@@ -333,7 +507,7 @@ function validatePlanValues(job: Job, profile: QaProfile, values: RunValues, flo
   // artefact from a mail check that has already waited for its message (#69),
   // and only for the fields that check actually exposes (#64).
   const mailChecks = new Map<string, { count: number; code: boolean }>()
-  for (const [criterionIndex, criterion] of job.criteria.entries()) {
+  for (const [criterionIndex, criterion] of criteria.entries()) {
     for (const [checkIndex, check] of (criterion.checks ?? []).entries()) {
       const base = `criteria[${criterionIndex}].checks[${checkIndex}]`
       if (check.kind === 'mail') {
@@ -431,9 +605,9 @@ async function feedIfOptedIn(
   )
 }
 
-async function resolveProfile(job: Job) {
-  if ('inline' in job.profile) return validateProfileConfig(job.profile.inline)
-  return loadProfile(resolve(job.repoPath, job.profile.path))
+async function resolveProfileRef(repoPath: string, ref: JobProfileRef): Promise<QaProfile> {
+  if ('inline' in ref) return validateProfileConfig(ref.inline)
+  return loadProfile(resolve(repoPath, ref.path))
 }
 
 async function finishRun(

@@ -53,6 +53,15 @@ export type {
   ProfileSuite,
   ProfileSuiteKind,
 } from './profile.js'
+export {
+  DEFAULT_PROFILE_NAME,
+  discoverProfiles,
+  pathUnderArea,
+  profileCovers,
+  selectProfiles,
+  touchedPathsFromDiff,
+} from './monorepo.js'
+export type { NamedProfile } from './monorepo.js'
 export type {
   CriterionOutcome,
   RunVerdict,
@@ -90,7 +99,7 @@ export type { RunContext } from './job-from-plan.js'
 export { NO_DIFF, PLAN_OUTPUT_SCHEMA, PlanStepError, planRun } from './plan-step.js'
 export type { DeclaredRunInputs, PlanCriterionInput, PlanInputs } from './plan-step.js'
 export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'
-export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobCheck, JobPostTarget } from './job.js'
+export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobCheck, JobPostTarget, JobProfileGroup, SingleProfileJob, SeveralProfilesJob } from './job.js'
 export { httpMailbox, mailEvidence, runMailCheck, extractCode, DEFAULT_CODE_PATTERN } from './mailbox.js'
 export type { MailMessage, MailEvidenceMessage, MailOutcome, ReadMail } from './mailbox.js'
 export { Artefacts } from './artefacts.js'
