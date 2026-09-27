@@ -1,0 +1,7 @@
+#!/bin/sh
+# The base image's qare shim for the fixture: enough of the entry point to run
+# the contract smoke check, reading the version the release stamped.
+case "${1:-}" in
+  --version) cat /opt/qare/config/VERSION ;;
+  *) printf 'qare: unknown argument "%s"\n' "$1" >&2; exit 64 ;;
+esac

@@ -42,3 +42,40 @@ jobs:
         run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The image extension contract's release guard (docs/images.md): the worked
+  # example derived image builds and runs on every release, so a release cannot
+  # break derived images silently. Until the layered image family (#88) starts
+  # publishing the real base images, the base is the contract-conformant
+  # fixture in the example's test directory, stamped with the release version;
+  # the example builds against it through the same ARG the contract documents.
+  derived-image:
+    name: derived-image contract guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stamp the fixture base with the release version
+        run: echo "$GITHUB_REF_NAME" > examples/derived-image/test/VERSION
+      - name: Build the contract-conformant base fixture
+        run: |
+          docker build -f examples/derived-image/test/base-fixture.Dockerfile \
+            -t qare-contract-base:"$GITHUB_REF_NAME" examples/derived-image/test
+      - name: Build the worked example against it
+        run: |
+          docker build --build-arg QARE_IMAGE=qare-contract-base:"$GITHUB_REF_NAME" \
+            -t qare-derived:"$GITHUB_REF_NAME" examples/derived-image
+      - name: Run the contract smoke check as the qare user
+        run: |
+          set -euo pipefail
+          version="$(docker run --rm qare-derived:"$GITHUB_REF_NAME" /opt/qare/bin/qare --version)"
+          if [[ "$version" != "$GITHUB_REF_NAME" ]]; then
+            echo "the entry point printed '$version', expected '$GITHUB_REF_NAME'" >&2
+            exit 1
+          fi
+          docker run --rm qare-derived:"$GITHUB_REF_NAME" /opt/qare/drivers/scale-driver/probe
+          docker run --rm qare-derived:"$GITHUB_REF_NAME" /opt/qare/tools/measure
+          user="$(docker run --rm qare-derived:"$GITHUB_REF_NAME" id -un)"
+          if [[ "$user" != qare ]]; then
+            echo "the container runs as '$user', expected the qare user" >&2
+            exit 1
+          fi
