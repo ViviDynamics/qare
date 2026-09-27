@@ -265,3 +265,21 @@ test('a screenshot link text is escaped like the other link texts', () => {
 
   expect(body).toContain(`[pa ge .png](<${screenshot}>)`)
 })
+
+test('the comment names where the run executed', () => {
+  const versions = { qare: '2026.9.0', node: '24.5.0', nareContract: 1 }
+  const native = result('passed', [{ id: 'c1', outcome: 'proven', evidence: ['checks/c1/0/stdout.txt'] }])
+  native.environment = { execution: 'native', versions }
+  const body = renderComment(native)
+  expect(body).toContain('Executed natively on a host with qare 2026.9.0, node 24.5.0, nare contract 1.')
+  expect(body).not.toContain('Executed in a container')
+
+  const containerised = result('passed', [{ id: 'c1', outcome: 'proven', evidence: ['checks/c1/0/stdout.txt'] }])
+  containerised.environment = { execution: 'containerised', versions }
+  expect(renderComment(containerised)).toContain('Executed in a container with qare 2026.9.0, node 24.5.0, nare contract 1.')
+})
+
+test('a result without an environment record says nothing about where it ran', () => {
+  const body = renderComment(result('passed', [{ id: 'c1', outcome: 'proven', evidence: ['checks/c1/0/stdout.txt'] }]))
+  expect(body).not.toContain('Executed')
+})

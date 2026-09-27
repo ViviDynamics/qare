@@ -1,3 +1,5 @@
+import type { RunEnvironment } from './environment.js'
+
 export const RESULT_SCHEMA_VERSION = '1'
 
 export type CriterionOutcome = 'proven' | 'failed' | 'unverified'
@@ -44,6 +46,8 @@ export interface RunResult {
   job?: { id: string }
   waived?: Array<{ criterionId: string; by: string }>
   target?: RunTarget
+  /** Where and with which versions this run executed (issue #91). */
+  environment?: RunEnvironment
 }
 
 const CRITERION_OUTCOMES: CriterionOutcome[] = ['proven', 'failed', 'unverified']
@@ -125,6 +129,7 @@ export function parseResult(input: unknown): RunResult {
   const job = parseJobSummary(input.job)
   const waived = parseWaived(input.waived)
   const target = parseTarget(input.target)
+  const environment = parseEnvironment(input.environment)
 
   return {
     schemaVersion,
@@ -133,6 +138,30 @@ export function parseResult(input: unknown): RunResult {
     ...(job === undefined ? {} : { job }),
     ...(waived === undefined ? {} : { waived }),
     ...(target === undefined ? {} : { target }),
+    ...(environment === undefined ? {} : { environment }),
+  }
+}
+
+/**
+ * The execution environment is optional, so a result.json written before the
+ * field existed still loads: an old artifact judges the same after an upgrade.
+ */
+function parseEnvironment(value: unknown): RunEnvironment | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) fail('environment', 'result.json environment must be a JSON object with execution and versions')
+  const execution = value.execution
+  if (execution !== 'native' && execution !== 'containerised')
+    fail('environment.execution', `unknown execution ${JSON.stringify(execution)} (expected "native" or "containerised")`)
+  if (!isRecord(value.versions)) fail('environment.versions', 'environment.versions must be a JSON object')
+  return {
+    execution,
+    versions: {
+      qare: nonEmptyString(value.versions.qare, 'environment.versions.qare', 'qare version'),
+      node: nonEmptyString(value.versions.node, 'environment.versions.node', 'node version'),
+      nareContract: typeof value.versions.nareContract === 'number'
+        ? value.versions.nareContract
+        : fail('environment.versions.nareContract', 'nare contract must be a number'),
+    },
   }
 }
 

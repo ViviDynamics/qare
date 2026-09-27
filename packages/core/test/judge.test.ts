@@ -2,12 +2,18 @@ import { describe, expect, test } from 'vitest'
 import {
   consumeVerifierFindings,
   detectRegressions,
+  judgeExecuted,
+  judgedResult,
   judgeRun,
   prepareVerifierInputs,
   runVerifier,
   toSideResults,
   verdictOf,
   FakeAgentRunner,
+  NO_DIFF,
+  NARE_CONTRACT,
+  RESULT_SCHEMA_VERSION,
+  VERSION,
   VERIFIER_OUTPUT_SCHEMA,
   type CriterionOutcome,
   type CriterionVerdict,
@@ -438,4 +444,46 @@ test('the verifier output schema uses only keywords nare validates', () => {
   }
   walk(VERIFIER_OUTPUT_SCHEMA, '')
   expect(unsupported).toEqual([])
+})
+
+test('judgedResult carries the environment through judging', () => {
+  const environment = {
+    execution: 'native' as const,
+    versions: { qare: VERSION, node: process.versions.node, nareContract: NARE_CONTRACT },
+  }
+  const executed: RunResult = {
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'passed',
+    criteria: [{ id: 'c1', outcome: 'proven', evidence: ['evidence/c1/stdout.txt'] }],
+    environment,
+  }
+  const result = judgedResult(
+    executed,
+    'passed',
+    [{ criterionId: 'c1', outcome: 'proven', regression: false, reason: 'proven at head' }],
+    new Map([['c1', ['evidence/c1/stdout.txt']]]),
+  )
+  expect(result.environment).toEqual(environment)
+})
+
+test('a result without an environment judges to one without it', () => {
+  const result = judgedResult(
+    { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [] },
+    'passed',
+    [],
+    new Map(),
+  )
+  expect(result.environment).toBeUndefined()
+})
+
+test('an executed result judged again keeps its environment record', async () => {
+  const executed: RunResult = {
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'refused',
+    criteria: [{ id: 'c1', outcome: 'unverified', reason: 'no qare contract; nare must be installed' }],
+    environment: { execution: 'native', versions: { qare: VERSION, node: process.versions.node, nareContract: NARE_CONTRACT } },
+  }
+  const { result } = await judgeExecuted(executed, { texts: {}, diff: NO_DIFF })
+  expect(result.verdict).toBe('refused')
+  expect(result.environment?.execution).toBe('native')
 })

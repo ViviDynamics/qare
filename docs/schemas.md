@@ -68,6 +68,10 @@ The run's output and the machine contract other harnesses consume.
 {
   "schemaVersion": "1",
   "verdict": "passed",
+  "environment": {
+    "execution": "native",
+    "versions": { "qare": "2026.9.0", "node": "24.5.0", "nareContract": 1 }
+  },
   "criteria": [
     { "id": "...", "outcome": "proven", "evidence": ["evidence/..."] },
     { "id": "...", "outcome": "failed", "evidence": ["evidence/..."] },
@@ -90,6 +94,7 @@ The run's output and the machine contract other harnesses consume.
 | `job` | document | optional; when present `job.id` is required non-empty — the caller's job id, echoed back |
 | `waived` | document | optional non-empty array of `{ criterionId, by }` — the human waiver record a `waived` run carries |
 | `target` | document | optional; present when the run checked an app qare did not boot. `target.url` is required non-empty and `target.comparison` must be `"none"`: nothing ran at a base revision, so no regression was looked for |
+| `environment` | document | optional; when present `environment.execution` is `"native"` or `"containerised"`, and `environment.versions` carries `qare`, `node` (non-empty strings) and `nareContract` (number): where the run executed and with which versions |
 
 ## Fail-closed rules shared by both loaders
 

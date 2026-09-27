@@ -490,6 +490,35 @@ something unusual starts from the base and adds only that. Paths, the entry
 point and the user are a stable contract, so a derived image keeps working
 across QARE releases.
 
+### On a host
+
+The host install is the same package the image ships: `@qare/cli` at a pinned
+version, with the pinned nare installed beside it (the wheel from nare's
+release, `python3 -m pip install --user`), and nothing else added by hand.
+Drivers are added on demand, one per client family the profile's suites
+actually target: `playwright-core` and `npx playwright install chromium` for a
+suite that drives a browser, a container runtime only for a profile that boots
+an app.
+
+`qare doctor` names what the host has, what the profile needs, and how to
+install what is missing. It checks node, the pinned nare, the docker daemon
+for a profile that boots an app, and the chromium driver for a profile whose
+suites drive a browser. Display and devices are reported but never required:
+the browser driver runs headless, and devices arrive through the profile's
+registered MCP servers. A profile that is there but broken is a caller
+mistake, named on the error stream.
+
+A run on a host obeys the same rules a container run does, and the one rule
+the image cannot enforce for itself the harness imposes: a command step (the
+step that runs pull request code) runs with the minimal deterministic
+environment (PATH, HOME and the entries the profile gives it), so a host's
+tokens and other secrets never reach pull request code. Inside a container the
+step keeps the inherit contract, because the image controls that environment.
+Either way the result and its evidence are the same shape, and the result
+records where the run executed: `environment.execution` is `native` or
+`containerised`, with the qare version, the node version and the nare contract
+it ran with.
+
 ### Tools QARE did not ship
 
 A host that installs QARE will have tools QARE has never heard of: an in-house
@@ -613,7 +642,7 @@ One TypeScript codebase, one core, thin adapters:
 | Package | Purpose |
 | --- | --- |
 | `@qare/core` | plan, execute, judge, report; provider interface; `result.json` schema |
-| `@qare/cli` | `qare init`, `qare readiness`, `qare run`, `qare run --job`, `qare judge`, `qare replay`, `qare ledger`, `qare redact`, `qare reap`, `qare sweep` |
+| `@qare/cli` | `qare init`, `qare readiness`, `qare doctor`, `qare run`, `qare run --job`, `qare judge`, `qare replay`, `qare ledger`, `qare redact`, `qare reap`, `qare sweep` |
 | `@qare/action` | GitHub Action wrapping the three jobs |
 | `@qare/mcp` | MCP server so orchestrators, Codex, OpenCode and others can call it |
 | `plugin/claude-code` | skill, verifier subagent, Stop hook for local runs |

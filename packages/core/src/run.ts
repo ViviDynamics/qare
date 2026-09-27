@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Artefacts, type ArtefactField } from './artefacts.js'
+import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
 import { bootApp, CANCEL_DOWN_TIMEOUT_MS, killActiveCompose, stopApp, type BootOpts } from './boot.js'
 import { hasMintedProject, isolatedHealthUrl, isolateRun, type RunIsolation } from './isolation.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
@@ -64,7 +65,11 @@ interface FlowTargetContext {
  *
  * A check without `env` inherits the harness environment unchanged. A check that
  * carries `env` opts into a minimal deterministic environment (PATH, HOME and the
- * check's own entries), so its checks do not inherit harness secrets.
+ * check's own entries), so its checks do not inherit harness secrets. That is the
+ * rule for every command step on a host (#91): a host's environment is nobody's
+ * contract, so the harness imposes the minimal deterministic one itself, and
+ * pull request code never inherits a host's tokens. A containerised run keeps
+ * the inherit contract, because the image controls that environment.
  *
  * The booted app is intentionally left up after the checks so evidence (logs) can
  * be inspected; teardown is the caller's job (stopApp).
@@ -88,8 +93,14 @@ export async function runJob(
     flowSession?: FlowSessionFactory
     /** What the driver behind this run's flows declares (#70); the browser driver by default. */
     flowDriver?: FlowDriverCapabilities
+    /** Where the run executes; detected from the process when not pinned (issue #91). */
+    execution?: ExecutionKind
   } = {},
 ): Promise<{ result: RunResult; isolation?: RunIsolation }> {
+  // Where this run executes is evidence like the verdict is: recorded in
+  // result.json with the version set, so a host run and an image run are
+  // readable side by side (issue #91).
+  const execution = opts.execution ?? detectExecution()
   let profile: QaProfile
   try {
     profile = await resolveProfile(job)
@@ -98,7 +109,7 @@ export async function runJob(
     // A repository that has not onboarded is refused, not a caller mistake
     // (#107). Every criterion is still reported, unverified, naming the gap,
     // so the evidence says what nobody checked and what onboarding needs.
-    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `this repository has no usable .qa/ profile yet, so qare will not claim to have checked it: ${error.message}`)
+    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `this repository has no usable .qa/ profile yet, so qare will not claim to have checked it: ${error.message}`, undefined, undefined, execution)
   }
   // One compose project per run (#53), minted before anything boots. A run
   // against a target boots nothing, so it needs no isolation, and a run that
@@ -109,7 +120,7 @@ export async function runJob(
     try {
       isolation = opts.isolation ?? (await isolateRun())
     } catch (error) {
-      return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `the harness could not isolate this run, so it will not boot an app: ${error instanceof Error ? error.message : String(error)}`)
+      return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `the harness could not isolate this run, so it will not boot an app: ${error instanceof Error ? error.message : String(error)}`, undefined, undefined, execution)
     }
     // A run that boots an app always publishes it on a port of its own: an
     // isolation without a usable one would fall back to the compose default
@@ -123,6 +134,9 @@ export async function runJob(
         opts,
         BUILTIN_REDACTION_RULES,
         'the run isolation carries no usable app port, so two runs could publish their apps on the same host port; a run that boots an app needs an isolation with a host port in 1..65535 (isolateRun)',
+        undefined,
+        undefined,
+        execution,
       )
     }
     // A caller-carried isolation is only usable if it is one the harness could
@@ -135,6 +149,9 @@ export async function runJob(
         opts,
         BUILTIN_REDACTION_RULES,
         'the run isolation does not carry a usable project: the compose project is qare-<run id>, so a leftover stack is always findable by reap and a project qare never minted is never touched',
+        undefined,
+        undefined,
+        execution,
       )
     }
   }
@@ -155,7 +172,7 @@ export async function runJob(
     validatePlanValues(job, profile, values, opts.flowDriver ?? BROWSER_FLOW_DRIVER)
   } catch (error) {
     if (!(error instanceof JobValidationError)) throw error
-    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, error.message, targetNote, isolation)
+    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, error.message, targetNote, isolation, execution)
   }
   // The seeded second-factor secret and any backup code never reach the
   // evidence either: they sweep alongside the profile's own rules (#64).
@@ -189,7 +206,7 @@ export async function runJob(
         outcome: 'unverified',
         reason: boot.reason ?? 'boot did not come up',
       }))
-      const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria, ...targetNote }, rules, values)
+      const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria, ...targetNote }, rules, values, execution)
       await feedIfOptedIn(opts, job, finished.result)
       return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
     }
@@ -208,13 +225,13 @@ export async function runJob(
     const totp =
       login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
     const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target, totp }
-    for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow))
+    for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow, execution))
     // The judge is the verdict decision. Base execution and egress interception
     // of a booted stack land with the orchestrator; a target run records what its
     // browser reached, and a host the profile does not declare refuses the run.
     const egressVerdict = target !== undefined && target.undeclared.length > 0 ? 'refused' : 'allowed'
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict })
-    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, ...targetNote }, rules, values)
+    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, ...targetNote }, rules, values, execution)
     await feedIfOptedIn(opts, job, finished.result)
     return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
   } finally {
@@ -230,13 +247,14 @@ async function refuseRun(
   reason: string,
   targetNote: Pick<RunResult, 'target'> = {},
   isolation?: RunIsolation,
+  execution: ExecutionKind = detectExecution(),
 ): Promise<{ result: RunResult; isolation?: RunIsolation }> {
   const criteria: CriterionResult[] = job.criteria.map((criterion) => ({
     id: criterion.id,
     outcome: 'unverified',
     reason,
   }))
-  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria, ...targetNote }, rules)
+  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria, ...targetNote }, rules, undefined, execution)
   await feedIfOptedIn(opts, job, finished.result)
   return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
 }
@@ -423,8 +441,15 @@ async function finishRun(
   result: RunResult,
   rules: readonly RedactionRule[],
   values?: RunValues,
+  execution: ExecutionKind = detectExecution(),
 ): Promise<{ result: RunResult }> {
-  const full: RunResult = redactResult({ ...result, job: { id: job.id } }, rules)
+  // The run records where and with which versions it executed (issue #91):
+  // the same fact the evidence comment states, written before redaction so
+  // the version set is part of the published result itself.
+  const full: RunResult = redactResult(
+    { ...result, job: { id: job.id }, environment: runEnvironment(execution) },
+    rules,
+  )
   await mkdir(job.evidenceDir, { recursive: true })
   await writeFile(join(job.evidenceDir, 'result.json'), `${JSON.stringify(full, null, 2)}\n`)
   if (values !== undefined) {
@@ -444,6 +469,7 @@ async function runCriterion(
   mail: { inbox?: string; readMail?: ReadMail },
   artefacts: Artefacts,
   flow: { session?: FlowSessionFactory; masks: string[]; suites: ProfileSuite[]; target?: FlowTargetContext; totp?: FlowTotpConfig },
+  execution: ExecutionKind,
 ): Promise<CriterionResult> {
   const checks = criterion.checks ?? []
   if (checks.length === 0)
@@ -531,6 +557,7 @@ async function runCriterion(
         checkDir,
         sweepRules,
         flow.masks,
+        execution,
       )
       evidence.push(...outcome.evidence)
       if (outcome.status === 'failed') failed = true
@@ -569,7 +596,7 @@ async function runCriterion(
     // A command that echoes what it consumed writes it to stdout: the value is
     // a secret like any other, so the check's evidence is swept with it (#64).
     if (resolved.consumed.length > 0) sweepRules.push(...valueRules(resolved.consumed.map((consumed) => consumed.artefact)))
-    const outcome = await runCommandCheck(resolved.check, cwd, timeoutMs)
+    const outcome = await runCommandCheck(resolved.check, cwd, timeoutMs, execution)
     await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
     await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), sweepRules))
     await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), redactText(truncationNote(outcome, 'stderr'), sweepRules))
@@ -661,6 +688,7 @@ async function runFlowCheckJob(
   checkDir: string,
   rules: readonly RedactionRule[],
   masks: string[],
+  execution: ExecutionKind,
 ): Promise<{ status: 'passed' | 'failed' | 'unverified'; reason?: string; evidence: string[] }> {
   const inEvidence = (names: readonly string[]): string[] => names.map((name) => `${checkDir}/${name}`)
   if (check.suite !== undefined) {
@@ -677,7 +705,7 @@ async function runFlowCheckJob(
     // A suite runs its own browser, which qare cannot see: like a command
     // check, its traffic is not recorded, and the SPEC says so.
     const command = substituteValues(suite.command, values)
-    const outcome = await runSuiteCheck({ name: suite.name, command }, { cwd: repoPath, timeoutMs: check.timeoutMs })
+    const outcome = await runSuiteCheck({ name: suite.name, command }, { cwd: repoPath, timeoutMs: check.timeoutMs, execution })
     const dir = join(evidenceDir, checkDir)
     await mkdir(dir, { recursive: true })
     const text = redactText(
@@ -1019,16 +1047,37 @@ function killCheck(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
-export function runCommandCheck(check: JobCommandCheck, cwd: string, timeoutMs: number): Promise<CheckOutcome> {
+/**
+ * The environment a command step runs under. A check that carries `env` always
+ * opts into the minimal deterministic environment (PATH, HOME and its own
+ * entries). On a containerised run a check without `env` inherits the harness
+ * environment unchanged, which the image controls. On a host nothing controls
+ * it, so the minimal deterministic environment is the rule for every command
+ * step there (#91): pull request code never inherits a host's tokens.
+ */
+function checkEnvironment(env: JobCommandCheck['env'], execution: ExecutionKind | undefined): NodeJS.ProcessEnv | undefined {
+  if (execution !== 'native' && env === undefined) return undefined
+  return {
+    PATH: process.env.PATH ?? '/usr/bin:/bin',
+    HOME: process.env.HOME ?? '',
+    ...(env ?? {}),
+  }
+}
+
+export function runCommandCheck(
+  check: JobCommandCheck,
+  cwd: string,
+  timeoutMs: number,
+  execution?: ExecutionKind,
+): Promise<CheckOutcome> {
+  const env = checkEnvironment(check.env, execution)
   return new Promise((resolve) => {
     const tokens = check.run.split(/\s+/).filter((token) => token !== '')
     // detached puts the check in its own process group so a group-wide kill also
     // reaches grandchildren that inherited the stdio pipes.
     const child = spawn(tokens[0] ?? '', tokens.slice(1), {
       cwd,
-      ...(check.env === undefined
-        ? {}
-        : { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '', ...check.env } }),
+      ...(env === undefined ? {} : { env }),
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
     })

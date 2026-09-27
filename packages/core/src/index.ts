@@ -207,3 +207,7 @@ export {
 export type { MissingStub, StubIssueDraft, StubIssueRefusedEntry, StubIssuePoster } from './stub-issues.js'
 export { CheckInputError, checkCriteria, defaultCheckEvidenceDir, nareRunners } from './check.js'
 export type { CheckOptions, CheckOutcome } from './check.js'
+export { detectExecution, runEnvironment } from './environment.js'
+export type { ExecutionKind, RunEnvironment } from './environment.js'
+export { runDoctor } from './doctor.js'
+export type { DoctorFinding, DoctorProbes, DoctorReport } from './doctor.js'
