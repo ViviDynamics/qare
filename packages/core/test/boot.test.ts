@@ -43,8 +43,49 @@ test('healthy boot polls health and reports up', async () => {
   })
 
   expect(outcome).toEqual({ kind: 'up', logs: 'up out' })
-  expect(composeArgs).toEqual([['-f', 'compose.qa.yaml', 'up', '-d', '--wait', 'admin']])
+  // Every compose call opens with the run's own project (#53).
+  expect(composeArgs).toEqual([['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'up', '-d', '--wait', 'admin']])
   expect(probedUrls).toEqual([HEALTH_URL])
+})
+
+test('a boot the caller leaves unisolated still mints its own project and run id', async () => {
+  const profile = await profileWith({ app: { health: { timeout: '1s' } } })
+  const envs: (Record<string, string> | undefined)[] = []
+
+  const outcome = await bootApp(profile, {
+    runCompose: async (_args, _timeoutMs, env) => {
+      envs.push(env)
+      return { code: 0, stdout: 'up out', stderr: '' }
+    },
+    probe: async () => ({ ok: true }),
+    pollIntervalMs: 1,
+  })
+
+  expect(outcome.kind).toBe('up')
+  expect(envs.length).toBe(1)
+  expect(envs[0]?.QARE_RUN_ID).toMatch(/[0-9a-f-]{36}/)
+  // No port is allocated for a boot the caller did not ask to publish a port with.
+  expect(envs[0]?.QARE_APP_PORT).toBeUndefined()
+})
+
+test('a caller-carried isolation names the -p project and hands compose the port env', async () => {
+  const profile = await profileWith({ app: { health: { timeout: '1s' } } })
+  const calls: { args: string[]; env?: Record<string, string> }[] = []
+
+  const outcome = await bootApp(profile, {
+    runCompose: async (args, _timeoutMs, env) => {
+      calls.push({ args, env })
+      return { code: 0, stdout: 'up out', stderr: '' }
+    },
+    probe: async () => ({ ok: true }),
+    pollIntervalMs: 1,
+    isolation: { runId: 'run-1', project: 'qare-run-1', startedAt: '2026-01-01T00:00:00.000Z', port: 4321 },
+  })
+
+  expect(outcome.kind).toBe('up')
+  expect(calls.length).toBe(1)
+  expect(calls[0]?.args).toEqual(['-p', 'qare-run-1', '-f', 'compose.qa.yaml', 'up', '-d', '--wait', 'admin'])
+  expect(calls[0]?.env).toEqual({ QARE_RUN_ID: 'run-1', QARE_APP_PORT: '4321' })
 })
 
 test('unhealthy boot blocks naming the health URL', async () => {
@@ -92,9 +133,11 @@ test('watchdog blocks compose up that outlives the health deadline and attempts 
     logs: '',
   })
   expect(composeArgs).toEqual([
-    ['-f', 'compose.qa.yaml', 'up', '-d', '--wait', 'admin'],
-    ['-f', 'compose.qa.yaml', 'down'],
+    ['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'up', '-d', '--wait', 'admin'],
+    ['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'down'],
   ])
+  // The watchdog downs the very project the up booted (#53).
+  expect(composeArgs[1]?.[1]).toBe(composeArgs[0]?.[1])
 })
 
 test('probe errors keep polling until the deadline', async () => {
@@ -144,6 +187,21 @@ test('stopApp brings the compose service down', async () => {
   expect(composeArgs).toEqual([['-f', 'compose.qa.yaml', 'down']])
 })
 
+test('stopApp downs the project the isolation names when the caller carries one', async () => {
+  const profile = await profileWith({ app: { health: { timeout: '1s' } } })
+  const composeArgs: string[][] = []
+
+  await stopApp(profile, {
+    runCompose: async (args) => {
+      composeArgs.push(args)
+      return { code: 0, stdout: '', stderr: '' }
+    },
+    isolation: { runId: 'run-1', project: 'qare-run-1', startedAt: '2026-01-01T00:00:00.000Z', port: 4321 },
+  })
+
+  expect(composeArgs).toEqual([['-p', 'qare-run-1', '-f', 'compose.qa.yaml', 'down']])
+})
+
 test('the default compose runner calls docker compose, not bare docker', async () => {
   // A fake docker on PATH echoes its arguments, so this pins what the default
   // runner really spawns rather than what a test seam is handed.
@@ -155,7 +213,9 @@ test('the default compose runner calls docker compose, not bare docker', async (
     const profile = await profileWith({ app: { health: { timeout: '1s' } } })
     const outcome = await bootApp(profile, { probe: async () => ({ ok: true }), pollIntervalMs: 1 })
 
-    expect(outcome).toEqual({ kind: 'up', logs: 'compose -f compose.qa.yaml up -d --wait admin\n' })
+    expect(outcome.kind).toBe('up')
+    // The default runner names the run's own project with -p (#53).
+    expect(outcome.logs).toMatch(/^compose -p qare-.* -f compose\.qa\.yaml up -d --wait admin\n$/)
   } finally {
     process.env.PATH = savedPath
     await rm(bin, { recursive: true, force: true })

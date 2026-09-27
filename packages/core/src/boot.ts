@@ -4,6 +4,7 @@ import https from 'node:https'
 import type { ProfileApp, QaProfile } from './profile.js'
 import { VERSION } from './version.js'
 import { parseDurationMs } from './duration.js'
+import { composeEnv, mintIsolation, type RunIsolation } from './isolation.js'
 
 export interface BootOutcome {
   kind: 'up' | 'blocked'
@@ -12,19 +13,34 @@ export interface BootOutcome {
 }
 
 export interface BootOpts {
-  /** Runs `docker compose` with these arguments; args begin after the `compose` subcommand. */
-  runCompose?: (args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>
+  /**
+   * Runs `docker compose` with these arguments; args begin after the `compose`
+   * subcommand and open with the run's `-p` project (#53). `env` is merged over
+   * the harness environment, so a profile compose file can bind the run's port.
+   */
+  runCompose?: (args: string[], timeoutMs: number, env?: Record<string, string>) => Promise<{ code: number; stdout: string; stderr: string }>
   probe?: (url: string) => Promise<{ ok: boolean }>
   pollIntervalMs?: number
+  /**
+   * The run's compose isolation (#53): the `-p` project every call addresses.
+   * When the caller does not carry one, the boot mints its own, so two boots
+   * never share a project name, network or volumes.
+   */
+  isolation?: RunIsolation
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 500
 const NO_DEADLINE_MS = 0
 
-function defaultRunCompose(args: string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
+/**
+ * The compose runner every compose call falls back to when the caller injects
+ * no seam. `env`, when given, is merged over the harness environment, so a
+ * profile compose file can bind `${QARE_APP_PORT}` (#53).
+ */
+export function defaultRunCompose(args: string[], timeoutMs: number, env?: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
   void timeoutMs
   return new Promise((resolve) => {
-    const child = spawn('docker', ['compose', ...args], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn('docker', ['compose', ...args], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } })
     let stdout = ''
     let stderr = ''
     child.stdout?.on('data', (chunk) => {
@@ -67,9 +83,9 @@ function defaultProbe(url: string, timeoutMs: number): Promise<{ ok: boolean }> 
   })
 }
 
-async function captureComposeLogs(app: ProfileApp, opts: BootOpts): Promise<string> {
+async function captureComposeLogs(app: ProfileApp, opts: BootOpts, isolation: RunIsolation): Promise<string> {
   const runCompose = opts.runCompose ?? defaultRunCompose
-  const logs = await runCompose(['-f', app.boot.compose, 'logs', '--no-color', app.boot.service], NO_DEADLINE_MS)
+  const logs = await runCompose(['-p', isolation.project, '-f', app.boot.compose, 'logs', '--no-color', app.boot.service], NO_DEADLINE_MS, composeEnv(isolation))
   return logs.stdout + logs.stderr
 }
 
@@ -124,6 +140,11 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   if (profile.app === undefined) return probeTarget(profile, opts)
   const app = profile.app
   const runCompose = opts.runCompose ?? defaultRunCompose
+  // One project per boot (#53): the caller's isolation when it carries one, a
+  // minted one otherwise, so concurrent boots never share a project name,
+  // network or volumes. Every compose call below opens with this `-p`.
+  const isolation = opts.isolation ?? mintIsolation()
+  const env = composeEnv(isolation)
   let timeoutMs: number
   try {
     timeoutMs = parseDurationMs(app.health.timeout)
@@ -143,7 +164,7 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   try {
     up = await Promise.race([
       watchdog,
-      runCompose(['-f', app.boot.compose, 'up', '-d', '--wait', app.boot.service], timeoutMs),
+      runCompose(['-p', isolation.project, '-f', app.boot.compose, 'up', '-d', '--wait', app.boot.service], timeoutMs, env),
     ])
   } catch (error) {
     clearTimeout(timer)
@@ -152,7 +173,7 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   clearTimeout(timer)
 
   if (up === 'watchdog') {
-    void stopApp(profile, opts)
+    void stopApp(profile, { ...opts, isolation })
     return { kind: 'blocked', reason: 'boot watchdog: compose up exceeded the health deadline', logs: '' }
   }
 
@@ -161,7 +182,7 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
     return {
       kind: 'blocked',
       reason: `compose up exited ${up.code}`,
-      logs: logs || (await captureComposeLogs(app, opts)),
+      logs: logs || (await captureComposeLogs(app, opts, isolation)),
     }
   }
 
@@ -171,16 +192,25 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   return {
     kind: 'blocked',
     reason: `health check at ${app.health.http} did not pass within ${app.health.timeout}`,
-    logs: logs || (await captureComposeLogs(app, opts)),
+    logs: logs || (await captureComposeLogs(app, opts, isolation)),
   }
 }
 
-/** Tear the booted stack down; a target profile booted nothing, so there is nothing to stop. */
+/**
+ * Tear the booted stack down; a target profile booted nothing, so there is
+ * nothing to stop. The caller passes the isolation the boot used, so `down`
+ * addresses the same `-p` project `up` did (#53); with none passed, the down
+ * runs projectless, as today.
+ */
 export async function stopApp(profile: QaProfile, opts: BootOpts = {}): Promise<void> {
   if (profile.app === undefined) return
   const runCompose = opts.runCompose ?? defaultRunCompose
   try {
-    await runCompose(['-f', profile.app.boot.compose, 'down'], NO_DEADLINE_MS)
+    await runCompose(
+      [...(opts.isolation === undefined ? [] : ['-p', opts.isolation.project]), '-f', profile.app.boot.compose, 'down'],
+      NO_DEADLINE_MS,
+      composeEnv(opts.isolation),
+    )
   } catch (error) {
     console.error(`compose down failed: ${String(error)}`)
   }

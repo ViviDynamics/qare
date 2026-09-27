@@ -10,16 +10,19 @@ export type RunValues = Record<string, string>
  *
  * A run against a target also carries `target_url`, the URL its checks point
  * at (#122); a profile that boots its own stack does not mint it, so a
- * reference to it there fails closed at plan time.
+ * reference to it there fails closed at plan time. A run that boots its own
+ * app also carries `app_port`, the host port its compose project publishes the
+ * app on (#53), and profiles bind it with `ports: ["${QARE_APP_PORT:-3000}:3000"]`.
  */
-export function mintRunValues(opts: { targetUrl?: string } = {}): RunValues {
-  const id = randomUUID()
+export function mintRunValues(opts: { targetUrl?: string; appPort?: string; runId?: string } = {}): RunValues {
+  const id = opts.runId ?? randomUUID()
   return {
     id,
     started_at: new Date().toISOString(),
     mail_address: `qare-${id}@localhost`,
     // No trailing slash, so {{run.target_url}}/path never doubles one.
     ...(opts.targetUrl === undefined ? {} : { target_url: opts.targetUrl.replace(/\/+$/, '') }),
+    ...(opts.appPort === undefined ? {} : { app_port: opts.appPort }),
   }
 }
 

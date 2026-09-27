@@ -37,6 +37,12 @@ Everything judge writes is published, so it redacts the reasons in it, with
 the built-in rules and, given `--profile <dir>`, the profile's `redact` values
 and patterns too.
 
+`qare reap` tears down every running compose project qare booted — the projects
+named `qare-*` (#53). This is the cleanup for a run that never reached its own
+teardown: the orchestrator runs it after a cancel or a crash, and a stuck run
+is reaped rather than holding the queue. It exits 4 if any project could not go
+down, naming each on stderr. Projects that are not qare's are never touched.
+
 ## result.json
 
 A completed run always writes a result, even when the verdict is failure:
@@ -76,6 +82,7 @@ The evidence directory holds everything a run produced:
 ```
 <evidenceDir>/
   result.json                      # the machine contract, at the root
+  isolation.json                   # an app run: the compose project, run id and port it booted under (#53)
   checks/<criterion id>/<n>/       # one directory per executed check
     stdout.txt
     stderr.txt

@@ -138,7 +138,9 @@ Strings in the profile, the seed step, commands, flows and checks may carry
 fresh for each run. The first minted value is a per-run mail address
 (`{{run.mail_address}}`), and a run id and started-at timestamp come free with
 it (`{{run.id}}`, `{{run.started_at}}`). A run against a target also mints
-`{{run.target_url}}`, the URL its checks point at. Checks may also carry
+`{{run.target_url}}`, the URL its checks point at, and a run that boots its own
+app mints `{{run.app_port}}`, the host port its compose project publishes the
+app on (#53). Checks may also carry
 `{{mail.<name>.link}}` references, which the harness substitutes at run time
 with artefacts the run has observed (single-use artefacts, below). This is
 substitution, not a language: no expressions, no conditionals, no nesting. A
@@ -147,6 +149,31 @@ that has not run yet, or an unterminated `{{`, fails the run closed at plan time
 and nothing boots. The minted values are written to the run's evidence, so a
 reader can see which address a run used, and two concurrent runs never collide.
 Flow definitions substitute with the flow runner.
+
+### Run isolation (#53)
+
+Two runs of the same repository at the same time never share a compose stack.
+Every run boots its app under its own compose project, `qare-<run id>`, so the
+project's name, network and volumes belong to that run alone. The app's host
+port is allocated per run too: the harness picks a free port and hands compose
+both it and the run id as `QARE_APP_PORT` and `QARE_RUN_ID`, so a profile's
+compose file binds it with `ports: ["${QARE_APP_PORT:-3000}:3000"]` and two
+concurrent runs never collide on the host.
+
+The health URL names where the app answers. A profile may write the port as
+`{{run.app_port}}` — `http://localhost:{{run.app_port}}/up` — and a plain local
+port in the health URL is pinned to the run's port either way, so the run
+proves the app it booted and not another run's. A URL the harness cannot name
+(a remote target, or one with no explicit port) is left unchanged.
+
+A run writes `isolation.json` into its evidence before booting — the project,
+the run id, the port, the started-at timestamp — so whatever happened to the
+run, what it booted is findable. Cleanup has three paths: a boot that outlives
+its health deadline is torn down by the boot watchdog; a canceled `qare run`
+(SIGINT/SIGTERM) stops its own project before the process exits; and a run
+that died without stopping its stack is reaped by hand with `qare reap`, which
+takes down every running compose project named `qare-*` and nothing else. A
+stuck run is reaped rather than holding the queue.
 
 ### Mail checks
 
@@ -584,7 +611,7 @@ One TypeScript codebase, one core, thin adapters:
 | Package | Purpose |
 | --- | --- |
 | `@qare/core` | plan, execute, judge, report; provider interface; `result.json` schema |
-| `@qare/cli` | `qare init`, `qare readiness`, `qare run`, `qare run --job`, `qare judge`, `qare replay`, `qare ledger`, `qare sweep` |
+| `@qare/cli` | `qare init`, `qare readiness`, `qare run`, `qare run --job`, `qare judge`, `qare replay`, `qare ledger`, `qare redact`, `qare reap`, `qare sweep` |
 | `@qare/action` | GitHub Action wrapping the three jobs |
 | `@qare/mcp` | MCP server so orchestrators, Codex, OpenCode and others can call it |
 | `plugin/claude-code` | skill, verifier subagent, Stop hook for local runs |
