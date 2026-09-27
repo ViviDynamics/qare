@@ -195,9 +195,20 @@ function parseProfileGroups(value: unknown): JobProfileGroup[] {
       fail(`${base}.name`, `profile name "${name}" contains ":"; ":" is reserved for namespace prefixes, so it cannot appear in a profile name`)
     if (isUnsafeProfileName(name))
       fail(`${base}.name`, `profile name ${JSON.stringify(name)} must not contain path separators, ".." or control characters`)
+    const profile = parseProfileRef(entry.profile)
+    // A several-app run publishes where each app's profile lives, and judge
+    // and redact re-read every named profile from the .qa root the run
+    // publishes (#55). An inline profile travels in the result itself; a path
+    // must be one the artifact carries, so anything else is refused before a
+    // result is written that judge could not follow.
+    if ('path' in profile && profile.path !== `.qa/${name}`)
+      fail(
+        `${base}.profile.path`,
+        `profile path ${JSON.stringify(profile.path)} must be ${JSON.stringify(`.qa/${name}`)}: a several-app job names its apps by the directories of the .qa root, because judge and redact re-read them from the artifact the run publishes`,
+      )
     return {
       name,
-      profile: parseProfileRef(entry.profile),
+      profile,
       criteria: parseCriteria(entry.criteria),
     }
   })
@@ -219,7 +230,7 @@ function parseProfileGroups(value: unknown): JobProfileGroup[] {
   return groups
 }
 
-function parseProfileRef(value: unknown): JobProfileRef {
+export function parseProfileRef(value: unknown): JobProfileRef {
   if (!isRecord(value)) fail('profile', 'profile must be a YAML object carrying either a path or an inline profile')
   const hasPath = value.path !== undefined
   const hasInline = value.inline !== undefined

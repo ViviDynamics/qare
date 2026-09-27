@@ -203,6 +203,11 @@ function parseProfiles(value: unknown): PlanProfileRef[] {
       fail(`${base}.path`, `profile path ${JSON.stringify(path)} climbs out of the repository (".." is not allowed)`)
     if (path !== '.' && path.split('/').includes('.'))
       fail(`${base}.path`, `profile path ${JSON.stringify(path)} carries a "." segment, which no git diff path can match (write the path without it)`)
+    // The plan's profiles are re-read by judge and redact from the .qa root
+    // the run publishes (#55), so a plan selects its apps from the named
+    // directories of that root and nothing else.
+    if (path !== `.qa/${name}`)
+      fail(`${base}.path`, `planned profile path ${JSON.stringify(path)} must be ${JSON.stringify(`.qa/${name}`)}: judge and redact re-read every named profile from the .qa root the run publishes, so a plan selects its apps from the named directories of .qa`)
     return { name, path }
   })
   return profiles

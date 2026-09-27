@@ -175,8 +175,8 @@ test('a plan that names its profiles builds one run over several apps, each with
     parsePlan({
       schemaVersion: '1',
       profiles: [
-        { name: 'admin', path: 'apps/admin/.qa' },
-        { name: 'docs', path: 'apps/docs/.qa' },
+        { name: 'admin', path: '.qa/admin' },
+        { name: 'docs', path: '.qa/docs' },
       ],
       criteria: [
         { id: 'c1', text: 'admin boots', checks: [COMMAND], profile: 'admin' },
@@ -191,12 +191,12 @@ test('a plan that names its profiles builds one run over several apps, each with
   expect(job.profiles).toEqual([
     {
       name: 'admin',
-      profile: { path: '/work/apps/admin/.qa' },
+      profile: { path: '.qa/admin' },
       criteria: [{ id: 'c1', text: 'admin boots', checks: [{ kind: 'command', run: 'npm test -- login' }] }],
     },
     {
       name: 'docs',
-      profile: { path: '/work/apps/docs/.qa' },
+      profile: { path: '.qa/docs' },
       criteria: [{ id: 'c2', text: 'docs boots', checks: [{ kind: 'command', run: 'npm test -- login' }] }],
     },
   ])
@@ -208,8 +208,8 @@ test('an app the plan planned no criterion against takes no part in the run, and
     parsePlan({
       schemaVersion: '1',
       profiles: [
-        { name: 'admin', path: 'apps/admin/.qa' },
-        { name: 'docs', path: 'apps/docs/.qa' },
+        { name: 'admin', path: '.qa/admin' },
+        { name: 'docs', path: '.qa/docs' },
       ],
       criteria: [{ id: 'c1', text: 'admin boots', checks: [COMMAND], profile: 'admin' }],
     }),
@@ -226,8 +226,8 @@ test('a plan that names several apps refuses a criterion that names no app', () 
     parsePlan({
       schemaVersion: '1',
       profiles: [
-        { name: 'admin', path: 'apps/admin/.qa' },
-        { name: 'docs', path: 'apps/docs/.qa' },
+        { name: 'admin', path: '.qa/admin' },
+        { name: 'docs', path: '.qa/docs' },
       ],
       criteria: [
         { id: 'c1', text: 'admin boots', checks: [COMMAND], profile: 'admin' },
@@ -241,7 +241,7 @@ test('a criterion naming an app the plan does not plan is refused at load', () =
   expect(() =>
     parsePlan({
       schemaVersion: '1',
-      profiles: [{ name: 'admin', path: 'apps/admin/.qa' }],
+      profiles: [{ name: 'admin', path: '.qa/admin' }],
       criteria: [{ id: 'c1', text: 'x', checks: [COMMAND], profile: 'docs' }],
     }),
   ).toThrow(/names "docs", which the plan does not plan/)
@@ -262,8 +262,8 @@ test('an unplannable criterion names its app too, so it is reported against the 
     parsePlan({
       schemaVersion: '1',
       profiles: [
-        { name: 'admin', path: 'apps/admin/.qa' },
-        { name: 'docs', path: 'apps/docs/.qa' },
+        { name: 'admin', path: '.qa/admin' },
+        { name: 'docs', path: '.qa/docs' },
       ],
       criteria: [
         { id: 'c1', text: 'admin mail', unplannable: 'needs a mailbox', profile: 'admin' },
@@ -298,8 +298,8 @@ test('criterion ids must be unique across every group of a several-profile plan'
       parsePlan({
         schemaVersion: '1',
         profiles: [
-          { name: 'admin', path: 'apps/admin/.qa' },
-          { name: 'docs', path: 'apps/docs/.qa' },
+          { name: 'admin', path: '.qa/admin' },
+          { name: 'docs', path: '.qa/docs' },
         ],
         criteria: [
           { id: 'c1', text: 'x', checks: [COMMAND], profile: 'admin' },
@@ -315,8 +315,24 @@ test('a planned profile name that cannot be an evidence file name is refused at 
   expect(() =>
     parsePlan({
       schemaVersion: '1',
-      profiles: [{ name: 'foo/../../outside', path: 'apps/admin/.qa' }],
+      profiles: [{ name: 'foo/../../outside', path: '.qa/admin' }],
       criteria: [{ id: 'c1', text: 'x', checks: [COMMAND], profile: 'foo/../../outside' }],
     }),
   ).toThrow(/must not contain path separators/)
+})
+
+test('a several-app job whose profile lives outside the .qa layout is refused', async () => {
+  const { parseJob } = await import('../src/index.js')
+  expect(() =>
+    parseJob({
+      id: 'j', repoPath: '/work', baseRef: 'a', headRef: 'b', evidenceDir: 'e', post: 'none',
+      profiles: [
+        {
+          name: 'admin',
+          profile: { path: 'apps/admin/.qa' },
+          criteria: [{ id: 'c1', text: 'x', checks: [{ kind: 'command', run: 'true' }] }],
+        },
+      ],
+    }),
+  ).toThrow(/profile path "apps\/admin\/\.qa" must be "\.qa\/admin"/)
 })

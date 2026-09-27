@@ -239,8 +239,8 @@ test('one run checks two apps under two isolations and reports a verdict per app
 
   expect(result.verdict).toBe('passed')
   expect(result.profiles).toEqual([
-    { name: 'admin', verdict: 'passed', criteria: ['admin-c1'] },
-    { name: 'storefront', verdict: 'passed', criteria: ['storefront-c1'] },
+    { name: 'admin', verdict: 'passed', criteria: ['admin-c1'], profile: { inline: APP_PROFILE } },
+    { name: 'storefront', verdict: 'passed', criteria: ['storefront-c1'], profile: { inline: APP_PROFILE } },
   ])
   expect(result.target).toBeUndefined()
   expect(result.criteria.map((criterion) => criterion.id)).toEqual(['admin-c1', 'storefront-c1'])
@@ -289,8 +289,8 @@ test('an app that declares a hosted target is refused in a several-app run, and 
 
   const { result } = await runJob(job, HEALTHY_BOOT)
   expect(result.profiles).toEqual([
-    { name: 'targeted', verdict: 'refused', criteria: ['targeted-c1'] },
-    { name: 'admin', verdict: 'passed', criteria: ['admin-c1'] },
+    { name: 'targeted', verdict: 'refused', criteria: ['targeted-c1'], profile: { inline: targetedProfile } },
+    { name: 'admin', verdict: 'passed', criteria: ['admin-c1'], profile: { inline: APP_PROFILE } },
   ])
   expect(result.verdict).toBe('blocked')
   expect(result.target).toBeUndefined()
@@ -389,8 +389,8 @@ test('a group whose profile is not there is refused for that app alone', async (
   const { result } = await runJob(job, HEALTHY_BOOT)
 
   expect(result.profiles).toEqual([
-    { name: 'admin', verdict: 'passed', criteria: ['admin-c1'] },
-    { name: 'ghost', verdict: 'refused', criteria: ['ghost-c1'] },
+    { name: 'admin', verdict: 'passed', criteria: ['admin-c1'], profile: { inline: APP_PROFILE } },
+    { name: 'ghost', verdict: 'refused', criteria: ['ghost-c1'], profile: { path: '.qa/ghost' } },
   ])
   expect(result.verdict).toBe('blocked')
   const ghost = result.criteria.find((criterion) => criterion.id === 'ghost-c1')

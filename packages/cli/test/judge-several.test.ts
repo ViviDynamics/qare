@@ -139,3 +139,89 @@ test('redact sweeps an evidence directory with the rules of every app the result
   expect(code).toBe(0)
   expect(await readFile(join(resultPath, '..', 'notes.txt'), 'utf8')).not.toContain('s3cret-value')
 })
+
+test('judge applies the rules of an inline profile the result carries itself', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-judge-several-'))
+  made.push(dir)
+  const evidence = join(dir, 'evidence')
+  await mkdir(evidence, { recursive: true })
+  const resultPath = join(evidence, 'result.json')
+  await writeFile(
+    resultPath,
+    JSON.stringify({
+      schemaVersion: RESULT_SCHEMA_VERSION,
+      verdict: 'blocked',
+      criteria: [{ id: 'c1', outcome: 'unverified', reason: 'the storefront total was s3cret-value aware' }],
+      profiles: [
+        {
+          name: 'inline-app',
+          verdict: 'refused',
+          criteria: ['c1'],
+          profile: { inline: { redact: { values: ['s3cret-value'] } } },
+        },
+      ],
+    }),
+    'utf8',
+  )
+  // No .qa root carries this app: its rules travel in the result itself.
+  const root = join(dir, 'qa')
+
+  const code = await main(['judge', '--result', resultPath, '--runner', 'none', '--profile', root], capture().writer, capture().writer)
+
+  expect(code).toBe(0)
+  const judged = JSON.parse(await readFile(join(resultPath, '..', 'judged-result.json'), 'utf8'))
+  expect(judged.criteria[0].reason).not.toContain('s3cret-value')
+})
+
+test('judge refuses a result whose profile path the qa-profile artifact cannot carry', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-judge-several-'))
+  made.push(dir)
+  const evidence = join(dir, 'evidence')
+  await mkdir(evidence, { recursive: true })
+  const resultPath = join(evidence, 'result.json')
+  await writeFile(
+    resultPath,
+    JSON.stringify({
+      schemaVersion: RESULT_SCHEMA_VERSION,
+      verdict: 'blocked',
+      criteria: [{ id: 'c1', outcome: 'unverified', reason: 'r' }],
+      profiles: [{ name: 'admin', verdict: 'refused', criteria: ['c1'], profile: { path: 'apps/admin/.qa' } }],
+    }),
+    'utf8',
+  )
+  const err = capture()
+
+  const code = await main(['judge', '--result', resultPath, '--runner', 'none', '--profile', join(dir, 'qa')], capture().writer, err.writer)
+
+  expect(code).toBe(4)
+  expect(err.lines.join('')).toContain('which the qa-profile artifact cannot carry')
+})
+
+test('a named boot profile is read with the fixtures and stubs the .qa root shares', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-judge-several-'))
+  made.push(dir)
+  const root = join(dir, 'qa')
+  const bootProfile = [
+    'app:',
+    '  boot: { compose: compose.qa.yaml, service: admin }',
+    "  health: { http: '" + ['http:', '//localhost:3000/up'].join('') + "', timeout: 120s }",
+    '  seed: { command: bin/rails db:seed:qa }',
+    '  login: { fixture: fixtures/users.yml, role: admin }',
+    'stubs: []',
+    'visual: { widths: [], themes: [] }',
+    'suites: []',
+    'redact:',
+    '  values:',
+    '    - s3cret-value',
+  ].join('\n')
+  await profileAt(join(root, 'admin'), bootProfile)
+  await mkdir(join(root, 'fixtures'), { recursive: true })
+  await mkdir(join(root, 'stubs'), { recursive: true })
+  const resultPath = await severalResult(join(dir, 'evidence'), true)
+
+  const code = await main(['judge', '--result', resultPath, '--runner', 'none', '--profile', root], capture().writer, capture().writer)
+
+  expect(code).toBe(0)
+  const judged = JSON.parse(await readFile(join(resultPath, '..', 'judged-result.json'), 'utf8'))
+  expect(judged.criteria[0].reason).not.toContain('s3cret-value')
+})

@@ -1,4 +1,5 @@
 import type { RunEnvironment } from './environment.js'
+import { parseProfileRef, type JobProfileRef } from './job.js'
 
 export const RESULT_SCHEMA_VERSION = '1'
 
@@ -52,9 +53,12 @@ export interface RunResult {
    * The profiles a several-profile run checked, in the order the job named
    * them (#55): one verdict per app, and the criterion ids that belong to it,
    * so a reader can see what each app was asked and which app a criterion
-   * checked. Absent when the run checked one profile.
+   * checked. Each entry carries the profile reference the job checked — the
+   * inline profile itself, or the path under the .qa root — because judge and
+   * redact re-read the rules from the result and the .qa artifact alone.
+   * Absent when the run checked one profile.
    */
-  profiles?: Array<{ name: string; verdict: RunVerdict; criteria: string[] }>
+  profiles?: Array<{ name: string; verdict: RunVerdict; criteria: string[]; profile?: JobProfileRef }>
 }
 
 const CRITERION_OUTCOMES: CriterionOutcome[] = ['proven', 'failed', 'unverified']
@@ -174,10 +178,12 @@ function parseEnvironment(value: unknown): RunEnvironment | undefined {
   }
 }
 
-function parseProfiles(value: unknown): Array<{ name: string; verdict: RunVerdict; criteria: string[] }> | undefined {
+function parseProfiles(
+  value: unknown,
+): Array<{ name: string; verdict: RunVerdict; criteria: string[]; profile?: JobProfileRef }> | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value))
-    fail('profiles', 'result.json profiles must be an array of { name, verdict, criteria }')
+    fail('profiles', 'result.json profiles must be an array of { name, verdict, criteria, profile }')
   if (value.length === 0) fail('profiles', 'result.json profiles must not be empty when present')
   return value.map((entry, index) => {
     if (!isRecord(entry)) fail(`profiles[${index}]`, 'profile entry must be a JSON object')
@@ -187,12 +193,17 @@ function parseProfiles(value: unknown): Array<{ name: string; verdict: RunVerdic
       fail(`profiles[${index}].verdict`, `unknown verdict ${JSON.stringify(verdict)} (expected "passed", "failed", "blocked", "refused" or "waived")`)
     if (!Array.isArray(entry.criteria))
       fail(`profiles[${index}].criteria`, 'profile entry must carry the criterion ids the profile checked')
+    // The profile reference the run checked: judge and redact re-read the
+    // rules from the result and the .qa artifact alone, so the reference is
+    // carried here rather than reconstructed from the app's name alone.
+    const profile = entry.profile === undefined ? undefined : parseProfileRef(entry.profile)
     return {
       name,
       verdict: verdict as RunVerdict,
       criteria: entry.criteria.map((criterion, criterionIndex) =>
         nonEmptyString(criterion, `profiles[${index}].criteria[${criterionIndex}]`, 'criterion id'),
       ),
+      ...(profile === undefined ? {} : { profile }),
     }
   })
 }

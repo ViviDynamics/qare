@@ -296,6 +296,7 @@ async function runSeveralProfiles(
           name: group.name,
           verdict: 'refused' as const,
           criteria: group.criteria.map((criterion) => criterion.id),
+          profile: group.profile,
         })),
       },
       BUILTIN_REDACTION_RULES,
@@ -344,7 +345,7 @@ async function runSeveralProfiles(
     }
   }
   const criteria: CriterionResult[] = []
-  const profiles: Array<{ name: string; verdict: RunVerdict; criteria: string[] }> = []
+  const profiles: Array<{ name: string; verdict: RunVerdict; criteria: string[]; profile: JobProfileRef }> = []
   const recorded: Array<{ name: string; values: RunValues }> = []
   const isolations: Array<{ name: string; isolation: RunIsolation }> = []
   let egressRefused = false
@@ -359,7 +360,7 @@ async function runSeveralProfiles(
           ? { criteria: entry.group.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified' as const, reason: entry.refusal! })), verdict: 'refused' }
           : await runProfileGroup(job, entry.group, entry.profile!, rules, masks, opts, cleanups, execution)
       criteria.push(...outcome.criteria)
-      profiles.push({ name: entry.group.name, verdict: outcome.verdict, criteria: outcome.criteria.map((criterion) => criterion.id) })
+      profiles.push({ name: entry.group.name, verdict: outcome.verdict, criteria: outcome.criteria.map((criterion) => criterion.id), profile: entry.group.profile })
       if (outcome.values !== undefined) recorded.push({ name: entry.group.name, values: outcome.values })
       if (outcome.isolation !== undefined) isolations.push({ name: entry.group.name, isolation: outcome.isolation })
       if (outcome.egressRefused === true) egressRefused = true

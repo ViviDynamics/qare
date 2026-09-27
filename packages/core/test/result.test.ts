@@ -233,3 +233,30 @@ test('an environment record naming an unknown execution fails closed', () => {
   )
   expect(error.field).toBe('environment.execution')
 })
+
+test('a several-app result carries the profile reference each app was checked with', () => {
+  const result = parseResult({
+    schemaVersion: '1',
+    verdict: 'blocked',
+    criteria: [{ id: 'c1', outcome: 'unverified', reason: 'the check never ran' }],
+    profiles: [
+      { name: 'admin', verdict: 'refused', criteria: ['c1'], profile: { path: '.qa/admin' } },
+      { name: 'storefront', verdict: 'refused', criteria: [], profile: { inline: { target: { url: 'x' } } } },
+    ],
+  })
+  expect(result.profiles).toEqual([
+    { name: 'admin', verdict: 'refused', criteria: ['c1'], profile: { path: '.qa/admin' } },
+    { name: 'storefront', verdict: 'refused', criteria: [], profile: { inline: { target: { url: 'x' } } } },
+  ])
+})
+
+test('a profile reference that is neither a path nor an inline profile fails closed', () => {
+  expect(() =>
+    parseResult({
+      schemaVersion: '1',
+      verdict: 'blocked',
+      criteria: [{ id: 'c1', outcome: 'unverified', reason: 'r' }],
+      profiles: [{ name: 'admin', verdict: 'refused', criteria: ['c1'], profile: 5 }],
+    }),
+  ).toThrow(/profile entry must be a JSON object|profile must be a YAML object/)
+})

@@ -1,4 +1,3 @@
-import { resolve } from 'node:path'
 import { parseJob } from './job.js'
 import type { Job, JobCheck, JobCriterion, JobProfileRef, JobPostTarget } from './job.js'
 import type { Plan, PlanCheck } from './plan.js'
@@ -96,14 +95,16 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
     )
 
   // A plan that names its profiles runs as one run over several apps (#55):
-  // one group per planned app, its profile resolved from the repo it names,
-  // and only the criteria planned against it. The planned paths are relative
-  // to the repository, so the same plan runs wherever the repository is.
+  // one group per planned app, its profile the planned path, and only the
+  // criteria planned against it. The planned paths are relative to the
+  // repository, so the same plan runs wherever the repository is, and the
+  // result carries the same reference judge and redact re-read from the .qa
+  // artifact.
   if (plan.profiles !== undefined) {
     const plannedProfiles = plan.criteria.map((criterion) => criterion.profile)
     const groups = plan.profiles.map((planned) => ({
       name: planned.name,
-      profile: { path: resolve(context.repoPath, planned.path) },
+      profile: { path: planned.path },
       criteria: criteria.filter((_criterion, index) => plannedProfiles[index] === planned.name),
     }))
     for (const group of groups.filter((group) => group.criteria.length === 0))

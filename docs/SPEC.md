@@ -188,11 +188,20 @@ boot that never came up) reports its criteria unverified with the reason named,
 and the other apps still run.
 
 A plan may name the apps it is planned against: `profiles`, one
-`{ name, path }` per app, with a repo-relative path under `.qa/`, and every
+`{ name, path }` per app, whose path is exactly `.qa/<name>` — judge and
+redact re-read every named profile from the .qa root the run publishes, so a
+plan selects its apps from the named directories of that root — and every
 criterion names the app it is checked against. `qare run --plan` builds the
 several-app run from such a plan and takes no `--profile` for it. An app that
 declares a hosted target is checked in its own single run instead: a
 several-app result names no target.
+
+The result of a several-app run carries where each app's profile lives, so
+judge and redact apply the same rules the run did: an inline profile travels
+in the result itself, and a named profile is re-read from the .qa root with
+the fixtures and stubs the root shares, exactly as the run loaded it. A
+profile reference the artifact cannot carry is refused, never silently read
+from the app's name alone.
 
 ### Run-scoped values
 

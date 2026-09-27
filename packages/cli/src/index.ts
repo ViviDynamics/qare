@@ -48,6 +48,7 @@ import type {
   BootOpts,
   FlowDriverCapabilities,
   Job,
+  JobProfileRef,
   LedgerEntry,
   Plan,
   QaProfile,
@@ -317,7 +318,7 @@ async function redactionRulesFor(profileDir: string | undefined, out: Writer): P
  */
 async function redactionRulesForRun(
   profileDir: string | undefined,
-  profiles: readonly { name: string }[] | undefined,
+  profiles: readonly { name: string; profile?: JobProfileRef }[] | undefined,
   out: Writer,
 ): Promise<readonly RedactionRule[]> {
   if (profiles === undefined) return redactionRulesFor(profileDir, out)
@@ -334,23 +335,40 @@ async function redactionRulesForRun(
     if (!(error instanceof ProfileMissingError)) throw error
   }
   for (const entry of profiles) {
-    const dir = join(profileDir, entry.name)
     try {
-      rules.push(...(await rulesOf(resolve(dir))))
+      // An inline profile travels in the result itself: there is no directory
+      // to read, so its rules are applied from the result alone.
+      if (entry.profile !== undefined && 'inline' in entry.profile) {
+        rules.push(...profileRules(entry.profile.inline))
+        continue
+      }
+      // A path the qa-profile artifact cannot carry is refused rather than
+      // silently read from the app's name alone (#55).
+      if (entry.profile !== undefined && 'path' in entry.profile && entry.profile.path !== `.qa/${entry.name}`)
+        throw new Error(
+          `the result names profile path ${JSON.stringify(entry.profile.path)} for app ${JSON.stringify(entry.name)}, which the qa-profile artifact cannot carry: judge and redact read every named profile from the .qa root, so a run keeps them at .qa/${entry.name}`,
+        )
+      // A named profile shares the .qa root's fixtures and stubs, exactly as
+      // the run that produced the result loaded it (issue #55).
+      rules.push(...(await rulesOf(resolve(join(profileDir, entry.name)), resolve(profileDir))))
     } catch (error) {
       if (!(error instanceof ProfileMissingError)) throw error
       throw new Error(
-        `no usable profile for app ${JSON.stringify(entry.name)} at ${dir}: judge redacts with the rules of every app the result checked, and this app's rules cannot be read`,
+        `no usable profile for app ${JSON.stringify(entry.name)} at ${join(profileDir, entry.name)}: judge redacts with the rules of every app the result checked, and this app's rules cannot be read`,
       )
     }
   }
   return rules
 }
 
-async function rulesOf(profileDir: string): Promise<readonly RedactionRule[]> {
-  const profile = await loadProfile(profileDir)
+function profileRules(profile: QaProfile): readonly RedactionRule[] {
   const login = profile.app?.login
   return [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value])]
+}
+
+async function rulesOf(profileDir: string, resources?: string): Promise<readonly RedactionRule[]> {
+  const profile = await loadProfile(profileDir, resources === undefined ? undefined : { resources })
+  return profileRules(profile)
 }
 
 /**
