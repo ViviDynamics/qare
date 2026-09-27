@@ -145,6 +145,19 @@ function fail(field: string, message: string): never {
   throw new ProfileValidationError(field, message)
 }
 
+/**
+ * Whether a profile name is one a run cannot publish under (#55). Profile
+ * names become evidence file names (`isolation-<name>.json`,
+ * `values-<name>.json`) and profile directories, wherever the name came from:
+ * a hand-written job, a plan that names its apps, or the directory discovery
+ * prints for `qare profiles`. ":" is reserved for namespace prefixes, and
+ * separators, ".." and control characters would carry the name out of the
+ * evidence directory it is published into.
+ */
+export function isUnsafeProfileName(name: string): boolean {
+  return name.includes(':') || /[/\\]|\.\./.test(name) || /[\x00-\x1f\x7f]/.test(name)
+}
+
 function missing(field: string, message: string): never {
   throw new ProfileMissingError(field, message)
 }

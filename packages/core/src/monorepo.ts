@@ -1,6 +1,6 @@
 import { lstat, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { ProfileValidationError, loadProfile, type QaProfile } from './profile.js'
+import { ProfileValidationError, isUnsafeProfileName, loadProfile, type QaProfile } from './profile.js'
 
 /**
  * One profile of a repository that may hold several (#55). `name` is the
@@ -62,6 +62,16 @@ export async function discoverProfiles(qaDir: string): Promise<NamedProfile[]> {
     // QA.md, unreadable YAML, absent fixtures — fails closed rather than
     // reading as absence.
     if (!(await exists(join(dir, 'config.yml')))) continue
+    // The directory's name becomes the app's profile name everywhere it is
+    // published — `qare profiles` output, evidence file names, a plan's
+    // profile list — so a name the filesystem allowed but no job or plan
+    // could carry is refused here, at discovery, before anything is written
+    // under it (#55).
+    if (isUnsafeProfileName(entry.name))
+      throw new ProfileValidationError(
+        'profiles',
+        `profile name ${JSON.stringify(entry.name)} must not contain path separators, ".." or control characters; the directory under ${qaDir} names the app, and the name becomes evidence file names`,
+      )
     const profile = await loadProfile(dir, { resources: qaDir })
     named.push({ name: entry.name, dir, profile })
   }

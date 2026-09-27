@@ -110,6 +110,16 @@ test('a malformed named profile fails discovery instead of being skipped', async
   await expect(discoverProfiles(join(repo, '.qa'))).rejects.toThrow(ProfileValidationError)
 })
 
+test('a named profile directory whose name cannot be published fails discovery closed', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'qare-mono-'))
+  await writeProfile(join(repo, '.qa', 'bad:name'), TARGET_CONFIG)
+  await expect(discoverProfiles(join(repo, '.qa'))).rejects.toThrow(/must not contain path separators, "\.\." or control characters/)
+
+  const newlineRepo = await mkdtemp(join(tmpdir(), 'qare-mono-'))
+  await writeProfile(join(newlineRepo, '.qa', 'admin\n## injected'), TARGET_CONFIG)
+  await expect(discoverProfiles(join(newlineRepo, '.qa'))).rejects.toThrow(ProfileValidationError)
+})
+
 test('a root config.yml that exists but is not a file fails discovery closed', async () => {
   const repo = await mkdtemp(join(tmpdir(), 'qare-mono-'))
   await writeProfile(join(repo, '.qa', 'storefront'), TARGET_CONFIG)

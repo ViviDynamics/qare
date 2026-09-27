@@ -252,3 +252,74 @@ test('the loader round-trips through the lock: lock(loadPlan) then compare(loadP
   expect(comparePlan(loadPlan(text), locked)).toEqual({ matches: true, findings: [] })
   expect(locked.criteria.map(criterion => criterion.id)).toEqual(['ledger-export-csv', 'multi-currency-totals', 'payout-1099-notice'])
 })
+
+const severalPlanInput = {
+  schemaVersion: '1',
+  profiles: [
+    { name: 'admin', path: 'admin/.qa' },
+    { name: 'storefront', path: '.qa/storefront' },
+  ],
+  criteria: [
+    { id: 'c1', text: 'first criterion.', profile: 'admin', checks: [{ kind: 'command', name: 'n1', command: 'x' }] },
+    { id: 'c2', text: 'second criterion.', profile: 'storefront', checks: [{ kind: 'command', name: 'n2', command: 'y' }] },
+  ],
+}
+
+test('the fingerprint covers the app list and every criterion profile assignment', () => {
+  const reassigned = parsePlan({
+    ...severalPlanInput,
+    criteria: [
+      { id: 'c1', text: 'first criterion.', profile: 'storefront', checks: [{ kind: 'command', name: 'n1', command: 'x' }] },
+      { id: 'c2', text: 'second criterion.', profile: 'storefront', checks: [{ kind: 'command', name: 'n2', command: 'y' }] },
+    ],
+  })
+  expect(fingerprintPlan(reassigned)).not.toBe(fingerprintPlan(parsePlan(severalPlanInput)))
+
+  const renamed = parsePlan({
+    ...severalPlanInput,
+    profiles: [{ name: 'admin2', path: 'admin/.qa' }, { name: 'storefront', path: '.qa/storefront' }],
+    criteria: [
+      { id: 'c1', text: 'first criterion.', profile: 'admin2', checks: [{ kind: 'command', name: 'n1', command: 'x' }] },
+      { id: 'c2', text: 'second criterion.', profile: 'storefront', checks: [{ kind: 'command', name: 'n2', command: 'y' }] },
+    ],
+  })
+  expect(fingerprintPlan(renamed)).not.toBe(fingerprintPlan(parsePlan(severalPlanInput)))
+})
+
+test('a single-app plan is fingerprinted without the profile fields', () => {
+  const locked = lockPlan(basePlan)
+  expect(JSON.stringify(locked.locked)).not.toContain('profiles')
+  expect(comparePlan(basePlan, locked.locked)).toEqual({ matches: true, findings: [] })
+})
+
+test('reassigning a criterion to another app is a named finding', () => {
+  const { locked } = lockPlan(parsePlan(severalPlanInput))
+  const current = parsePlan({
+    ...severalPlanInput,
+    criteria: [
+      { id: 'c1', text: 'first criterion.', profile: 'storefront', checks: [{ kind: 'command', name: 'n1', command: 'x' }] },
+      { id: 'c2', text: 'second criterion.', profile: 'storefront', checks: [{ kind: 'command', name: 'n2', command: 'y' }] },
+    ],
+  })
+  const comparison = comparePlan(current, locked)
+  expect(comparison.matches).toBe(false)
+  expect(comparison.findings).toContain('criterion c1: planned against storefront, the lock says admin')
+})
+
+test('removing an app from the plan or changing its path is a named finding', () => {
+  const { locked } = lockPlan(parsePlan(severalPlanInput))
+  const pathChanged = parsePlan({
+    ...severalPlanInput,
+    profiles: [{ name: 'admin', path: 'admin/.qa' }, { name: 'storefront', path: 'other/.qa' }],
+  })
+  const comparison = comparePlan(pathChanged, locked)
+  expect(comparison.matches).toBe(false)
+  expect(comparison.findings).toContain('profile storefront: profile path changed from .qa/storefront to other/.qa')
+
+  const appRemoved = parsePlan({
+    ...severalPlanInput,
+    profiles: [{ name: 'admin', path: 'admin/.qa' }],
+    criteria: [{ id: 'c1', text: 'first criterion.', profile: 'admin', checks: [{ kind: 'command', name: 'n1', command: 'x' }] }],
+  })
+  expect(comparePlan(appRemoved, locked).findings).toContain('profile storefront: app removed from the plan')
+})

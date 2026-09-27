@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
@@ -239,7 +240,13 @@ async function redactCommand(argv: string[], out: Writer, err: Writer): Promise<
       if (arg !== '--evidence' && arg !== '--profile') throw new Error(`qare redact does not take ${arg}`)
     const evidence = flag(argv, '--evidence')
     if (evidence === undefined) throw new Error('qare redact requires --evidence <dir>')
-    const rules = await redactionRulesFor(flag(argv, '--profile'), out)
+    // The result, when the run left one, says which apps ran, and every app's
+    // rules sweep the directory they all published into (#55).
+    const resultPath = join(resolve(evidence), 'result.json')
+    const profiles = existsSync(resultPath)
+      ? loadResult(await readFile(resultPath, 'utf8')).profiles
+      : undefined
+    const rules = await redactionRulesForRun(flag(argv, '--profile'), profiles, out)
     const report = await redactEvidenceDir(resolve(evidence), rules)
     for (const name of report.changed) out.write(`redacted ${name}\n`)
     out.write(
@@ -296,6 +303,54 @@ async function redactionRulesFor(profileDir: string | undefined, out: Writer): P
     out.write(`no usable .qa/ profile at ${profileDir}, so only the built-in redaction rules apply\n`)
     return BUILTIN_REDACTION_RULES
   }
+}
+
+/**
+ * The rules a result is judged or redacted with, given the profiles the result
+ * says it ran (#55). One app is the path above: the rules its --profile names
+ * plus the built-in ones. A result of several apps names every app it checked,
+ * and each app's rules apply: the verifier reads the diff, and the diff can
+ * carry fixture values any app's rules exist for. Every named app's profile is
+ * read from under the .qa root the --profile gives, so one that cannot be read
+ * fails the command: redacting with fewer rules than the run asks for would
+ * publish what it names.
+ */
+async function redactionRulesForRun(
+  profileDir: string | undefined,
+  profiles: readonly { name: string }[] | undefined,
+  out: Writer,
+): Promise<readonly RedactionRule[]> {
+  if (profiles === undefined) return redactionRulesFor(profileDir, out)
+  if (profileDir === undefined)
+    throw new Error(
+      'the result names the apps it ran, and judge redacts with the rules of every app it checked; pass --profile <dir>, the .qa root the run resolved them from',
+    )
+  const rules = [...BUILTIN_REDACTION_RULES]
+  try {
+    // A monorepo's .qa root carries no profile of its own: the named apps hold
+    // the rules, and the loop below reads each of them.
+    rules.push(...(await rulesOf(resolve(profileDir))))
+  } catch (error) {
+    if (!(error instanceof ProfileMissingError)) throw error
+  }
+  for (const entry of profiles) {
+    const dir = join(profileDir, entry.name)
+    try {
+      rules.push(...(await rulesOf(resolve(dir))))
+    } catch (error) {
+      if (!(error instanceof ProfileMissingError)) throw error
+      throw new Error(
+        `no usable profile for app ${JSON.stringify(entry.name)} at ${dir}: judge redacts with the rules of every app the result checked, and this app's rules cannot be read`,
+      )
+    }
+  }
+  return rules
+}
+
+async function rulesOf(profileDir: string): Promise<readonly RedactionRule[]> {
+  const profile = await loadProfile(profileDir)
+  const login = profile.app?.login
+  return [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value])]
 }
 
 /**
@@ -661,13 +716,15 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     const planPath = flag(argv, '--plan')
     const diffPath = flag(argv, '--diff')
     const flowActions = flowActionKinds(flag(argv, '--flow-actions'))
-    // Everything judge writes is published, and the verifier's reasons are
-    // model text about evidence and a diff that can carry fixture data.
-    const rules = await redactionRulesFor(flag(argv, '--profile'), out)
 
     const resultPath = resolve(resultSpec)
     const outDir = outDirSpec === undefined ? dirname(resultPath) : resolve(outDirSpec)
     const loaded = loadResult(await readFile(resultPath, 'utf8'))
+    // Everything judge writes is published, and the verifier's reasons are
+    // model text about evidence and a diff that can carry fixture data. The
+    // rules are read once the result is: a result of several apps is swept
+    // with the rules of every app it checked (#55).
+    const rules = await redactionRulesForRun(flag(argv, '--profile'), loaded.profiles, out)
     // Nothing ran on a refused run, so there is no evidence for the verifier
     // to read and a model call would be spent on nothing.
     const verify = runnerSpec === 'nare' && loaded.verdict !== 'refused'

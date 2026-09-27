@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { parse as parseYaml } from 'yaml'
-import type { QaProfile } from './profile.js'
+import { isUnsafeProfileName, type QaProfile } from './profile.js'
 import { PlanValidationError, parseFlowActions, type FlowActionStep } from './plan.js'
 
 export type JobProfileRef = { path: string } | { inline: QaProfile }
@@ -193,7 +193,7 @@ function parseProfileGroups(value: unknown): JobProfileGroup[] {
     const name = nonEmptyString(entry.name, `${base}.name`, 'profile name')
     if (name.includes(':'))
       fail(`${base}.name`, `profile name "${name}" contains ":"; ":" is reserved for namespace prefixes, so it cannot appear in a profile name`)
-    if (/[/\\]|\.\./.test(name) || /[\x00-\x1f\x7f]/.test(name))
+    if (isUnsafeProfileName(name))
       fail(`${base}.name`, `profile name ${JSON.stringify(name)} must not contain path separators, ".." or control characters`)
     return {
       name,

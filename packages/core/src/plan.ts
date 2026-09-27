@@ -2,6 +2,7 @@
 // verbatim and rejects anything else. Type-only import: the loader adds no
 // runtime dependency on the runner.
 import type { FlowAction, FlowDriverCapabilities, FlowElement } from './flow.js'
+import { isUnsafeProfileName } from './profile.js'
 
 export const PLAN_SCHEMA_VERSION = '1'
 
@@ -191,7 +192,7 @@ function parseProfiles(value: unknown): PlanProfileRef[] {
     const name = nonEmptyString(entry.name, `${base}.name`, 'name')
     if (name.includes(':'))
       fail(`${base}.name`, `profile name "${name}" contains ":"; ":" is reserved for namespace prefixes, so it cannot appear in a profile name`)
-    if (/[/\\]|\.\./.test(name) || /[\x00-\x1f\x7f]/.test(name))
+    if (isUnsafeProfileName(name))
       fail(`${base}.name`, `profile name ${JSON.stringify(name)} must not contain path separators, ".." or control characters; profile names become evidence file names`)
     if (seen.has(name)) fail(`${base}.name`, `two planned profiles are named ${JSON.stringify(name)}; a plan names each app once`)
     seen.add(name)
