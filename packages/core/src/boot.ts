@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import http from 'node:http'
 import https from 'node:https'
 import type { ProfileApp, QaProfile } from './profile.js'
@@ -38,18 +38,55 @@ export interface BootOpts {
 
 const DEFAULT_POLL_INTERVAL_MS = 500
 const NO_DEADLINE_MS = 0
+// A killed child gets SIGTERM first; SIGKILL only if it is still running after
+// this grace, mirroring the command-check runner.
+const COMPOSE_KILL_GRACE_MS = 500
+// A runner that never settles is waited on for a grace only, so the watchdog's
+// down is never put off for longer than that.
+const DRAIN_GRACE_MS = 250
+
+// The compose children the default runner still has in flight, so a cancel can
+// kill them before the run tears its project down (#53): an orphaned `compose
+// up` that keeps provisioning after the down has run could resurrect the very
+// project the run meant to stop.
+const activeComposeChildren = new Set<ChildProcess>()
+
+/**
+ * Kill every compose child the default runner still has in flight. SIGKILL, so
+ * nothing survives to create resources the subsequent down cannot see (#53).
+ */
+export function killActiveCompose(): void {
+  for (const child of activeComposeChildren) {
+    activeComposeChildren.delete(child)
+    child.kill('SIGKILL')
+  }
+}
 
 /**
  * The compose runner every compose call falls back to when the caller injects
  * no seam. `env`, when given, is merged over the harness environment, so a
- * profile compose file can bind `${QARE_APP_PORT}` (#53).
+ * profile compose file can bind `${QARE_APP_PORT}` (#53). A call never outlives
+ * its deadline: the runner kills the child it spawned at it, so an up that
+ * outlived the boot's health deadline stops provisioning resources a teardown
+ * could then miss (#53).
  */
 export function defaultRunCompose(args: string[], timeoutMs: number, env?: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
-  void timeoutMs
   return new Promise((resolve) => {
     const child = spawn('docker', ['compose', ...args], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } })
+    activeComposeChildren.add(child)
     let stdout = ''
     let stderr = ''
+    let killed = false
+    let killTimer: ReturnType<typeof setTimeout> | undefined
+    // A deadline of 0 (NO_DEADLINE_MS) sets no deadline, as before.
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            killed = true
+            child.kill('SIGTERM')
+            killTimer = setTimeout(() => child.kill('SIGKILL'), COMPOSE_KILL_GRACE_MS)
+          }, timeoutMs)
+        : undefined
     child.stdout?.on('data', (chunk) => {
       stdout += chunk
     })
@@ -57,10 +94,16 @@ export function defaultRunCompose(args: string[], timeoutMs: number, env?: Recor
       stderr += chunk
     })
     child.on('error', (error) => {
+      if (timer !== undefined) clearTimeout(timer)
+      if (killTimer !== undefined) clearTimeout(killTimer)
+      activeComposeChildren.delete(child)
       resolve({ code: -1, stdout, stderr: `${stderr}${String(error)}` })
     })
     child.on('close', (code) => {
-      resolve({ code: code ?? -1, stdout, stderr })
+      if (timer !== undefined) clearTimeout(timer)
+      if (killTimer !== undefined) clearTimeout(killTimer)
+      activeComposeChildren.delete(child)
+      resolve({ code: killed ? -1 : (code ?? -1), stdout, stderr })
     })
   })
 }
@@ -169,11 +212,13 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
     timer = setTimeout(() => resolve('watchdog'), timeoutMs)
   })
   let up: { code: number; stdout: string; stderr: string } | 'watchdog'
+  let started: Promise<{ code: number; stdout: string; stderr: string }>
   try {
-    up = await Promise.race([
-      watchdog,
-      runCompose(['-p', isolation.project, '-f', app.boot.compose, 'up', '-d', '--wait', app.boot.service], timeoutMs, env),
-    ])
+    started = runCompose(['-p', isolation.project, '-f', app.boot.compose, 'up', '-d', '--wait', app.boot.service], timeoutMs, env)
+    // The losing branch of the race is drained, so a compose up that settles
+    // late after the watchdog does not crash the process unhandled.
+    void started.catch(() => {})
+    up = await Promise.race([watchdog, started])
   } catch (error) {
     clearTimeout(timer)
     return { kind: 'blocked', reason: `boot command failed to start: ${String(error)}`, logs: '', isolation }
@@ -181,7 +226,18 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   clearTimeout(timer)
 
   if (up === 'watchdog') {
-    void stopApp(profile, { ...opts, isolation })
+    // The losing branch is drained before the down: a compose up that is
+    // still provisioning must not resurrect the project after the down has
+    // run (#53). The default runner kills its child at the deadline, so the
+    // up settles shortly after it; a runner that never settles is waited on
+    // for a grace only, so the down is never put off for longer than that.
+    const drained = new Promise((resolve) => {
+      const grace = setTimeout(resolve, DRAIN_GRACE_MS)
+      grace.unref()
+    })
+    void Promise.race([started.then(() => undefined, () => undefined), drained]).then(() => {
+      void stopApp(profile, { ...opts, isolation })
+    })
     return { kind: 'blocked', reason: 'boot watchdog: compose up exceeded the health deadline', logs: '', isolation }
   }
 

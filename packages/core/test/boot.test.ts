@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import { bootApp, loadProfile, stopApp, type QaProfile } from '../src/index.js'
 
 const fixtureDir = new URL('../fixtures/qa-valid/.qa', import.meta.url)
@@ -152,10 +152,14 @@ test('watchdog blocks compose up that outlives the health deadline and attempts 
       startedAt: expect.any(String),
     },
   })
-  expect(composeArgs).toEqual([
-    ['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'up', '-d', '--wait', 'admin'],
-    ['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'down'],
-  ])
+  // The down waits for the in-flight up to settle first (#53): a runner that
+  // never settles is drained for a grace only, then torn down.
+  await vi.waitFor(() => {
+    expect(composeArgs).toEqual([
+      ['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'up', '-d', '--wait', 'admin'],
+      ['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'down'],
+    ])
+  })
   // The watchdog downs the very project the up booted (#53).
   expect(composeArgs[1]?.[1]).toBe(composeArgs[0]?.[1])
 })

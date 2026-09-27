@@ -645,7 +645,28 @@ test('an app run refuses an isolation that carries no port, so runs cannot fall 
 
   expect(result.verdict).toBe('refused')
   expect(isolation).toBeUndefined()
-  expect(result.criteria[0].reason).toContain('no app port')
+  expect(result.criteria[0].reason).toContain('no usable app port')
+  // Nothing booted: a refused run leaves no stack and writes no isolation evidence.
+  expect(captured.calls).toEqual([])
+  expect(existsSync(join(job.evidenceDir, 'isolation.json'))).toBe(false)
+})
+
+test('an app run refuses an isolation whose port is not a host port (#53)', async () => {
+  const captured = isolatedBootCapture()
+  const job = await makeJob({
+    criteria: commandCriteria('echo ok'),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  for (const port of [0, 70000, 1.5, Number.NaN]) {
+    const { result } = await runJob(job, {
+      ...captured.opts,
+      isolation: { runId: 'run-1', project: 'qare-run-1', startedAt: '2026-01-01T00:00:00.000Z', port },
+    })
+    expect(result.verdict).toBe('refused')
+    expect(result.criteria[0].reason).toContain('no usable app port')
+  }
+
   // Nothing booted: a refused run leaves no stack and writes no isolation evidence.
   expect(captured.calls).toEqual([])
   expect(existsSync(join(job.evidenceDir, 'isolation.json'))).toBe(false)

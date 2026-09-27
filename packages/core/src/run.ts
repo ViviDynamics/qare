@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Artefacts, type ArtefactField } from './artefacts.js'
-import { bootApp, stopApp, type BootOpts } from './boot.js'
+import { bootApp, killActiveCompose, stopApp, type BootOpts } from './boot.js'
 import { isolatedHealthUrl, isolateRun, type RunIsolation } from './isolation.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
 import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
@@ -19,6 +19,14 @@ import { mintRunValues, substituteValues, validateRunReferences, validateValueRe
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 60000
 const NO_CHECKS_REASON = 'no checks were given for this criterion, so nothing ran'
+
+/**
+ * A host port compose can publish and a health URL can name: an integer in
+ * 1..65535 (#53).
+ */
+function hasUsablePort(port: number | undefined): boolean {
+  return port !== undefined && Number.isInteger(port) && port >= 1 && port <= 65535
+}
 
 /**
  * Where the flow check gets its browser: the run hands over a session factory,
@@ -104,14 +112,17 @@ export async function runJob(
       return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `the harness could not isolate this run, so it will not boot an app: ${error instanceof Error ? error.message : String(error)}`)
     }
     // A run that boots an app always publishes it on a port of its own: an
-    // isolation without one would fall back to the compose default and put
-    // two concurrent runs on the same host port, so it is refused.
-    if (isolation.port === undefined) {
+    // isolation without a usable one would fall back to the compose default
+    // and put two concurrent runs on the same host port, or name a port the
+    // health URL cannot, so it is refused (#53). A caller-carried isolation
+    // is unvalidated otherwise: only an integer in the host-port range is
+    // something compose can publish and a health URL can name.
+    if (!hasUsablePort(isolation.port)) {
       return refuseRun(
         job,
         opts,
         BUILTIN_REDACTION_RULES,
-        'the run isolation carries no app port, so two runs could publish their apps on the same host port; a run that boots an app needs an isolation with a port (isolateRun)',
+        'the run isolation carries no usable app port, so two runs could publish their apps on the same host port; a run that boots an app needs an isolation with a host port in 1..65535 (isolateRun)',
       )
     }
   }
@@ -227,6 +238,10 @@ async function refuseRun(
  */
 export function installCancelCleanup(profile: QaProfile, opts: BootOpts): () => void {
   const stop = (): void => {
+    // The compose children the run still has in flight are killed first, so
+    // no orphaned up can keep provisioning the project after the down has
+    // run (#53).
+    killActiveCompose()
     void stopApp(profile, opts).finally(() => process.exit(4))
   }
   process.once('SIGINT', stop)
