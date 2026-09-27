@@ -1,4 +1,4 @@
-import { readdir, stat } from 'node:fs/promises'
+import { lstat, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ProfileMissingError, ProfileValidationError, loadProfile, type QaProfile } from './profile.js'
 
@@ -34,7 +34,11 @@ export const DEFAULT_PROFILE_NAME = 'default'
  */
 export async function discoverProfiles(qaDir: string): Promise<NamedProfile[]> {
   const isFile = async (path: string): Promise<boolean> => (await stat(path).then((info) => info.isFile()).catch(() => false))
-  const root: NamedProfile | undefined = (await isFile(join(qaDir, 'config.yml')))
+  // The root is present when the entry exists, whatever it is: a config.yml
+  // that is a directory or a broken symlink is a malformed root, and the load
+  // reports it, rather than reading as a named-profile layout.
+  const exists = async (path: string): Promise<boolean> => (await lstat(path).then(() => true, () => false))
+  const root: NamedProfile | undefined = (await exists(join(qaDir, 'config.yml')))
     ? { name: DEFAULT_PROFILE_NAME, dir: qaDir, profile: await loadProfile(qaDir) }
     : undefined
   const entries = await readdir(qaDir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {

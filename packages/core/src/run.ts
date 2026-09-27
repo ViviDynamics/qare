@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Artefacts, type ArtefactField } from './artefacts.js'
 import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
 import { bootApp, CANCEL_DOWN_TIMEOUT_MS, killActiveCompose, stopApp, type BootOpts } from './boot.js'
@@ -654,7 +654,12 @@ async function feedIfOptedIn(
 
 async function resolveProfileRef(repoPath: string, ref: JobProfileRef): Promise<QaProfile> {
   if ('inline' in ref) return validateProfileConfig(ref.inline)
-  return loadProfile(resolve(repoPath, ref.path))
+  const dir = resolve(repoPath, ref.path)
+  // A profile that lives directly in .qa/ shares the root's fixtures and
+  // stubs when it keeps none of its own, exactly as discovery loads it (#55).
+  const qaDir = resolve(repoPath, '.qa')
+  const shared = dirname(dir) === qaDir ? { resources: qaDir } : undefined
+  return loadProfile(dir, shared)
 }
 
 async function finishRun(

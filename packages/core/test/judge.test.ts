@@ -446,6 +446,45 @@ test('the verifier output schema uses only keywords nare validates', () => {
   expect(unsupported).toEqual([])
 })
 
+test('judgedResult recomputes an app summary the judge downgraded', () => {
+  const executed: RunResult = {
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'passed',
+    criteria: [
+      { id: 'c1', outcome: 'proven', evidence: ['evidence/c1/stdout.txt'] },
+      { id: 'c2', outcome: 'proven', evidence: ['evidence/c2/stdout.txt'] },
+    ],
+    profiles: [
+      { name: 'admin', verdict: 'passed', criteria: ['c1'] },
+      { name: 'storefront', verdict: 'refused', criteria: ['c2'] },
+    ],
+  }
+  const result = judgedResult(
+    executed,
+    'failed',
+    [
+      { criterionId: 'c1', outcome: 'failed', regression: false, reason: 'the verifier found a problem' },
+      { criterionId: 'c2', outcome: 'unverified', regression: false, reason: 'the boot never came up' },
+    ],
+    new Map(),
+  )
+  expect(result.profiles?.map((profile) => profile.verdict)).toEqual(['failed', 'refused'])
+})
+
+test('a passed app summary downgrades to blocked the way the run verdict does', () => {
+  const executed: RunResult = {
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'passed',
+    criteria: [{ id: 'c1', outcome: 'proven', evidence: ['evidence/c1/stdout.txt'] }],
+    profiles: [{ name: 'admin', verdict: 'passed', criteria: ['c1'] }],
+  }
+  const judged = [
+    { criterionId: 'c1', outcome: 'unverified' as const, regression: false, reason: 'the judge could not verify it' },
+  ]
+  const result = judgedResult(executed, 'blocked', judged, new Map())
+  expect(result.profiles?.[0]?.verdict).toBe('blocked')
+})
+
 test('judgedResult carries the environment through judging', () => {
   const environment = {
     execution: 'native' as const,

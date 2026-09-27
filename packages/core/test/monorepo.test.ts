@@ -110,6 +110,13 @@ test('a malformed named profile fails discovery instead of being skipped', async
   await expect(discoverProfiles(join(repo, '.qa'))).rejects.toThrow(ProfileValidationError)
 })
 
+test('a root config.yml that exists but is not a file fails discovery closed', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'qare-mono-'))
+  await writeProfile(join(repo, '.qa', 'storefront'), TARGET_CONFIG)
+  await mkdir(join(repo, '.qa', 'config.yml'), { recursive: true })
+  await expect(discoverProfiles(join(repo, '.qa'))).rejects.toThrow(ProfileValidationError)
+})
+
 test('a repository without .qa/ discovers nothing', async () => {
   const repo = await mkdtemp(join(tmpdir(), 'qare-mono-'))
   expect(await discoverProfiles(join(repo, '.qa'))).toEqual([])
@@ -233,6 +240,20 @@ test('a several-profile run refuses a caller-carried isolation instead of sharin
   expect(result.verdict).toBe('refused')
   expect(result.profiles?.map((profile) => profile.verdict)).toEqual(['refused', 'refused'])
   expect(result.criteria.every((criterion) => criterion.outcome === 'unverified' && criterion.reason.includes('an isolation of its own'))).toBe(true)
+})
+
+test('a path-referenced profile shares the fixtures and stubs the .qa root keeps', async () => {
+  const job = await makeSeveralJob([
+    { name: 'admin', profile: { path: '.qa/admin' }, criteria: [commandCriterion('admin-c1')] },
+  ])
+  await writeProfile(join(job.repoPath, '.qa', 'admin'), APP_BOOT_CONFIG)
+  await mkdir(join(job.repoPath, '.qa', 'fixtures'), { recursive: true })
+  await mkdir(join(job.repoPath, '.qa', 'stubs'), { recursive: true })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('passed')
+  expect(result.profiles?.map((profile) => profile.verdict)).toEqual(['passed'])
 })
 
 test("every app's evidence is swept with every app's redaction rules", async () => {
@@ -412,6 +433,16 @@ test('a profile name that carries Markdown is escaped in the heading, not render
   const comment = renderComment(result)
   expect(comment).toContain('### a\\`d\\|min\\<b\\> — verdict failed')
   expect(comment).not.toContain('<b>')
+})
+
+test('a profile name that carries a line break cannot inject a heading below it', () => {
+  const result: RunResult = {
+    ...severalResult(),
+    profiles: [{ name: 'admin\n## injected', verdict: 'failed', criteria: ['admin-c1'] }],
+  }
+  const comment = renderComment(result)
+  expect(comment).toContain('### admin ## injected — verdict failed')
+  expect(comment.split('\n').filter((line) => line.startsWith('### '))).toHaveLength(1)
 })
 
 test('the comment of a single-profile run has no per-app sections', () => {

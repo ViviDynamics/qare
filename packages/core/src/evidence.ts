@@ -132,12 +132,18 @@ function escapeLinkText(text: string): string {
  * inject markup into it (#55).
  */
 function escapeHeading(text: string): string {
-  return text
-    .replaceAll('\\', '\\\\')
-    .replaceAll('`', '\\`')
-    .replaceAll('|', '\\|')
-    .replaceAll('<', '\\<')
-    .replaceAll('>', '\\>')
+  return (
+    text
+      // A line break in the name ends the heading early and injects Markdown
+      // below it, so it flattens to a space first.
+      .replaceAll('\r', ' ')
+      .replaceAll('\n', ' ')
+      .replaceAll('\\', '\\\\')
+      .replaceAll('`', '\\`')
+      .replaceAll('|', '\\|')
+      .replaceAll('<', '\\<')
+      .replaceAll('>', '\\>')
+  )
 }
 
 export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 'relative' }): string {
