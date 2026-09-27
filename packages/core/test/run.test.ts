@@ -783,3 +783,54 @@ test('a cancel with a caller isolation naming a foreign project kills nothing an
     exit.mockRestore()
   }
 })
+
+test('a cancel whose compose down never settles still exits 4, bounded by the down deadline (#53)', async () => {
+  const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+  const errors: string[] = []
+  const errorSpy = vi.spyOn(console, 'error').mockImplementation((line) => errors.push(String(line)))
+  const cleanup = installCancelCleanup(INLINE_PROFILE, {
+    runCompose: () => new Promise(() => {}),
+    downTimeoutMs: 50,
+    isolation: { runId: 'run-1', project: 'qare-run-1', startedAt: '2026-01-01T00:00:00.000Z', port: 4321 },
+  })
+  try {
+    process.emit('SIGINT')
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(4), { timeout: 5000 })
+
+    expect(errors.join('')).toContain('the compose down did not settle within 50ms')
+  } finally {
+    cleanup()
+    errorSpy.mockRestore()
+    exit.mockRestore()
+  }
+})
+
+test('one SIGINT cancels every run in the process, and the exit waits for every down (#53)', async () => {
+  const composeArgs: string[][] = []
+  const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+  const runCompose = async (args: string[]) => {
+    composeArgs.push(args)
+    return { code: 0, stdout: '', stderr: '' }
+  }
+  const cleanupA = installCancelCleanup(INLINE_PROFILE, {
+    runCompose,
+    isolation: { runId: 'run-a', project: 'qare-run-a', startedAt: '2026-01-01T00:00:00.000Z', port: 4321 },
+  })
+  const cleanupB = installCancelCleanup(INLINE_PROFILE, {
+    runCompose,
+    isolation: { runId: 'run-b', project: 'qare-run-b', startedAt: '2026-01-01T00:00:00.000Z', port: 4322 },
+  })
+  try {
+    process.emit('SIGINT')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    // Both downs ran, and the process exited once — after the last down, not
+    // after the first.
+    expect(composeArgs).toHaveLength(2)
+    expect(exit).toHaveBeenCalledTimes(1)
+  } finally {
+    cleanupA()
+    cleanupB()
+    exit.mockRestore()
+  }
+})

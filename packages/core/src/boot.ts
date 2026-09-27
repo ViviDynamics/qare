@@ -34,6 +34,13 @@ export interface BootOpts {
    * never share a project name, network or volumes.
    */
   isolation?: RunIsolation
+  /**
+   * The deadline for a compose `down` this seam issues: the runner kills its
+   * child at it. 0 (the default) sets no deadline; the cancellation path
+   * always bounds its down, so a canceled run cannot hang past it on a compose
+   * call that never settles (#53).
+   */
+  downTimeoutMs?: number
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 500
@@ -46,6 +53,11 @@ const COMPOSE_KILL_GRACE_MS = 500
 // grace, so the default runner's up — which settles only after its child is
 // dead — wins the wait before the grace ever fires.
 const DRAIN_GRACE_MS = COMPOSE_KILL_GRACE_MS + 250
+
+// The cancellation down is bounded: a compose call that never settles — a hung
+// docker daemon — cannot hold a canceled run's exit open past it (#53). The
+// stack a timed-out down leaves behind is what `qare reap` is for.
+export const CANCEL_DOWN_TIMEOUT_MS = 30_000
 
 // The compose children the default runner still has in flight, keyed by the
 // project name their args open with (`''` for a projectless call), so a cancel
@@ -316,7 +328,7 @@ export async function stopApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   try {
     await runCompose(
       [...(opts.isolation === undefined ? [] : ['-p', opts.isolation.project]), '-f', profile.app.boot.compose, 'down'],
-      NO_DEADLINE_MS,
+      opts.downTimeoutMs ?? NO_DEADLINE_MS,
       composeEnv(opts.isolation),
     )
   } catch (error) {

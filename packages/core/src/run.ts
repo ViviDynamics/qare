@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Artefacts, type ArtefactField } from './artefacts.js'
-import { bootApp, killActiveCompose, stopApp, type BootOpts } from './boot.js'
+import { bootApp, CANCEL_DOWN_TIMEOUT_MS, killActiveCompose, stopApp, type BootOpts } from './boot.js'
 import { hasMintedProject, isolatedHealthUrl, isolateRun, type RunIsolation } from './isolation.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
 import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
@@ -246,8 +246,13 @@ async function refuseRun(
  * process exits (#53): a canceled run must not leave its stack holding the
  * port and network the next run could otherwise queue behind. The handlers are
  * removed when the run finishes normally, so an exit qare chose carries no
- * stale cleanup.
+ * stale cleanup. The down is bounded, so a compose call that never settles
+ * cannot hold the exit open, and the exit waits for every canceled run's down,
+ * so two runs sharing a process never leave the later run's stack behind the
+ * earlier run's exit (#53).
  */
+const pendingStops = new Set<Promise<void>>()
+
 export function installCancelCleanup(profile: QaProfile, opts: BootOpts): () => void {
   const stop = (): void => {
     // The compose children this run still has in flight are killed first, so
@@ -258,7 +263,32 @@ export function installCancelCleanup(profile: QaProfile, opts: BootOpts): () => 
     // is never addressed: neither the kill nor the down touches it (#53).
     const isolation = opts.isolation
     if (isolation !== undefined && hasMintedProject(isolation)) killActiveCompose(isolation.project)
-    void stopApp(profile, opts).finally(() => process.exit(4))
+    const downTimeoutMs = opts.downTimeoutMs ?? CANCEL_DOWN_TIMEOUT_MS
+    const stopped = stopApp(profile, { ...opts, downTimeoutMs }).catch(() => {})
+    // The deadline is the exit guarantee: when the down hangs past it, the
+    // timeout is reported, the wait resolves anyway, and the exit runs,
+    // leaving the stack to reap (#53).
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined
+    const entry =
+      downTimeoutMs > 0
+        ? Promise.race([
+            stopped,
+            new Promise<void>((resolve) => {
+              timeoutTimer = setTimeout(() => {
+                console.error(
+                  `canceled run ${isolation?.runId ?? ''}: the compose down did not settle within ${downTimeoutMs}ms; the leftover stack is left for reap`,
+                )
+                resolve()
+              }, downTimeoutMs)
+            }),
+          ])
+        : stopped
+    pendingStops.add(entry)
+    void entry.finally(() => {
+      if (timeoutTimer !== undefined) clearTimeout(timeoutTimer)
+      pendingStops.delete(entry)
+      if (pendingStops.size === 0) process.exit(4)
+    })
   }
   process.once('SIGINT', stop)
   process.once('SIGTERM', stop)
