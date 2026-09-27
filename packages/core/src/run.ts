@@ -405,6 +405,17 @@ async function runProfileGroup(
     ...(isolation === undefined ? {} : { runId: isolation.runId }),
     ...(isolation?.port === undefined ? {} : { appPort: String(isolation.port) }),
   })
+  // One isolation file per app, written before validation, so a refusal still
+  // names the compose project a leftover stack runs under — the caller holds
+  // the isolation either way, which is what an orchestrator needs to reap it
+  // (#53, #55).
+  if (isolation !== undefined) {
+    await mkdir(job.evidenceDir, { recursive: true })
+    await writeFile(
+      join(job.evidenceDir, `isolation-${group.name}.json`),
+      `${JSON.stringify({ run_id: isolation.runId, project: isolation.project, started_at: isolation.startedAt, ...(isolation.port === undefined ? {} : { port: isolation.port }) }, null, 2)}\n`,
+    )
+  }
   try {
     validatePlanValues(group.criteria, profile, values, opts.flowDriver ?? BROWSER_FLOW_DRIVER)
   } catch (error) {
@@ -414,16 +425,6 @@ async function runProfileGroup(
     return { criteria: unverifiedAll(error.message), verdict: 'refused', values, ...(isolation === undefined ? {} : { isolation }) }
   }
   const login = profile.app?.login
-  // One isolation file per app, written before anything boots: it names the
-  // compose project a leftover stack runs under, which is what an orchestrator
-  // needs to reap it (#53).
-  if (isolation !== undefined) {
-    await mkdir(job.evidenceDir, { recursive: true })
-    await writeFile(
-      join(job.evidenceDir, `isolation-${group.name}.json`),
-      `${JSON.stringify({ run_id: isolation.runId, project: isolation.project, started_at: isolation.startedAt, ...(isolation.port === undefined ? {} : { port: isolation.port }) }, null, 2)}\n`,
-    )
-  }
   const bootedProfile =
     isolation === undefined || profile.app === undefined
       ? profile

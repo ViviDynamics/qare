@@ -117,6 +117,20 @@ test('a root config.yml that exists but is not a file fails discovery closed', a
   await expect(discoverProfiles(join(repo, '.qa'))).rejects.toThrow(ProfileValidationError)
 })
 
+test('a named profile directory called default fails closed whatever the config entry is', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'qare-mono-'))
+  await writeProfile(join(repo, '.qa', 'admin'), TARGET_CONFIG)
+  await mkdir(join(repo, '.qa', 'default', 'config.yml'), { recursive: true })
+  await expect(discoverProfiles(join(repo, '.qa'))).rejects.toThrow(/reserved for the single root profile/)
+})
+
+test('a named directory that carries a config.yml but no QA.md fails discovery closed', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'qare-mono-'))
+  await mkdir(join(repo, '.qa', 'admin'), { recursive: true })
+  await writeFile(join(repo, '.qa', 'admin', 'config.yml'), `${TARGET_CONFIG}\n`, 'utf8')
+  await expect(discoverProfiles(join(repo, '.qa'))).rejects.toThrow(/QA\.md/)
+})
+
 test('a repository without .qa/ discovers nothing', async () => {
   const repo = await mkdtemp(join(tmpdir(), 'qare-mono-'))
   expect(await discoverProfiles(join(repo, '.qa'))).toEqual([])
@@ -254,6 +268,28 @@ test('a path-referenced profile shares the fixtures and stubs the .qa root keeps
 
   expect(result.verdict).toBe('passed')
   expect(result.profiles?.map((profile) => profile.verdict)).toEqual(['passed'])
+})
+
+test("a plan validation refusal still writes the app's isolation evidence", async () => {
+  const job = await makeSeveralJob([
+    {
+      name: 'admin',
+      profile: { inline: APP_PROFILE },
+      criteria: [{
+        id: 'admin-c1',
+        text: 'criterion admin-c1',
+        checks: [{ kind: 'flow', actions: [{ action: 'open', url: `{{mail.c1.link}}${'/x'}` }] }],
+      }],
+    },
+  ])
+
+  const { result, isolations } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('blocked')
+  expect(result.profiles?.map((profile) => profile.verdict)).toEqual(['refused'])
+  const isolation = JSON.parse(await readFile(join(job.evidenceDir, 'isolation-admin.json'), 'utf8'))
+  expect(isolation.project).toBeTruthy()
+  expect(isolations).toEqual([expect.objectContaining({ name: 'admin' })])
 })
 
 test("every app's evidence is swept with every app's redaction rules", async () => {
@@ -428,11 +464,12 @@ test('the comment reports one section per app when a run checked several', () =>
 test('a profile name that carries Markdown is escaped in the heading, not rendered', () => {
   const result: RunResult = {
     ...severalResult(),
-    profiles: [{ name: 'a`d|min<b>', verdict: 'failed', criteria: ['admin-c1'] }],
+    profiles: [{ name: 'a`d|min<b>*_[x]~', verdict: 'failed', criteria: ['admin-c1'] }],
   }
   const comment = renderComment(result)
-  expect(comment).toContain('### a\\`d\\|min\\<b\\> — verdict failed')
+  expect(comment).toContain('### a\\`d\\|min\\<b\\>\\*\\_\\[x\\]\\~ — verdict failed')
   expect(comment).not.toContain('<b>')
+  expect(comment).not.toContain('[x]')
 })
 
 test('a profile name that carries a line break cannot inject a heading below it', () => {

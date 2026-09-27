@@ -1,6 +1,6 @@
-import { lstat, readdir, stat } from 'node:fs/promises'
+import { lstat, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { ProfileMissingError, ProfileValidationError, loadProfile, type QaProfile } from './profile.js'
+import { ProfileValidationError, loadProfile, type QaProfile } from './profile.js'
 
 /**
  * One profile of a repository that may hold several (#55). `name` is the
@@ -33,7 +33,6 @@ export const DEFAULT_PROFILE_NAME = 'default'
  * its own (#55).
  */
 export async function discoverProfiles(qaDir: string): Promise<NamedProfile[]> {
-  const isFile = async (path: string): Promise<boolean> => (await stat(path).then((info) => info.isFile()).catch(() => false))
   // The root is present when the entry exists, whatever it is: a config.yml
   // that is a directory or a broken symlink is a malformed root, and the load
   // reports it, rather than reading as a named-profile layout.
@@ -49,7 +48,7 @@ export async function discoverProfiles(qaDir: string): Promise<NamedProfile[]> {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     if (entry.name === DEFAULT_PROFILE_NAME) {
-      if (await isFile(join(qaDir, entry.name, 'config.yml')))
+      if (await exists(join(qaDir, entry.name, 'config.yml')))
         throw new ProfileValidationError(
           'config.yml',
           `a named profile cannot be called ${DEFAULT_PROFILE_NAME}: the name is reserved for the single root profile, so a ${join(qaDir, entry.name, 'config.yml')} is a layout nobody can select from; rename the directory to the app it checks`,
@@ -57,15 +56,13 @@ export async function discoverProfiles(qaDir: string): Promise<NamedProfile[]> {
       continue
     }
     const dir = join(qaDir, entry.name)
-    let profile: QaProfile
-    try {
-      profile = await loadProfile(dir, { resources: qaDir })
-    } catch (error) {
-      // A subdirectory without a config.yml is not a profile: it is a
-      // directory of fixtures, stubs or learned notes the root form keeps.
-      if (error instanceof ProfileMissingError) continue
-      throw error
-    }
+    // A subdirectory without a config.yml is not a profile: it is a directory
+    // of fixtures, stubs or learned notes the root form keeps. A directory
+    // that carries the entry is a profile, so every load error — a missing
+    // QA.md, unreadable YAML, absent fixtures — fails closed rather than
+    // reading as absence.
+    if (!(await exists(join(dir, 'config.yml')))) continue
+    const profile = await loadProfile(dir, { resources: qaDir })
     named.push({ name: entry.name, dir, profile })
   }
   if (root !== undefined && named.length > 0)

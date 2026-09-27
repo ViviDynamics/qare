@@ -143,6 +143,11 @@ function escapeHeading(text: string): string {
       .replaceAll('|', '\\|')
       .replaceAll('<', '\\<')
       .replaceAll('>', '\\>')
+      .replaceAll('[', '\\[')
+      .replaceAll(']', '\\]')
+      .replaceAll('*', '\\*')
+      .replaceAll('_', '\\_')
+      .replaceAll('~', '\\~')
   )
 }
 
