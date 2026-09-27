@@ -300,6 +300,7 @@ test('a blocked run whose unverified criteria are all planner-unplannable or unr
   expect(execute).toContain('[ "$code" -eq 2 ]')
   expect(execute).toContain('the planner could not plan it')
   expect(execute).toContain('the planned command cannot run')
+  expect(execute).toContain('check could not start')
 })
 
 test('the planner reads the scrubbed, trimmed copy of the diff, never the raw one (nare#29)', () => {
