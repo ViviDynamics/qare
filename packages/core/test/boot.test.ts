@@ -229,6 +229,28 @@ test('stopApp downs the project the isolation names when the caller carries one'
   expect(composeArgs).toEqual([['-p', 'qare-run-1', '-f', 'compose.qa.yaml', 'down']])
 })
 
+test('stopApp refuses to down a caller isolation whose project is not qare-<run id>, so a foreign project is never a stop target (#53)', async () => {
+  const profile = await profileWith({ app: { health: { timeout: '1s' } } })
+  const composeArgs: string[][] = []
+  const errors: string[] = []
+  const errorSpy = vi.spyOn(console, 'error').mockImplementation((line) => errors.push(String(line)))
+
+  try {
+    await stopApp(profile, {
+      runCompose: async (args) => {
+        composeArgs.push(args)
+        return { code: 0, stdout: '', stderr: '' }
+      },
+      isolation: { runId: 'run-1', project: 'production', startedAt: '2026-01-01T00:00:00.000Z', port: 4321 },
+    })
+  } finally {
+    errorSpy.mockRestore()
+  }
+
+  expect(composeArgs).toEqual([])
+  expect(errors.join('')).toContain('does not carry a usable project')
+})
+
 test('the default compose runner calls docker compose, not bare docker', async () => {
   // A fake docker on PATH echoes its arguments, so this pins what the default
   // runner really spawns rather than what a test seam is handed.

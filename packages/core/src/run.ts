@@ -3,7 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Artefacts, type ArtefactField } from './artefacts.js'
 import { bootApp, killActiveCompose, stopApp, type BootOpts } from './boot.js'
-import { isolatedHealthUrl, isolateRun, type RunIsolation } from './isolation.js'
+import { hasMintedProject, isolatedHealthUrl, isolateRun, type RunIsolation } from './isolation.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
 import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
 import { BROWSER_FLOW_DRIVER, makePlaywrightFlowSession } from './flow-playwright.js'
@@ -129,7 +129,7 @@ export async function runJob(
     // have minted: the compose project is `qare-<run id>`, so a leftover stack
     // is always findable by the reap sweep, and a project qare never minted is
     // never touched (#53).
-    if (isolation.project !== `qare-${isolation.runId}`) {
+    if (!hasMintedProject(isolation)) {
       return refuseRun(
         job,
         opts,

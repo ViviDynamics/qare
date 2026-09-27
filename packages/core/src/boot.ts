@@ -4,7 +4,7 @@ import https from 'node:https'
 import type { ProfileApp, QaProfile } from './profile.js'
 import { VERSION } from './version.js'
 import { parseDurationMs } from './duration.js'
-import { composeEnv, mintIsolation, type RunIsolation } from './isolation.js'
+import { composeEnv, hasMintedProject, mintIsolation, type RunIsolation } from './isolation.js'
 
 export interface BootOutcome {
   kind: 'up' | 'blocked'
@@ -288,10 +288,18 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
  * Tear the booted stack down; a target profile booted nothing, so there is
  * nothing to stop. The caller passes the isolation the boot used, so `down`
  * addresses the same `-p` project `up` did (#53); with none passed, the down
- * runs projectless, as today.
+ * runs projectless, as today. The stop seam is public, so a caller-carried
+ * isolation whose project is not `qare-<run id>` is refused rather than
+ * downed: a project outside the harness namespace is never a stop target.
  */
 export async function stopApp(profile: QaProfile, opts: BootOpts = {}): Promise<void> {
   if (profile.app === undefined) return
+  if (opts.isolation !== undefined && !hasMintedProject(opts.isolation)) {
+    console.error(
+      'compose down refused: the run isolation does not carry a usable project: the compose project is qare-<run id>, so a leftover stack is always findable by reap and a project qare never minted is never touched',
+    )
+    return
+  }
   const runCompose = opts.runCompose ?? defaultRunCompose
   try {
     await runCompose(

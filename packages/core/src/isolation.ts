@@ -46,6 +46,17 @@ export async function isolateRun(): Promise<RunIsolation> {
 }
 
 /**
+ * True when the isolation is one the harness could have minted: the compose
+ * project is `qare-<run id>` (#53). The invariant keeps a leftover stack
+ * findable by the reap sweep, and every seam that accepts a caller-carried
+ * isolation — boot and stop alike — refuses one naming a project outside
+ * qare's namespace, so a foreign project is never booted and never torn down.
+ */
+export function hasMintedProject(isolation: RunIsolation): boolean {
+  return isolation.project === `qare-${isolation.runId}`
+}
+
+/**
  * A bare project isolation for a compose call whose caller does not own a run:
  * the project alone keeps concurrent boots out of each other's networks and
  * volumes. No port is allocated, so nothing about where the app is published

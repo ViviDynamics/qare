@@ -23,7 +23,7 @@ Action). From this plugin you only use the CLI:
 - `qare judge` — re-judge from existing evidence. Its verifier needs `--plan` and `--diff`; `--runner none` judges without it.
 - `qare ledger` — inspect the criteria ledger.
 - `qare redact --evidence <dir> [--profile <dir>]` — redact an evidence directory in place before publishing it; fails, naming the file, when it meets one it cannot vouch for.
-- `qare reap [project...]` — tear down the named compose project qare booted, or, with no names, every running project qare booted (`qare-*`). The cleanup for a canceled or crashed run, so its leftovers stop holding the port and network; the no-names sweep downs active runs too, so use it only when no qare run is left working.
+- `qare reap [project...]` — tear down the named compose project qare booted, or, with no names, every running project qare booted (`qare-*`). It is the cleanup for a canceled or crashed run, so its leftovers stop holding the port and network; the no-names sweep downs active runs too, so use it only when no qare run is left working.
 
 If the CLI is not installed, say so and stop; do not approximate qare by
 writing checks or verdicts yourself.
