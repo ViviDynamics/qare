@@ -168,3 +168,82 @@ test('replay reads the pipeline layout with the artifacts below evidence', async
   expect(out.lines.join('')).toContain('verdict passed')
   expect(out.lines.join('')).toContain('byte-identical with the stored judged verdict')
 })
+
+test('replay reproduces a verdict judge wrote with profile redaction rules', async () => {
+  const dir = await evidenceWithResult()
+  await writeFile(
+    join(dir, 'result.json'),
+    JSON.stringify(
+      {
+        schemaVersion: RESULT_SCHEMA_VERSION,
+        verdict: 'passed',
+        criteria: [{ id: 'c1', outcome: 'proven', evidence: ['c1/stdout.txt'] }],
+        target: { url: 'https://example.com/[REDACTED]/index', comparison: 'none' },
+        job: { id: 'pr-1' },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  )
+  const profile = await profileWithRedaction()
+  const judgedOut = capture()
+  await main(
+    ['judge', '--result', join(dir, 'result.json'), '--runner', 'none', '--profile', profile, '--outDir', dir],
+    judgedOut.writer,
+    judgedOut.writer,
+  )
+  const out = capture()
+
+  const code = await main(['replay', dir], out.writer, capture().writer)
+
+  expect(code).toBe(0)
+  expect(out.lines.join('')).toContain('byte-identical with the stored judged verdict')
+})
+
+test('replay of a verdict stored with rules the artifacts predate prints nothing the rules redact', async () => {
+  const dir = await evidenceWithResult()
+  await writeFile(
+    join(dir, 'result.json'),
+    JSON.stringify(
+      {
+        schemaVersion: RESULT_SCHEMA_VERSION,
+        verdict: 'passed',
+        criteria: [{ id: 'c1', outcome: 'proven', evidence: ['c1/stdout.txt'] }],
+        target: { url: 'https://example.com/hunter2/index', comparison: 'none' },
+        job: { id: 'pr-1' },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  )
+  const profile = await profileWithRedaction()
+  const judgedOut = capture()
+  await main(
+    ['judge', '--result', join(dir, 'result.json'), '--runner', 'none', '--profile', profile, '--outDir', dir],
+    judgedOut.writer,
+    judgedOut.writer,
+  )
+  expect((await readFile(join(dir, 'judged-result.json'), 'utf8')).includes('hunter2')).toBe(false)
+  const out = capture()
+
+  const code = await main(['replay', dir], out.writer, capture().writer)
+
+  expect(code).toBe(1)
+  const printed = out.lines.join('')
+  expect(printed).toContain('not what the recompute writes byte for byte')
+  expect(printed).not.toContain('hunter2')
+})
+
+async function profileWithRedaction(): Promise<string> {
+  const profile = await mkdtemp(join(tmpdir(), 'qare-replay-redaction-'))
+  made.push(profile)
+  await writeFile(join(profile, 'QA.md'), 'the profile instructions\n', 'utf8')
+  await writeFile(
+    join(profile, 'config.yml'),
+    'target:\n  url: https://example.com\n  health: { http: /, timeout: 30s }\nredact:\n  values: ["hunter2"]\n',
+    'utf8',
+  )
+  return profile
+}
