@@ -13,7 +13,7 @@ import {
 
 const APP_URL = ['http:', '//localhost:3000/up'].join('')
 
-type PageFails = Partial<Record<'open' | 'click' | 'type' | 'assertText' | 'screenshot', Error>>
+type PageFails = Partial<Record<'open' | 'click' | 'type' | 'choose' | 'waitFor' | 'assertText' | 'assertElement' | 'screenshot', Error>>
 
 function fakePage(fails: PageFails = {}): { page: FlowPage; calls: string[] } {
   const calls: string[] = []
@@ -26,7 +26,10 @@ function fakePage(fails: PageFails = {}): { page: FlowPage; calls: string[] } {
     open: async (url) => step('open', url, fails.open),
     click: async (what) => step('click', element(what), fails.click),
     type: async (what, value) => step('type', `${element(what)}=${value}`, fails.type),
+    choose: async (what, value) => step('choose', `${element(what)}=${value}`, fails.choose),
+    waitFor: async (what) => step('waitFor', element(what), fails.waitFor),
     assertText: async (text) => step('assert', text, fails.assertText),
+    assertElement: async (what) => step('assertElement', element(what), fails.assertElement),
     screenshot: async (path) => {
       calls.push(`screenshot ${path}`)
       if (fails.screenshot) throw fails.screenshot
@@ -77,7 +80,7 @@ test('runs typed actions in order, names the final screenshot, and keeps the tra
       { action: 'open', url: APP_URL },
       { action: 'type', element: { role: 'textbox', name: 'Email' }, value: 'me@example.com' },
       { action: 'click', element: { testId: 'sign-in' } },
-      { action: 'assert', text: 'Welcome' },
+      { action: 'assertText', text: 'Welcome' },
     ],
   })
 
@@ -126,7 +129,7 @@ test('reports failed for a mismatched assert, with the failure screenshot', asyn
     page,
     actions: [
       { action: 'open', url: APP_URL },
-      { action: 'assert', text: 'Welcome' },
+      { action: 'assertText', text: 'Welcome' },
     ],
   })
 
@@ -360,7 +363,7 @@ test('a product assertion that fails after the factor was typed is failed, with 
     actions: [
       { action: 'open', url: APP_URL },
       { action: 'totp', element: { role: 'textbox', name: 'Verification code' } },
-      { action: 'assert', text: 'Welcome' },
+      { action: 'assertText', text: 'Welcome' },
     ],
     totp: { ...TOTP_CONFIG },
     generatedCodes: [],
@@ -423,4 +426,75 @@ test('a code generated against a closing window is retried once in the next wind
     totpCode(TOTP_SECRET, TOTP_CONFIG, 30_100),
   ])
   expect(calls.filter((call) => call.startsWith('type '))).toHaveLength(2)
+})
+
+test('the intent actions run in order through the seam (#70)', async () => {
+  const { page, calls } = fakePage()
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [
+      { action: 'open', url: APP_URL },
+      { action: 'waitFor', element: { role: 'combobox', name: 'Country' } },
+      { action: 'choose', element: { role: 'combobox', name: 'Country' }, value: 'Ireland' },
+      { action: 'assertElement', element: { testId: 'address-form' } },
+      { action: 'capture' },
+    ],
+  })
+
+  expect(result.outcome).toBe('passed')
+  expect(result.reason).toBeUndefined()
+  expect(calls).toEqual([
+    `open ${APP_URL}`,
+    'waitFor combobox:Country',
+    'choose combobox:Country=Ireland',
+    'assertElement address-form',
+    'screenshot ' + join(dir, 'capture-4.png'),
+    `screenshot ${join(dir, 'final.png')}`,
+  ])
+  // The capture lands in the evidence beside the action log, ahead of the named final screenshot.
+  expect(result.evidence).toEqual(['actions.log', 'capture-4.png', 'final.png'])
+  const log = await actionsLog(dir)
+  expect(log).toContain('action 1: wait for role=combobox name=Country')
+  expect(log).toContain('action 2: choose role=combobox name=Country=Ireland')
+  expect(log).toContain('action 3: assert the element testId=address-form is visible')
+  expect(log).toContain('action 4: capture a screenshot')
+})
+
+test('a failed element assert fails the check and names the element (#70)', async () => {
+  const { page, calls } = fakePage({ assertElement: new Error('element absent') })
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [
+      { action: 'open', url: APP_URL },
+      { action: 'assertElement', element: { role: 'button', name: 'Save' } },
+    ],
+  })
+
+  expect(result.outcome).toBe('failed')
+  expect(result.reason).toBe('assert failed: the element role=button name=Save is not visible')
+  expect(calls).toEqual([`open ${APP_URL}`, 'assertElement button:Save', `screenshot ${join(dir, 'failure.png')}`])
+  expect(result.evidence).toEqual(['actions.log', 'failure.png'])
+})
+
+test('a capture is withheld while a second-factor code may sit on the page (#64, #70)', async () => {
+  const { page } = fakePage()
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [{ action: 'capture' }],
+    codesOnPage: true,
+  })
+
+  expect(result.outcome).toBe('passed')
+  expect(result.evidence).toEqual(['actions.log'])
+  const log = await actionsLog(dir)
+  expect(log).toContain('capture-0.png withheld')
 })

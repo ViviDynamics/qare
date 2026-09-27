@@ -75,9 +75,12 @@ function fakeSession(opened: string[], outbound: EgressAttempt[] | null = [], op
       },
       click: async () => {},
       type: async () => {},
+      choose: async () => {},
+      waitFor: async () => {},
       assertText: async () => {
         if (opts.hang) await new Promise(() => {})
       },
+      assertElement: async () => {},
       screenshot: async (path) => writeFile(path, 'png'),
     }
     const trace: FlowTrace = { start: async () => 'trace', stop: async () => {} }
@@ -185,7 +188,7 @@ test('command and flow checks run against the target URL, and the result says th
           kind: 'flow',
           actions: [
             { action: 'open', url: '/wiki/Ada_Lovelace' },
-            { action: 'assert', text: 'Ada Lovelace' },
+            { action: 'assertText', text: 'Ada Lovelace' },
           ],
         },
       ],
@@ -320,7 +323,7 @@ test('a flow that times out still has what its browser reached held against the 
     {
       id: 'c1',
       text: 'x',
-      checks: [{ kind: 'flow', timeoutMs: 50, actions: [{ action: 'open', url: '/' }, { action: 'assert', text: 'never' }] }],
+      checks: [{ kind: 'flow', timeoutMs: 50, actions: [{ action: 'open', url: '/' }, { action: 'assertText', text: 'never' }] }],
     },
   ])
 
@@ -362,7 +365,7 @@ test('flow strings and suite commands take run values, and an unknown one refuse
   expect(result.verdict).toBe('passed')
   expect(opened).toEqual([PAGE_URL])
 
-  const bad = await makeJob([{ id: 'c1', text: 'x', checks: [{ kind: 'flow', actions: [{ action: 'assert', text: '{{run.nope}}' }] }] }])
+  const bad = await makeJob([{ id: 'c1', text: 'x', checks: [{ kind: 'flow', actions: [{ action: 'assertText', text: '{{run.nope}}' }] }] }])
   const refused = await runJob(bad, { ...NEVER_COMPOSE, ...UP, flowSession: fakeSession([]) })
   expect(refused.result.verdict).toBe('refused')
   expect((refused.result.criteria[0] as { reason: string }).reason).toContain('actions[0].text')
@@ -389,7 +392,7 @@ test('braces that are not run references pass through a suite command and flow t
   })
   const job = await makeJob(
     [
-      { id: 'c1', text: 'x', checks: [{ kind: 'flow', actions: [{ action: 'open', url: '/' }, { action: 'assert', text: 'Hello {{name}}' }] }] },
+      { id: 'c1', text: 'x', checks: [{ kind: 'flow', actions: [{ action: 'open', url: '/' }, { action: 'assertText', text: 'Hello {{name}}' }] }] },
       { id: 'c2', text: 'y', checks: [{ kind: 'flow', suite: 'e2e' }] },
     ],
     withSuite,

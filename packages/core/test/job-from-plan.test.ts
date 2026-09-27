@@ -93,7 +93,7 @@ test('flow checks are carried to the job, with suites and typed actions', () => 
     { action: 'open', url: ['http:', '//localhost:3000'].join('') },
     { action: 'type', element: { role: 'textbox', name: 'Email' }, value: 'me@example.com' },
     { action: 'click', element: { testId: 'sign-in' } },
-    { action: 'assert', text: 'Welcome' },
+    { action: 'assertText', text: 'Welcome' },
   ]
   const { job, notes } = jobFromPlan(
     plan([

@@ -1,7 +1,7 @@
 // The flow vocabulary is the runner's (flow.ts); the plan loader accepts it
 // verbatim and rejects anything else. Type-only import: the loader adds no
 // runtime dependency on the runner.
-import type { FlowAction, FlowElement } from './flow.js'
+import type { FlowAction, FlowDriverCapabilities, FlowElement } from './flow.js'
 
 export const PLAN_SCHEMA_VERSION = '1'
 
@@ -115,7 +115,7 @@ function numberArray(value: unknown, field: string, label: string): number[] {
   })
 }
 
-export function loadPlan(text: string, extraFlowActions: readonly string[] = []): Plan {
+export function loadPlan(text: string, extraFlowActions: readonly string[] = [], driver?: FlowDriverCapabilities): Plan {
   let input: unknown
   try {
     input = JSON.parse(text)
@@ -125,10 +125,16 @@ export function loadPlan(text: string, extraFlowActions: readonly string[] = [])
       `plan.json is not valid JSON (${error instanceof Error ? error.message : String(error)})`,
     )
   }
-  return parsePlan(input, extraFlowActions)
+  return parsePlan(input, extraFlowActions, driver)
 }
 
-export function parsePlan(input: unknown, extraFlowActions: readonly string[] = []): Plan {
+export function parsePlan(input: unknown, extraFlowActions: readonly string[] = [], driver?: FlowDriverCapabilities): Plan {
+  const plan = parseLoose(input, extraFlowActions)
+  if (driver !== undefined) rejectUndeclaredActions(plan, driver)
+  return plan
+}
+
+function parseLoose(input: unknown, extraFlowActions: readonly string[]): Plan {
   if (!isRecord(input)) fail('plan', 'plan.json must be a JSON object')
 
   const { schemaVersion } = input
@@ -251,7 +257,41 @@ export function parseFlowActions(value: unknown, base: string, extraFlowActions:
   return value.map((entry, index) => parseFlowAction(entry, `${base}[${index}]`, extraFlowActions))
 }
 
-export const FLOW_ACTION_KINDS = ['open', 'type', 'click', 'assert', 'totp', 'backupCode'] as const
+export const FLOW_ACTION_KINDS = [
+  'open',
+  'type',
+  'click',
+  'choose',
+  'waitFor',
+  'assertText',
+  'assertElement',
+  'capture',
+  'totp',
+  'backupCode',
+] as const
+
+/**
+ * A plan naming an action the target driver lacks is rejected here, where it
+ * loads, with the action and the driver named (#70): nothing downstream gets
+ * to boot and fail halfway through.
+ */
+function rejectUndeclaredActions(plan: Plan, driver: FlowDriverCapabilities): void {
+  for (const [criterionIndex, criterion] of plan.criteria.entries()) {
+    if ('unplannable' in criterion) continue
+    for (const [checkIndex, check] of criterion.checks.entries()) {
+      if (check.kind !== 'flow' || check.actions === undefined) continue
+      const base = `criteria[${criterionIndex}].checks[${checkIndex}]`
+      for (const [actionIndex, action] of check.actions.entries()) {
+        if (!driver.actions.includes(action.action)) {
+          fail(
+            `${base}.actions[${actionIndex}].action`,
+            `flow action ${JSON.stringify(action.action)} is not one the ${driver.name} driver declares, so the plan cannot run against it (declared: ${driver.actions.map((k) => JSON.stringify(k)).join(', ')})`,
+          )
+        }
+      }
+    }
+  }
+}
 
 function parseFlowAction(value: unknown, base: string, extraFlowActions: readonly string[] = []): FlowActionStep {
   if (!isRecord(value)) fail(base, 'a flow action must be an object, not a free-form string')
@@ -284,10 +324,25 @@ function parseFlowAction(value: unknown, base: string, extraFlowActions: readonl
       const element = parseFlowElement(value.element, `${base}.element`)
       return { action: 'click', element }
     }
-    case 'assert': {
-      const text = nonEmptyString(value.text, `${base}.text`, 'asserted text')
-      return { action: 'assert', text }
+    case 'choose': {
+      const element = parseFlowElement(value.element, `${base}.element`)
+      const actionValue = nonEmptyString(value.value, `${base}.value`, 'chosen option')
+      return { action: 'choose', element, value: actionValue }
     }
+    case 'waitFor': {
+      const element = parseFlowElement(value.element, `${base}.element`)
+      return { action: 'waitFor', element }
+    }
+    case 'assertText': {
+      const text = nonEmptyString(value.text, `${base}.text`, 'asserted text')
+      return { action: 'assertText', text }
+    }
+    case 'assertElement': {
+      const element = parseFlowElement(value.element, `${base}.element`)
+      return { action: 'assertElement', element }
+    }
+    case 'capture':
+      return { action: 'capture' }
     case 'totp': {
       // The element only: the code comes from the profile's seeded secret at
       // run time, so no plan carries a secret or a code (#64).

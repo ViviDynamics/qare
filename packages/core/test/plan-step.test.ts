@@ -80,7 +80,18 @@ test('the schema types flow actions and the prompt names the element vocabulary'
 
   const schema = JSON.parse(runner.requests[0].outputSchema)
   const actions = schema.properties.criteria.items.properties.checks.items.properties.actions
-  expect(actions.items.properties.action.enum).toEqual(['open', 'type', 'click', 'assert', 'totp', 'backupCode'])
+  expect(actions.items.properties.action.enum).toEqual([
+    'open',
+    'type',
+    'click',
+    'choose',
+    'waitFor',
+    'assertText',
+    'assertElement',
+    'capture',
+    'totp',
+    'backupCode',
+  ])
   expect(actions.items.properties.element).toMatchObject({ type: 'object' })
 
   const [request] = runner.requests
@@ -184,12 +195,27 @@ test('the flow action kinds the change introduces widen the schema and the promp
   await planRun(runner, { ...INPUTS, flowActions: ['magicLink'] })
 
   const [request] = runner.requests
-  expect(request.prompt).toContain('A flow action is one of open, type, click, assert, totp, backupCode, magicLink')
+  expect(request.prompt).toContain(
+    'A flow action is one of open, type, click, choose, waitFor, assertText, assertElement, capture, totp, backupCode, magicLink',
+  )
   const schema = JSON.parse(request.outputSchema)
   const kinds =
     schema.properties.criteria.items.properties.checks.items.properties.actions.items.properties.action.enum
   expect(kinds).toContain('magicLink')
   expect(kinds).toContain('totp')
+})
+
+test('a driver narrows the flow kinds the planner is offered (#70)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, { ...INPUTS, driver: { name: 'browser', actions: ['open', 'click'], evidence: [] } })
+
+  const [request] = runner.requests
+  expect(request.prompt).toContain('A flow action is one of open, click.')
+  const schema = JSON.parse(request.outputSchema)
+  const kinds =
+    schema.properties.criteria.items.properties.checks.items.properties.actions.items.properties.action.enum
+  expect(kinds).toEqual(['open', 'click'])
 })
 
 test('an answer written in the change\'s declared vocabulary is accepted', async () => {

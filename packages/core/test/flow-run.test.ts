@@ -57,10 +57,13 @@ function fakeSessionFactory(events: string[], opts: { assertFails?: Error } = {}
       open: async (url) => events.push(`open ${url}`),
       click: async () => events.push('click'),
       type: async () => events.push('type'),
+      choose: async () => events.push('choose'),
+      waitFor: async () => events.push('waitFor'),
       assertText: async (text) => {
         events.push(`assert ${text}`)
         if (opts.assertFails) throw opts.assertFails
       },
+      assertElement: async () => events.push('assertElement'),
       screenshot: async (path) => {
         const { writeFile } = await import('node:fs/promises')
         await writeFile(path, PNG_1X1)
@@ -115,7 +118,7 @@ test('an actions flow that proves its criterion publishes the log, the final scr
       kind: 'flow',
       actions: [
         { action: 'open', url: HEALTH_URL },
-        { action: 'assert', text: 'Welcome' },
+        { action: 'assertText', text: 'Welcome' },
       ],
     }),
     profile: { inline: INLINE_PROFILE },
@@ -156,7 +159,7 @@ test('the profile masks reach the action log of the screenshots they applied to 
       kind: 'flow',
       actions: [
         { action: 'open', url: HEALTH_URL },
-        { action: 'assert', text: 'Welcome' },
+        { action: 'assertText', text: 'Welcome' },
       ],
     }),
     profile: { inline: { ...INLINE_PROFILE, redact: { masks: ['css=.fixture-banner'] } } },
@@ -182,7 +185,7 @@ test('a failed assert fails its criterion, with the failure screenshot as eviden
   const events: string[] = []
   const { factory } = fakeSessionFactory(events, { assertFails: new Error('text absent') })
   const job = await makeJob({
-    criteria: flowCriterion({ kind: 'flow', actions: [{ action: 'assert', text: 'Welcome' }] }),
+    criteria: flowCriterion({ kind: 'flow', actions: [{ action: 'assertText', text: 'Welcome' }] }),
     profile: { inline: INLINE_PROFILE },
   })
 
@@ -326,7 +329,10 @@ function totpSessionFactory(events: string[]) {
       open: async (url) => events.push(`open ${url}`),
       click: async () => events.push('click'),
       type: async (_what, value) => events.push(`type ${value}`),
+      choose: async () => events.push('choose'),
+      waitFor: async () => events.push('waitFor'),
       assertText: async (text) => events.push(`assert ${text}`),
+      assertElement: async () => events.push('assertElement'),
       screenshot: async (path) => {
         const { writeFile } = await import('node:fs/promises')
         await writeFile(path, PNG_1X1)
@@ -352,7 +358,7 @@ test('a flow through the totp action types the seeded code and sweeps it from th
       actions: [
         { action: 'open', url: HEALTH_URL },
         { action: 'totp', element: { role: 'textbox', name: 'Verification code' } },
-        { action: 'assert', text: 'Welcome' },
+        { action: 'assertText', text: 'Welcome' },
       ],
     }),
     profile: { inline: TOTP_PROFILE },
@@ -453,7 +459,10 @@ test('a flow action failure that quotes a mail-borne value is redacted in the re
         events.push(`type ${value}`)
         throw new Error(`the seam rejected the value ${value}`)
       },
+      choose: async () => events.push('choose'),
+      waitFor: async () => events.push('waitFor'),
       assertText: async (text) => events.push(`assert ${text}`),
+      assertElement: async () => events.push('assertElement'),
       screenshot: async () => undefined,
     }
     const trace: FlowTrace = { start: async () => 'trace-1', stop: async () => undefined }
@@ -475,4 +484,35 @@ test('a flow action failure that quotes a mail-borne value is redacted in the re
   // reaches the result the verifier reads (#64).
   expect(result.criteria[0].reason).not.toContain('555111')
   expect(result.criteria[0].reason).toContain('[redacted]')
+})
+
+test('a flow naming an action the driver lacks is refused before anything boots (#70)', async () => {
+  const events: string[] = []
+  const { factory } = fakeSessionFactory(events)
+  const job = await makeJob({
+    criteria: flowCriterion({
+      kind: 'flow',
+      actions: [
+        { action: 'open', url: HEALTH_URL },
+        { action: 'capture' },
+      ],
+    }),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, {
+    ...HEALTHY_BOOT,
+    runCompose: async () => {
+      events.push('compose up')
+      return { code: 0, stdout: 'up out', stderr: 'up err' }
+    },
+    flowSession: factory,
+    flowDriver: { name: 'test-driver', actions: ['open', 'assertText'], evidence: ['screenshot'] },
+  })
+
+  expect(result.verdict).toBe('refused')
+  expect(result.criteria[0].outcome).toBe('unverified')
+  expect(result.criteria[0].reason).toContain('flow action "capture" is not one the test-driver driver declares')
+  // Nothing ran: no boot, no browser, no evidence.
+  expect(events).toEqual([])
 })

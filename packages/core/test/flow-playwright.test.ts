@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { attemptOf, makePlaywrightFlowSession } from '../src/flow-playwright.js'
+import { attemptOf, BROWSER_FLOW_DRIVER, makePlaywrightFlowSession } from '../src/flow-playwright.js'
 
 const NOT_INSTALLED_MESSAGE =
   'playwright-core is not installed; flow checks are unverified without a browser backend'
@@ -17,6 +17,8 @@ function fakeChromium(events: string[], opts: { visible?: boolean; subresources?
     const self = {
       click: async () => events.push(`click ${name}`),
       fill: async (value: string) => events.push(`fill ${name}=${value}`),
+      selectOption: async (value: { label: string }) => events.push(`choose ${name}=${value.label}`),
+      waitFor: async (opts: { state: string }) => events.push(`waitFor ${name} until ${opts.state}`),
       isVisible: async () => {
         events.push(`visible ${name}`)
         return opts.visible ?? true
@@ -144,20 +146,27 @@ test('a session resolves semantic elements and drives one browser through the se
   await session.trace.start()
   await session.page.open(APP_URL)
   await session.page.type({ role: 'textbox', name: 'Email' }, 'me@example.com')
+  await session.page.choose({ role: 'combobox', name: 'Country' }, 'Ireland')
+  await session.page.waitFor({ testId: 'address-form' })
   await session.page.click({ testId: 'sign-in' })
   await session.page.assertText('Welcome to QARE')
+  await session.page.assertElement({ testId: 'welcome-banner' })
   await session.page.screenshot('/tmp/qare-flow-final.png')
   await session.trace.stop(TRACE_PATH)
   await session.dispose()
 
+  expect(session.capabilities).toBe(BROWSER_FLOW_DRIVER)
   expect(events).toEqual([
     'launch',
     'context',
     'start {"screenshots":true,"snapshots":true}',
     `open ${APP_URL}`,
     'fill textbox=Email=me@example.com',
+    'choose combobox=Country=Ireland',
+    'waitFor testId=address-form until visible',
     'click testId=sign-in',
     'visible text=Welcome to QARE',
+    'visible testId=welcome-banner',
     'screenshot /tmp/qare-flow-final.png',
     `stop ${TRACE_PATH}`,
     'close',
@@ -172,6 +181,17 @@ test('assertText throws naming the text when the page shows something else', asy
 
   await expect(session.page.assertText('Goodbye')).rejects.toThrow(
     'assert failed: the text "Goodbye" is not visible',
+  )
+})
+
+test('assertElement throws when the element is not visible (#70)', async () => {
+  const events: string[] = []
+  const session = await makePlaywrightFlowSession({
+    loadPlaywright: async () => ({ chromium: fakeChromium(events, { visible: false }) }) as never,
+  })
+
+  await expect(session.page.assertElement({ testId: 'welcome-banner' })).rejects.toThrow(
+    'assert failed: the element is not visible',
   )
 })
 

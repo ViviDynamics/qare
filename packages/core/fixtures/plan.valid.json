@@ -18,7 +18,7 @@
             { "action": "open", "url": "http://localhost:3000/ledger" },
             { "action": "type", "element": { "role": "textbox", "name": "Search" }, "value": "Ada Lovelace" },
             { "action": "click", "element": { "testId": "export-csv" } },
-            { "action": "assert", "text": "Export complete" }
+            { "action": "assertText", "text": "Export complete" }
           ], "inferred": true }
       ]
     },

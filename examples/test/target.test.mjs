@@ -69,7 +69,7 @@ function jobFor(dir) {
             timeoutMs: 30000,
             actions: [
               { action: 'open', url: '/wiki/Ada_Lovelace' },
-              { action: 'assert', text: 'First programmer.' },
+              { action: 'assertText', text: 'First programmer.' },
             ],
           },
         ],
