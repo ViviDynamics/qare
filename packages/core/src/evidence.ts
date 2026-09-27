@@ -130,6 +130,12 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
   const posted = links.kind === 'artifact'
   const cell = posted ? cellSpan : escapeCell
   const job = result.job === undefined ? '' : ` (job ${posted ? codeSpan(result.job.id) : result.job.id})`
+  const environment = result.environment === undefined
+    ? []
+    : [
+        `Executed ${result.environment.execution === 'native' ? 'natively on a host' : 'in a container'} with qare ${result.environment.versions.qare}, node ${result.environment.versions.node}, nare contract ${result.environment.versions.nareContract}.`,
+        '',
+      ]
   const lines = [
     `## QARE run: ${result.verdict}${job}`,
     '',
@@ -138,6 +144,9 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
     ...(result.target === undefined
       ? []
       : [`Checked against the running target ${codeSpan(result.target.url)}. Nothing ran at a base revision, so there is no base comparison and no regression was looked for.`, '']),
+    // Where the run executed and what it ran with (issue #91): a host run and
+    // an image run are readable side by side.
+    ...environment,
     '| criterion | outcome | reason |',
     '| --- | --- | --- |',
     ...result.criteria.map(

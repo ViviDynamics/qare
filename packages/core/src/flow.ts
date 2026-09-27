@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import type { ExecutionKind } from './environment.js'
 import { DEFAULT_CHECK_TIMEOUT_MS, runCommandCheck } from './run.js'
 import { totpCode, totpWindow, windowRemaining } from './totp.js'
 
@@ -391,12 +392,13 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
  */
 export async function runSuiteCheck(
   suite: { name: string; command: string },
-  opts: { cwd: string; timeoutMs?: number },
+  opts: { cwd: string; timeoutMs?: number; execution?: ExecutionKind },
 ): Promise<{ outcome: 'passed' | 'failed' | 'unverified'; reason?: string }> {
   const outcome = await runCommandCheck(
     { kind: 'command', run: suite.command },
     opts.cwd,
     opts.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
+    opts.execution,
   )
   if (outcome.status === 'passed') return { outcome: 'passed' }
   if (outcome.status === 'failed')

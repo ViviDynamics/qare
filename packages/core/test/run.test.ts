@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { expect, test, vi } from 'vitest'
 import {
   JobValidationError,
+  NARE_CONTRACT,
+  VERSION,
   installCancelCleanup,
   loadJobFromText,
   loadResult,
@@ -357,6 +359,73 @@ test('a check with env does not inherit the harness environment', async () => {
   } finally {
     delete process.env.QA_SHOULD_NOT_EXIST
   }
+})
+
+test('on a host, a check without env still gets the minimal deterministic environment', async () => {
+  process.env.QA_SHOULD_NOT_EXIST = 'harness-secret'
+  const job = await makeJob({
+    criteria: commandCriteria('./minimal.sh'),
+    profile: { inline: INLINE_PROFILE },
+  })
+  await writeFile(
+    join(job.repoPath, 'minimal.sh'),
+    [
+      '#!/bin/sh',
+      'echo "missing=$QA_SHOULD_NOT_EXIST"',
+      'echo "home=$HOME"',
+    ].join('\n'),
+    { mode: 0o755 },
+  )
+
+  try {
+    const { result } = await runJob(job, { ...HEALTHY_BOOT, execution: 'native' })
+
+    expect(result.verdict).toBe('passed')
+    const stdout = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'stdout.txt'), 'utf8')
+    expect(stdout).not.toContain('harness-secret')
+    expect(stdout).toContain('missing=')
+    expect(stdout).toMatch(/home=.+/)
+  } finally {
+    delete process.env.QA_SHOULD_NOT_EXIST
+  }
+})
+
+test('on a containerised run, a check without env inherits the harness environment', async () => {
+  process.env.QA_SHOULD_NOT_EXIST = 'harness-secret'
+  const job = await makeJob({
+    criteria: commandCriteria('./minimal.sh'),
+    profile: { inline: INLINE_PROFILE },
+  })
+  await writeFile(join(job.repoPath, 'minimal.sh'), '#!/bin/sh\necho "missing=$QA_SHOULD_NOT_EXIST"\n', { mode: 0o755 })
+
+  try {
+    const { result } = await runJob(job, { ...HEALTHY_BOOT, execution: 'containerised' })
+
+    expect(result.verdict).toBe('passed')
+    const stdout = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'stdout.txt'), 'utf8')
+    expect(stdout).toContain('missing=harness-secret')
+  } finally {
+    delete process.env.QA_SHOULD_NOT_EXIST
+  }
+})
+
+test('the result records the environment the run executed in', async () => {
+  const job = await makeJob({
+    criteria: commandCriteria('echo ok'),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, execution: 'native' })
+
+  expect(result.environment).toEqual({
+    execution: 'native',
+    versions: { qare: VERSION, node: process.versions.node, nareContract: NARE_CONTRACT },
+  })
+  // The same finishRun writes the record into the evidence, so result.json
+  // carries it without the caller passing anything.
+  const written = loadResult(await readFile(join(job.evidenceDir, 'result.json'), 'utf8'))
+  expect(written.environment?.execution).toBe('native')
+  expect(written.environment?.versions.nareContract).toBe(NARE_CONTRACT)
 })
 
 test('a check env with a non-string value fails job loading', () => {

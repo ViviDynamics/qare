@@ -203,3 +203,33 @@ test('an empty reason on a failed criterion fails closed', () => {
   )
   expect(error.field).toBe('criteria[0].reason')
 })
+
+test('the environment record round trips, and a result without one still loads', () => {
+  const environment = { execution: 'native' as const, versions: { qare: '2026.9.0', node: '24.5.0', nareContract: 1 } }
+  const parsed = parseResult({
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'passed',
+    criteria: [{ id: 'c1', outcome: 'proven', evidence: ['c1/out.txt'] }],
+    environment,
+  })
+  expect(parsed.environment).toEqual(environment)
+  expect(
+    parseResult({
+      schemaVersion: RESULT_SCHEMA_VERSION,
+      verdict: 'passed',
+      criteria: [{ id: 'c1', outcome: 'proven', evidence: ['c1/out.txt'] }],
+    }).environment,
+  ).toBeUndefined()
+})
+
+test('an environment record naming an unknown execution fails closed', () => {
+  const error = resultError(() =>
+    parseResult({
+      schemaVersion: RESULT_SCHEMA_VERSION,
+      verdict: 'passed',
+      criteria: [{ id: 'c1', outcome: 'proven', evidence: ['c1/out.txt'] }],
+      environment: { execution: 'simulated', versions: { qare: '2026.9.0', node: '24.5.0', nareContract: 1 } },
+    }),
+  )
+  expect(error.field).toBe('environment.execution')
+})

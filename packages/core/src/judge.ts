@@ -386,6 +386,9 @@ export function judgedResult(
     ...(loaded.job === undefined ? {} : { job: { id: loaded.job.id } }),
     ...(loaded.waived === undefined ? {} : { waived: loaded.waived }),
     ...(loaded.target === undefined ? {} : { target: loaded.target }),
+    // Where the run executed is evidence like the verdict is, so judging it
+    // again does not erase it (issue #91).
+    ...(loaded.environment === undefined ? {} : { environment: loaded.environment }),
   }
 }
 

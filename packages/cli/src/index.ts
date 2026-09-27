@@ -34,6 +34,7 @@ import {
   readinessInventory,
   replayRun,
   reapProjects,
+  runDoctor,
   runJob,
   VERSION,
 } from '@qare/core'
@@ -71,10 +72,11 @@ export async function main(
   if (argv[0] === 'replay') return replayCommand(argv.slice(1), out, err)
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
+  if (argv[0] === 'doctor') return doctorCommand(argv.slice(1), out, err)
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -433,6 +435,39 @@ async function readinessCommand(argv: string[], out: Writer, err: Writer): Promi
       out.write(`report ${outSpec}\n`)
     }
     return 0
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 4
+  }
+}
+
+/**
+ * `qare doctor`: what this host has, what the profile needs, and how to
+ * install what is missing (#91). The exit codes are the run contract's: 0 the
+ * host can run what the profile asks for, 1 a required piece is missing, 4 the
+ * invocation is wrong (a broken profile is one, so it is named on `err`).
+ */
+async function doctorCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
+  try {
+    for (const arg of argv.filter((entry) => entry.startsWith('-')))
+      if (arg !== '--profile' && arg !== '--nare' && arg !== '--json') throw new Error(`qare doctor does not take ${arg}`)
+    const profile = flag(argv, '--profile')
+    const nare = flag(argv, '--nare')
+    const report = await runDoctor({
+      ...(profile === undefined ? {} : { profilePath: profile }),
+      ...(nare === undefined ? {} : { nare }),
+    })
+    if (argv.includes('--json')) {
+      out.write(`${JSON.stringify(report, null, 2)}\n`)
+    } else {
+      out.write(`execution ${report.execution}\n`)
+      for (const finding of report.findings) {
+        out.write(`${finding.required && !finding.ok ? 'missing' : 'ok'} ${finding.name}: ${finding.detail}\n`)
+        if (finding.install !== undefined) out.write(`  ${finding.install}\n`)
+      }
+      out.write(report.ready ? 'this host can run qare natively\n' : 'this host is missing what the run needs\n')
+    }
+    return report.ready ? 0 : 1
   } catch (error) {
     err.write(`${formatError(error)}\n`)
     return 4
