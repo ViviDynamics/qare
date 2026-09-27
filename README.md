@@ -26,7 +26,9 @@ audit that a published verdict still follows from the artifacts that claim it.
 
 Concurrent runs never collide: each run boots its app under its own compose
 project and on a host port allocated for that run alone, and `qare reap`
-tears down the stacks a canceled or crashed run left running (#53).
+tears down the stacks a canceled or crashed run left running (#53). It takes
+a run's project by name while other runs stay live, and sweeps every `qare-*`
+project when no run is left working.
 
 Every model call qare makes goes through nare. That rule, and the others that
 hold for every change here, are in [CONSTITUTION.md](CONSTITUTION.md).

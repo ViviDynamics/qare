@@ -91,6 +91,32 @@ test('reap fails closed when compose ls exits non-zero, even when its stdout par
   expect(err.lines.join('')).toContain('compose ls exited 3')
 })
 
+test('reap downs exactly the named projects and refuses to touch a project that is not qare-owned (#53)', async () => {
+  const downs: string[] = []
+  const listings: string[] = []
+  const out = capture()
+  const err = capture()
+
+  const code = await main(['reap', 'qare-dead', 'production'], out.writer, err.writer, {
+    runCompose: async (args) => {
+      if (args[0] === 'ls') {
+        listings.push(args.join(' '))
+        return { code: 0, stdout: JSON.stringify([]), stderr: '' }
+      }
+      downs.push(args[1] ?? '')
+      return { code: 0, stdout: '', stderr: '' }
+    },
+  })
+
+  expect(code).toBe(4)
+  // The named project is downed without a listing: the caller named it from
+  // the evidence, and a live queue's other projects are never touched.
+  expect(downs).toEqual(['qare-dead'])
+  expect(listings).toEqual([])
+  expect(err.lines.join('')).toContain('could not reap production: not a qare project')
+  expect(out.lines.join('')).toContain('reaped 1 qare projects, 1 failures')
+})
+
 test('reap bounds every compose call, so a hung docker daemon cannot hold the cleanup queue forever (#53)', async () => {
   const deadlines: number[] = []
   const out = capture()

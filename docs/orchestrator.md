@@ -37,11 +37,14 @@ Everything judge writes is published, so it redacts the reasons in it, with
 the built-in rules and, given `--profile <dir>`, the profile's `redact` values
 and patterns too.
 
-`qare reap` tears down every running compose project qare booted — the projects
-named `qare-*` (#53). This is the cleanup for a run that never reached its own
-teardown: the orchestrator runs it after a cancel or a crash, and a stuck run
-is reaped rather than holding the queue. It exits 4 if any project could not go
-down, naming each on stderr. Projects that are not qare's are never touched.
+`qare reap` tears down compose projects qare booted (#53). With project names
+(`qare reap qare-<run id>`), exactly those are downed and a name that is not
+qare's is refused, so the orchestrator can reap the run that just died while
+its other runs stay live. With no names, it is the quiescent sweep: every
+running project named `qare-*` is downed, active or not, so it belongs when no
+qare run is left working — after a crash that took the queue down, or after
+everything was canceled. It exits 4 if any project could not go down, naming
+each on stderr. Projects that are not qare's are never touched.
 
 ## result.json
 

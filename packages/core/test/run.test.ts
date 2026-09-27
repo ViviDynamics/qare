@@ -672,6 +672,25 @@ test('an app run refuses an isolation whose port is not a host port (#53)', asyn
   expect(existsSync(join(job.evidenceDir, 'isolation.json'))).toBe(false)
 })
 
+test('an app run refuses a caller isolation whose project is not qare-<run id>, so no foreign project is ever touched (#53)', async () => {
+  const captured = isolatedBootCapture()
+  const job = await makeJob({
+    criteria: commandCriteria('echo ok'),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, {
+    ...captured.opts,
+    isolation: { runId: 'run-1', project: 'production', startedAt: '2026-01-01T00:00:00.000Z', port: 3000 },
+  })
+
+  expect(result.verdict).toBe('refused')
+  expect(result.criteria[0].reason).toContain('not carry a usable project')
+  // Nothing booted: a refused run leaves no stack and writes no isolation evidence.
+  expect(captured.calls).toEqual([])
+  expect(existsSync(join(job.evidenceDir, 'isolation.json'))).toBe(false)
+})
+
 test('two runs of the same repository at the same time never share a stack, a port, or a probe URL (#53)', async () => {
   const bootA = isolatedBootCapture()
   const bootB = isolatedBootCapture()

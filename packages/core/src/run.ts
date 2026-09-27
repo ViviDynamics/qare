@@ -125,6 +125,18 @@ export async function runJob(
         'the run isolation carries no usable app port, so two runs could publish their apps on the same host port; a run that boots an app needs an isolation with a host port in 1..65535 (isolateRun)',
       )
     }
+    // A caller-carried isolation is only usable if it is one the harness could
+    // have minted: the compose project is `qare-<run id>`, so a leftover stack
+    // is always findable by the reap sweep, and a project qare never minted is
+    // never touched (#53).
+    if (isolation.project !== `qare-${isolation.runId}`) {
+      return refuseRun(
+        job,
+        opts,
+        BUILTIN_REDACTION_RULES,
+        'the run isolation does not carry a usable project: the compose project is qare-<run id>, so a leftover stack is always findable by reap and a project qare never minted is never touched',
+      )
+    }
   }
   // Run values exist per run, so they are minted here and referenced by name
   // from user-authored strings (#68). An unknown reference fails closed at

@@ -172,8 +172,10 @@ run, what it booted is findable. Cleanup has three paths: a boot that outlives
 its health deadline is torn down by the boot watchdog; a canceled `qare run`
 (SIGINT/SIGTERM) stops its own project before the process exits; and a run
 that died without stopping its stack is reaped by hand with `qare reap`, which
-takes down every running compose project named `qare-*` and nothing else. A
-stuck run is reaped rather than holding the queue.
+takes down a named run's project, or — with no names, the quiescent sweep —
+every running compose project named `qare-*` and nothing else. A stuck run is
+reaped rather than holding the queue, and a sweep is for when no qare run is
+left working, because it downs active runs too.
 
 ### Mail checks
 
