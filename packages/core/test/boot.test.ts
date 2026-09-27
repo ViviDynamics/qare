@@ -154,12 +154,15 @@ test('watchdog blocks compose up that outlives the health deadline and attempts 
   })
   // The down waits for the in-flight up to settle first (#53): a runner that
   // never settles is drained for a grace only, then torn down.
-  await vi.waitFor(() => {
-    expect(composeArgs).toEqual([
-      ['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'up', '-d', '--wait', 'admin'],
-      ['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'down'],
-    ])
-  })
+  await vi.waitFor(
+    () => {
+      expect(composeArgs).toEqual([
+        ['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'up', '-d', '--wait', 'admin'],
+        ['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'down'],
+      ])
+    },
+    { timeout: 5000 },
+  )
   // The watchdog downs the very project the up booted (#53).
   expect(composeArgs[1]?.[1]).toBe(composeArgs[0]?.[1])
 })

@@ -42,23 +42,42 @@ const NO_DEADLINE_MS = 0
 // this grace, mirroring the command-check runner.
 const COMPOSE_KILL_GRACE_MS = 500
 // A runner that never settles is waited on for a grace only, so the watchdog's
-// down is never put off for longer than that.
-const DRAIN_GRACE_MS = 250
+// down is never put off for longer than that. The grace outlives the kill
+// grace, so the default runner's up — which settles only after its child is
+// dead — wins the wait before the grace ever fires.
+const DRAIN_GRACE_MS = COMPOSE_KILL_GRACE_MS + 250
 
-// The compose children the default runner still has in flight, so a cancel can
-// kill them before the run tears its project down (#53): an orphaned `compose
-// up` that keeps provisioning after the down has run could resurrect the very
-// project the run meant to stop.
-const activeComposeChildren = new Set<ChildProcess>()
+// The compose children the default runner still has in flight, keyed by the
+// project name their args open with (`''` for a projectless call), so a cancel
+// can kill exactly the canceled run's children (#53): one run's cancellation
+// must not kill another run's compose child.
+const activeComposeChildren = new Map<string, Set<ChildProcess>>()
+
+function trackComposeChild(projectKey: string, child: ChildProcess): void {
+  const children = activeComposeChildren.get(projectKey) ?? new Set()
+  children.add(child)
+  activeComposeChildren.set(projectKey, children)
+}
+
+function untrackComposeChild(projectKey: string, child: ChildProcess): void {
+  const children = activeComposeChildren.get(projectKey)
+  if (children === undefined) return
+  children.delete(child)
+  if (children.size === 0) activeComposeChildren.delete(projectKey)
+}
 
 /**
- * Kill every compose child the default runner still has in flight. SIGKILL, so
- * nothing survives to create resources the subsequent down cannot see (#53).
+ * Kill the compose children the default runner still has in flight for
+ * `project`. SIGKILL, so nothing survives to create resources the subsequent
+ * down cannot see (#53). Without a project, every project's children are
+ * killed.
  */
-export function killActiveCompose(): void {
-  for (const child of activeComposeChildren) {
-    activeComposeChildren.delete(child)
-    child.kill('SIGKILL')
+export function killActiveCompose(project?: string): void {
+  for (const [key, children] of activeComposeChildren) {
+    if (project !== undefined && project !== key) continue
+    for (const child of children) child.kill('SIGKILL')
+    children.clear()
+    activeComposeChildren.delete(key)
   }
 }
 
@@ -73,12 +92,15 @@ export function killActiveCompose(): void {
 export function defaultRunCompose(args: string[], timeoutMs: number, env?: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn('docker', ['compose', ...args], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } })
-    activeComposeChildren.add(child)
+    // Every call the harness composes opens with `-p <project>` (#53); a
+    // projectless call is keyed ''.
+    const projectKey = args[0] === '-p' && args[1] !== undefined ? args[1] : ''
+    trackComposeChild(projectKey, child)
     let stdout = ''
     let stderr = ''
     let killed = false
     let killTimer: ReturnType<typeof setTimeout> | undefined
-    // A deadline of 0 (NO_DEADLINE_MS) sets no deadline, as before.
+    // A deadline of 0 (NO_DEADLINE_MS) sets no deadline.
     const timer =
       timeoutMs > 0
         ? setTimeout(() => {
@@ -96,13 +118,13 @@ export function defaultRunCompose(args: string[], timeoutMs: number, env?: Recor
     child.on('error', (error) => {
       if (timer !== undefined) clearTimeout(timer)
       if (killTimer !== undefined) clearTimeout(killTimer)
-      activeComposeChildren.delete(child)
+      untrackComposeChild(projectKey, child)
       resolve({ code: -1, stdout, stderr: `${stderr}${String(error)}` })
     })
     child.on('close', (code) => {
       if (timer !== undefined) clearTimeout(timer)
       if (killTimer !== undefined) clearTimeout(killTimer)
-      activeComposeChildren.delete(child)
+      untrackComposeChild(projectKey, child)
       resolve({ code: killed ? -1 : (code ?? -1), stdout, stderr })
     })
   })

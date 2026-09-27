@@ -15,7 +15,11 @@ export interface ReapOpts {
   runCompose?: (args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>
 }
 
-const NO_DEADLINE_MS = 0
+// Reap never waits forever on a compose call: a docker daemon that hangs
+// instead of rejecting is bounded by this deadline, and a call that outlives
+// it is recorded as that step's failure rather than holding the cleanup
+// queue forever (#53).
+const REAP_CALL_TIMEOUT_MS = 60000
 /** The project prefix qare boots every run under (#53); reap touches nothing else. */
 const PROJECT_PREFIX = 'qare-'
 
@@ -30,7 +34,7 @@ const PROJECT_PREFIX = 'qare-'
  */
 export async function reapProjects(opts: ReapOpts = {}): Promise<ReapOutcome> {
   const runCompose = opts.runCompose ?? defaultRunCompose
-  const listing = await runCompose(['ls', '--format', 'json'], NO_DEADLINE_MS)
+  const listing = await runCompose(['ls', '--format', 'json'], REAP_CALL_TIMEOUT_MS)
   // The listing's exit code first, and its stdout alone after that: a listing
   // that failed is never a sweep that found nothing, and a warning on stderr
   // does not get to break the parse of a good listing.
@@ -55,7 +59,7 @@ export async function reapProjects(opts: ReapOpts = {}): Promise<ReapOutcome> {
   const reaped: string[] = []
   const failures: { project: string; reason: string }[] = []
   for (const project of projects) {
-    const outcome = await runCompose(['-p', project, 'down', '--volumes'], NO_DEADLINE_MS).catch((error: unknown) => ({
+    const outcome = await runCompose(['-p', project, 'down', '--volumes'], REAP_CALL_TIMEOUT_MS).catch((error: unknown) => ({
       code: -1,
       stdout: '',
       stderr: String(error),

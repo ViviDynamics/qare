@@ -90,3 +90,25 @@ test('reap fails closed when compose ls exits non-zero, even when its stdout par
   expect(code).toBe(4)
   expect(err.lines.join('')).toContain('compose ls exited 3')
 })
+
+test('reap bounds every compose call, so a hung docker daemon cannot hold the cleanup queue forever (#53)', async () => {
+  const deadlines: number[] = []
+  const out = capture()
+  const err = capture()
+
+  const code = await main(['reap'], out.writer, err.writer, {
+    runCompose: async (args, timeoutMs) => {
+      deadlines.push(timeoutMs)
+      if (args[0] === 'ls') return { code: 0, stdout: JSON.stringify([{ Name: 'qare-hung' }, { Name: 'qare-fine' }]), stderr: '' }
+      // A call the deadline killed resolves with a non-zero code and no output.
+      return args[1] === 'qare-hung' ? { code: -1, stdout: '', stderr: '' } : { code: 0, stdout: '', stderr: '' }
+    },
+  })
+
+  expect(code).toBe(4)
+  // The ls call and every down are bounded: no deadline of 0 anywhere.
+  expect(deadlines.every((timeoutMs) => timeoutMs > 0)).toBe(true)
+  // A timeout is that project's failure: the sweep continued to qare-fine.
+  expect(err.lines.join('')).toContain('could not reap qare-hung: compose down exited -1')
+  expect(out.lines.join('')).toContain('reaped 1 qare projects, 1 failures')
+})

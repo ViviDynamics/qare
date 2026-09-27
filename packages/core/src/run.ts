@@ -238,10 +238,12 @@ async function refuseRun(
  */
 export function installCancelCleanup(profile: QaProfile, opts: BootOpts): () => void {
   const stop = (): void => {
-    // The compose children the run still has in flight are killed first, so
+    // The compose children this run still has in flight are killed first, so
     // no orphaned up can keep provisioning the project after the down has
-    // run (#53).
-    killActiveCompose()
+    // run (#53). Only this run's project is killed: a concurrent run in the
+    // same process must not lose its own children to this cancellation.
+    const project = opts.isolation?.project
+    if (project !== undefined) killActiveCompose(project)
     void stopApp(profile, opts).finally(() => process.exit(4))
   }
   process.once('SIGINT', stop)
