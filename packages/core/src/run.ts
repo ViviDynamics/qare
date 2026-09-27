@@ -327,6 +327,22 @@ async function runSeveralProfiles(
     const login = entry.profile?.app?.login
     rules.push(...redactionRules(entry.profile?.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value]))
   }
+  // Flow masks are swept the same way, before any app runs: a screenshot one
+  // app captures must carry every app's mask regions, or one app's pixels can
+  // publish another app's secret (#55).
+  const masks = [...new Set(planned.flatMap((entry) => entry.profile?.redact?.masks ?? []))]
+  // A several-app result names no target: the result's target metadata says a
+  // run against a target has one side only. An app that declares a hosted
+  // target is refused for this run, and the other apps still run, so the run
+  // never silently drops which URL it was checked against (#55).
+  for (const [index, entry] of planned.entries()) {
+    if (entry.profile?.target === undefined) continue
+    planned[index] = {
+      group: entry.group,
+      refusal:
+        'the profile declares a hosted target, and a run over several apps reports no target of its own; check this app in its own single run so the result can name what it was checked against',
+    }
+  }
   const criteria: CriterionResult[] = []
   const profiles: Array<{ name: string; verdict: RunVerdict; criteria: string[] }> = []
   const recorded: Array<{ name: string; values: RunValues }> = []
@@ -341,7 +357,7 @@ async function runSeveralProfiles(
       const outcome: ProfileGroupOutcome =
         entry.refusal !== undefined
           ? { criteria: entry.group.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified' as const, reason: entry.refusal! })), verdict: 'refused' }
-          : await runProfileGroup(job, entry.group, entry.profile!, rules, opts, cleanups, execution)
+          : await runProfileGroup(job, entry.group, entry.profile!, rules, masks, opts, cleanups, execution)
       criteria.push(...outcome.criteria)
       profiles.push({ name: entry.group.name, verdict: outcome.verdict, criteria: outcome.criteria.map((criterion) => criterion.id) })
       if (outcome.values !== undefined) recorded.push({ name: entry.group.name, values: outcome.values })
@@ -372,6 +388,7 @@ async function runProfileGroup(
   group: JobProfileGroup,
   profile: QaProfile,
   rules: RedactionRule[],
+  masks: string[],
   opts: BootOpts & {
     ledgerFeed?: { dir: string }
     readMail?: ReadMail
@@ -460,7 +477,9 @@ async function runProfileGroup(
     const target = profile.target === undefined ? undefined : targetContext(profile.target)
     const totp =
       login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
-    const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target, totp }
+    // The masks are the union of every app's, built before any app ran, so
+    // one app's screenshots cannot publish another app's secret region (#55).
+    const flow = { session: opts.flowSession, masks, suites: profile.suites, target, totp }
     for (const criterion of group.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow, execution))
     const egressRefused = target !== undefined && target.undeclared.length > 0
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })

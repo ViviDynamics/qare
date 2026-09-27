@@ -1,4 +1,5 @@
 import { resolve } from 'node:path'
+import { parseJob } from './job.js'
 import type { Job, JobCheck, JobCriterion, JobProfileRef, JobPostTarget } from './job.js'
 import type { Plan, PlanCheck } from './plan.js'
 
@@ -109,8 +110,11 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
       notes.push(
         `${group.name}: no criterion in the plan is checked against this app, so it takes no part in the run`,
       )
+    // The built job passes through the same validator as a hand-written job,
+    // so criterion ids carry the same safety rules and stay unique across
+    // groups: ids become evidence directory names, whatever form builds them.
     return {
-      job: {
+      job: parseJob({
         id: context.id,
         repoPath: context.repoPath,
         baseRef: context.baseRef,
@@ -118,7 +122,7 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
         profiles: groups.filter((group) => group.criteria.length > 0),
         evidenceDir: context.evidenceDir,
         post: context.post ?? 'none',
-      },
+      }),
       notes,
     }
   }
@@ -126,7 +130,7 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
     throw new Error('the plan names no profiles and the run context names no profile, so nothing can be planned to run')
 
   return {
-    job: {
+    job: parseJob({
       id: context.id,
       repoPath: context.repoPath,
       baseRef: context.baseRef,
@@ -135,7 +139,7 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
       criteria,
       evidenceDir: context.evidenceDir,
       post: context.post ?? 'none',
-    },
+    }),
     notes,
   }
 }

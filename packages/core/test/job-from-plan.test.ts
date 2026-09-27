@@ -150,13 +150,15 @@ test('post defaults to none, because posting is the caller asking for it', () =>
   expect(job.post).toBe('none')
 })
 
-test('a post target is carried when the caller names one', () => {
-  const { job } = jobFromPlan(plan([{ id: 'c1', text: 'x', checks: [COMMAND] }]), {
-    ...CONTEXT,
-    post: 'ViviDynamics/qare#104',
-  })
-
-  expect(job.post).toBe('ViviDynamics/qare#104')
+test('a post target the runner cannot post to is refused, not silently carried', () => {
+  // The built job passes through the job validator, which understands "none"
+  // only, so a plan-run cannot smuggle a post target the job form refuses.
+  expect(() =>
+    jobFromPlan(plan([{ id: 'c1', text: 'x', checks: [COMMAND] }]), {
+      ...CONTEXT,
+      post: 'ViviDynamics/qare#104',
+    }),
+  ).toThrow(/unknown post target/)
 })
 
 test('a job criterion carrying both checks and an unrunnable reason is refused as contradictory', async () => {
@@ -282,4 +284,39 @@ test('a plan that names no profiles and a context that names no profile cannot b
   expect(() =>
     jobFromPlan(plan([{ id: 'c1', text: 'x', checks: [COMMAND] }]), contextWithoutProfile),
   ).toThrow(/names no profile/)
+})
+
+test('a criterion id that climbs out of the evidence directory is refused, whatever form builds the job', () => {
+  expect(() =>
+    jobFromPlan(plan([{ id: '../outside', text: 'x', checks: [COMMAND] }]), CONTEXT),
+  ).toThrow(/must not contain path separators/)
+})
+
+test('criterion ids must be unique across every group of a several-profile plan', () => {
+  expect(() =>
+    jobFromPlan(
+      parsePlan({
+        schemaVersion: '1',
+        profiles: [
+          { name: 'admin', path: 'apps/admin/.qa' },
+          { name: 'docs', path: 'apps/docs/.qa' },
+        ],
+        criteria: [
+          { id: 'c1', text: 'x', checks: [COMMAND], profile: 'admin' },
+          { id: 'c1', text: 'y', checks: [COMMAND], profile: 'docs' },
+        ],
+      }),
+      CONTEXT,
+    ),
+  ).toThrow(/duplicate criterion id "c1" in profiles admin and docs/)
+})
+
+test('a planned profile name that cannot be an evidence file name is refused at load', () => {
+  expect(() =>
+    parsePlan({
+      schemaVersion: '1',
+      profiles: [{ name: 'foo/../../outside', path: 'apps/admin/.qa' }],
+      criteria: [{ id: 'c1', text: 'x', checks: [COMMAND], profile: 'foo/../../outside' }],
+    }),
+  ).toThrow(/must not contain path separators/)
 })

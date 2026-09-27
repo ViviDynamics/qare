@@ -262,6 +262,54 @@ test('a several-profile run refuses a caller-carried isolation instead of sharin
   expect(result.criteria.every((criterion) => criterion.outcome === 'unverified' && criterion.reason.includes('an isolation of its own'))).toBe(true)
 })
 
+test('an app that declares a hosted target is refused in a several-app run, and the other app still runs', async () => {
+  // The result's target metadata says a run against a target has one side
+  // only, so a several-app run cannot name what a target app was checked
+  // against: it is refused instead of silently dropping the metadata (#55).
+  const targetedProfile: QaProfile = {
+    target: { url: ['http:', '//targeted.example'].join(''), health: { http: HEALTH_URL, timeout: '30s' }, hosts: [] },
+    stubs: [],
+    visual: { widths: [], themes: [] },
+    suites: [],
+  }
+  const job = await makeSeveralJob([
+    { name: 'targeted', profile: { inline: targetedProfile }, criteria: [commandCriterion('targeted-c1')] },
+    { name: 'admin', profile: { inline: APP_PROFILE }, criteria: [commandCriterion('admin-c1')] },
+  ])
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+  expect(result.profiles).toEqual([
+    { name: 'targeted', verdict: 'refused', criteria: ['targeted-c1'] },
+    { name: 'admin', verdict: 'passed', criteria: ['admin-c1'] },
+  ])
+  expect(result.verdict).toBe('blocked')
+  expect(result.target).toBeUndefined()
+  expect(result.criteria[0].reason).toContain('hosted target')
+})
+
+test('flow masks are the union of every app, so one app screenshot carries every app mask', async () => {
+  const received: string[][] = []
+  const maskedProfile = (mask: string): QaProfile => ({ ...APP_PROFILE, redact: { masks: [mask] } })
+  const job = await makeSeveralJob([
+    {
+      name: 'admin',
+      profile: { inline: maskedProfile('css=.admin-secret') },
+      criteria: [{ id: 'admin-c1', text: 'flow', checks: [{ kind: 'flow', name: 'walk', actions: [{ action: 'open', url: HEALTH_URL }] }] }],
+    },
+    { name: 'storefront', profile: { inline: maskedProfile('css=.storefront-secret') }, criteria: [commandCriterion('storefront-c1')] },
+  ])
+
+  await runJob(job, {
+    ...HEALTHY_BOOT,
+    flowSession: async (opts) => {
+      received.push(opts.masks)
+      throw new Error('the test stops at the factory, having captured the masks')
+    },
+  })
+
+  expect(received).toEqual([['css=.admin-secret', 'css=.storefront-secret']])
+})
+
 test('a path-referenced profile shares the fixtures and stubs the .qa root keeps', async () => {
   const job = await makeSeveralJob([
     { name: 'admin', profile: { path: '.qa/admin' }, criteria: [commandCriterion('admin-c1')] },

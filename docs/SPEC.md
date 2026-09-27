@@ -190,7 +190,9 @@ and the other apps still run.
 A plan may name the apps it is planned against: `profiles`, one
 `{ name, path }` per app, with a repo-relative path under `.qa/`, and every
 criterion names the app it is checked against. `qare run --plan` builds the
-several-app run from such a plan and takes no `--profile` for it.
+several-app run from such a plan and takes no `--profile` for it. An app that
+declares a hosted target is checked in its own single run instead: a
+several-app result names no target.
 
 ### Run-scoped values
 
