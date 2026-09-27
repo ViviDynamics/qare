@@ -253,9 +253,11 @@ export function installCancelCleanup(profile: QaProfile, opts: BootOpts): () => 
     // The compose children this run still has in flight are killed first, so
     // no orphaned up can keep provisioning the project after the down has
     // run (#53). Only this run's project is killed: a concurrent run in the
-    // same process must not lose its own children to this cancellation.
-    const project = opts.isolation?.project
-    if (project !== undefined) killActiveCompose(project)
+    // same process must not lose its own children to this cancellation. A
+    // caller-carried isolation naming a project outside the harness namespace
+    // is never addressed: neither the kill nor the down touches it (#53).
+    const isolation = opts.isolation
+    if (isolation !== undefined && hasMintedProject(isolation)) killActiveCompose(isolation.project)
     void stopApp(profile, opts).finally(() => process.exit(4))
   }
   process.once('SIGINT', stop)

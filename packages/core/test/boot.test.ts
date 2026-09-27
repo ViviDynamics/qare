@@ -251,6 +251,23 @@ test('stopApp refuses to down a caller isolation whose project is not qare-<run 
   expect(errors.join('')).toContain('does not carry a usable project')
 })
 
+test('bootApp blocks a caller isolation whose project is not qare-<run id> before any compose call (#53)', async () => {
+  const profile = await profileWith({ app: { health: { timeout: '1s' } } })
+  const composeArgs: string[][] = []
+
+  const outcome = await bootApp(profile, {
+    runCompose: async (args) => {
+      composeArgs.push(args)
+      return { code: 0, stdout: '', stderr: '' }
+    },
+    isolation: { runId: 'run-1', project: 'production', startedAt: '2026-01-01T00:00:00.000Z', port: 4321 },
+  })
+
+  expect(outcome.kind).toBe('blocked')
+  expect(outcome.reason).toContain('does not carry a usable project')
+  expect(composeArgs).toEqual([])
+})
+
 test('the default compose runner calls docker compose, not bare docker', async () => {
   // A fake docker on PATH echoes its arguments, so this pins what the default
   // runner really spawns rather than what a test seam is handed.

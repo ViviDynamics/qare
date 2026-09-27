@@ -216,6 +216,18 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   // minted one otherwise, so concurrent boots never share a project name,
   // network or volumes. Every compose call below opens with this `-p`.
   const isolation = opts.isolation ?? mintIsolation()
+  // The boot seam is public: a caller-carried isolation naming a project
+  // outside the harness namespace is refused before any compose call — the
+  // same invariant the run refuses on — so `-p` never addresses a foreign
+  // project (#53).
+  if (opts.isolation !== undefined && !hasMintedProject(isolation)) {
+    return {
+      kind: 'blocked',
+      reason: 'the run isolation does not carry a usable project: the compose project is qare-<run id>, so a leftover stack is always findable by reap and a project qare never minted is never touched',
+      logs: '',
+      isolation,
+    }
+  }
   const env = composeEnv(isolation)
   let timeoutMs: number
   try {

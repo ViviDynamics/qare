@@ -761,3 +761,25 @@ test('a canceled run stops its own compose project before exiting', async () => 
     exit.mockRestore()
   }
 })
+
+test('a cancel with a caller isolation naming a foreign project kills nothing and downs nothing (#53)', async () => {
+  const composeArgs: string[][] = []
+  const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+  const cleanup = installCancelCleanup(INLINE_PROFILE, {
+    runCompose: async (args) => {
+      composeArgs.push(args)
+      return { code: 0, stdout: '', stderr: '' }
+    },
+    isolation: { runId: 'run-1', project: 'production', startedAt: '2026-01-01T00:00:00.000Z', port: 4321 },
+  })
+  try {
+    process.emit('SIGINT')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    expect(composeArgs).toEqual([])
+    expect(exit).toHaveBeenCalledWith(4)
+  } finally {
+    cleanup()
+    exit.mockRestore()
+  }
+})
