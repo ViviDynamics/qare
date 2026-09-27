@@ -31,14 +31,19 @@ const PROJECT_PREFIX = 'qare-'
 export async function reapProjects(opts: ReapOpts = {}): Promise<ReapOutcome> {
   const runCompose = opts.runCompose ?? defaultRunCompose
   const listing = await runCompose(['ls', '--format', 'json'], NO_DEADLINE_MS)
-  const output = `${listing.stdout}${listing.stderr}`
+  // The listing's exit code first, and its stdout alone after that: a listing
+  // that failed is never a sweep that found nothing, and a warning on stderr
+  // does not get to break the parse of a good listing.
+  if (listing.code !== 0) {
+    throw new Error(`compose ls exited ${listing.code}, so qare cannot tell which projects are its leftovers: ${(listing.stderr || listing.stdout).trim()}`)
+  }
   let running: unknown
   try {
-    running = JSON.parse(output)
+    running = JSON.parse(listing.stdout)
   } catch {
-    throw new Error(`compose ls output is not JSON, so qare cannot tell which projects are its leftovers: ${output.trim()}`)
+    throw new Error(`compose ls output is not JSON, so qare cannot tell which projects are its leftovers: ${listing.stdout.trim()}`)
   }
-  if (!Array.isArray(running)) throw new Error(`compose ls output is not a project list, so qare cannot tell which projects are its leftovers: ${output.trim()}`)
+  if (!Array.isArray(running)) throw new Error(`compose ls output is not a project list, so qare cannot tell which projects are its leftovers: ${listing.stdout.trim()}`)
   const projects = [
     ...new Set(
       running

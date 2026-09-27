@@ -23,11 +23,17 @@ test('isolatedHealthUrl pins an explicit local port to the run port', () => {
   expect(isolatedHealthUrl(url('localhost:3000/up'), 4321)).toBe(url('localhost:4321/up'))
   expect(isolatedHealthUrl(url('127.0.0.1:3000/up'), 4321)).toBe(url('127.0.0.1:4321/up'))
   expect(isolatedHealthUrl(url('[::1]:3000/up'), 4321)).toBe(url('[::1]:4321/up'))
+  // An explicit default port is explicit: the URL parser normalizes it away,
+  // so the pin is decided on the raw string the profile authored (#53).
+  expect(isolatedHealthUrl(url('localhost:80/up'), 4321)).toBe(url('localhost:4321/up'))
+  expect(isolatedHealthUrl(url('[::1]:443/up', 'https'), 4321)).toBe(url('[::1]:4321/up', 'https'))
 })
 
 test('isolatedHealthUrl leaves what it cannot name unchanged', () => {
   // No explicit port: the URL never named a port, so nothing is rewritten.
   expect(isolatedHealthUrl(url('localhost/up'), 4321)).toBe(url('localhost/up'))
+  // A port after the userinfo is not the authority's port.
+  expect(isolatedHealthUrl(url('user:80@localhost/up'), 4321)).toBe(url('user:80@localhost/up'))
   // A remote target is never rewritten: only this run's local app is.
   expect(isolatedHealthUrl(url('example.com:8443/up', 'https'), 4321)).toBe(url('example.com:8443/up', 'https'))
   // Not a URL at all: the boot names it when its probe does not answer.

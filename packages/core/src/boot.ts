@@ -10,6 +10,13 @@ export interface BootOutcome {
   kind: 'up' | 'blocked'
   reason?: string
   logs: string
+  /**
+   * The isolation the boot ran under (#53): the caller's, or the one minted
+   * when it carried none, so a caller that did not carry one can still stop
+   * the project this boot created. A target boot booted nothing, so it names
+   * no isolation.
+   */
+  isolation?: RunIsolation
 }
 
 export interface BootOpts {
@@ -153,6 +160,7 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
       kind: 'blocked',
       reason: `app.health.timeout ${error instanceof Error ? error.message : String(error)}`,
       logs: '',
+      isolation,
     }
   }
 
@@ -168,13 +176,13 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
     ])
   } catch (error) {
     clearTimeout(timer)
-    return { kind: 'blocked', reason: `boot command failed to start: ${String(error)}`, logs: '' }
+    return { kind: 'blocked', reason: `boot command failed to start: ${String(error)}`, logs: '', isolation }
   }
   clearTimeout(timer)
 
   if (up === 'watchdog') {
     void stopApp(profile, { ...opts, isolation })
-    return { kind: 'blocked', reason: 'boot watchdog: compose up exceeded the health deadline', logs: '' }
+    return { kind: 'blocked', reason: 'boot watchdog: compose up exceeded the health deadline', logs: '', isolation }
   }
 
   if (up.code !== 0) {
@@ -183,16 +191,18 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
       kind: 'blocked',
       reason: `compose up exited ${up.code}`,
       logs: logs || (await captureComposeLogs(app, opts, isolation)),
+      isolation,
     }
   }
 
-  if (await waitForHealth(app.health.http, timeoutMs, opts)) return { kind: 'up', logs: up.stdout }
+  if (await waitForHealth(app.health.http, timeoutMs, opts)) return { kind: 'up', logs: up.stdout, isolation }
 
   const logs = `${up.stdout}${up.stderr}`
   return {
     kind: 'blocked',
     reason: `health check at ${app.health.http} did not pass within ${app.health.timeout}`,
     logs: logs || (await captureComposeLogs(app, opts, isolation)),
+    isolation,
   }
 }
 

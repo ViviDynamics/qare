@@ -23,6 +23,14 @@ export interface RunIsolation {
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
 
 /**
+ * The authority of a local URL that names a port explicitly, detected on the
+ * raw string because the URL parser normalizes an explicit default port
+ * (`localhost:80`, `[::1]:443`) away, and an explicit local port is still one
+ * the run should pin.
+ */
+const EXPLICIT_LOCAL_PORT = /^(https?):\/\/(?:[^/\s?#]*@)?(?:localhost|127\.0\.0\.1|\[::1\]):\d+/i
+
+/**
  * Mint the isolation a run boots under: a fresh run id, the compose project
  * named after it, and a free host port for the app. Allocation failure throws,
  * so the run is refused with the reason named rather than booted unisolated.
@@ -48,7 +56,13 @@ export function mintIsolation(): RunIsolation {
   return { runId, project: `qare-${runId}`, startedAt: new Date().toISOString() }
 }
 
-/** Bind port 0 on the loopback interface and report the port the OS handed back. */
+/**
+ * Bind port 0 on the loopback interface and report the port the OS handed back.
+ * The reservation is released before compose binds it — it must be: compose
+ * cannot bind a port that is already taken. A process that claims the port in
+ * that gap makes this run's compose `up` fail loudly, a bind refusal and a
+ * blocked boot, never two runs answering on one port.
+ */
 export function allocatePort(): Promise<number> {
   const options: ListenOptions = { host: '127.0.0.1', port: 0, exclusive: true }
   return new Promise((resolve, reject) => {
@@ -82,7 +96,7 @@ export function isolatedHealthUrl(url: string, port: number | undefined): string
     return url
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return url
-  if (!LOCAL_HOSTS.has(parsed.hostname) || parsed.port === '') return url
+  if (!LOCAL_HOSTS.has(parsed.hostname) || !EXPLICIT_LOCAL_PORT.test(url)) return url
   parsed.port = String(port)
   return parsed.toString()
 }

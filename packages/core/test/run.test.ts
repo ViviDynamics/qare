@@ -631,6 +631,26 @@ test('an app run records its isolation, boots under its own project, and mints a
   expect(captured.calls[0]?.env).toEqual({ QARE_RUN_ID: isolation?.runId, QARE_APP_PORT: String(isolation?.port) })
 })
 
+test('an app run refuses an isolation that carries no port, so runs cannot fall back to one default port', async () => {
+  const captured = isolatedBootCapture()
+  const job = await makeJob({
+    criteria: commandCriteria('echo ok'),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result, isolation } = await runJob(job, {
+    ...captured.opts,
+    isolation: { runId: 'run-1', project: 'qare-run-1', startedAt: '2026-01-01T00:00:00.000Z' },
+  })
+
+  expect(result.verdict).toBe('refused')
+  expect(isolation).toBeUndefined()
+  expect(result.criteria[0].reason).toContain('no app port')
+  // Nothing booted: a refused run leaves no stack and writes no isolation evidence.
+  expect(captured.calls).toEqual([])
+  expect(existsSync(join(job.evidenceDir, 'isolation.json'))).toBe(false)
+})
+
 test('two runs of the same repository at the same time never share a stack, a port, or a probe URL (#53)', async () => {
   const bootA = isolatedBootCapture()
   const bootB = isolatedBootCapture()

@@ -42,7 +42,18 @@ test('healthy boot polls health and reports up', async () => {
     pollIntervalMs: 1,
   })
 
-  expect(outcome).toEqual({ kind: 'up', logs: 'up out' })
+  expect(outcome).toEqual({
+    kind: 'up',
+    logs: 'up out',
+    // The minted isolation is returned, so a caller that carried none can
+    // still stop the project this boot created (#53). A bare boot mints no
+    // port: it publishes nothing.
+    isolation: {
+      runId: expect.any(String),
+      project: expect.stringMatching(/^qare-/),
+      startedAt: expect.any(String),
+    },
+  })
   // Every compose call opens with the run's own project (#53).
   expect(composeArgs).toEqual([['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'up', '-d', '--wait', 'admin']])
   expect(probedUrls).toEqual([HEALTH_URL])
@@ -66,6 +77,10 @@ test('a boot the caller leaves unisolated still mints its own project and run id
   expect(envs[0]?.QARE_RUN_ID).toMatch(/[0-9a-f-]{36}/)
   // No port is allocated for a boot the caller did not ask to publish a port with.
   expect(envs[0]?.QARE_APP_PORT).toBeUndefined()
+  // The boot returns the isolation it minted, so stopApp can address it (#53).
+  expect(outcome.isolation?.runId).toBe(envs[0]?.QARE_RUN_ID)
+  expect(outcome.isolation?.project).toBe(`qare-${outcome.isolation?.runId}`)
+  expect(outcome.isolation?.port).toBeUndefined()
 })
 
 test('a caller-carried isolation names the -p project and hands compose the port env', async () => {
@@ -131,6 +146,11 @@ test('watchdog blocks compose up that outlives the health deadline and attempts 
     kind: 'blocked',
     reason: 'boot watchdog: compose up exceeded the health deadline',
     logs: '',
+    isolation: {
+      runId: expect.any(String),
+      project: expect.stringMatching(/^qare-/),
+      startedAt: expect.any(String),
+    },
   })
   expect(composeArgs).toEqual([
     ['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'up', '-d', '--wait', 'admin'],

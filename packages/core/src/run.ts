@@ -103,6 +103,17 @@ export async function runJob(
     } catch (error) {
       return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `the harness could not isolate this run, so it will not boot an app: ${error instanceof Error ? error.message : String(error)}`)
     }
+    // A run that boots an app always publishes it on a port of its own: an
+    // isolation without one would fall back to the compose default and put
+    // two concurrent runs on the same host port, so it is refused.
+    if (isolation.port === undefined) {
+      return refuseRun(
+        job,
+        opts,
+        BUILTIN_REDACTION_RULES,
+        'the run isolation carries no app port, so two runs could publish their apps on the same host port; a run that boots an app needs an isolation with a port (isolateRun)',
+      )
+    }
   }
   // Run values exist per run, so they are minted here and referenced by name
   // from user-authored strings (#68). An unknown reference fails closed at

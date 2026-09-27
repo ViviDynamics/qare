@@ -56,3 +56,37 @@ test('reap fails closed when compose ls does not answer with a project list', as
   expect(code).toBe(4)
   expect(err.lines.join('')).toContain('cannot tell which projects are its leftovers')
 })
+
+test('reap parses the listing from stdout alone, so a warning on stderr does not break the sweep', async () => {
+  const downs: string[] = []
+  const out = capture()
+  const err = capture()
+
+  const code = await main(['reap'], out.writer, err.writer, {
+    runCompose: async (args) => {
+      if (args[0] === 'ls')
+        return {
+          code: 0,
+          stdout: JSON.stringify([{ Name: 'qare-ok' }]),
+          stderr: 'time="2026-09-27T00:00:00Z" level=warning msg="a warning"',
+        }
+      downs.push(args[1] ?? '')
+      return { code: 0, stdout: '', stderr: '' }
+    },
+  })
+
+  expect(code).toBe(0)
+  expect(downs).toEqual(['qare-ok'])
+  expect(out.lines.join('')).toContain('reaped 1 qare projects, 0 failures')
+})
+
+test('reap fails closed when compose ls exits non-zero, even when its stdout parses as empty', async () => {
+  const err = capture()
+
+  const code = await main(['reap'], capture().writer, err.writer, {
+    runCompose: async () => ({ code: 3, stdout: '[]', stderr: '' }),
+  })
+
+  expect(code).toBe(4)
+  expect(err.lines.join('')).toContain('compose ls exited 3')
+})
