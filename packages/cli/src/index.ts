@@ -32,6 +32,7 @@ import {
   renderCheckRun,
   renderComment,
   readinessInventory,
+  replayRun,
   runJob,
   VERSION,
 } from '@qare/core'
@@ -41,6 +42,7 @@ import type {
   Job,
   LedgerEntry,
   RedactionRule,
+  ReplayDifference,
   RunVerdict,
 } from '@qare/core'
 
@@ -65,11 +67,12 @@ export async function main(
   if (argv[0] === 'issue-criteria') return issueCriteriaCommand(argv.slice(1), out, err)
   if (argv[0] === 'plan') return planCommand(argv.slice(1), out, err)
   if (argv[0] === 'judge') return judgeCommand(argv.slice(1), out, err)
+  if (argv[0] === 'replay') return replayCommand(argv.slice(1), out, err)
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>] | qare redact --evidence <dir> [--profile <dir>]\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>] | qare redact --evidence <dir> [--profile <dir>] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -468,6 +471,78 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     err.write(`${formatError(error)}\n`)
     return 4
   }
+}
+
+/**
+ * Re-run a verdict from its artifacts (#54): an evidence directory in, the
+ * verdict recomputed from plan.json and result.json with no model and no
+ * network. Byte-identical with the stored judged-result.json when the verdict
+ * is exactly what judge wrote, and a clear per-criterion diff when it is not.
+ * Exit 0 reproduces the verdict (or the run was never judged), 1 it differs,
+ * 4 the artifacts are unusable.
+ */
+async function replayCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
+  try {
+    if (argv.some((arg) => arg.startsWith('-'))) throw new Error('qare replay takes no flags')
+    if (argv.length !== 1) throw new Error('qare replay takes exactly one run directory')
+    const dir = resolve(argv[0] as string)
+    const plan = loadPlan(await readArtifact(dir, 'plan.json'))
+    const executed = loadResult(await readArtifact(dir, 'result.json'))
+    const stored = await readStoredVerdict(dir)
+    const report = await replayRun({ plan, executed, ...(stored === undefined ? {} : { stored }) })
+    out.write(`verdict ${report.result.verdict}; replayed ${dir}\n`)
+    if (stored === undefined) {
+      out.write('no judged-result.json stored with the run, so there is nothing to compare\n')
+      return 0
+    }
+    if (report.identical) {
+      out.write('byte-identical with the stored judged verdict\n')
+      return 0
+    }
+    for (const difference of report.differences) out.write(`${describeDifference(difference)}\n`)
+    if (report.explanation !== undefined) out.write(`${report.explanation}\n`)
+    return 1
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 4
+  }
+}
+
+/**
+ * The judged-result.json a run stored, when it is there at all: a run judged
+ * by an older qare, or one that was never judged, is still replayable.
+ */
+async function readStoredVerdict(dir: string) {
+  let bytes: string
+  try {
+    bytes = await readFile(join(dir, 'judged-result.json'), 'utf8')
+  } catch (error) {
+    if (isEnoent(error)) return undefined
+    throw error
+  }
+  return { bytes, result: loadResult(bytes) }
+}
+
+async function readArtifact(dir: string, name: string): Promise<string> {
+  try {
+    return await readFile(join(dir, name), 'utf8')
+  } catch (error) {
+    if (isEnoent(error))
+      throw new Error(`qare replay reads the artifacts of a run; ${dir} has no ${name}`)
+    throw error
+  }
+}
+
+function isEnoent(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as NodeJS.ErrnoException).code === 'ENOENT'
+}
+
+function describeDifference(difference: ReplayDifference): string {
+  if (difference.field === 'verdict')
+    return `verdict: stored ${difference.stored}, replayed ${difference.replayed}`
+  if (difference.field === 'reason')
+    return `criterion ${difference.criterionId} reason: stored "${difference.stored}", replayed "${difference.replayed}"`
+  return `criterion ${difference.criterionId}: stored ${difference.stored}, replayed ${difference.replayed}`
 }
 
 export async function runLedgerCommand(argv: string[], out: Writer, err: Writer): Promise<number> {

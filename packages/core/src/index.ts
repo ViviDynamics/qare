@@ -137,6 +137,8 @@ export type {
   VerifierFinding,
   VerifierInputs,
 } from './judge.js'
+export { replayRun } from './replay.js'
+export type { ReplayDifference, ReplayReport, StoredVerdict } from './replay.js'
 export { renderComment, renderCheckRun } from './evidence.js'
 export type { CheckRunPayload, EvidenceLinks, EvidencePoster } from './evidence.js'
 export {

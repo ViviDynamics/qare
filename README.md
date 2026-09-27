@@ -17,6 +17,13 @@ project family: an orchestrator calls nare to develop and qare to QA. Other
 agent harnesses can call qare the same way, through its CLI, GitHub Action, or
 MCP server.
 
+Anyone can re-run a verdict after the fact: `qare replay <dir>` recomputes it
+from the run's stored `plan.json` and `result.json` in code alone, with no
+model and no network, and says whether it is byte-identical with the verdict
+the run judged. When it is not, it prints the criteria that moved, and names
+the verifier when a downgrade only the model could make is why. It is the
+audit that a published verdict still follows from the artifacts that claim it.
+
 Every model call qare makes goes through nare. That rule, and the others that
 hold for every change here, are in [CONSTITUTION.md](CONSTITUTION.md).
 
