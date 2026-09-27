@@ -332,7 +332,7 @@ test('a check whose binary is missing leaves the criterion unverified and the ru
     {
       id: 'criterion-1',
       outcome: 'unverified',
-      reason: expect.stringContaining('could not start'),
+      reason: expect.stringContaining('the planned command cannot run'),
     },
   ])
 })

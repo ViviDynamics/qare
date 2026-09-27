@@ -1305,7 +1305,10 @@ export function runCommandCheck(
       else stderrTruncated = true
     })
     child.on('error', (error) => {
-      settle({ status: 'unverified', reason: `check could not start: ${String(error)}`, stdout, stderr })
+      // A spawn failure is a binary the plan named that this host does not
+      // have: nothing ran, so nothing about the change was tested, and the
+      // reason names the same planning gap the shell guard does (#64).
+      settle({ status: 'unverified', reason: `the planned command cannot run: ${String(error)}`, stdout, stderr })
     })
     child.on('close', (code) => {
       if (timedOut)
