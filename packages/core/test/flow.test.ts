@@ -498,3 +498,22 @@ test('a capture is withheld while a second-factor code may sit on the page (#64,
   const log = await actionsLog(dir)
   expect(log).toContain('capture-0.png withheld')
 })
+
+test('a capture whose screenshot fails leaves the check unverified, not passed (#70)', async () => {
+  const { page } = fakePage({ screenshot: new Error('the disk filled') })
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [{ action: 'open', url: APP_URL }, { action: 'capture' }],
+  })
+
+  expect(result.outcome).toBe('unverified')
+  expect(result.reason).toContain('action 1 failed')
+  expect(result.reason).toContain('the disk filled')
+  // The failure screenshot cannot be written either, so only the log survives.
+  expect(result.evidence).toEqual(['actions.log'])
+  const log = await actionsLog(dir)
+  expect(log).toContain('screenshot capture-1.png failed')
+})

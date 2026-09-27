@@ -512,7 +512,7 @@ test('a flow naming an action the driver lacks is refused before anything boots 
 
   expect(result.verdict).toBe('refused')
   expect(result.criteria[0].outcome).toBe('unverified')
-  expect(result.criteria[0].reason).toContain('flow action "capture" is not one the test-driver driver declares')
+  expect(result.criteria[0].reason).toContain('flow action "capture" is not one of the actions the test-driver driver declares')
   // Nothing ran: no boot, no browser, no evidence.
   expect(events).toEqual([])
 })

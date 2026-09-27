@@ -58,7 +58,7 @@ Per-kind required fields (all values are non-empty strings):
 | `visual` | `screenshot` | named screenshot to capture |
 | `visual` | `widths`, `themes` | optional arrays of numbers / of strings; profile defaults apply when omitted |
 
-A flow action is one of `{"action": "open", "url": "..."}`, `{"action": "type", "element": ..., "value": "..."}`, `{"action": "click", "element": ...}` and `{"action": "assert", "text": "..."}`. An element reference is `{"role": "...", "name": "..."}` or `{"testId": "..."}` — semantic, never a selector. Free-form strings are rejected when the plan loads.
+A flow action is one of `{"action": "open", "url": "..."}`, `{"action": "type", "element": ..., "value": "..."}`, `{"action": "click", "element": ...}` and `{"action": "assertText", "text": "..."}`. An element reference is `{"role": "...", "name": "..."}` or `{"testId": "..."}` — semantic, never a selector. Free-form strings are rejected when the plan loads.
 
 ## result.json (schemaVersion "1")
 

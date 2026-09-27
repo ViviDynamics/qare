@@ -218,6 +218,31 @@ test('a driver narrows the flow kinds the planner is offered (#70)', async () =>
   expect(kinds).toEqual(['open', 'click'])
 })
 
+test('the change\'s own kinds are parsed against the same merged set the planner was offered (#70)', async () => {
+  const answer = completed(
+    JSON.stringify({
+      schemaVersion: '1',
+      criteria: [
+        {
+          id: 'c1',
+          text: CRITERIA[0].text,
+          checks: [{ kind: 'flow', name: 'magic login', actions: [{ action: 'magicLink', element: { testId: 'sign-in' } }] }],
+        },
+      ],
+    }),
+  )
+  const runner = new FakeAgentRunner([answer])
+
+  const plan = await planRun(runner, {
+    ...INPUTS,
+    criteria: [{ id: 'c1', text: CRITERIA[0].text }],
+    driver: { name: 'browser', actions: ['open', 'click'], evidence: [] },
+    flowActions: ['magicLink'],
+  })
+
+  expect(plan.criteria[0].checks[0]).toMatchObject({ kind: 'flow', actions: [{ action: 'magicLink' }] })
+})
+
 test('an answer written in the change\'s declared vocabulary is accepted', async () => {
   const answer = JSON.stringify({
     schemaVersion: '1',

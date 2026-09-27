@@ -285,7 +285,7 @@ function rejectUndeclaredActions(plan: Plan, driver: FlowDriverCapabilities): vo
         if (!driver.actions.includes(action.action)) {
           fail(
             `${base}.actions[${actionIndex}].action`,
-            `flow action ${JSON.stringify(action.action)} is not one the ${driver.name} driver declares, so the plan cannot run against it (declared: ${driver.actions.map((k) => JSON.stringify(k)).join(', ')})`,
+            `flow action ${JSON.stringify(action.action)} is not one of the actions the ${driver.name} driver declares, so the plan cannot run against it (declared: ${driver.actions.map((k) => JSON.stringify(k)).join(', ')})`,
           )
         }
       }

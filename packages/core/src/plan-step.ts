@@ -47,6 +47,16 @@ function offeredKinds(inputs: PlanInputs): readonly string[] {
   return [...new Set([...base, ...(inputs.flowActions ?? [])])]
 }
 
+/**
+ * The driver the plan is parsed against: what the planner was offered, the
+ * loader accepts, so the change's own kinds extend the declared set (#70).
+ */
+function effectiveDriver(inputs: PlanInputs): FlowDriverCapabilities | undefined {
+  if (inputs.driver === undefined || inputs.flowActions === undefined || inputs.flowActions.length === 0)
+    return inputs.driver
+  return { ...inputs.driver, actions: [...inputs.driver.actions, ...inputs.flowActions] }
+}
+
 /** What the planner and the verifier are told when there is no change under review. */
 export const NO_DIFF =
   'There is no diff: this is a one-off check of the app as it runs now, not a review of a change.'
@@ -283,7 +293,7 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
 
     let plan: Plan
     try {
-      plan = parsePlan(JSON.parse(run.output), inputs.flowActions ?? [], inputs.driver)
+      plan = parsePlan(JSON.parse(run.output), inputs.flowActions ?? [], effectiveDriver(inputs))
     } catch (error) {
       correction = error instanceof Error ? error.message : String(error)
       continue

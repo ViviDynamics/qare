@@ -231,7 +231,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   // from mail — may still sit in an input on it, and redaction cannot read
   // pixels: every capture is withheld until the flow can prove otherwise (#64).
   let codeOnPage = codesOnPage
-  const screenshot = async (name: string): Promise<string | undefined> => {
+  const screenshot = async (name: string, opts: { required?: boolean } = {}): Promise<string | undefined> => {
     if (codeOnPage) {
       log.push(`${name} withheld: the second-factor code is visible on the page, and redaction cannot read pixels`)
       return undefined
@@ -242,6 +242,9 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
       return name
     } catch (error) {
       log.push(`screenshot ${name} failed: ${String(error)}`)
+      // A capture the plan asked for is the proof it asked for: the flow cannot
+      // pass as though the pixels were published when the capture failed (#70).
+      if (opts.required) throw error
       return undefined
     }
   }
@@ -288,7 +291,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
           break
         case 'capture': {
           const name = `capture-${index}.png`
-          const taken = await screenshot(name)
+          const taken = await screenshot(name, { required: true })
           if (taken !== undefined) captures.push(name)
           break
         }

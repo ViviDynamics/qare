@@ -200,7 +200,7 @@ function validatePlanValues(job: Job, profile: QaProfile, values: RunValues, flo
           if (!flowDriver.actions.includes(action.action))
             throw new JobValidationError(
               `${base}.actions[${actionIndex}].action`,
-              `flow action ${JSON.stringify(action.action)} is not one the ${flowDriver.name} driver declares, so the plan cannot run against it`,
+              `flow action ${JSON.stringify(action.action)} is not one of the actions the ${flowDriver.name} driver declares, so the plan cannot run against it`,
             )
           mapFlowStrings(action, (value, field) => {
             validateValueReferences(value, values, `${base}.actions[${actionIndex}].${field}`, allow(`${base}.actions[${actionIndex}].${field}`))
