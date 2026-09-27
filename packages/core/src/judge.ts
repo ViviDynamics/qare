@@ -361,7 +361,7 @@ export function judgedResult(
   // time can go stale: it is recomputed from the final criteria of its subset
   // — the job's order and names kept — or the per-app heading would contradict
   // the table and the judged verdict (#55).
-  const waived = new Set(loaded.waived ?? [])
+  const waived = new Set((loaded.waived ?? []).map((waiver) => waiver.criterionId))
   const profiles = loaded.profiles?.map((profile) => {
     const ids = new Set(profile.criteria)
     const subset = criteria.filter((criterion) => ids.has(criterion.criterionId))
