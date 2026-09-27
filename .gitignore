@@ -21,6 +21,3 @@ repo.env
 .claude/*
 !.claude/skills/
 qare-evidence/
-
-# The derived-image contract test stamps the version it tests at build time.
-examples/derived-image/test/VERSION

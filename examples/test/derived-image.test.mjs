@@ -5,14 +5,13 @@
 // in the example's test directory, the same build the release guard runs.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 const EXAMPLE = join(ROOT, 'examples', 'derived-image')
-const FIXTURE_VERSION = '2026.9.0'
 
 function sh(cmd, args, options = {}) {
   return execFileSync(cmd, args, { ...options }).toString()
@@ -54,18 +53,21 @@ test('the release workflow builds the example on every release', async () => {
 })
 
 test('the example builds against a contract-conformant base and runs as the qare user', async () => {
-  await writeFile(join(EXAMPLE, 'test', 'VERSION'), `${FIXTURE_VERSION}\n`)
+  // The fixture ships with its version: a fresh checkout builds it whole, and
+  // the release guard stamps the file with the release version before its own
+  // build.
+  const version = (await readFile(join(EXAMPLE, 'test', 'VERSION'), 'utf8')).trim()
   sh('docker', [
     'build', '-f', join(EXAMPLE, 'test', 'base-fixture.Dockerfile'),
-    '-t', `qare-contract-base:${FIXTURE_VERSION}`, join(EXAMPLE, 'test'),
+    '-t', `qare-contract-base:${version}`, join(EXAMPLE, 'test'),
   ])
   sh('docker', [
-    'build', '--build-arg', `QARE_IMAGE=qare-contract-base:${FIXTURE_VERSION}`,
+    'build', '--build-arg', `QARE_IMAGE=qare-contract-base:${version}`,
     '-t', 'qare-derived:contract-test', '.',
   ], { cwd: EXAMPLE })
   assert.equal(
     sh('docker', ['run', '--rm', 'qare-derived:contract-test', '/opt/qare/bin/qare', '--version']).trim(),
-    FIXTURE_VERSION,
+    version,
     'the entry point answers with the stamped version',
   )
   assert.equal(
