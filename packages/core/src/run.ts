@@ -2,7 +2,8 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Artefacts, type ArtefactField } from './artefacts.js'
-import { bootApp, type BootOpts } from './boot.js'
+import { bootApp, CANCEL_DOWN_TIMEOUT_MS, killActiveCompose, stopApp, type BootOpts } from './boot.js'
+import { hasMintedProject, isolatedHealthUrl, isolateRun, type RunIsolation } from './isolation.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
 import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
 import { BROWSER_FLOW_DRIVER, makePlaywrightFlowSession } from './flow-playwright.js'
@@ -18,6 +19,14 @@ import { mintRunValues, substituteValues, validateRunReferences, validateValueRe
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 60000
 const NO_CHECKS_REASON = 'no checks were given for this criterion, so nothing ran'
+
+/**
+ * A host port compose can publish and a health URL can name: an integer in
+ * 1..65535 (#53).
+ */
+function hasUsablePort(port: number | undefined): boolean {
+  return port !== undefined && Number.isInteger(port) && port >= 1 && port <= 65535
+}
 
 /**
  * Where the flow check gets its browser: the run hands over a session factory,
@@ -60,6 +69,13 @@ interface FlowTargetContext {
  * The booted app is intentionally left up after the checks so evidence (logs) can
  * be inspected; teardown is the caller's job (stopApp).
  *
+ * A run that boots an app is isolated per run (#53): its compose project is
+ * `qare-<run id>` and its app is published on a host port allocated for the run,
+ * so two runs of the same repository at the same time never share a stack, a
+ * network, or a port. The isolation is recorded in `isolation.json` in the
+ * evidence, and a canceled run stops its own project before exiting. The run's
+ * isolation is returned with the result, so the caller can stop what was booted.
+ *
  * Everything written to the evidence directory, and the result returned, is
  * redacted with the profile's rules and the built-in ones (#52): evidence is
  * published, and output from the app under test can carry its secrets.
@@ -73,7 +89,7 @@ export async function runJob(
     /** What the driver behind this run's flows declares (#70); the browser driver by default. */
     flowDriver?: FlowDriverCapabilities
   } = {},
-): Promise<{ result: RunResult }> {
+): Promise<{ result: RunResult; isolation?: RunIsolation }> {
   let profile: QaProfile
   try {
     profile = await resolveProfile(job)
@@ -84,10 +100,54 @@ export async function runJob(
     // so the evidence says what nobody checked and what onboarding needs.
     return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `this repository has no usable .qa/ profile yet, so qare will not claim to have checked it: ${error.message}`)
   }
+  // One compose project per run (#53), minted before anything boots. A run
+  // against a target boots nothing, so it needs no isolation, and a run that
+  // cannot mint one is refused with the reason named: a run that cannot say
+  // which project it boots under does not boot.
+  let isolation: RunIsolation | undefined
+  if (profile.app !== undefined) {
+    try {
+      isolation = opts.isolation ?? (await isolateRun())
+    } catch (error) {
+      return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `the harness could not isolate this run, so it will not boot an app: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    // A run that boots an app always publishes it on a port of its own: an
+    // isolation without a usable one would fall back to the compose default
+    // and put two concurrent runs on the same host port, or name a port the
+    // health URL cannot, so it is refused (#53). A caller-carried isolation
+    // is unvalidated otherwise: only an integer in the host-port range is
+    // something compose can publish and a health URL can name.
+    if (!hasUsablePort(isolation.port)) {
+      return refuseRun(
+        job,
+        opts,
+        BUILTIN_REDACTION_RULES,
+        'the run isolation carries no usable app port, so two runs could publish their apps on the same host port; a run that boots an app needs an isolation with a host port in 1..65535 (isolateRun)',
+      )
+    }
+    // A caller-carried isolation is only usable if it is one the harness could
+    // have minted: the compose project is `qare-<run id>`, so a leftover stack
+    // is always findable by the reap sweep, and a project qare never minted is
+    // never touched (#53).
+    if (!hasMintedProject(isolation)) {
+      return refuseRun(
+        job,
+        opts,
+        BUILTIN_REDACTION_RULES,
+        'the run isolation does not carry a usable project: the compose project is qare-<run id>, so a leftover stack is always findable by reap and a project qare never minted is never touched',
+      )
+    }
+  }
   // Run values exist per run, so they are minted here and referenced by name
   // from user-authored strings (#68). An unknown reference fails closed at
   // plan time: nothing boots, and the refusal names the field and the name.
-  const values = mintRunValues(profile.target === undefined ? {} : { targetUrl: profile.target.url })
+  // The isolation's run id is the run's id: the compose project and the mail
+  // address name the same run (#53).
+  const values = mintRunValues({
+    ...(profile.target === undefined ? {} : { targetUrl: profile.target.url }),
+    ...(isolation === undefined ? {} : { runId: isolation.runId }),
+    ...(isolation?.port === undefined ? {} : { appPort: String(isolation.port) }),
+  })
   // A run against a target has one side only, and the result says so rather
   // than implying a base comparison it never made (#122).
   const targetNote = profile.target === undefined ? {} : { target: { url: profile.target.url, comparison: 'none' as const } }
@@ -95,47 +155,71 @@ export async function runJob(
     validatePlanValues(job, profile, values, opts.flowDriver ?? BROWSER_FLOW_DRIVER)
   } catch (error) {
     if (!(error instanceof JobValidationError)) throw error
-    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, error.message, targetNote)
+    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, error.message, targetNote, isolation)
   }
   // The seeded second-factor secret and any backup code never reach the
   // evidence either: they sweep alongside the profile's own rules (#64).
   const login = profile.app?.login
   const rules = [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value])]
-  const boot = await bootApp(profile, opts)
-  if (boot.kind === 'blocked') {
-    const criteria: CriterionResult[] = job.criteria.map((criterion) => ({
-      id: criterion.id,
-      outcome: 'unverified',
-      reason: boot.reason ?? 'boot did not come up',
-    }))
-    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria, ...targetNote }, rules, values)
-    await feedIfOptedIn(opts, job, finished.result)
-    return finished
+  if (isolation !== undefined) {
+    await mkdir(job.evidenceDir, { recursive: true })
+    // Evidence is published: this names the compose project a leftover stack
+    // runs under, which is what an orchestrator needs to reap it (#53).
+    await writeFile(
+      join(job.evidenceDir, 'isolation.json'),
+      `${JSON.stringify({ run_id: isolation.runId, project: isolation.project, started_at: isolation.startedAt, ...(isolation.port === undefined ? {} : { port: isolation.port }) }, null, 2)}\n`,
+    )
   }
+  // The health URL is authored in the profile: run values are substituted
+  // here (a profile may name the port as {{run.app_port}}), and a local URL
+  // is then pinned to the port this run published the app on (#53), so the
+  // run proves the app it booted and not another run's.
+  const bootedProfile =
+    isolation === undefined || profile.app === undefined
+      ? profile
+      : { ...profile, app: { ...profile.app, health: { ...profile.app.health, http: isolatedHealthUrl(substituteValues(profile.app.health.http, values), isolation.port) } } }
+  // A canceled run tears its own project down before the process exits (#53),
+  // and the disposer is released when the run finishes either way.
+  const cancelCleanup = isolation === undefined ? undefined : installCancelCleanup(bootedProfile, { ...opts, isolation })
+  try {
+    const boot = await bootApp(bootedProfile, { ...opts, isolation })
+    if (boot.kind === 'blocked') {
+      const criteria: CriterionResult[] = job.criteria.map((criterion) => ({
+        id: criterion.id,
+        outcome: 'unverified',
+        reason: boot.reason ?? 'boot did not come up',
+      }))
+      const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria, ...targetNote }, rules, values)
+      await feedIfOptedIn(opts, job, finished.result)
+      return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
+    }
 
-  const criteria: CriterionResult[] = []
-  const mail = {
-    inbox: profile.mail?.inbox,
-    readMail: opts.readMail ?? (profile.mail?.inbox === undefined ? undefined : httpMailbox(profile.mail.inbox)),
+    const criteria: CriterionResult[] = []
+    const mail = {
+      inbox: profile.mail?.inbox,
+      readMail: opts.readMail ?? (profile.mail?.inbox === undefined ? undefined : httpMailbox(profile.mail.inbox)),
+    }
+    // Single-use artefacts are a per-run ledger: what was consumed in this run
+    // says nothing about any other run (#69).
+    const artefacts = new Artefacts()
+    const target = profile.target === undefined ? undefined : targetContext(profile.target)
+    // The flow types the code the profile's seeded secret generates; the secret
+    // itself never crosses into the plan (#64).
+    const totp =
+      login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
+    const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target, totp }
+    for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow))
+    // The judge is the verdict decision. Base execution and egress interception
+    // of a booted stack land with the orchestrator; a target run records what its
+    // browser reached, and a host the profile does not declare refuses the run.
+    const egressVerdict = target !== undefined && target.undeclared.length > 0 ? 'refused' : 'allowed'
+    const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict })
+    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, ...targetNote }, rules, values)
+    await feedIfOptedIn(opts, job, finished.result)
+    return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
+  } finally {
+    cancelCleanup?.()
   }
-  // Single-use artefacts are a per-run ledger: what was consumed in this run
-  // says nothing about any other run (#69).
-  const artefacts = new Artefacts()
-  const target = profile.target === undefined ? undefined : targetContext(profile.target)
-  // The flow types the code the profile's seeded secret generates; the secret
-  // itself never crosses into the plan (#64).
-  const totp =
-    login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
-  const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target, totp }
-  for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow))
-  // The judge is the verdict decision. Base execution and egress interception
-  // of a booted stack land with the orchestrator; a target run records what its
-  // browser reached, and a host the profile does not declare refuses the run.
-  const egressVerdict = target !== undefined && target.undeclared.length > 0 ? 'refused' : 'allowed'
-  const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict })
-  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, ...targetNote }, rules, values)
-  await feedIfOptedIn(opts, job, finished.result)
-  return finished
 }
 
 /** Refuse the whole run without booting: every criterion is reported unverified, naming the gap. */
@@ -145,7 +229,8 @@ async function refuseRun(
   rules: readonly RedactionRule[],
   reason: string,
   targetNote: Pick<RunResult, 'target'> = {},
-): Promise<{ result: RunResult }> {
+  isolation?: RunIsolation,
+): Promise<{ result: RunResult; isolation?: RunIsolation }> {
   const criteria: CriterionResult[] = job.criteria.map((criterion) => ({
     id: criterion.id,
     outcome: 'unverified',
@@ -153,7 +238,63 @@ async function refuseRun(
   }))
   const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria, ...targetNote }, rules)
   await feedIfOptedIn(opts, job, finished.result)
-  return finished
+  return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
+}
+
+/**
+ * On cancel (SIGINT/SIGTERM) the run stops its own compose project before the
+ * process exits (#53): a canceled run must not leave its stack holding the
+ * port and network the next run could otherwise queue behind. The handlers are
+ * removed when the run finishes normally, so an exit qare chose carries no
+ * stale cleanup. The down is bounded, so a compose call that never settles
+ * cannot hold the exit open, and the exit waits for every canceled run's down,
+ * so two runs sharing a process never leave the later run's stack behind the
+ * earlier run's exit (#53).
+ */
+const pendingStops = new Set<Promise<void>>()
+
+export function installCancelCleanup(profile: QaProfile, opts: BootOpts): () => void {
+  const stop = (): void => {
+    // The compose children this run still has in flight are killed first, so
+    // no orphaned up can keep provisioning the project after the down has
+    // run (#53). Only this run's project is killed: a concurrent run in the
+    // same process must not lose its own children to this cancellation. A
+    // caller-carried isolation naming a project outside the harness namespace
+    // is never addressed: neither the kill nor the down touches it (#53).
+    const isolation = opts.isolation
+    if (isolation !== undefined && hasMintedProject(isolation)) killActiveCompose(isolation.project)
+    // A caller override at or below 0 would opt the cancellation out of its
+    // own guarantee, so it is normalized to the default bound.
+    const downTimeoutMs = opts.downTimeoutMs !== undefined && opts.downTimeoutMs > 0 ? opts.downTimeoutMs : CANCEL_DOWN_TIMEOUT_MS
+    const stopped = stopApp(profile, { ...opts, downTimeoutMs }).catch(() => {})
+    // The deadline is the exit guarantee: when the down hangs past it, the
+    // timeout is reported, the wait resolves anyway, and the exit runs,
+    // leaving the stack to reap (#53).
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined
+    const entry = Promise.race([
+      stopped,
+      new Promise<void>((resolve) => {
+        timeoutTimer = setTimeout(() => {
+          console.error(
+            `canceled run ${isolation?.runId ?? ''}: the compose down did not settle within ${downTimeoutMs}ms; the leftover stack is left for reap`,
+          )
+          resolve()
+        }, downTimeoutMs)
+      }),
+    ])
+    pendingStops.add(entry)
+    void entry.finally(() => {
+      if (timeoutTimer !== undefined) clearTimeout(timeoutTimer)
+      pendingStops.delete(entry)
+      if (pendingStops.size === 0) process.exit(4)
+    })
+  }
+  process.once('SIGINT', stop)
+  process.once('SIGTERM', stop)
+  return () => {
+    process.removeListener('SIGINT', stop)
+    process.removeListener('SIGTERM', stop)
+  }
 }
 
 /**
@@ -165,7 +306,11 @@ async function refuseRun(
  * anything boots, naming the action and the driver (#70).
  */
 function validatePlanValues(job: Job, profile: QaProfile, values: RunValues, flowDriver: FlowDriverCapabilities): void {
-  if (profile.app !== undefined) validateValueReferences(profile.app.seed.command, values, 'app.seed.command')
+  if (profile.app !== undefined) {
+    validateValueReferences(profile.app.seed.command, values, 'app.seed.command')
+    // The health URL may name the port the run publishes the app on (#53).
+    validateValueReferences(profile.app.health.http, values, 'app.health.http')
+  }
   // Mail artefact names are validated in walk order: a check may only read an
   // artefact from a mail check that has already waited for its message (#69),
   // and only for the fields that check actually exposes (#64).

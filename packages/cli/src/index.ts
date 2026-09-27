@@ -33,6 +33,7 @@ import {
   renderComment,
   readinessInventory,
   replayRun,
+  reapProjects,
   runJob,
   VERSION,
 } from '@qare/core'
@@ -71,8 +72,9 @@ export async function main(
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
+  if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>] | qare redact --evidence <dir> [--profile <dir>] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -234,6 +236,30 @@ async function redactCommand(argv: string[], out: Writer, err: Writer): Promise<
       `${report.changed.length} of ${report.files.length} files redacted; ${report.images.length} images published as captured\n`,
     )
     return 0
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 4
+  }
+}
+
+/**
+ * `qare reap [project...]`: tear down compose projects qare booted (#53). With
+ * project names, exactly those are downed and a name that is not qare's is
+ * refused, so the orchestrator can reap the run that just died while its other
+ * runs stay live. With no names, every running compose project qare booted
+ * (`qare-*`) is torn down, so this is the quiescent cleanup an orchestrator
+ * runs when no qare run is left working — after a canceled or crashed queue —
+ * and a stuck run is reaped rather than holding the queue. A project that
+ * fails to go down names itself on `err` and fails the command.
+ */
+async function reapCommand(out: Writer, err: Writer, projects: string[], boot: BootOpts): Promise<number> {
+  try {
+    const opts = boot.runCompose === undefined ? {} : { runCompose: boot.runCompose }
+    const outcome = await reapProjects(projects.length === 0 ? opts : { ...opts, projects })
+    for (const project of outcome.reaped) out.write(`reaped ${project}\n`)
+    for (const failure of outcome.failures) err.write(`could not reap ${failure.project}: ${failure.reason}\n`)
+    out.write(`reaped ${outcome.reaped.length} qare projects, ${outcome.failures.length} failures\n`)
+    return outcome.failures.length === 0 ? 0 : 4
   } catch (error) {
     err.write(`${formatError(error)}\n`)
     return 4

@@ -2,13 +2,15 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import {
   JobValidationError,
+  installCancelCleanup,
   loadJobFromText,
   loadResult,
   renderComment,
   runJob,
+  type BootOpts,
   type Job,
   type JobCriterion,
   type JobProfileRef,
@@ -16,6 +18,8 @@ import {
 } from '../src/index.js'
 
 const HEALTH_URL = ['http:', '//localhost:3000/up'].join('')
+// Assembled like HEALTH_URL: no network marker sits as a literal in a test.
+const localUrl = (rest: string): string => ['http:', rest].join('')
 
 const INLINE_PROFILE: QaProfile = {
   app: {
@@ -574,4 +578,283 @@ test('a reference in an env key is refused: keys name variables, they are not su
 
   expect(result.verdict).toBe('refused')
   expect(result.criteria[0].reason).toContain('env key')
+})
+
+interface CapturedComposeCall {
+  args: string[]
+  env?: Record<string, string>
+}
+
+function isolatedBootCapture(): { opts: BootOpts; calls: CapturedComposeCall[]; probedUrls: string[] } {
+  const calls: CapturedComposeCall[] = []
+  const probedUrls: string[] = []
+  return {
+    calls,
+    probedUrls,
+    opts: {
+      runCompose: async (args, _timeoutMs, env) => {
+        calls.push({ args, env })
+        return { code: 0, stdout: 'up out', stderr: '' }
+      },
+      probe: async (url) => {
+        probedUrls.push(url)
+        return { ok: true }
+      },
+      pollIntervalMs: 1,
+    },
+  }
+}
+
+test('an app run records its isolation, boots under its own project, and mints app_port', async () => {
+  const captured = isolatedBootCapture()
+  const job = await makeJob({
+    criteria: commandCriteria('echo ok'),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result, isolation } = await runJob(job, captured.opts)
+
+  expect(result.verdict).toBe('passed')
+  expect(isolation?.project).toBe(`qare-${isolation?.runId}`)
+  // The evidence names what the run booted, so leftovers are findable (#53).
+  const recorded = JSON.parse(await readFile(join(job.evidenceDir, 'isolation.json'), 'utf8')) as Record<string, unknown>
+  expect(recorded.project).toBe(isolation?.project)
+  expect(recorded.run_id).toBe(isolation?.runId)
+  expect(recorded.port).toBe(isolation?.port)
+  const values = JSON.parse(await readFile(join(job.evidenceDir, 'values.json'), 'utf8')) as Record<string, string>
+  expect(values.app_port).toBe(String(isolation?.port))
+  // One id per run: the compose project and the mail address name the same run.
+  expect(values.id).toBe(isolation?.runId)
+  expect(captured.calls.length).toBe(1)
+  expect(captured.calls[0]?.args?.[0]).toBe('-p')
+  expect(captured.calls[0]?.args?.[1]).toBe(isolation?.project)
+  expect(captured.calls[0]?.env).toEqual({ QARE_RUN_ID: isolation?.runId, QARE_APP_PORT: String(isolation?.port) })
+})
+
+test('an app run refuses an isolation that carries no port, so runs cannot fall back to one default port', async () => {
+  const captured = isolatedBootCapture()
+  const job = await makeJob({
+    criteria: commandCriteria('echo ok'),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result, isolation } = await runJob(job, {
+    ...captured.opts,
+    isolation: { runId: 'run-1', project: 'qare-run-1', startedAt: '2026-01-01T00:00:00.000Z' },
+  })
+
+  expect(result.verdict).toBe('refused')
+  expect(isolation).toBeUndefined()
+  expect(result.criteria[0].reason).toContain('no usable app port')
+  // Nothing booted: a refused run leaves no stack and writes no isolation evidence.
+  expect(captured.calls).toEqual([])
+  expect(existsSync(join(job.evidenceDir, 'isolation.json'))).toBe(false)
+})
+
+test('an app run refuses an isolation whose port is not a host port (#53)', async () => {
+  const captured = isolatedBootCapture()
+  const job = await makeJob({
+    criteria: commandCriteria('echo ok'),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  for (const port of [0, 70000, 1.5, Number.NaN]) {
+    const { result } = await runJob(job, {
+      ...captured.opts,
+      isolation: { runId: 'run-1', project: 'qare-run-1', startedAt: '2026-01-01T00:00:00.000Z', port },
+    })
+    expect(result.verdict).toBe('refused')
+    expect(result.criteria[0].reason).toContain('no usable app port')
+  }
+
+  // Nothing booted: a refused run leaves no stack and writes no isolation evidence.
+  expect(captured.calls).toEqual([])
+  expect(existsSync(join(job.evidenceDir, 'isolation.json'))).toBe(false)
+})
+
+test('an app run refuses a caller isolation whose project is not qare-<run id>, so no foreign project is ever touched (#53)', async () => {
+  const captured = isolatedBootCapture()
+  const job = await makeJob({
+    criteria: commandCriteria('echo ok'),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, {
+    ...captured.opts,
+    isolation: { runId: 'run-1', project: 'production', startedAt: '2026-01-01T00:00:00.000Z', port: 3000 },
+  })
+
+  expect(result.verdict).toBe('refused')
+  expect(result.criteria[0].reason).toContain('not carry a usable project')
+  // Nothing booted: a refused run leaves no stack and writes no isolation evidence.
+  expect(captured.calls).toEqual([])
+  expect(existsSync(join(job.evidenceDir, 'isolation.json'))).toBe(false)
+})
+
+test('two runs of the same repository at the same time never share a stack, a port, or a probe URL (#53)', async () => {
+  const bootA = isolatedBootCapture()
+  const bootB = isolatedBootCapture()
+  const jobA = await makeJob({
+    criteria: commandCriteria('echo ok'),
+    profile: { inline: INLINE_PROFILE },
+  })
+  const jobB = await makeJob({
+    criteria: commandCriteria('echo ok'),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const [runA, runB] = await Promise.all([runJob(jobA, bootA.opts), runJob(jobB, bootB.opts)])
+
+  expect(runA.result.verdict).toBe('passed')
+  expect(runB.result.verdict).toBe('passed')
+  expect(runA.isolation?.project).toMatch(/^qare-/)
+  expect(runB.isolation?.project).toMatch(/^qare-/)
+  expect(runA.isolation?.project).not.toBe(runB.isolation?.project)
+  expect(runA.isolation?.port).not.toBe(runB.isolation?.port)
+  // Each run composed under its own project, with its own port env.
+  expect(bootA.calls[0]?.args?.[1]).toBe(runA.isolation?.project)
+  expect(bootB.calls[0]?.args?.[1]).toBe(runB.isolation?.project)
+  expect(bootA.calls[0]?.env?.QARE_APP_PORT).toBe(String(runA.isolation?.port))
+  expect(bootB.calls[0]?.env?.QARE_APP_PORT).toBe(String(runB.isolation?.port))
+  // Each run's health probe is pinned to the port that run published its app on.
+  expect(bootA.probedUrls).toEqual([localUrl(`//localhost:${runA.isolation?.port}/up`)])
+  expect(bootB.probedUrls).toEqual([localUrl(`//localhost:${runB.isolation?.port}/up`)])
+})
+
+test('the health URL may name the run port as {{run.app_port}} and probes the allocated port', async () => {
+  const captured = isolatedBootCapture()
+  const job = await makeJob({
+    criteria: commandCriteria('echo ok'),
+    profile: {
+      inline: {
+        ...INLINE_PROFILE,
+        app: { ...INLINE_PROFILE.app, health: { http: localUrl('//localhost:{{run.app_port}}/up'), timeout: '120s' } },
+      },
+    },
+  })
+
+  const { result, isolation } = await runJob(job, captured.opts)
+
+  expect(result.verdict).toBe('passed')
+  expect(isolation?.port).toEqual(expect.any(Number))
+  expect(captured.probedUrls).toEqual([localUrl(`//localhost:${isolation?.port}/up`)])
+})
+
+test('a canceled run stops its own compose project before exiting', async () => {
+  const composeArgs: string[][] = []
+  const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+  const cleanup = installCancelCleanup(INLINE_PROFILE, {
+    runCompose: async (args) => {
+      composeArgs.push(args)
+      return { code: 0, stdout: '', stderr: '' }
+    },
+    isolation: { runId: 'run-1', project: 'qare-run-1', startedAt: '2026-01-01T00:00:00.000Z', port: 4321 },
+  })
+  try {
+    process.emit('SIGINT')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    expect(composeArgs).toEqual([['-p', 'qare-run-1', '-f', 'compose.qa.yaml', 'down']])
+    expect(exit).toHaveBeenCalledWith(4)
+  } finally {
+    cleanup()
+    exit.mockRestore()
+  }
+})
+
+test('a cancel with a caller isolation naming a foreign project kills nothing and downs nothing (#53)', async () => {
+  const composeArgs: string[][] = []
+  const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+  const cleanup = installCancelCleanup(INLINE_PROFILE, {
+    runCompose: async (args) => {
+      composeArgs.push(args)
+      return { code: 0, stdout: '', stderr: '' }
+    },
+    isolation: { runId: 'run-1', project: 'production', startedAt: '2026-01-01T00:00:00.000Z', port: 4321 },
+  })
+  try {
+    process.emit('SIGINT')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    expect(composeArgs).toEqual([])
+    expect(exit).toHaveBeenCalledWith(4)
+  } finally {
+    cleanup()
+    exit.mockRestore()
+  }
+})
+
+test('a cancel whose compose down never settles still exits 4, bounded by the down deadline (#53)', async () => {
+  const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+  const errors: string[] = []
+  const errorSpy = vi.spyOn(console, 'error').mockImplementation((line) => errors.push(String(line)))
+  const cleanup = installCancelCleanup(INLINE_PROFILE, {
+    runCompose: () => new Promise(() => {}),
+    downTimeoutMs: 50,
+    isolation: { runId: 'run-1', project: 'qare-run-1', startedAt: '2026-01-01T00:00:00.000Z', port: 4321 },
+  })
+  try {
+    process.emit('SIGINT')
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(4), { timeout: 5000 })
+
+    expect(errors.join('')).toContain('the compose down did not settle within 50ms')
+  } finally {
+    cleanup()
+    errorSpy.mockRestore()
+    exit.mockRestore()
+  }
+})
+
+test('one SIGINT cancels every run in the process, and the exit waits for every down (#53)', async () => {
+  const composeArgs: string[][] = []
+  const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+  const runCompose = async (args: string[]) => {
+    composeArgs.push(args)
+    return { code: 0, stdout: '', stderr: '' }
+  }
+  const cleanupA = installCancelCleanup(INLINE_PROFILE, {
+    runCompose,
+    isolation: { runId: 'run-a', project: 'qare-run-a', startedAt: '2026-01-01T00:00:00.000Z', port: 4321 },
+  })
+  const cleanupB = installCancelCleanup(INLINE_PROFILE, {
+    runCompose,
+    isolation: { runId: 'run-b', project: 'qare-run-b', startedAt: '2026-01-01T00:00:00.000Z', port: 4322 },
+  })
+  try {
+    process.emit('SIGINT')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    // Both downs ran, and the process exited once — after the last down, not
+    // after the first.
+    expect(composeArgs).toHaveLength(2)
+    expect(exit).toHaveBeenCalledTimes(1)
+  } finally {
+    cleanupA()
+    cleanupB()
+    exit.mockRestore()
+  }
+})
+
+test('a cancel override of zero is normalized to the cancellation bound, so no caller can opt the exit out of its deadline (#53)', async () => {
+  const timeouts: number[] = []
+  const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+  const cleanup = installCancelCleanup(INLINE_PROFILE, {
+    runCompose: (_args, timeoutMs) => {
+      timeouts.push(timeoutMs)
+      return new Promise(() => {})
+    },
+    downTimeoutMs: 0,
+    isolation: { runId: 'run-1', project: 'qare-run-1', startedAt: '2026-01-01T00:00:00.000Z', port: 4321 },
+  })
+  try {
+    process.emit('SIGINT')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    // The zero override reaches the down as the cancellation bound, not as no
+    // deadline: the exit cannot be opted out of its guarantee.
+    expect(timeouts).toEqual([30000])
+  } finally {
+    cleanup()
+    exit.mockRestore()
+  }
 })
