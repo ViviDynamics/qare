@@ -1,10 +1,23 @@
 import type { EgressAttempt } from './egress.js'
-import type { FlowElement, FlowPage, FlowTrace } from './flow.js'
+import type { FlowDriverCapabilities, FlowElement, FlowPage, FlowTrace } from './flow.js'
 
 const NOT_INSTALLED_MESSAGE =
   'playwright-core is not installed; flow checks are unverified without a browser backend'
 const LOAD_FAILED_MESSAGE =
   'playwright-core failed to load; flow checks are unverified without a working backend'
+
+/**
+ * The browser driver's own declaration (#70): the actions its seam can perform
+ * and the evidence kinds it can produce. A plan naming anything else is
+ * rejected before anything runs, so the declaration is the contract a flow is
+ * written against, and a swapped driver that declares the same set runs the
+ * same flow unchanged.
+ */
+export const BROWSER_FLOW_DRIVER: FlowDriverCapabilities = {
+  name: 'browser',
+  actions: ['open', 'type', 'click', 'choose', 'waitFor', 'assertText', 'assertElement', 'capture', 'totp', 'backupCode'],
+  evidence: ['screenshot', 'trace'],
+}
 
 type PlaywrightModule = typeof import('playwright-core')
 
@@ -28,7 +41,13 @@ export async function makePlaywrightFlowSession(
     loadPlaywright?: () => Promise<PlaywrightModule>
     masks?: string[]
   } = {},
-): Promise<{ page: FlowPage; trace: FlowTrace; dispose: () => Promise<void>; outbound: () => EgressAttempt[] }> {
+): Promise<{
+  capabilities: FlowDriverCapabilities
+  page: FlowPage
+  trace: FlowTrace
+  dispose: () => Promise<void>
+  outbound: () => EgressAttempt[]
+}> {
   const loadPlaywright =
     opts.loadPlaywright ?? ((): Promise<PlaywrightModule> => import('playwright-core'))
   let playwright: PlaywrightModule
@@ -99,12 +118,29 @@ export async function makePlaywrightFlowSession(
       const started = await start()
       await resolve(started.page, element).fill(value)
     },
+    choose: async (element, value) => {
+      const started = await start()
+      // The option is chosen by its accessible name, the same semantic form
+      // the element reference itself carries (#70).
+      await resolve(started.page, element).selectOption({ label: value })
+    },
+    waitFor: async (element) => {
+      const started = await start()
+      await resolve(started.page, element).waitFor({ state: 'visible' })
+    },
     assertText: async (text) => {
       const started = await start()
       const locator = started.page.getByText(text).first()
       const visible = await locator.isVisible()
       if (!visible) {
         throw new Error(`assert failed: the text ${JSON.stringify(text)} is not visible`)
+      }
+    },
+    assertElement: async (element) => {
+      const started = await start()
+      const visible = await resolve(started.page, element).isVisible()
+      if (!visible) {
+        throw new Error(`assert failed: the element is not visible`)
       }
     },
     screenshot: async (path) => {
@@ -143,7 +179,7 @@ export async function makePlaywrightFlowSession(
     await started.browser.close()
   }
 
-  return { page, trace, dispose, outbound: () => [...outbound] }
+  return { capabilities: BROWSER_FLOW_DRIVER, page, trace, dispose, outbound: () => [...outbound] }
 }
 
 const DEFAULT_PORTS: Record<string, number> = { 'http:': 80, 'https:': 443, 'ws:': 80, 'wss:': 443 }

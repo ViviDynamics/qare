@@ -1,4 +1,5 @@
 import type { AgentRunner } from './runner.js'
+import type { FlowDriverCapabilities } from './flow.js'
 import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
 import { shellCharacter } from './run.js'
 
@@ -26,6 +27,34 @@ export interface PlanInputs {
    * loads the plan.
    */
   flowActions?: string[]
+  /**
+   * The driver the planned flows will run against (#70). The planner is only
+   * offered the actions that driver declares, so it cannot plan something the
+   * target cannot do; a plan naming anything else is rejected when it loads.
+   */
+  driver?: FlowDriverCapabilities
+}
+
+/**
+ * The action kinds the planner is offered: everything the target driver
+ * declares plus the kinds the change under review introduces (#70).
+ */
+function offeredKinds(inputs: PlanInputs): readonly string[] {
+  const base =
+    inputs.driver === undefined
+      ? FLOW_ACTION_KINDS
+      : FLOW_ACTION_KINDS.filter((kind) => inputs.driver!.actions.includes(kind))
+  return [...new Set([...base, ...(inputs.flowActions ?? [])])]
+}
+
+/**
+ * The driver the plan is parsed against: what the planner was offered, the
+ * loader accepts, so the change's own kinds extend the declared set (#70).
+ */
+function effectiveDriver(inputs: PlanInputs): FlowDriverCapabilities | undefined {
+  if (inputs.driver === undefined || inputs.flowActions === undefined || inputs.flowActions.length === 0)
+    return inputs.driver
+  return { ...inputs.driver, actions: [...inputs.driver.actions, ...inputs.flowActions] }
 }
 
 /** What the planner and the verifier are told when there is no change under review. */
@@ -56,8 +85,9 @@ const SYSTEM = [
  * `parsePlan` remains the authority, which is also the constitution's rule that
  * code decides rather than the model.
  */
-export function planOutputSchema(extraFlowActions: readonly string[] = []) {
-  const kinds = [...new Set([...FLOW_ACTION_KINDS, ...extraFlowActions])]
+export function planOutputSchema(extraFlowActions: readonly string[] = [], driver?: FlowDriverCapabilities) {
+  const base = driver === undefined ? FLOW_ACTION_KINDS : FLOW_ACTION_KINDS.filter((kind) => driver.actions.includes(kind))
+  const kinds = [...new Set([...base, ...extraFlowActions])]
   return {
   type: 'object',
   properties: {
@@ -129,7 +159,7 @@ function prompt(inputs: PlanInputs, correction?: string): string {
   const criteria = inputs.criteria
     .map((criterion) => `- ${criterion.id}: ${criterion.text}`)
     .join('\n')
-  const flowActionKinds = [...new Set([...FLOW_ACTION_KINDS, ...(inputs.flowActions ?? [])])]
+  const flowActionKinds = offeredKinds(inputs)
   const suites = inputs.suites?.length
     ? `Suites this repository declares, which a check may name:\n${inputs.suites.map((suite) => `- ${suite}`).join('\n')}`
     : 'This repository declares no suites, so every check must stand on its own.'
@@ -146,7 +176,7 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     '',
     'A check is one of:',
     '- command: {"kind":"command","name":...,"command":"an executable followed by its arguments"}',
-    '- flow: {"kind":"flow","name":...,"suite":"an existing suite"} or {"kind":"flow","name":...,"actions":[{"action":"open","url":"the url to open first"},{"action":"type","element":{"role":"searchbox","name":"Search"},"value":"Ada Lovelace"},{"action":"click","element":{"role":"button","name":"Search"}},{"action":"assert","text":"the text that must be visible"}]}',
+    '- flow: {"kind":"flow","name":...,"suite":"an existing suite"} or {"kind":"flow","name":...,"actions":[{"action":"open","url":"the url to open first"},{"action":"type","element":{"role":"searchbox","name":"Search"},"value":"Ada Lovelace"},{"action":"click","element":{"role":"button","name":"Search"}},{"action":"assertText","text":"the text that must be visible"}]}',
     '- visual: {"kind":"visual","name":...,"screenshot":"name","widths":[390],"themes":["light"]}',
     '- mail: {"kind":"mail","name":...,"address":"the address a message is waited for","subject":"a substring to match", "timeoutMs":60000}',
     '',
@@ -158,6 +188,10 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     `A flow action is one of ${flowActionKinds.join(', ')}. An element reference is semantic:`,
     '{"role":"the aria role","name":"the accessible name"} or {"testId":"the data-testid value"}.',
     'Never a CSS selector, never coordinates, never a free-form instruction.',
+    'choose picks an option by its accessible name: {"action":"choose","element":{"role":"combobox","name":"Country"},"value":"the option to choose"}.',
+    'waitFor waits for an element to become visible before the next action: {"action":"waitFor","element":{...}}.',
+    'assertElement asserts an element is visible: {"action":"assertElement","element":{...}}. capture takes a screenshot:',
+    '{"action":"capture"}.',
     'A totp action types the second-factor code the harness generates from the profile\'s seeded login.totp secret:',
     '{"action":"totp","element":{"role":"textbox","name":"Verification code"}}. A backupCode action types the profile\'s seeded',
     'backup code the same way. Never write a secret, a code or a recovery value into the plan: the profile seeds them.',
@@ -246,7 +280,7 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
       prompt: prompt(inputs, correction),
       system: SYSTEM,
       toolPolicy: 'none',
-      outputSchema: JSON.stringify(planOutputSchema(inputs.flowActions ?? [])),
+      outputSchema: JSON.stringify(planOutputSchema(inputs.flowActions ?? [], inputs.driver)),
       budget: { maxOutputTokens: 4096 },
     })
     if (run.status !== 'completed')
@@ -259,7 +293,7 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
 
     let plan: Plan
     try {
-      plan = parsePlan(JSON.parse(run.output), inputs.flowActions ?? [])
+      plan = parsePlan(JSON.parse(run.output), inputs.flowActions ?? [], effectiveDriver(inputs))
     } catch (error) {
       correction = error instanceof Error ? error.message : String(error)
       continue

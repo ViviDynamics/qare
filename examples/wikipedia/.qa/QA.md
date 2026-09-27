@@ -11,7 +11,7 @@ resolves against the target URL. Searching for an article:
     - { action: open, url: /wiki/Main_Page }
     - { action: type, element: { role: searchbox, name: Search Wikipedia }, value: Ada Lovelace }
     - { action: click, element: { role: button, name: Search } }
-    - { action: assert, text: Countess of Lovelace }
+    - { action: assertText, text: Countess of Lovelace }
 
 Boundary: this example runs against the live site, so it needs the network,
 and the in-repo tests exercise the same profile shape against a local server

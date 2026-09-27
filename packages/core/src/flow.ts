@@ -4,8 +4,10 @@ import { DEFAULT_CHECK_TIMEOUT_MS, runCommandCheck } from './run.js'
 import { totpCode, totpWindow, windowRemaining } from './totp.js'
 
 /**
- * The fixed flow vocabulary a plan may ask for (#70, #121). The driver resolves
- * element references against the page; nothing here names a selector.
+ * The fixed flow vocabulary a plan may ask for (#70, #121). Actions are named
+ * for intent rather than for a library, so the same check runs against any
+ * driver that declares the same set; the driver resolves element references
+ * against the page, and nothing here names a selector.
  */
 export type FlowElement = { role: string; name: string } | { testId: string }
 
@@ -13,11 +15,31 @@ export type FlowAction =
   | { action: 'open'; url: string }
   | { action: 'type'; element: FlowElement; value: string }
   | { action: 'click'; element: FlowElement }
-  | { action: 'assert'; text: string }
+  /** Chooses the option whose accessible name is `value` in the element (#70). */
+  | { action: 'choose'; element: FlowElement; value: string }
+  /** Waits until the element is visible, without asserting anything about it (#70). */
+  | { action: 'waitFor'; element: FlowElement }
+  /** Asserts the text is visible. A failed assert is a failed check (#70). */
+  | { action: 'assertText'; text: string }
+  /** Asserts the element is visible. A failed assert is a failed check (#70). */
+  | { action: 'assertElement'; element: FlowElement }
+  /** Takes a screenshot of the page as it stands, as evidence (#70). */
+  | { action: 'capture' }
   /** Types the code the harness generates from the profile's seeded secret (#64). */
   | { action: 'totp'; element: FlowElement }
   /** Types the profile's seeded backup code, where the app accepts one (#64). */
   | { action: 'backupCode'; element: FlowElement }
+
+/**
+ * What one driver supports (#70): a plan naming an action the driver lacks is
+ * rejected before anything runs, with the action and the driver named. Evidence
+ * kinds are what the driver can produce for the harness to publish.
+ */
+export interface FlowDriverCapabilities {
+  name: string
+  actions: readonly string[]
+  evidence: readonly string[]
+}
 
 /** The profile's `login.totp` section, carried to the flow that types its codes. */
 export interface FlowTotpConfig {
@@ -32,7 +54,10 @@ export interface FlowPage {
   open(url: string): Promise<void>
   click(element: FlowElement): Promise<void>
   type(element: FlowElement, value: string): Promise<void>
+  choose(element: FlowElement, value: string): Promise<void>
+  waitFor(element: FlowElement): Promise<void>
   assertText(text: string): Promise<void>
+  assertElement(element: FlowElement): Promise<void>
   screenshot(path: string): Promise<void>
 }
 
@@ -85,7 +110,18 @@ export interface FlowCheckResult {
   evidence: string[]
 }
 
-const KNOWN_KINDS: readonly string[] = ['open', 'type', 'click', 'assert', 'totp', 'backupCode']
+const KNOWN_KINDS: readonly string[] = [
+  'open',
+  'type',
+  'click',
+  'choose',
+  'waitFor',
+  'assertText',
+  'assertElement',
+  'capture',
+  'totp',
+  'backupCode',
+]
 
 /**
  * A code typed this close to a window boundary is generated for the next
@@ -116,8 +152,16 @@ function describeAction(action: FlowAction, index: number): string {
       return `action ${index}: type ${describeElement(action.element)}=${action.value}`
     case 'click':
       return `action ${index}: click ${describeElement(action.element)}`
-    case 'assert':
+    case 'choose':
+      return `action ${index}: choose ${describeElement(action.element)}=${action.value}`
+    case 'waitFor':
+      return `action ${index}: wait for ${describeElement(action.element)}`
+    case 'assertText':
       return `action ${index}: assert text "${action.text}" is visible`
+    case 'assertElement':
+      return `action ${index}: assert the element ${describeElement(action.element)} is visible`
+    case 'capture':
+      return `action ${index}: capture a screenshot`
     case 'totp':
       return `action ${index}: totp code generated from the profile's seeded secret and typed into ${describeElement(action.element)}`
     case 'backupCode':
@@ -187,7 +231,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   // from mail — may still sit in an input on it, and redaction cannot read
   // pixels: every capture is withheld until the flow can prove otherwise (#64).
   let codeOnPage = codesOnPage
-  const screenshot = async (name: string): Promise<string | undefined> => {
+  const screenshot = async (name: string, opts: { required?: boolean } = {}): Promise<string | undefined> => {
     if (codeOnPage) {
       log.push(`${name} withheld: the second-factor code is visible on the page, and redaction cannot read pixels`)
       return undefined
@@ -198,6 +242,9 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
       return name
     } catch (error) {
       log.push(`screenshot ${name} failed: ${String(error)}`)
+      // A capture the plan asked for is the proof it asked for: the flow cannot
+      // pass as though the pixels were published when the capture failed (#70).
+      if (opts.required) throw error
       return undefined
     }
   }
@@ -213,6 +260,9 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   let outcome: FlowCheckResult['outcome'] = 'passed'
   let reason: string | undefined
   let failureScreenshot: string | undefined
+  // A capture is evidence the flow took on the way past, so it is listed in
+  // the result whatever happens to the actions that follow it (#70).
+  const captures: string[] = []
 
   for (const [index, action] of actions.entries()) {
     let line = describeAction(action, index)
@@ -227,9 +277,24 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
         case 'click':
           await page.click(action.element)
           break
-        case 'assert':
+        case 'choose':
+          await page.choose(action.element, action.value)
+          break
+        case 'waitFor':
+          await page.waitFor(action.element)
+          break
+        case 'assertText':
           await page.assertText(action.text)
           break
+        case 'assertElement':
+          await page.assertElement(action.element)
+          break
+        case 'capture': {
+          const name = `capture-${index}.png`
+          const taken = await screenshot(name, { required: true })
+          if (taken !== undefined) captures.push(name)
+          break
+        }
         case 'totp': {
           const config = totp!
           // A code generated against a window that ends before the app reads
@@ -273,9 +338,12 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
         }
       }
     } catch (error) {
-      if (action.action === 'assert') {
+      if (action.action === 'assertText' || action.action === 'assertElement') {
         outcome = 'failed'
-        reason = `assert failed: the text ${JSON.stringify(action.text)} is not visible`
+        reason =
+          action.action === 'assertText'
+            ? `assert failed: the text ${JSON.stringify(action.text)} is not visible`
+            : `assert failed: the element ${describeElement(action.element)} is not visible`
       } else {
         // The failure reason quotes what the action saw, and the action may
         // have seen a value the flow put on the page: the same sweep that
@@ -289,7 +357,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
     log.push(line)
   }
 
-  const evidence: string[] = [ACTION_LOG]
+  const evidence: string[] = [ACTION_LOG, ...captures]
   if (outcome === 'passed') {
     const final = await screenshot(FINAL_SCREENSHOT)
     if (final !== undefined) evidence.push(final)

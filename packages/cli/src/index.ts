@@ -18,6 +18,7 @@ import {
   NareAgentRunner,
   ProfileMissingError,
   BUILTIN_REDACTION_RULES,
+  BROWSER_FLOW_DRIVER,
   loadProfile,
   redactEvidenceDir,
   redactText,
@@ -36,6 +37,7 @@ import {
 } from '@qare/core'
 import type {
   BootOpts,
+  FlowDriverCapabilities,
   Job,
   LedgerEntry,
   RedactionRule,
@@ -344,9 +346,16 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
     }
 
     const runner = new NareAgentRunner(binary === undefined ? {} : { binary })
+    // The browser driver is what a plan can assume; the change's own kinds
+    // extend it, so a plan may name them even though the browser lacks them.
+    const driver: FlowDriverCapabilities =
+      flowActions.length === 0
+        ? BROWSER_FLOW_DRIVER
+        : { ...BROWSER_FLOW_DRIVER, actions: [...BROWSER_FLOW_DRIVER.actions, ...flowActions] }
     const plan = await planRun(runner, {
       criteria,
       diff,
+      driver,
       ...(suites === undefined ? {} : { suites }),
       ...(flowActions.length === 0 ? {} : { flowActions }),
     })
@@ -586,7 +595,7 @@ async function runCommand(
       )
       if (missing.length > 0)
         throw new Error(`qare run --plan also requires ${missing.join(', ')}`)
-      const plan = loadPlan(await readFile(resolve(planSpec), 'utf8'))
+      const plan = loadPlan(await readFile(resolve(planSpec), 'utf8'), [], BROWSER_FLOW_DRIVER)
       const built = jobFromPlan(plan, {
         id: flag(argv, '--id') as string,
         repoPath: resolve(flag(argv, '--repo') as string),

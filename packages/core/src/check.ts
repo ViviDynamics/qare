@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { BootOpts } from './boot.js'
+import { BROWSER_FLOW_DRIVER } from './flow-playwright.js'
 import { jobFromPlan } from './job-from-plan.js'
 import { judgeExecuted } from './judge.js'
 import type { ReadMail } from './mailbox.js'
@@ -138,6 +139,7 @@ async function planOrReport(planner: AgentRunner, criteria: { id: string; text: 
     return await planRun(planner, {
       criteria,
       suites: profile.suites.map((suite) => suite.name),
+      driver: BROWSER_FLOW_DRIVER,
       ...(profile.target === undefined ? {} : { target: profile.target.url }),
     })
   } catch (error) {

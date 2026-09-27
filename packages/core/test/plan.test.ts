@@ -57,7 +57,7 @@ test('plan.valid.json carries the inferred-check marker and an unplannable crite
           { action: 'open', url: ['http:', '//localhost:3000/ledger'].join('') },
           { action: 'type', element: { role: 'textbox', name: 'Search' }, value: 'Ada Lovelace' },
           { action: 'click', element: { testId: 'export-csv' } },
-          { action: 'assert', text: 'Export complete' },
+          { action: 'assertText', text: 'Export complete' },
         ],
         inferred: true,
       },
@@ -291,4 +291,65 @@ test('the refusal names the whole vocabulary it was offered, including the chang
   )
 
   expect(error.message).toContain('"totp", "backupCode", "magicLink"')
+})
+
+test('a plan naming an action the driver lacks is refused, naming the action and the driver (#70)', () => {
+  const error = planError(() =>
+    parsePlan(
+      {
+        schemaVersion: '1',
+        criteria: [
+          {
+            id: 'c1',
+            text: 'the ledger exports to CSV',
+            checks: [
+              {
+                kind: 'flow',
+                name: 'ledger-export',
+                actions: [
+                  { action: 'open', url: ['http:', '//localhost:3000/ledger'].join('') },
+                  { action: 'capture' },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      [],
+      { name: 'flat-file', actions: ['open'], evidence: [] },
+    ),
+  )
+
+  expect(error.field).toBe('criteria[0].checks[0].actions[1].action')
+  expect(error.message).toContain('"capture"')
+  expect(error.message).toContain('flat-file')
+  expect(error.message).toContain('"open"')
+})
+
+test('a plan whose actions all sit in the driver\'s declared set loads with that driver (#70)', () => {
+  const plan = parsePlan(
+    {
+      schemaVersion: '1',
+      criteria: [
+        {
+          id: 'c1',
+          text: 'the ledger exports to CSV',
+          checks: [
+            {
+              kind: 'flow',
+              name: 'ledger-export',
+              actions: [
+                { action: 'open', url: ['http:', '//localhost:3000/ledger'].join('') },
+                { action: 'assertText', text: 'Export complete' },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    [],
+    { name: 'browser', actions: ['open', 'assertText'], evidence: [] },
+  )
+
+  expect(plan.criteria[0].checks[0]).toMatchObject({ kind: 'flow', name: 'ledger-export' })
 })

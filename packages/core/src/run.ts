@@ -4,8 +4,8 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Artefacts, type ArtefactField } from './artefacts.js'
 import { bootApp, type BootOpts } from './boot.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
-import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
-import { makePlaywrightFlowSession } from './flow-playwright.js'
+import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
+import { BROWSER_FLOW_DRIVER, makePlaywrightFlowSession } from './flow-playwright.js'
 import { judgeRun, toSideResults } from './judge.js'
 import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck } from './job.js'
 import type { FlowActionStep } from './plan.js'
@@ -28,6 +28,7 @@ const NO_CHECKS_REASON = 'no checks were given for this criterion, so nothing ra
  * against a target checks against the hosts the profile declares (#122).
  */
 export type FlowSessionFactory = (opts: { masks: string[] }) => Promise<{
+  capabilities?: FlowDriverCapabilities
   page: FlowPage
   trace: FlowTrace
   dispose: () => Promise<void>
@@ -65,7 +66,13 @@ interface FlowTargetContext {
  */
 export async function runJob(
   job: Job,
-  opts: BootOpts & { ledgerFeed?: { dir: string }; readMail?: ReadMail; flowSession?: FlowSessionFactory } = {},
+  opts: BootOpts & {
+    ledgerFeed?: { dir: string }
+    readMail?: ReadMail
+    flowSession?: FlowSessionFactory
+    /** What the driver behind this run's flows declares (#70); the browser driver by default. */
+    flowDriver?: FlowDriverCapabilities
+  } = {},
 ): Promise<{ result: RunResult }> {
   let profile: QaProfile
   try {
@@ -85,7 +92,7 @@ export async function runJob(
   // than implying a base comparison it never made (#122).
   const targetNote = profile.target === undefined ? {} : { target: { url: profile.target.url, comparison: 'none' as const } }
   try {
-    validatePlanValues(job, profile, values)
+    validatePlanValues(job, profile, values, opts.flowDriver ?? BROWSER_FLOW_DRIVER)
   } catch (error) {
     if (!(error instanceof JobValidationError)) throw error
     return refuseRun(job, opts, BUILTIN_REDACTION_RULES, error.message, targetNote)
@@ -153,9 +160,11 @@ async function refuseRun(
  * Walk every user-authored string that can carry a `{{run.<name>}}` reference and
  * reject unknown names before anything boots. The seed command is validated here
  * even though its execution lands with the orchestrator, so a bad name in the
- * seed is still a plan-time failure.
+ * seed is still a plan-time failure. The driver's own declaration is walked the
+ * same way: a flow naming an action the driver lacks refuses the run before
+ * anything boots, naming the action and the driver (#70).
  */
-function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): void {
+function validatePlanValues(job: Job, profile: QaProfile, values: RunValues, flowDriver: FlowDriverCapabilities): void {
   if (profile.app !== undefined) validateValueReferences(profile.app.seed.command, values, 'app.seed.command')
   // Mail artefact names are validated in walk order: a check may only read an
   // artefact from a mail check that has already waited for its message (#69),
@@ -188,6 +197,11 @@ function validatePlanValues(job: Job, profile: QaProfile, values: RunValues): vo
           return true
         }
         for (const [actionIndex, action] of (check.actions ?? []).entries()) {
+          if (!flowDriver.actions.includes(action.action))
+            throw new JobValidationError(
+              `${base}.actions[${actionIndex}].action`,
+              `flow action ${JSON.stringify(action.action)} is not one of the actions the ${flowDriver.name} driver declares, so the plan cannot run against it`,
+            )
           mapFlowStrings(action, (value, field) => {
             validateValueReferences(value, values, `${base}.actions[${actionIndex}].${field}`, allow(`${base}.actions[${actionIndex}].${field}`))
             return value
@@ -641,7 +655,9 @@ function mapFlowStrings(action: FlowActionStep, map: (value: string, field: stri
       return { ...action, url: map(action.url, 'url') }
     case 'type':
       return { ...action, value: map(action.value, 'value') }
-    case 'assert':
+    case 'choose':
+      return { ...action, value: map(action.value, 'value') }
+    case 'assertText':
       return { ...action, text: map(action.text, 'text') }
     default:
       return action

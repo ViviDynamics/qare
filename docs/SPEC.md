@@ -419,6 +419,17 @@ for intent rather than for a library, a driver declares which actions and which
 evidence kinds it supports, and a plan asking for something its target cannot do
 is rejected before anything boots rather than failing halfway through.
 
+The vocabulary is fixed and small: `open` a URL, `type` a value, `click` an
+element, `choose` an option by its accessible name, `waitFor` an element to
+become visible, `assertText` that a text is visible, `assertElement` that an
+element is visible, and `capture` a screenshot as evidence; the two second
+factor actions (`totp`, `backupCode`) complete it. A driver declares the actions
+and the evidence kinds it supports, the planner is only offered what the driver
+declares, and a plan naming anything else is refused naming the action and the
+driver, at load time and again before a run boots. The judge reads the same
+driver-independent results either way, so swapping the browser for another
+driver that declares the same actions changes nothing in a plan.
+
 The browser is the first driver. A desktop shell, a phone and a native
 application are the same vocabulary against a different tree, and every one of
 those platforms exposes an accessibility tree, so element references stay

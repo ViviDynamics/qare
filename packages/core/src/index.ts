@@ -101,14 +101,14 @@ export { runJob } from './run.js'
 export type { FlowSessionFactory } from './run.js'
 export { runVisualCheck, type VisualRevision, type VisualCheckOpts, type VisualScreenshot, type VisualDiff, type VisualCheckResult } from './visual.js'
 export { runFlowCheck, runSuiteCheck } from './flow.js'
-export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult, FlowTotpConfig } from './flow.js'
+export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult, FlowTotpConfig, FlowDriverCapabilities } from './flow.js'
 export { decodeBase32, totpCode, totpWindow, windowRemaining } from './totp.js'
 export {
   makePlaywrightScreenshot,
   disposeBrowser,
   PlaywrightScreenshotBackendError,
 } from './visual-playwright.js'
-export { makePlaywrightFlowSession, PlaywrightFlowSessionError } from './flow-playwright.js'
+export { BROWSER_FLOW_DRIVER, makePlaywrightFlowSession, PlaywrightFlowSessionError } from './flow-playwright.js'
 export { matchesStub, summarizeEgress, mergeVerdicts } from './egress.js'
 export type { EgressAttempt, EgressFinding, EgressStub } from './egress.js'
 export { diffStubs, flagAddedStubs } from './stub-diff.js'
