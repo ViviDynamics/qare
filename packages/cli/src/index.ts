@@ -517,18 +517,34 @@ async function readStoredVerdict(dir: string) {
   try {
     bytes = await readFile(join(dir, 'judged-result.json'), 'utf8')
   } catch (error) {
-    if (isEnoent(error)) return undefined
-    throw error
+    if (!isEnoent(error)) throw error
+    try {
+      bytes = await readFile(join(dir, 'evidence', 'judged-result.json'), 'utf8')
+    } catch (nested) {
+      if (isEnoent(nested)) return undefined
+      throw nested
+    }
   }
   return { bytes, result: loadResult(bytes) }
 }
 
+/**
+ * One artifact of the run: plan.json, result.json and judged-result.json sit
+ * beside each other when judge writes beside the result, and the pipeline's
+ * judge workspace keeps plan.json and judged-result.json at its root with the
+ * executed result.json below evidence/, so both layouts replay.
+ */
 async function readArtifact(dir: string, name: string): Promise<string> {
   try {
     return await readFile(join(dir, name), 'utf8')
   } catch (error) {
+    if (!isEnoent(error)) throw error
+  }
+  try {
+    return await readFile(join(dir, 'evidence', name), 'utf8')
+  } catch (error) {
     if (isEnoent(error))
-      throw new Error(`qare replay reads the artifacts of a run; ${dir} has no ${name}`)
+      throw new Error(`qare replay reads the artifacts of a run; ${dir} has no ${name} in the directory or its evidence subdirectory`)
     throw error
   }
 }

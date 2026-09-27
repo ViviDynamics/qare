@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -131,4 +131,40 @@ test('a directory without the artifacts is an error that names what is missing',
 
   expect(code).toBe(4)
   expect(err.lines.join('')).toContain('no plan.json')
+})
+
+test('replay reads the pipeline layout with the artifacts below evidence', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-replay-pipeline-'))
+  made.push(dir)
+  await writeFile(join(dir, 'plan.json'), `${JSON.stringify(PLAN, null, 2)}\n`, 'utf8')
+  await mkdir(join(dir, 'evidence'), { recursive: true })
+  await writeFile(
+    join(dir, 'evidence', 'result.json'),
+    JSON.stringify(
+      {
+        schemaVersion: RESULT_SCHEMA_VERSION,
+        verdict: 'passed',
+        criteria: [{ id: 'c1', outcome: 'proven', evidence: ['c1/stdout.txt'] }],
+        job: { id: 'pr-1' },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  )
+  const judgedOut = capture()
+  await main(
+    ['judge', '--result', join(dir, 'evidence', 'result.json'), '--runner', 'none', '--outDir', dir],
+    judgedOut.writer,
+    judgedOut.writer,
+  )
+  expect(existsSync(join(dir, 'judged-result.json'))).toBe(true)
+  expect(existsSync(join(dir, 'evidence', 'result.json'))).toBe(true)
+  const out = capture()
+
+  const code = await main(['replay', dir], out.writer, capture().writer)
+
+  expect(code).toBe(0)
+  expect(out.lines.join('')).toContain('verdict passed')
+  expect(out.lines.join('')).toContain('byte-identical with the stored judged verdict')
 })
