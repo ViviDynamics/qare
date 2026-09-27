@@ -84,17 +84,27 @@ jobs:
           fi
       - name: Build the example against the published base when it exists
         run: |
-          if docker pull ghcr.io/vividynamics/qare-core:"$GITHUB_REF_NAME"; then
+          if docker pull ghcr.io/vividynamics/qare-core:"$GITHUB_REF_NAME" 2>pull.log; then
             docker build --build-arg QARE_IMAGE=ghcr.io/vividynamics/qare-core:"$GITHUB_REF_NAME" \
               -t qare-derived-published:"$GITHUB_REF_NAME" examples/derived-image
-            docker run --rm qare-derived-published:"$GITHUB_REF_NAME" qare --version
+            version="$(docker run --rm qare-derived-published:"$GITHUB_REF_NAME" qare --version)"
+            if [[ "$version" != "$GITHUB_REF_NAME" ]]; then
+              echo "the entry point printed '$version', expected '$GITHUB_REF_NAME'" >&2
+              exit 1
+            fi
             docker run --rm qare-derived-published:"$GITHUB_REF_NAME" /opt/qare/drivers/scale-driver/probe
             docker run --rm qare-derived-published:"$GITHUB_REF_NAME" /opt/qare/tools/measure
             user="$(docker run --rm qare-derived-published:"$GITHUB_REF_NAME" id -un)"
-            if [[ "$user" != qare ]]; then
-              echo "the container runs as '$user', expected the qare user" >&2
+            uid="$(docker run --rm qare-derived-published:"$GITHUB_REF_NAME" id -u)"
+            gid="$(docker run --rm qare-derived-published:"$GITHUB_REF_NAME" id -g)"
+            if [[ "$user" != qare || "$uid" != 1000 || "$gid" != 1000 ]]; then
+              echo "the container runs as '$user' (uid $uid, gid $gid), expected qare with uid and gid 1000" >&2
               exit 1
             fi
-          else
+          elif grep -qE "manifest unknown|not found|not exist|name unknown" pull.log; then
             echo "the published base for this release does not exist yet; only the fixture guard ran"
+          else
+            echo "the published base pull failed for a reason other than absence:" >&2
+            cat pull.log >&2
+            exit 1
           fi
