@@ -101,7 +101,7 @@ jobs:
               echo "the container runs as '$user' (uid $uid, gid $gid), expected qare with uid and gid 1000" >&2
               exit 1
             fi
-          elif grep -qE "manifest unknown|not found|not exist|name unknown" pull.log; then
+          elif grep -qE "manifest unknown|name unknown" pull.log; then
             echo "the published base for this release does not exist yet; only the fixture guard ran"
           else
             echo "the published base pull failed for a reason other than absence:" >&2
