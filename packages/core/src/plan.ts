@@ -62,7 +62,9 @@ export interface PlannedCriterion {
   /**
    * The app this criterion is checked against, named after the plan's
    * `profiles`. A plan that names its profiles must name one on every
-   * criterion, or nothing runs (#55).
+   * criterion, or nothing runs (#55); a plan that names no profiles
+   * cannot name one on any criterion, because the single-profile run
+   * would silently ignore it.
    */
   profile?: string
 }
@@ -222,7 +224,9 @@ function parseCriterion(value: unknown, index: number, extraFlowActions: readonl
   let profile: string | undefined
   if (value.profile !== undefined) {
     profile = nonEmptyString(value.profile, `${base}.profile`, 'profile')
-    if (profiles !== undefined && !profiles.some((planned) => planned.name === profile))
+    if (profiles === undefined)
+      fail(`${base}.profile`, `criterion "${id}" names ${JSON.stringify(profile)}, but the plan names no profiles; a criterion is checked against one of the apps the plan names, so a plan that routes a criterion must name its profiles`)
+    else if (!profiles.some((planned) => planned.name === profile))
       fail(`${base}.profile`, `criterion "${id}" names ${JSON.stringify(profile)}, which the plan does not plan; a criterion is checked against one of the apps the plan names`)
   }
 
