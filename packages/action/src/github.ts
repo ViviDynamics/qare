@@ -205,6 +205,35 @@ export class GitHubClient {
     await this.request('PATCH', `/repos/${this.repository}/git/refs/heads/${branch}`, undefined, { sha })
   }
 
+  /** A file's content at a ref, base64-decoded; absent is undefined, not an error. */
+  async getContents(path: string, ref: string): Promise<Buffer | undefined> {
+    try {
+      const contents = await this.request<{ content?: string; encoding?: string }>(
+        'GET',
+        `/repos/${this.repository}/contents/${path}`,
+        new URLSearchParams({ ref }),
+      )
+      if (contents.encoding !== 'base64' || typeof contents.content !== 'string') {
+        throw new GitHubClientError(`GitHub returned the contents of ${path} in a form ingest cannot read`)
+      }
+      return Buffer.from(contents.content, 'base64')
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) return undefined
+      throw error
+    }
+  }
+
+  async createPullRequest(head: string, base: string, title: string, body: string): Promise<{ number: number; htmlUrl?: string }> {
+    const pull = await this.request<{ number: number; html_url?: string }>(
+      'POST',
+      `/repos/${this.repository}/pulls`,
+      undefined,
+      { title, head, base, body },
+    )
+    return { number: pull.number, htmlUrl: pull.html_url }
+  }
+
+
   private async request<T>(method: string, path: string, query?: URLSearchParams, payload?: unknown): Promise<T> {
     const url = new URL(`${this.root}${path}`)
     if (query !== undefined) {
