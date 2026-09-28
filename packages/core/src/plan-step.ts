@@ -110,8 +110,8 @@ export class PlanStepError extends Error {
 function exploreChannel(exploration: NonNullable<PlanInputs['exploration']>): AgentToolChannel {
   if (typeof exploration.endpoint !== 'string' || exploration.endpoint.trim() === '')
     throw new PlanStepError('the exploration channel carries no endpoint, so there is nothing the model session can explore')
-  if (!isExplorableUrl(exploration.endpoint))
-    throw new PlanStepError('the exploration endpoint is not an absolute http or https URL, so the model session cannot reach it')
+  if (!isExplorableUrl(exploration.endpoint) || new URL(exploration.endpoint).protocol !== 'http:')
+    throw new PlanStepError('the exploration endpoint must be an absolute http URL: the channel is served in clear inside the sandbox, and the client does not speak https')
   const allowlist = exploration.tools ?? EXPLORATION_TOOLS
   const unknown = allowlist.filter((tool) => !EXPLORATION_TOOLS.includes(tool as ExplorationTool))
   if (unknown.length > 0)
