@@ -127,6 +127,9 @@ export function startExplorationServer(
   const { host = '127.0.0.1', port = 0 } = options
   return new Promise((resolve, reject) => {
     const server = createServer((request, response) => {
+      // A peer that walks away mid-result leaves a dead socket: the write
+      // failure says nothing the sandbox needs to answer.
+      response.on('error', () => {})
       handle(request, response, page).catch((error) => {
         refuse(response, 500, error instanceof Error ? error.message : String(error))
       })
@@ -167,7 +170,11 @@ function handle(request: IncomingMessage, response: ServerResponse, page: Explor
     refuse(response, 404, `the exploration channel serves only ${EXPLORATION_TOOLS.join(', ')}, and nothing else crosses it`)
     return Promise.resolve()
   }
-  return readBody(request).then(async (body) => {
+  return readBody(request).then(async ({ body, over }) => {
+    if (over) {
+      refuse(response, 413, 'the exploration tool call carried a body past the 4 KiB cap: the channel carries a URL, not a payload')
+      return
+    }
     switch (url) {
       case '/observe':
         reply(response, await page.observe())
@@ -214,12 +221,33 @@ export function isExplorableUrl(url: string): boolean {
   }
 }
 
-function readBody(request: IncomingMessage): Promise<string> {
+// The channel serves tool calls, and the only call that reads a body is
+// navigate's single URL: a peer that streams without end must not grow the
+// sandbox process's memory, so the body stops accumulating past the cap and
+// the call is refused instead of read.
+const MAX_BODY_BYTES = 4 * 1024
+
+// What crosses back is a tool result the plan step hands to the model, so it
+// is bounded well before the model's own limits: a page that answers with a
+// payload a plan step cannot carry is refused, and the trusted side never
+// buffers it whole.
+const MAX_RESULT_BYTES = 4 * 1024 * 1024
+
+function readBody(request: IncomingMessage): Promise<{ body: string; over: boolean }> {
   return new Promise((resolve, reject) => {
     let body = ''
-    request.on('data', (chunk) => (body += String(chunk)))
+    let bytes = 0
+    let over = false
+    request.on('data', (chunk) => {
+      bytes += chunk.length
+      if (bytes > MAX_BODY_BYTES) {
+        over = true
+        return
+      }
+      body += String(chunk)
+    })
     request.on('error', reject)
-    request.on('end', () => resolve(body))
+    request.on('end', () => resolve({ body, over }))
   })
 }
 
@@ -266,7 +294,20 @@ export async function callExplorationTool(
       },
       (incoming) => {
         let body = ''
-        incoming.on('data', (chunk) => (body += String(chunk)))
+        let bytes = 0
+        incoming.on('data', (chunk) => {
+          bytes += chunk.length
+          if (bytes > MAX_RESULT_BYTES) {
+            incoming.destroy()
+            reject(
+              new ExplorationError(
+                'the exploration tool result ran past the 4 MiB cap: the plan step does not carry a page-sized payload',
+              ),
+            )
+            return
+          }
+          body += String(chunk)
+        })
         incoming.on('error', reject)
         incoming.on('end', () => {
           let parsed: unknown

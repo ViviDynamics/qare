@@ -243,6 +243,35 @@ test('the exploration prompt describes exactly the tools the channel serves', as
   )
 })
 
+test('a tool call whose body runs past the cap is refused instead of read', async () => {
+  const server = await startExplorationServer(fakePage())
+  try {
+    // The body carries one navigate URL: anything past the cap is not a tool
+    // call, and a peer streaming without end must not grow the server's
+    // memory. The refusal crosses fenced, the way every channel refusal does.
+    const answer = await callExplorationTool(server.url, 'navigate', {
+      url: `${url('127.0.0.1:34567')}/${'a'.repeat(8 * 1024)}`,
+    }).catch((error) => String(error))
+    expect(answer).toContain('[untrusted tool result:')
+    expect(answer).toContain('the exploration tool call carried a body past the 4 KiB cap')
+  } finally {
+    await server.close()
+  }
+})
+
+test('a tool result that runs past the cap never reaches the plan step whole', async () => {
+  const server = await startExplorationServer(
+    fakePage({ snapshot: async () => ({ role: 'main', states: {}, path: 'x'.repeat(5 * 1024 * 1024), children: [] }) }),
+  )
+  try {
+    await expect(callExplorationTool(server.url, 'snapshot')).rejects.toThrow(
+      'the exploration tool result ran past the 4 MiB cap',
+    )
+  } finally {
+    await server.close()
+  }
+})
+
 test('an exploration channel outside the read-only allowlist is refused before any model call', async () => {
   const refused = new FakeAgentRunner([completed(planned())])
   await expect(
