@@ -2,7 +2,7 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import {
   FileLedgerStore,
   buildReadinessReport,
@@ -46,6 +46,7 @@ import type {
   Job,
   LedgerEntry,
   Plan,
+  QaProfile,
   RedactionRule,
   ReplayDifference,
   RunVerdict,
@@ -338,6 +339,56 @@ function unplannedPlan(criteria: { id: string; text: string }[], reason: string)
   }
 }
 
+/**
+ * The paths the diff adds or changes. A content change carries the new path in
+ * its `+++ b/` header; a rename, a binary file and a mode-only change carry it
+ * in the git header's b/ side or the rename-to line instead. Deleted files are
+ * genuinely gone, so they are not declared (#162).
+ */
+function touchedPaths(diff: string): string[] {
+  const paths: string[] = []
+  for (const chunk of diff.split(/^diff --git /m).slice(1)) {
+    const lines = chunk.split('\n')
+    const added = lines.find((line) => line.startsWith('+++ b/'))
+    if (added !== undefined) {
+      const path = added.slice('+++ b/'.length).trim()
+      if (path !== '') paths.push(path)
+      continue
+    }
+    const renamed = lines.find((line) => line.startsWith('rename to '))
+    if (renamed !== undefined) {
+      const path = renamed.slice('rename to '.length).trim()
+      if (path !== '') paths.push(path)
+      continue
+    }
+    const header = (lines[0] ?? '').match(/ b\/(.+)$/)
+    const binary = lines.some((line) => line.startsWith('Binary files ') || line.startsWith('GIT binary patch'))
+    const modeOnly = lines.some((line) => line.startsWith('old mode '))
+    if ((binary || modeOnly) && header !== null) {
+      const path = (header[1] ?? '').trim()
+      if (path !== '') paths.push(path)
+    }
+  }
+  return [...new Set(paths)]
+}
+
+/**
+ * The declared run inputs of the pipeline's plan (#162): the plan file itself,
+ * the profile directory, and every path the diff touches. The run's own
+ * outputs are never declared — result.json and its siblings are written when
+ * the run ends, which is exactly why the doomed checks of #162 looked
+ * plannable to a planner that had only the pipeline's own prose to go by.
+ */
+function declaredRunPaths(outPath: string, profilePath: string | undefined, diff: string): string[] {
+  const paths = [relative(process.cwd(), outPath)]
+  // The planner only knows repository-relative paths, so an absolute --profile
+  // is normalized against the same root as the plan file, and a relative one
+  // is kept as the caller wrote it (#162).
+  if (profilePath !== undefined) paths.push(relative(process.cwd(), resolve(profilePath)))
+  paths.push(...touchedPaths(diff))
+  return [...new Set(paths.filter((path) => path !== ''))]
+}
+
 async function planCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
   try {
     const criteriaPath = flag(argv, '--criteria')
@@ -379,13 +430,14 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       criteria = loaded as { id: string; text: string }[]
     }
     let diff = await readFile(resolve(diffPath), 'utf8')
+    let profile: QaProfile | undefined
     if (profilePath !== undefined) {
       // The diff can be the very change that seeds the profile, so the seeded
       // values sweep from the model-facing text before the planner sees it
       // (#64). No profile means nothing seeded to sweep; a profile that is
       // there but broken throws, as everywhere else.
       try {
-        const profile = await loadProfile(resolve(profilePath))
+        profile = await loadProfile(resolve(profilePath))
         const login = profile.app?.login
         const redacted = redactText(diff, valueRules([login?.totp?.secret, login?.backupCode?.value]))
         if (redacted !== diff) out.write("the profile's seeded values are redacted from the diff before planning\n")
@@ -409,6 +461,7 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         criteria,
         diff,
         driver,
+        runInputs: { paths: declaredRunPaths(outPath, profilePath, diff) },
         ...(suites === undefined ? {} : { suites }),
         ...(flowActions.length === 0 ? {} : { flowActions }),
       })
