@@ -609,6 +609,22 @@ test('a plan that still reads evidence after its correction round fails closed (
   expect(runner.requests).toHaveLength(2)
 })
 
+test('a file the profile declares by its exact path is readable even under an evidence directory (#168)', async () => {
+  const clean = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'parser', command: 'node --test src/evidence/parser.ts' }] },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(clean)])
+
+  const plan = await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', 'src/evidence/parser.ts'] } })
+
+  expect(runner.requests).toHaveLength(1)
+  expect(plan.criteria[0].checks?.[0]?.command).toBe('node --test src/evidence/parser.ts')
+})
+
 test('runtime URLs and template values are not treated as filesystem paths (#162)', async () => {
   const url = ['https:', '//example.com', '/x.json'].join('')
   const clean = JSON.stringify({

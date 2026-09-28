@@ -438,7 +438,11 @@ function undeclaredReference(command: string, declared: string[]): string | unde
       RUN_OUTPUT_DIRECTORIES.includes(segments[0] ?? '')
     )
       return `${token} is an output the run writes when it ends, so it does not exist while a check runs`
-    if (segments.includes('evidence'))
+    // An invented evidence path (or one merely covered by a declared
+    // directory) is the #168 trap, but a file the profile declares by its
+    // exact path is a committed input: it exists while a check runs whatever
+    // its name (#168).
+    if (segments.includes('evidence') && !declared.includes(segments.join('/')))
       return `${token} is under an evidence directory, and nothing writes evidence while a check runs: the run publishes it when it ends, and the executing job runs no model-driven session`
     if (!isPathLike(token) || covered(segments.join('/'))) continue
     return `${token} is not among the declared run inputs`
