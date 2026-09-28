@@ -8,6 +8,7 @@ import { GitHubQaAssetsPusher } from './qa-assets.js'
 import { fileRefusalStubs, GitHubStubIssuePoster } from './stub-issues.js'
 import { requeueUnblocked, stubKeysFromDiffText } from './requeue.js'
 import { GitHubEvidencePoster, postEvidence } from './post-evidence.js'
+import { deliverIngest, IngestDeliveryError } from './ingest-deliver.js'
 
 export interface Writer {
   write(chunk: string): void
@@ -25,13 +26,14 @@ export async function main(argv: string[], out: Writer = process.stdout, err: Wr
     if (command === 'stub-issues') return await stubIssuesCommand(rest, out)
     if (command === 'requeue') return await requeueCommand(rest, out)
     if (command === 'post-evidence') return await postEvidenceCommand(rest, out)
+    if (command === 'ingest-deliver') return await ingestDeliverCommand(rest, out)
   } catch (error) {
     err.write(error instanceof Error ? `${error.name}: ${error.message}\n` : `${String(error)}\n`)
     return 1
   }
   entry(out)
   if (command !== undefined) {
-    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue" and "post-evidence"\n`)
+    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence" and "ingest-deliver"\n`)
     return 1
   }
   return 0
@@ -69,6 +71,39 @@ async function runStubIssues(
   if (result.verdict !== 'refused') return undefined
   const client = new GitHubClient({ repository: opts.repository, apiRoot: opts.apiRoot, tokenEnv: opts.tokenEnv })
   return fileRefusalStubs(new GitHubStubIssuePoster(client), result, opts.pr)
+}
+
+/**
+ * `ingest-deliver`: carry an ingest payload to GitHub (#37). The proposal
+ * becomes a pull request against the base branch for a human to apply, and
+ * every uncheckable criterion gets its one comment, never repeated. A payload
+ * built on a ledger that has since moved is refused here, so the proposal can
+ * not silently drop a rule that moved in between.
+ */
+async function ingestDeliverCommand(argv: string[], out: Writer): Promise<number> {
+  const flags = parseFlags(argv)
+  const proposalPath = flags.string('proposal')
+  const base = flags.string('base')
+  if (proposalPath === undefined) throw new IngestDeliveryError('qare-action ingest-deliver needs --proposal <path to ingest-proposal.json>')
+  if (base === undefined) throw new IngestDeliveryError('qare-action ingest-deliver needs --base <branch the pull request targets>')
+  const delivery = await deliverIngest({
+    proposalPath,
+    ...(flags.string('comments') === undefined ? {} : { commentsPath: flags.string('comments') }),
+    base,
+    client: new GitHubClient({
+      repository: flags.string('repository'),
+      apiRoot: flags.string('api-root'),
+      tokenEnv: flags.string('token-env'),
+    }),
+  })
+  out.write(
+    delivery.alreadyProposed
+      ? 'proposal already open as a pull request; nothing new to open\n'
+      : `opened pull request #${delivery.pull.number} against ${base}${delivery.pull.htmlUrl === undefined ? '' : `: ${delivery.pull.htmlUrl}`}\n`,
+  )
+  for (const issue of delivery.postedComments) out.write(`commented once on #${issue}\n`)
+  for (const issue of delivery.skippedComments) out.write(`#${issue} already carries the comment; left alone\n`)
+  return 0
 }
 
 async function postEvidenceCommand(argv: string[], out: Writer): Promise<number> {

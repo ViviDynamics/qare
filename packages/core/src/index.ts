@@ -208,6 +208,13 @@ export type {
 } from './ledger-proposal.js'
 export { applyLedgerProposal } from './ledger-apply.js'
 export { integrityOf } from './ledger.js'
+export {
+  hasIngestComment,
+  ingestCommentMarker,
+  ingestCriteria,
+  renderUncheckableComment,
+} from './ledger-ingest.js'
+export type { IngestSource, IngestOutcome, IngestDuplicate, UncheckableCriterion } from './ledger-ingest.js'
 export { readinessInventory, buildReadinessReport, normalizeOrigin, parseComposeServices, READINESS_MAX_FILES } from './readiness.js'
 export type {
   ReadinessInventory,

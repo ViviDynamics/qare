@@ -36,8 +36,30 @@ export interface FakeGithub {
   refs: Map<string, string>
   /** Every commit the fake has accepted, sha to its tree and parents. */
   commits: Map<string, { tree: string; parents: string[] }>
+  /** Every pull request the fake has accepted, number to its record. */
+  pulls: FakePull[]
+  /** Blob contents by sha, so a contents read can serve what a push wrote. */
+  blobs: Map<string, Buffer>
+  /** Tree entries by sha: path, mode and blob sha. */
+  trees: Map<string, FakeTreeEntry[]>
   status: number | undefined
   close(): Promise<void>
+}
+
+export interface FakeTreeEntry {
+  path: string
+  mode: '100644'
+  type: 'blob'
+  sha: string
+}
+
+export interface FakePull {
+  number: number
+  head: string
+  base: string
+  title: string
+  body: string
+  htmlUrl?: string
 }
 
 const TOKEN = 'qa-test-token'
@@ -56,6 +78,9 @@ export function startFakeGithub(): Promise<FakeGithub> {
   const checkRuns: unknown[] = []
   const refs = new Map<string, string>()
   const commits = new Map<string, FakeCommit>()
+  const pulls: FakePull[] = []
+  const blobs = new Map<string, Buffer>()
+  const trees = new Map<string, FakeTreeEntry[]>()
   const state = { status: undefined as number | undefined }
   let nextNumber = 100
   let nextCommentId = 5000
@@ -181,12 +206,17 @@ export function startFakeGithub(): Promise<FakeGithub> {
     // memory so a push can be followed from blob to ref.
     if (parts[0] === 'repos' && parts[3] === 'git' && parts[4] === 'blobs' && parts.length === 5) {
       if (request.method !== 'POST') return respond(response, 404, { message: 'no such blob route' })
-      respond(response, 201, { sha: objectSha('blob') })
+      const payload = body as { content: string; encoding: string }
+      const sha = objectSha('blob')
+      blobs.set(sha, Buffer.from(payload.content, payload.encoding === 'base64' ? 'base64' : 'utf8'))
+      respond(response, 201, { sha })
       return
     }
     if (parts[0] === 'repos' && parts[3] === 'git' && parts[4] === 'trees' && parts.length === 5) {
       if (request.method !== 'POST') return respond(response, 404, { message: 'no such tree route' })
-      respond(response, 201, { sha: objectSha('tree') })
+      const sha = objectSha('tree')
+      trees.set(sha, (body as { tree: FakeTreeEntry[] }).tree)
+      respond(response, 201, { sha })
       return
     }
     if (parts[0] === 'repos' && parts[3] === 'git' && parts[4] === 'commits') {
@@ -237,6 +267,32 @@ export function startFakeGithub(): Promise<FakeGithub> {
       respond(response, 200, { ref: branch, object: { sha, type: 'commit' } })
       return
     }
+    if (parts[0] === 'repos' && parts[3] === 'pulls' && parts.length === 4 && request.method === 'POST') {
+      const payload = body as { title: string; head: string; base: string; body: string }
+      const existing = pulls.find((pull) => pull.head === payload.head)
+      if (existing !== undefined) {
+        respond(response, 422, {
+          message: `Validation Failed: a pull request already exists for ${payload.head}.`,
+        })
+        return
+      }
+      const pull: FakePull = { number: nextNumber, head: payload.head, base: payload.base, title: payload.title, body: payload.body }
+      nextNumber += 1
+      pulls.push(pull)
+      respond(response, 201, { number: pull.number, html_url: `pull/${pull.number}` })
+      return
+    }
+    if (parts[0] === 'repos' && parts[3] === 'contents' && parts.length >= 5 && request.method === 'GET') {
+      const path = parts.slice(4).join('/')
+      const ref = url.searchParams.get('ref') ?? ''
+      const head = refs.get(`refs/heads/${ref}`)
+      const tree = head === undefined ? undefined : trees.get(commits.get(head)?.tree ?? '')
+      const entry = tree?.find((candidate) => candidate.path === path)
+      const content = entry === undefined ? undefined : blobs.get(entry.sha)
+      if (content === undefined) return respond(response, 404, { message: `no contents for ${path} at ${ref}` })
+      respond(response, 200, { content: content.toString('base64'), encoding: 'base64' })
+      return
+    }
     respond(response, 404, { message: `fake github has no route for ${request.method} ${url.pathname}` })
   }
 
@@ -258,6 +314,9 @@ export function startFakeGithub(): Promise<FakeGithub> {
         checkRuns,
         refs,
         commits,
+        pulls,
+        blobs,
+        trees,
         get status(): number | undefined {
           return state.status
         },

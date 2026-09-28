@@ -392,7 +392,13 @@ requirement of the backend, not a feature on top:
 Lifecycle:
 
 - **Ingest.** QARE reads acceptance criteria from an issue or PR and proposes
-  ledger entries. Proposals arrive as a pull request, never as a silent edit.
+  ledger entries. `qare ingest` turns what the sources state into a payload:
+  criteria the ledger already carries are kept back as duplicates, wording no
+  check can prove is kept back with a single comment on the source that stated
+  it, and the rest is proposed with its source named. The payload is delivered
+  by `qare-action ingest-deliver`, which opens the pull request a human applies
+  and posts each comment at most once. Proposals arrive as a pull request,
+  never as a silent edit.
 - **Verify.** Every run records its verdict against the criteria it covered, so
   the ledger always knows when each statement was last proven and by what.
 - **Contradict.** A change can put a new criterion at odds with an old one, or
@@ -726,7 +732,7 @@ One TypeScript codebase, one core, thin adapters:
 | Package | Purpose |
 | --- | --- |
 | `@qare/core` | plan, execute, judge, report; provider interface; `result.json` schema |
-| `@qare/cli` | `qare init`, `qare readiness`, `qare doctor`, `qare run`, `qare run --job`, `qare judge`, `qare replay`, `qare ledger`, `qare redact`, `qare reap`, `qare sweep` |
+| `@qare/cli` | `qare init`, `qare readiness`, `qare doctor`, `qare run`, `qare run --job`, `qare judge`, `qare replay`, `qare ledger`, `qare ingest`, `qare redact`, `qare reap`, `qare sweep` |
 | `@qare/action` | GitHub Action wrapping the three jobs |
 | `@qare/mcp` | MCP server so orchestrators, Codex, OpenCode and others can call it |
 | `plugin/claude-code` | skill, verifier subagent, Stop hook for local runs |

@@ -7,6 +7,10 @@ import { dirname, join, relative, resolve } from 'node:path'
 import {
   FileLedgerStore,
   buildReadinessReport,
+  ingestCommentMarker,
+  ingestCriteria,
+  integrityOf,
+  LEDGER_FILE,
   loadJobFromFile,
   loadJobFromText,
   jobFromPlan,
@@ -16,6 +20,7 @@ import {
   nareRunners,
   loadPlan,
   loadResult,
+  renderUncheckableComment,
   NareAgentRunner,
   ProfileMissingError,
   BUILTIN_REDACTION_RULES,
@@ -47,6 +52,7 @@ import {
 import type {
   BootOpts,
   FlowDriverCapabilities,
+  IngestOutcome,
   Job,
   JobProfileRef,
   LedgerEntry,
@@ -80,13 +86,14 @@ export async function main(
   if (argv[0] === 'judge') return judgeCommand(argv.slice(1), out, err)
   if (argv[0] === 'replay') return replayCommand(argv.slice(1), out, err)
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
+  if (argv[0] === 'ingest') return ingestCommand(argv.slice(1), out, err)
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
   if (argv[0] === 'profiles') return profilesCommand(argv.slice(1), out, err)
   if (argv[0] === 'doctor') return doctorCommand(argv.slice(1), out, err)
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -225,6 +232,151 @@ async function issueCriteriaCommand(argv: string[], out: Writer, err: Writer): P
     err.write(`${formatError(error)}\n`)
     return 4
   }
+}
+
+/**
+ * `qare ingest`: read the acceptance criteria issues and pull requests state,
+ * propose the ones no ledger entry already carries (#37), and leave the ones
+ * no check can prove to a single comment on each source that stated them.
+ *
+ * The ledger is never written here: what comes out is a payload the delivery
+ * turns into a pull request for a human to apply, which is what makes a
+ * proposal a proposal. The planner is required, because without one nothing
+ * can be told apart from what a check can prove, and nothing would be.
+ */
+async function ingestCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
+  try {
+    const sourcesPath = flag(argv, '--sources')
+    const outDir = flag(argv, '--out')
+    const nare = flag(argv, '--nare')
+    if (sourcesPath === undefined) throw new Error('qare ingest requires --sources <manifest.json>')
+    if (outDir === undefined) throw new Error('qare ingest requires --out <dir>')
+    if (nare === undefined) throw new Error('qare ingest requires --nare <binary> (a planner is how uncheckable wording is told apart)')
+
+    const manifest = parseSourcesManifest(await readFile(resolve(sourcesPath), 'utf8'))
+    const bodies = await Promise.all(
+      manifest.sources.map(async (source) => ({ ...source, body: await readFile(resolve(source.body), 'utf8') })),
+    )
+    const ledgerDirFlag = flag(argv, '--ledger') ?? '.qa'
+    const ledger = await new FileLedgerStore(resolve(ledgerDirFlag)).load()
+
+    const profileDir = flag(argv, '--profile')
+    const profile = profileDir === undefined ? undefined : await loadProfile(resolve(profileDir))
+    const outcome = await ingestCriteria(bodies, {
+      ledger,
+      planner: nareRunners(nare).planner,
+      ...(profile === undefined ? {} : { suites: profile.suites.map((suite) => suite.name) }),
+      ...(profile === undefined || profile.target === undefined ? {} : { target: profile.target.url }),
+    })
+
+    const proposal: LedgerIngestProposal = {
+      ledgerPath: join(ledgerDirFlag, LEDGER_FILE),
+      baseFingerprint: integrityOf(ledger),
+      ledgerText: outcome.ledgerText,
+      branch: `qare-ledger-proposal-${outcome.fingerprint.replace('sha256:', '').slice(0, 8)}`,
+      title: `Propose ${outcome.proposals.length} ledger criteria`,
+      body: renderProposalBody(manifest.sources, outcome),
+      sources: manifest.sources,
+    }
+    await mkdir(resolve(outDir), { recursive: true })
+    const proposalPath = join(resolve(outDir), 'ingest-proposal.json')
+    await writeFile(proposalPath, `${JSON.stringify(proposal, null, 2)}\n`, 'utf8')
+    const comments = outcome.uncheckable.flatMap((criterion) =>
+      criterion.sources.map((source) => ({
+        issue: source.number,
+        marker: ingestCommentMarker(criterion.id),
+        body: renderUncheckableComment({ ...criterion, sources: [source] }),
+      })),
+    )
+    const commentsPath = join(resolve(outDir), 'ingest-comments.json')
+    await writeFile(commentsPath, `${JSON.stringify(comments, null, 2)}\n`, 'utf8')
+    out.write(
+      `${outcome.proposals.length} proposed, ${outcome.duplicates.length} already carried, ${outcome.uncheckable.length} uncheckable; ${proposalPath}\n`,
+    )
+    return 0
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 4
+  }
+}
+
+interface LedgerIngestProposal {
+  ledgerPath: string
+  baseFingerprint: string
+  ledgerText: string
+  branch: string
+  title: string
+  body: string
+  sources: { kind: 'issue' | 'pr'; number: number; author: string; link: string }[]
+}
+
+/**
+ * The manifest names every source ingest reads: the kind, the number, the
+ * author of the body, the canonical link back to it, and the path of the body
+ * text itself, which the caller has already fetched.
+ */
+function parseSourcesManifest(text: string): { sources: { kind: 'issue' | 'pr'; number: number; author: string; link: string; body: string }[] } {
+  const parsed: unknown = JSON.parse(text)
+  if (typeof parsed !== 'object' || parsed === null || !Array.isArray((parsed as { sources?: unknown }).sources))
+    throw new Error('ingest: the sources manifest must be a JSON object with a "sources" array')
+  const sources = (parsed as { sources: unknown[] }).sources.map((entry, index) => {
+    if (typeof entry !== 'object' || entry === null) throw new Error(`ingest: sources[${index}] must be an object`)
+    const record = entry as Record<string, unknown>
+    if (record.kind !== 'issue' && record.kind !== 'pr')
+      throw new Error(`ingest: sources[${index}].kind must be "issue" or "pr" (got ${JSON.stringify(record.kind)})`)
+    const kind: 'issue' | 'pr' = record.kind
+    const number = record.number
+    if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0)
+      throw new Error(`ingest: sources[${index}].number must be a positive integer`)
+    for (const field of ['author', 'link', 'body'] as const) {
+      if (typeof record[field] !== 'string' || (record[field] as string).trim() === '')
+        throw new Error(`ingest: sources[${index}].${field} must be a non-empty string`)
+    }
+    return {
+      kind,
+      number,
+      author: record.author as string,
+      link: record.link as string,
+      body: record.body as string,
+    }
+  })
+  return { sources }
+}
+
+function renderProposalBody(
+  sources: { kind: 'issue' | 'pr'; number: number; author: string; link: string }[],
+  outcome: IngestOutcome,
+): string {
+  const lines = [
+    `Proposes ${outcome.proposals.length} criteria for the criteria ledger, as proposals for a human to apply.`,
+    '',
+    '## Sources',
+    ...sources.map((source) => `- ${source.kind} #${source.number} (@${source.author}): ${source.link}`),
+    '',
+  ]
+  if (outcome.proposals.length > 0) {
+    lines.push('## Proposed', ...outcome.proposals.map((entry) => `- \`${entry.criterion}\` (${entry.proof}): ${entry.note ?? ''}`), '')
+  }
+  if (outcome.duplicates.length > 0) {
+    lines.push(
+      '## Already carried',
+      ...outcome.duplicates.map(
+        (duplicate) => `- \`${duplicate.id}\` is ${duplicate.status} in the ledger, so not proposed again`,
+      ),
+      '',
+    )
+  }
+  if (outcome.uncheckable.length > 0) {
+    lines.push(
+      '## Uncheckable',
+      ...outcome.uncheckable.map(
+        (criterion) => `- \`${criterion.id}\`: ${criterion.why} One comment each, on the ${criterion.sources.map((source) => `${source.kind} #${source.number}`).join(', ')} that stated it.`,
+      ),
+      '',
+    )
+  }
+  lines.push('Nothing here is part of the ledger until a human applies the proposal.')
+  return lines.join('\n')
 }
 
 /**
