@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
 import { PLAN_SCHEMA_VERSION, PlanValidationError, parsePlan, loadPlan } from '../src/index.js'
+import { parseFlowActions } from '../src/plan.js'
 
 const fixture = (name: string) =>
   readFileSync(fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url)), 'utf8')
@@ -372,4 +373,20 @@ test('a criterion names a profile the plan does not carry is refused, because th
   expect(error.field).toBe('criteria[0].profile')
   expect(error.message).toContain('"admin"')
   expect(error.message).toContain('the plan names no profiles')
+})
+
+test('an element reference may pin the snapshot path it was authored against (#83)', () => {
+  const actions = parseFlowActions(
+    [{ action: 'click', element: { role: 'button', name: 'Save', at: 'document/main/button "Save"' } }],
+    'flow-83',
+  )
+  expect(actions[0]).toEqual({ action: 'click', element: { role: 'button', name: 'Save', at: 'document/main/button "Save"' } })
+})
+
+test('a snapshot path is validated against the shape the snapshot itself produces (#83)', () => {
+  const bad = (element: unknown) => () => parseFlowActions([{ action: 'click', element }], 'flow-83')
+  expect(bad({ role: 'button', name: 'Save', at: 'main/button' })).toThrow(PlanValidationError)
+  expect(bad({ role: 'button', name: 'Save', at: 7 })).toThrow(PlanValidationError)
+  expect(bad({ role: 'button', name: 'Save', at: 'document/main/button "Save"[0]' })).toThrow(PlanValidationError)
+  expect(bad({ testId: 'save', at: 'document/main' })).toThrow(PlanValidationError)
 })

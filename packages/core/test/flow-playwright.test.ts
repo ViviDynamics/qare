@@ -256,3 +256,63 @@ test('the browser driver maps the page ARIA snapshot onto the normalised schema 
   expect(heading?.states).toEqual({ level: 1 })
   expect(heading?.path).toBe('document/main/heading "QARE"')
 })
+
+test('a reference that carries a snapshot path resolves by walking it (#83)', async () => {
+  const events: string[] = []
+  const locator = (label: string, walk: string[]) => {
+    const self = {
+      getByRole: (role: string, options: { name?: string; exact?: boolean } = {}) => {
+        const step = `${role}${options.name === undefined ? '' : ` ${options.name}`}${options.exact === true ? ' exact' : ''}`
+        return locator(step, [...walk, step])
+      },
+      nth: (n: number) => {
+        events.push(`nth ${n + 1}`)
+        return self
+      },
+      click: async () => events.push(`click ${walk.at(-1) ?? ''}`),
+      fill: async (value: string) => events.push(`fill ${walk.at(-1) ?? ''}=${value}`),
+      selectOption: async (value: { label: string }) => events.push(`choose ${walk.at(-1) ?? ''}=${value.label}`),
+      waitFor: async () => events.push(`waitFor ${walk.at(-1) ?? ''}`),
+      isVisible: async () => true,
+      first: () => self,
+    }
+    events.push(walk.join(' / '))
+    return self
+  }
+  const chromium = {
+    launch: () =>
+      Promise.resolve({
+        newContext: async () => ({
+          on: () => undefined,
+          newPage: async () => ({
+            goto: async () => undefined,
+            getByRole: (role: string, options: { name?: string; exact?: boolean } = {}) => {
+              const step = `${role}${options.name === undefined ? '' : ` ${options.name}`}${options.exact === true ? ' exact' : ''}`
+              return locator(step, [step])
+            },
+            getByTestId: (testId: string) => locator(`testId=${testId}`, [`testId=${testId}`]),
+            screenshot: async () => undefined,
+          }),
+        }),
+        close: async () => undefined,
+      }),
+  }
+  const session = await makePlaywrightFlowSession({ loadPlaywright: async () => ({ chromium }) as never })
+
+  // The path is walked role by role, name by name, from the document down:
+  // the element the plan named is reached through the landmarks it sat in.
+  await session.page.type({ role: 'textbox', name: 'Search', at: 'document/main/textbox "Search"' }, 'Ada Lovelace')
+  await session.page.click({ role: 'button', name: 'Send', at: 'document/main/list/link "Ada"[2]' })
+  await session.dispose()
+
+  expect(events).toEqual([
+    'main',
+    'main / textbox Search exact',
+    'fill textbox Search exact=Ada Lovelace',
+    'main',
+    'main / list',
+    'main / list / link Ada exact',
+    'nth 2',
+    'click link Ada exact',
+  ])
+})

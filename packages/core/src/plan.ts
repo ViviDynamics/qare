@@ -2,6 +2,7 @@
 // verbatim and rejects anything else. Type-only import: the loader adds no
 // runtime dependency on the runner.
 import type { FlowAction, FlowDriverCapabilities, FlowElement } from './flow.js'
+import { isSnapshotPath } from './locator.js'
 import { isUnsafeProfileName } from './profile.js'
 import { DEFAULT_PROFILE_NAME } from './monorepo.js'
 
@@ -448,13 +449,27 @@ function parseFlowElement(value: unknown, base: string): FlowElement {
   if (hasTestId) {
     if (hasRole || hasName)
       fail(base, 'an element reference is a test id or a role with its accessible name, not both')
+    if (value.at !== undefined) fail(`${base}.at`, 'a test-id reference carries no snapshot path: a test id needs no repair')
     return { testId: nonEmptyString(value.testId, `${base}.testId`, 'test id') }
   }
   if (!hasRole || !hasName)
     fail(base, 'an element reference names a role with its accessible name, or a test id')
+  // The path the element sat at in the snapshot the plan was shown (#83): the
+  // one reference locator repair can compare an identity against. Optional,
+  // and only the shape the normalised snapshot itself produces.
+  const at =
+    value.at === undefined
+      ? undefined
+      : isSnapshotPath(value.at)
+        ? value.at
+        : fail(
+            `${base}.at`,
+            'a snapshot path starts at document and walks roles, quoted accessible names and occurrence indexes: document/main/region "Billing"/button "Save"[2]',
+          )
   return {
     role: nonEmptyString(value.role, `${base}.role`, 'role'),
     name: nonEmptyString(value.name, `${base}.name`, 'accessible name'),
+    ...(at === undefined ? {} : { at }),
   }
 }
 

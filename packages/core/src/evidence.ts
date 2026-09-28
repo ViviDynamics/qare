@@ -192,6 +192,26 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
           ]),
         ]),
   ]
+  // The repairs the run recorded (#83), named in the comment of the run they
+  // happened in: what the reference was, what it became (or why a repair was
+  // refused to review), and the identity comparison that decided it.
+  const repairs = result.criteria.flatMap((criterion) =>
+    (criterion.repairs ?? []).map((repair) => ({ criterion: criterion.id, ...repair })),
+  )
+  if (repairs.length > 0) {
+    lines.push(
+      '',
+      '## Locator repairs',
+      '',
+      'Locator repairs: an element reference that went stale was re-pointed only when the identity rule held (same role, same accessible name, same landmark ancestry), and an assertion was never repaired.',
+      '',
+      '| criterion | check | action | reference | repaired | identity | status |',
+      '| --- | --- | --- | --- | --- | --- | --- |',
+      ...repairs.map((repair) =>
+        `| ${cell(repair.criterion)} | ${cell(repair.check)} | ${repair.action} | ${cell(repair.reference)} | ${cell(repair.repaired ?? repair.refusedReason ?? '')} | ${cell(repair.identity)} | ${repair.status} |`,
+      ),
+    )
+  }
   if (links.kind === 'relative') {
     const details = detailLinks(result.criteria)
     if (details.length > 0) lines.push('', 'Details:', '', ...details)

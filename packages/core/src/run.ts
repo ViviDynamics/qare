@@ -7,6 +7,7 @@ import { bootApp, CANCEL_DOWN_TIMEOUT_MS, killActiveCompose, stopApp, type BootO
 import { hasMintedProject, isolatedHealthUrl, isolateRun, type RunIsolation } from './isolation.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
 import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
+import type { FlowRepairRecord } from './locator.js'
 import { BROWSER_FLOW_DRIVER, makePlaywrightFlowSession } from './flow-playwright.js'
 import { judgeRun, toSideResults } from './judge.js'
 import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck, type JobProfileGroup, type JobProfileRef, type SeveralProfilesJob, type SingleProfileJob } from './job.js'
@@ -15,7 +16,7 @@ import { feedRunLedger } from './ledger-feed.js'
 import { extractCode, httpMailbox, mailEvidence, runMailCheck, type ReadMail } from './mailbox.js'
 import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
-import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult, type RunVerdict } from './result.js'
+import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { mintRunValues, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 60000
@@ -752,6 +753,9 @@ async function runCriterion(
     }
 
   const evidence: string[] = []
+  // The repairs the flow checks proposed (#83), carried onto the criterion
+  // result so the run's comment can name them.
+  const criterionRepairs: RunRepairRecord[] = []
   let failed = false
   let unverifiedReason: string | undefined
   // The values a run publishes or consumes — a mail message's link, its
@@ -832,6 +836,16 @@ async function runCriterion(
         execution,
       )
       evidence.push(...outcome.evidence)
+      // A repair is recorded with the criterion and check it happened in (#83),
+      // so the comment can name it; the reference strings were swept by the
+      // flow itself, at write time.
+      if (outcome.repairs !== undefined)
+        criterionRepairs.push(
+          ...outcome.repairs.map((repair) => ({
+            ...repair,
+            check: substituted.name ?? `${criterion.id} check ${index}`,
+          })),
+        )
       if (outcome.status === 'failed') failed = true
       else if (outcome.status === 'unverified' && unverifiedReason === undefined)
         // The flow's reason quotes what the action saw, and the flow types
@@ -897,11 +911,18 @@ async function runCriterion(
       unverifiedReason = outcome.reason
   }
 
-  if (failed) return { id: criterion.id, outcome: 'failed', evidence }
-  if (unverifiedReason !== undefined) return { id: criterion.id, outcome: 'unverified', reason: unverifiedReason }
+  if (failed)
+    return { id: criterion.id, outcome: 'failed', evidence, ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }) }
+  if (unverifiedReason !== undefined)
+    return {
+      id: criterion.id,
+      outcome: 'unverified',
+      reason: unverifiedReason,
+      ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }),
+    }
   // Everything that ran passed, but the plan asked for more than ran.
   if (criterion.skipped !== undefined) return { id: criterion.id, outcome: 'unverified', reason: criterion.skipped, evidence }
-  return { id: criterion.id, outcome: 'proven', evidence }
+  return { id: criterion.id, outcome: 'proven', evidence, ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }) }
 }
 
 /**
@@ -968,7 +989,7 @@ async function runFlowCheckJob(
   rules: readonly RedactionRule[],
   masks: string[],
   execution: ExecutionKind,
-): Promise<{ status: 'passed' | 'failed' | 'unverified'; reason?: string; evidence: string[] }> {
+): Promise<{ status: 'passed' | 'failed' | 'unverified'; reason?: string; evidence: string[]; repairs?: FlowRepairRecord[] }> {
   const inEvidence = (names: readonly string[]): string[] => names.map((name) => `${checkDir}/${name}`)
   if (check.suite !== undefined) {
     const suite = suites.find((entry) => entry.name === check.suite)
@@ -1078,8 +1099,19 @@ async function runFlowCheckJob(
       }
     }
     if (outcome === undefined) return { status: 'unverified', reason: stopped ?? 'the flow stopped without an outcome', evidence }
-    if (outcome.outcome === 'unverified') return { status: 'unverified', reason: outcome.reason, evidence }
-    return { status: outcome.outcome, ...(outcome.reason === undefined ? {} : { reason: outcome.reason }), evidence }
+    if (outcome.outcome === 'unverified')
+      return {
+        status: 'unverified',
+        reason: outcome.reason,
+        evidence,
+        ...(outcome.repairs === undefined ? {} : { repairs: outcome.repairs }),
+      }
+    return {
+      status: outcome.outcome,
+      ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+      ...(outcome.repairs === undefined ? {} : { repairs: outcome.repairs }),
+      evidence,
+    }
   } finally {
     await started.dispose()
   }

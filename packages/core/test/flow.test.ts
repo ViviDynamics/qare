@@ -7,6 +7,7 @@ import {
   runSuiteCheck,
   totpCode,
   normaliseAriaSnapshot,
+  findCandidates,
   type FlowAction,
   type FlowElement,
   type FlowPage,
@@ -662,4 +663,161 @@ test('a driver without a snapshot seam notes the gap and carries no snapshot evi
   expect(result.outcome).toBe('passed')
   expect(result.evidence).toEqual(['actions.log', 'final.png'])
   expect(await actionsLog(dir)).toContain('snapshot not taken: the driver exposes no accessibility snapshot')
+})
+
+const REPAIR_YAML = '- main:\n  - form "Sign in":\n    - button "Save"'
+
+/**
+ * A page whose click lands only on the element the current tree holds, and
+ * misses whenever the reference still names the path the plan authored (#83).
+ * With `miss: 'always'` the locator resolves but the click fails anyway, the
+ * way an element the page obscures fails whatever path it is driven by.
+ */
+function repairablePage(opts: { yaml: string; miss: 'stale' | 'always' }): FlowPage {
+  const current = findCandidates(normaliseAriaSnapshot(opts.yaml), { role: 'button', name: 'Save' })[0]?.path
+  return {
+    ...fakePage().page,
+    click: async (what) => {
+      if (opts.miss === 'always') throw new Error('the element is obscured')
+      const path = 'at' in what ? what.at : undefined
+      if (path === current) return
+      throw new Error(`strict mode violation: element not found at ${path ?? '(no path)'}`)
+    },
+    snapshot: async () => normaliseAriaSnapshot(opts.yaml),
+  }
+}
+
+test('a rename of the markup around an element is repaired, recorded and re-driven (#83)', async () => {
+  const page = repairablePage({ yaml: REPAIR_YAML, miss: 'stale' })
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [
+      { action: 'open', url: APP_URL },
+      { action: 'click', element: { role: 'button', name: 'Save', at: 'document/main/form "Log in"/button "Save"' } },
+    ],
+  })
+
+  // The wrapper form was renamed by the change under review: the path moved,
+  // the element did not, and the identity rule says so.
+  expect(result.outcome).toBe('passed')
+  expect(result.repairs).toEqual([
+    {
+      action: 1,
+      reference: 'role=button name=Save at=document/main/form "Log in"/button "Save"',
+      repaired: 'role=button name=Save at=document/main/form "Sign in"/button "Save"',
+      identity: 'same role, same accessible name, same landmark ancestry (main/form)',
+      status: 'applied',
+    },
+  ])
+  expect(result.evidence).toEqual(['actions.log', 'final.png', 'repairs.json'])
+  const written = JSON.parse(await readFile(join(dir, 'repairs.json'), 'utf8'))
+  expect(written.schemaVersion).toBe(1)
+  expect(written.repairs).toEqual(result.repairs)
+  const log = await actionsLog(dir)
+  expect(log).toContain(
+    'locator repair applied: action 1 role=button name=Save at=document/main/form "Log in"/button "Save" -> role=button name=Save at=document/main/form "Sign in"/button "Save": same role, same accessible name, same landmark ancestry (main/form)',
+  )
+})
+
+test('a repair that would point at a different element is refused and sent to review (#83)', async () => {
+  // The button now sits under the navigation: same role, same name, different
+  // landmarks, so a different element, and never a repair.
+  const page = repairablePage({ yaml: '- main:\n  - navigation:\n    - button "Save"', miss: 'stale' })
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [
+      { action: 'open', url: APP_URL },
+      { action: 'click', element: { role: 'button', name: 'Save', at: 'document/main/form "Sign in"/button "Save"' } },
+    ],
+  })
+
+  expect(result.outcome).toBe('unverified')
+  expect(result.reason).toContain('the locator repair was refused')
+  expect(result.reason).toContain('different landmarks')
+  expect(result.repairs).toEqual([
+    {
+      action: 1,
+      reference: 'role=button name=Save at=document/main/form "Sign in"/button "Save"',
+      identity: 'same role, same accessible name, same landmark ancestry (main/form)',
+      status: 'refused',
+      refusedReason: expect.stringContaining('different landmarks'),
+    },
+  ])
+  expect(result.evidence).toEqual(['actions.log', 'failure.png', 'repairs.json'])
+  const written = JSON.parse(await readFile(join(dir, 'repairs.json'), 'utf8'))
+  expect(written.repairs[0].status).toBe('refused')
+  expect(await actionsLog(dir)).toContain('locator repair refused:')
+})
+
+test('an assertion is never repaired: an element that moved under an assert fails the check (#83)', async () => {
+  const page = {
+    ...repairablePage({ yaml: '- main:\n  - form "Sign in":\n    - group "Welcome panel"', miss: 'stale' }),
+    assertElement: async () => {
+      throw new Error('element absent')
+    },
+  }
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [
+      { action: 'open', url: APP_URL },
+      { action: 'assertElement', element: { role: 'group', name: 'Welcome panel', at: 'document/main/form "Log in"/group "Welcome panel"' } },
+    ],
+  })
+
+  // The assert failed, a candidate sits in the snapshot, and still no repair
+  // may cross an assertion: the check fails as itself.
+  expect(result.outcome).toBe('failed')
+  expect(result.repairs).toBeUndefined()
+  expect(result.evidence).toEqual(['actions.log', 'assert-1.json', 'failure.png'])
+  const log = await actionsLog(dir)
+  expect(log).not.toContain('locator repair')
+})
+
+test('an element action without a snapshot path is never repaired (#83)', async () => {
+  const page = repairablePage({ yaml: REPAIR_YAML, miss: 'stale' })
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [
+      { action: 'open', url: APP_URL },
+      { action: 'click', element: { role: 'button', name: 'Save' } },
+    ],
+  })
+
+  // A reference that carries no path has no identity to compare: the failure
+  // stands as it always has, and no repair is proposed.
+  expect(result.outcome).toBe('unverified')
+  expect(result.reason).toContain('action 1 failed')
+  expect(result.repairs).toBeUndefined()
+  expect(result.evidence).toEqual(['actions.log', 'failure.png'])
+  expect(await actionsLog(dir)).not.toContain('locator repair')
+})
+
+test('a repair whose reference still resolves is refused, so a failing action is not papered over (#83)', async () => {
+  const page = repairablePage({ yaml: REPAIR_YAML, miss: 'always' })
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [
+      { action: 'open', url: APP_URL },
+      { action: 'click', element: { role: 'button', name: 'Save', at: 'document/main/form "Sign in"/button "Save"' } },
+    ],
+  })
+
+  expect(result.outcome).toBe('unverified')
+  expect(result.reason).toContain('still resolves to the same element')
+  expect(result.repairs?.[0]?.status).toBe('refused')
 })
