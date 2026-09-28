@@ -364,7 +364,10 @@ function touchedPaths(diff: string): string[] {
  */
 function declaredRunPaths(outPath: string, profilePath: string | undefined, diff: string): string[] {
   const paths = [relative(process.cwd(), outPath)]
-  if (profilePath !== undefined) paths.push(profilePath)
+  // The planner only knows repository-relative paths, so an absolute --profile
+  // is normalized against the same root as the plan file, and a relative one
+  // is kept as the caller wrote it (#162).
+  if (profilePath !== undefined) paths.push(relative(process.cwd(), resolve(profilePath)))
   paths.push(...touchedPaths(diff))
   return [...new Set(paths.filter((path) => path !== ''))]
 }

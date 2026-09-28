@@ -489,3 +489,60 @@ test('a plan that still reads undeclared artifacts after its correction round fa
   )
   expect(runner.requests).toHaveLength(2)
 })
+
+test('a path that climbs out of a declared directory with .. is corrected, not covered (#162)', async () => {
+  const doomed = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'secrets', command: 'grep x .qa/../secrets.txt' }] },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(doomed), completed(planned())])
+
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('climbs outside the repository root')
+})
+
+test('the evidence directory is a forbidden run output with or without an extension (#162)', async () => {
+  for (const command of ['ls evidence', 'grep done evidence/streams']) {
+    const doomed = JSON.stringify({
+      schemaVersion: '1',
+      criteria: [
+        { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'evidence', command }] },
+        { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+      ],
+    })
+    const runner = new FakeAgentRunner([completed(doomed), completed(planned())])
+
+    await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json'] } })
+
+    expect(runner.requests, command).toHaveLength(2)
+    expect(runner.requests[1].prompt, command).toContain('is an output the run writes when it ends')
+  }
+})
+
+test('runtime URLs and template values are not treated as filesystem paths (#162)', async () => {
+  const url = ['https:', '//example.com', '/x.json'].join('')
+  const clean = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      {
+        id: 'c1',
+        text: CRITERIA[0].text,
+        checks: [
+          { kind: 'command', name: 'target', command: 'node article.mjs {{run.target_url}}/wiki/Ada_Lovelace' },
+          { kind: 'command', name: 'pull', command: `node pull.mjs ${url}` },
+        ],
+      },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(clean)])
+
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', 'article.mjs', 'pull.mjs'] } })
+
+  expect(runner.requests).toHaveLength(1)
+})

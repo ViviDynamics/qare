@@ -297,9 +297,10 @@ function commandContractGap(plan: Plan): string | undefined {
  * The run's own outputs, named in the SPEC's run contract: a command check
  * reading one of them reads a file the run writes when it ends, which is why
  * they are the one artifact class doomed by construction rather than by
- * absence.
+ * absence. The evidence directory counts with or without an extension.
  */
 const RUN_OUTPUT_BASENAMES = ['result.json', 'judged-result.json', 'comment.md', 'checkrun.json']
+const RUN_OUTPUT_DIRECTORIES = ['evidence']
 
 /** The harness's own CLI is never an executable on the runner's PATH (#162). */
 const HARNESS_CLI = 'qare'
@@ -314,9 +315,16 @@ function undeclaredReference(command: string, declared: string[]): string | unde
   for (const token of command.split(/\s+/).filter((token) => token !== '')) {
     if (token === HARNESS_CLI)
       return `"${HARNESS_CLI}" is this harness's own CLI, and the runner never installs it on its PATH, so the command cannot start`
-    if (!isPathLike(token) || covered(token)) continue
-    if (RUN_OUTPUT_BASENAMES.includes(token.split(/[\\/]/).pop() ?? token))
+    if (token.startsWith('http://') || token.startsWith('https://') || token.startsWith('{{')) continue
+    const segments = token.split(/[\\/]/)
+    if (segments.includes('..'))
+      return `${token} climbs outside the repository root with "..", so it is not among the declared run inputs`
+    if (
+      RUN_OUTPUT_BASENAMES.includes(segments[segments.length - 1] ?? '') ||
+      RUN_OUTPUT_DIRECTORIES.includes(segments[0] ?? '')
+    )
       return `${token} is an output the run writes when it ends, so it does not exist while a check runs`
+    if (!isPathLike(token) || covered(token)) continue
     return `${token} is not among the declared run inputs`
   }
   return undefined

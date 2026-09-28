@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import { expect, test } from 'vitest'
 import { criterionIdFor } from '@qare/core'
 import { main } from '../src/index.js'
@@ -373,7 +373,7 @@ test('qare plan declares the run contract paths to the planner (#162)', async ()
   const argv = JSON.parse(await readFile(argvPath, 'utf8')) as string[]
   expect(argv[1]).toContain('declared run inputs')
   expect(argv[1]).toContain('plan.json')
-  expect(argv[1]).toContain(join(dir, '.qa'))
+  expect(argv[1]).toContain(relative(process.cwd(), resolve(join(dir, '.qa'))))
   expect(argv[1]).toContain('login.ts')
   expect(argv[1]).toContain('result.json, judged-result.json')
 })
