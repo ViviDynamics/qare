@@ -601,6 +601,13 @@ async function runCriterion(
     await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), sweepRules))
     await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), redactText(truncationNote(outcome, 'stderr'), sweepRules))
     evidence.push(`${checkDir}/stdout.txt`, `${checkDir}/stderr.txt`)
+    // The command, its outcome and the exit code it closed with are evidence
+    // like the streams are (#152): a check that passes silently (test -f,
+    // grep -q) writes no output, and a verifier reading only empty streams
+    // cannot tell that the harness ran and captured anything at all.
+    const record = { command: resolved.check.run, outcome: outcome.status, ...(outcome.code === undefined ? {} : { exit_code: outcome.code }) }
+    await writeFile(join(job.evidenceDir, checkDir, 'command.json'), `${JSON.stringify(redactValue(record, sweepRules), null, 2)}\n`)
+    evidence.push(`${checkDir}/command.json`)
     if (resolved.consumed.length > 0) {
       const consumption = {
         artefacts: resolved.consumed.map((consumedArtefact) => ({ source: consumedArtefact.source, artefact: consumedArtefact.artefact })),
@@ -1137,7 +1144,7 @@ export function runCommandCheck(
           stderrTruncated,
         })
       else if (code === 0)
-        settle({ status: 'passed', stdout, stderr, stdoutTruncated, stderrTruncated })
+        settle({ status: 'passed', code, stdout, stderr, stdoutTruncated, stderrTruncated })
       else
         settle({
           status: 'failed',
