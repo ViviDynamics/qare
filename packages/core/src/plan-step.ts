@@ -286,8 +286,13 @@ function prompt(inputs: PlanInputs, correction?: string): string {
           "The run's own outputs do not exist while a check runs: result.json, judged-result.json,",
           'comment.md, checkrun.json and everything under the evidence directory are written when the',
           'run ends, so a check that reads one cannot pass, and neither can a command whose executable is not on the',
-          "runner's PATH (qare, this harness's own CLI, is not). Plan the check against the declared",
-          'run inputs, or mark the criterion unplannable.',
+          "runner's PATH (qare, this harness's own CLI, is not).",
+          'The executing job runs no model: no planning, verifying or exploring session runs inside it,',
+          'so an artifact that can only come into existence through a model-driven session, such as a',
+          'record of the tool calls a model made while exploring the app, never exists while a check runs,',
+          'whatever the change under test says about it. A criterion whose evidence can only come from',
+          'such a session is unplannable: mark it so instead of planning a check that reads such an artifact.',
+          'Plan the check against the declared run inputs, or mark the criterion unplannable.',
           '',
         ]),
     `A flow action is one of ${flowActionKinds.join(', ')}. An element reference is semantic:`,
@@ -377,7 +382,10 @@ function commandContractGap(plan: Plan): string | undefined {
  * The run's own outputs, named in the SPEC's run contract: a command check
  * reading one of them reads a file the run writes when it ends, which is why
  * they are the one artifact class doomed by construction rather than by
- * absence. The evidence directory counts with or without an extension.
+ * absence. The evidence directory counts with or without an extension, and
+ * wherever it sits under the repository root: a declared profile directory
+ * covers files that exist, and evidence is never among them while a check
+ * runs (#168).
  */
 const RUN_OUTPUT_BASENAMES = ['result.json', 'judged-result.json', 'comment.md', 'checkrun.json']
 const RUN_OUTPUT_DIRECTORIES = ['evidence']
@@ -430,6 +438,8 @@ function undeclaredReference(command: string, declared: string[]): string | unde
       RUN_OUTPUT_DIRECTORIES.includes(segments[0] ?? '')
     )
       return `${token} is an output the run writes when it ends, so it does not exist while a check runs`
+    if (segments.includes('evidence'))
+      return `${token} is under an evidence directory, and nothing writes evidence while a check runs: the run publishes it when it ends, and the executing job runs no model-driven session`
     if (!isPathLike(token) || covered(segments.join('/'))) continue
     return `${token} is not among the declared run inputs`
   }

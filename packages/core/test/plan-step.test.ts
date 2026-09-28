@@ -558,6 +558,57 @@ test('the evidence directory is a forbidden run output with or without an extens
   }
 })
 
+test('the prompt states the model-driven phase contract of the executing job (#168)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+
+  const prompt = runner.requests[0].prompt
+  expect(prompt).toContain('The executing job runs no model')
+  expect(prompt).toContain('model-driven session')
+})
+
+test('a command check reading evidence under a declared directory is corrected, and marking the criterion unplannable is accepted (#168)', async () => {
+  const doomed = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'calls', command: 'test -f .qa/evidence/mcp-calls.jsonl' }] },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+    ],
+  })
+  const corrected = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, unplannable: 'its evidence can only come from a model-driven session, and the executing job runs none' },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(doomed), completed(corrected)])
+
+  const plan = await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('.qa/evidence/mcp-calls.jsonl is under an evidence directory')
+  expect(runner.requests[1].prompt).toContain('mark the criterion unplannable')
+  expect(plan.criteria[0].unplannable).toContain('model-driven')
+})
+
+test('a plan that still reads evidence after its correction round fails closed (#168)', async () => {
+  const doomed = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'calls', command: 'grep tool .qa/evidence/mcp-calls.jsonl' }] },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(doomed), completed(doomed)])
+
+  await expect(planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })).rejects.toThrow(
+    /is under an evidence directory/,
+  )
+  expect(runner.requests).toHaveLength(2)
+})
+
 test('runtime URLs and template values are not treated as filesystem paths (#162)', async () => {
   const url = ['https:', '//example.com', '/x.json'].join('')
   const clean = JSON.stringify({
