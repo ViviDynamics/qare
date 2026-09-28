@@ -283,21 +283,23 @@ jobs:
           fi
           # 2 is blocked: nothing was disproven, but something was left
           # unverified. When every unverified criterion is one the planner
-          # could not plan, or whose planned command cannot run without a
-          # shell, the gap is in the planning vocabulary rather than in the
-          # change (#64): judge reports each criterion by name, and the
-          # pipeline stays green. Any other blocked run — a check that could
-          # not reach the app, an environment that would not boot — is a fault
-          # and stays red.
+          # could not plan, whose planned command cannot run without a
+          # shell, or whose check could not start at all (the planner named
+          # an executable the runner does not have), the gap is in the
+          # planning vocabulary rather than in the change (#64): judge
+          # reports each criterion by name, and the pipeline stays green. Any
+          # other blocked run — a check that could not reach the app, an
+          # environment that would not boot — is a fault and stays red.
           if [ "$code" -eq 2 ] && [ -f evidence/result.json ] && jq -e '
             .verdict == "blocked" and
             ([.criteria[] | select(.outcome == "unverified")] | length) > 0 and
             ([.criteria[] | select(.outcome == "unverified")
               | (.reason // "")
               | startswith("the planner could not plan it")
-                or startswith("the planned command cannot run")] | all)
+                or startswith("the planned command cannot run")
+                or startswith("check could not start")] | all)
           ' evidence/result.json > /dev/null; then
-            echo "verdict blocked: every criterion left unverified is planner-unplannable or names a command that cannot run without a shell; judge reports them, and nothing was disproven" >> "$GITHUB_STEP_SUMMARY"
+            echo "verdict blocked: every criterion left unverified is planner-unplannable, names a command that cannot run without a shell, or names a check that could not start; judge reports them, and nothing was disproven" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           exit "$code"
