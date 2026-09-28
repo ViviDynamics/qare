@@ -248,6 +248,21 @@ test('an exploration channel outside the read-only allowlist is refused before a
   // The channel client speaks only http: the server serves in clear inside
   // the sandbox's own network, so an https endpoint is refused, never
   // downgraded to plaintext.
+  // The endpoint reaches the model prompt verbatim, so credentials and
+  // query data are refused on the channel URL: the client never speaks
+  // userinfo, and nothing may ride the URL but where the app is.
+  const credentialed = new FakeAgentRunner([completed(planned())])
+  await expect(
+    planRun(credentialed, { ...INPUTS, exploration: { endpoint: url('user:secret@sandbox.internal:8080') } }),
+  ).rejects.toThrow(PlanStepError)
+  expect(credentialed.requests).toHaveLength(0)
+
+  const queryyed = new FakeAgentRunner([completed(planned())])
+  await expect(
+    planRun(queryyed, { ...INPUTS, exploration: { endpoint: `${url('sandbox.internal:8080')}/?token=secret` } }),
+  ).rejects.toThrow(PlanStepError)
+  expect(queryyed.requests).toHaveLength(0)
+
   const secure = new FakeAgentRunner([completed(planned())])
   await expect(
     planRun(secure, { ...INPUTS, exploration: { endpoint: url('sandbox.internal:8443', 'https') } }),
