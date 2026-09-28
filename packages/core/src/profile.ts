@@ -1,7 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
-import { parseDurationMs } from './duration.js'
+import { parseDurationMs, shellCharacter } from './duration.js'
 import { RedactionError, redactionRules, validateMaskSelectors, type ProfileRedaction } from './redact.js'
 
 /**
@@ -61,6 +61,28 @@ export interface ProfileSuite {
   kind: ProfileSuiteKind
 }
 
+/**
+ * The pipeline steps a registered host tool server may run in (#93). The plan
+ * step looks through its tools at the running app; the execute step runs pull
+ * request code, so a server that needs a credential is never placed there.
+ */
+export type McpStep = 'plan' | 'execute'
+
+export interface ProfileMcpServer {
+  /** The name the server's tools are reached under, and the evidence records. */
+  name: string
+  /** How to start the server: a command split on whitespace, spawned with no shell. */
+  command?: string
+  /** How to reach the server: an http or https URL speaking MCP. */
+  url?: string
+  /** Which of the server's tools the session may call. */
+  tools: string[]
+  /** The steps the server may run in. */
+  steps: McpStep[]
+  /** The credential the server needs, by name; never a value (#93). */
+  credential?: string
+}
+
 export interface QaProfile {
   /** The boot recipe; absent when the profile names a target instead. */
   app?: ProfileApp
@@ -71,6 +93,8 @@ export interface QaProfile {
   suites: ProfileSuite[]
   /** Where the harness reads the mail a check waits for (#67). */
   mail?: ProfileMail
+  /** The host's MCP servers the planner may look through (#93). */
+  mcp?: ProfileMcpServer[]
   /** Fixture data that must not be published in evidence (#52). */
   redact?: ProfileRedaction
   /**
@@ -263,6 +287,7 @@ export function validateProfileConfig(config: unknown): QaProfile {
     visual: parseVisual(config.visual),
     suites: parseSuites(config.suites),
     ...(config.mail === undefined ? {} : { mail: parseMail(config.mail) }),
+    ...(config.mcp === undefined ? {} : { mcp: parseMcp(config.mcp) }),
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
     ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
   }
@@ -286,6 +311,7 @@ function validateTargetConfig(config: Record<string, unknown>): QaProfile {
     visual: config.visual === undefined ? { widths: [], themes: [] } : parseVisual(config.visual),
     suites: config.suites === undefined ? [] : parseSuites(config.suites),
     ...(config.mail === undefined ? {} : { mail: parseMail(config.mail) }),
+    ...(config.mcp === undefined ? {} : { mcp: parseMcp(config.mcp) }),
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
     ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
   }
@@ -481,4 +507,62 @@ function parseRedact(value: unknown): ProfileRedaction {
     throw error
   }
   return redact
+}
+
+const MCP_STEPS: McpStep[] = ['plan', 'execute']
+
+/**
+ * The host's registered MCP servers (#93). A server that needs a credential
+ * declares so by name, and the profile refuses to place it in the execute
+ * step, which runs pull request code: the refusal names the reason, so the
+ * mistake is a profile mistake, not a run-time surprise.
+ */
+function parseMcp(value: unknown): ProfileMcpServer[] {
+  if (!Array.isArray(value)) fail('mcp', 'mcp must be an array of host tool server entries')
+  const seen: string[] = []
+  return value.map((entry, index) => {
+    const base = `mcp[${index}]`
+    if (!isRecord(entry)) fail(base, 'a host tool server must be a YAML object with name, command or url, tools and steps')
+    const name = nonEmptyString(entry.name, `${base}.name`, 'name')
+    if (isUnsafeProfileName(name))
+      fail(base, `server name ${JSON.stringify(name)} must not carry a separator, ".." or a control character: it names the tools on the channel and the evidence records`)
+    if (seen.includes(name)) fail(base, `a server named ${JSON.stringify(name)} is already registered`)
+    seen.push(name)
+    if (entry.command !== undefined && entry.url !== undefined)
+      fail(base, 'a server names one of command (start it) or url (reach it), not both')
+    if (entry.command === undefined && entry.url === undefined)
+      fail(base, 'a server must say how to start or reach it: name command or url')
+    let command: string | undefined
+    if (entry.command !== undefined) {
+      command = nonEmptyString(entry.command, `${base}.command`, 'command')
+      const character = shellCharacter(command)
+      if (character !== undefined)
+        fail(
+          base,
+          `command ${JSON.stringify(command)} carries ${JSON.stringify(character)}, which a shell would interpret: the command is split on whitespace and spawned with no shell`,
+        )
+    }
+    let url: string | undefined
+    if (entry.url !== undefined) {
+      url = nonEmptyString(entry.url, `${base}.url`, 'url')
+      httpUrl(url, base, 'url')
+    }
+    const tools = stringArray(entry.tools, `${base}.tools`, 'tools')
+    if (tools.length === 0)
+      fail(`${base}.tools`, 'a server must allow at least one tool: an empty allowlist registers nothing')
+    const steps: McpStep[] = stringArray(entry.steps, `${base}.steps`, 'steps').map((step, stepIndex) => {
+      if (!MCP_STEPS.includes(step as McpStep))
+        fail(`${base}.steps[${stepIndex}]`, `unknown step ${JSON.stringify(step)} (expected "plan", "execute")`)
+      return step as McpStep
+    })
+    if (steps.length === 0) fail(`${base}.steps`, 'a server must name the steps it may run in')
+    const credential =
+      entry.credential === undefined ? undefined : nonEmptyString(entry.credential, `${base}.credential`, 'credential')
+    if (credential !== undefined && steps.includes('execute'))
+      fail(
+        `${base}.steps`,
+        `a server that needs the credential ${JSON.stringify(credential)} cannot run in the execute step: the execute step runs pull request code, which must never hold it`,
+      )
+    return { name, ...(command !== undefined ? { command } : { url }), tools, steps, ...(credential === undefined ? {} : { credential }) }
+  })
 }

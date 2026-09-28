@@ -24,6 +24,8 @@ export interface AgentRunRequest {
   outputSchema: string
   budget: AgentBudget
   tools?: AgentToolChannel
+  /** The host's registered MCP servers (#93), addressed as server.tool. */
+  mcp?: AgentToolChannel
 }
 
 export type AgentRunStatus = 'completed' | 'failed'
@@ -145,22 +147,34 @@ function toolFlag(policy: ToolPolicy): string {
 }
 
 /**
- * The exploration channel reaches nare as environment (#87), the way a
+ * The model tool channels reach nare as environment (#87, #93), the way a
  * registered tool server is handed to the step that may look through it.
- * nare's own tool flags stay untouched: the channel carries a read-only
- * allowlist, so nothing that writes files or runs commands is asked for.
+ * nare's own tool flags stay untouched: the exploration channel carries a
+ * read-only allowlist, and the MCP channel carries only the tools the profile
+ * allowed, addressed as server.tool.
  */
-function explorationEnv(tools: AgentToolChannel | undefined, over: Record<string, string> | undefined): Record<string, string | undefined> {
+function channelEnv(
+  exploration: AgentToolChannel | undefined,
+  mcp: AgentToolChannel | undefined,
+  over: Record<string, string> | undefined,
+): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env, ...over }
-  if (tools === undefined) {
-    // The channel is opt-in per run: a run that named no channel gets none,
-    // even when the ambient environment carries a stale one.
+  if (exploration === undefined) {
+    // The channels are opt-in per run: a run that named none gets none, even
+    // when the ambient environment carries a stale one.
     delete env.QARE_EXPLORATION_TOOLS
     delete env.QARE_EXPLORATION_ENDPOINT
-    return env
+  } else {
+    env.QARE_EXPLORATION_TOOLS = exploration.allowlist.join(',')
+    env.QARE_EXPLORATION_ENDPOINT = exploration.endpoint
   }
-  env.QARE_EXPLORATION_TOOLS = tools.allowlist.join(',')
-  env.QARE_EXPLORATION_ENDPOINT = tools.endpoint
+  if (mcp === undefined) {
+    delete env.QARE_MCP_TOOLS
+    delete env.QARE_MCP_ENDPOINT
+  } else {
+    env.QARE_MCP_TOOLS = mcp.allowlist.join(',')
+    env.QARE_MCP_ENDPOINT = mcp.endpoint
+  }
   return env
 }
 
@@ -207,20 +221,24 @@ export class NareAgentRunner implements AgentRunner {
         await writeFile(schemaPath, request.outputSchema, 'utf8')
         argv.push('--schema', schemaPath)
       }
-      const { code, stdout } = await this.spawn(argv, request.tools)
+      const { code, stdout } = await this.spawn(argv, request.tools, request.mcp)
       return this.readOutcome(code, stdout)
     } finally {
       await rm(workDir, { recursive: true, force: true })
     }
   }
 
-  private async spawn(argv: string[], tools?: AgentToolChannel): Promise<{ code: number; stdout: string }> {
+  private async spawn(
+    argv: string[],
+    exploration?: AgentToolChannel,
+    mcp?: AgentToolChannel,
+  ): Promise<{ code: number; stdout: string }> {
     const { spawn } = await import('node:child_process')
     const binary = this.options.binary ?? 'nare'
     return await new Promise((resolve, reject) => {
       const child = spawn(binary, argv, {
         cwd: this.options.cwd,
-        env: explorationEnv(tools, this.options.env),
+        env: channelEnv(exploration, mcp, this.options.env),
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       let stdout = ''

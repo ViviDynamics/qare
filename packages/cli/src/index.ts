@@ -30,6 +30,8 @@ import {
   redactText,
   redactionRules,
   valueRules,
+  startMcpToolServer,
+  startRegisteredMcpSources,
   criteriaFromIssue,
   criteriaFromIssues,
   IssueCriteriaError,
@@ -59,6 +61,9 @@ import type {
   Plan,
   QaProfile,
   RedactionRule,
+  McpCallRecord,
+  McpSource,
+  McpToolServer,
   ReplayDifference,
   RunVerdict,
 } from '@qare/core'
@@ -684,8 +689,22 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       flowActions.length === 0
         ? BROWSER_FLOW_DRIVER
         : { ...BROWSER_FLOW_DRIVER, actions: [...BROWSER_FLOW_DRIVER.actions, ...flowActions] }
+    await mkdir(dirname(outPath), { recursive: true })
     let plan: Plan
+    // The profile's registered MCP servers the plan step may look through (#93):
+    // started here, served to the planner over one channel, recorded to
+    // mcp-calls.jsonl beside the plan, and closed whatever the planning did.
+    const mcpRecords: McpCallRecord[] = []
+    let mcpSources: McpSource[] = []
+    let mcpServer: McpToolServer | undefined
     try {
+      const started = await startRegisteredMcpSources(profile?.mcp ?? [], 'plan', {
+        record: (record) => mcpRecords.push(record),
+      })
+      mcpSources = started.sources
+      for (const failure of started.failures)
+        out.write(`host mcp server '${failure.server}' is unreachable: ${failure.reason}\n`)
+      mcpServer = started.sources.length === 0 ? undefined : await startMcpToolServer(started.sources)
       plan = await planRun(runner, {
         criteria,
         diff,
@@ -693,6 +712,19 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         runInputs: { paths: declaredRunPaths(outPath, profilePath, diff) },
         ...(suites === undefined ? {} : { suites }),
         ...(flowActions.length === 0 ? {} : { flowActions }),
+        ...(mcpServer === undefined
+          ? {}
+          : {
+              mcp: {
+                endpoint: mcpServer.url,
+                servers: mcpSources.map((source) => ({
+                  name: source.name,
+                  tools: source.tools.map((tool) =>
+                    tool.description === undefined ? { name: tool.name } : { name: tool.name, description: tool.description },
+                  ),
+                })),
+              },
+            }),
       })
     } catch (error) {
       // planRun already gave the planner its one correction round, carrying
@@ -703,11 +735,18 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       const named = `${error.name}: ${error.message}`
       out.write(`the planner could not produce a usable plan, so every criterion is marked unplannable: ${named}\n`)
       plan = unplannedPlan(criteria, `planning failed (${named})`)
+    } finally {
+      await mcpServer?.close().catch(() => {})
+      await Promise.all(mcpSources.map((source) => source.close().catch(() => {})))
+      if (mcpRecords.length > 0) {
+        const mcpPath = join(dirname(outPath), 'mcp-calls.jsonl')
+        await writeFile(mcpPath, `${mcpRecords.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8')
+        out.write(`recorded ${mcpRecords.length} host tool calls; ${mcpPath}\n`)
+      }
     }
     if (flowActions.length > 0)
       out.write(`planning with the change's flow action kinds: ${flowActions.join(', ')}\n`)
 
-    await mkdir(dirname(outPath), { recursive: true })
     await writeFile(outPath, `${JSON.stringify(plan, null, 2)}\n`, 'utf8')
     const unplannable = plan.criteria.filter((criterion) => 'unplannable' in criterion).length
     out.write(

@@ -6,6 +6,7 @@ import { BROWSER_FLOW_DRIVER } from './flow-playwright.js'
 import { jobFromPlan } from './job-from-plan.js'
 import { judgeExecuted } from './judge.js'
 import type { ReadMail } from './mailbox.js'
+import { startMcpToolServer, startRegisteredMcpSources, type McpCallRecord, type McpSource, type McpToolServer } from './mcp.js'
 import { PLAN_SCHEMA_VERSION, type Plan } from './plan.js'
 import { NO_DIFF, planRun } from './plan-step.js'
 import { ProfileMissingError, loadProfile, type QaProfile } from './profile.js'
@@ -101,14 +102,17 @@ export async function checkCriteria(opts: CheckOptions): Promise<CheckOutcome> {
     if (!(error instanceof ProfileMissingError)) throw error
   }
 
+  const notes: string[] = []
+  // The evidence directory exists before planning starts: the MCP call records
+  // land in it while the plan is being made, not only when the plan is written.
+  await mkdir(opts.evidenceDir, { recursive: true })
   const plan =
     profile === undefined
       ? unplanned(criteria, 'there is no usable profile to plan against')
-      : await planOrReport(opts.planner, criteria, profile)
-  await mkdir(opts.evidenceDir, { recursive: true })
+      : await planOrReport(opts.planner, criteria, profile, opts.evidenceDir, notes)
   await writeFile(join(opts.evidenceDir, 'plan.json'), `${JSON.stringify(plan, null, 2)}\n`)
 
-  const { job, notes } = jobFromPlan(plan, {
+  const { job, notes: runNotes } = jobFromPlan(plan, {
     id: opts.id ?? 'qare-check',
     repoPath: opts.repoPath,
     // A one-off check runs the app as it is: there is no second side.
@@ -119,6 +123,7 @@ export async function checkCriteria(opts: CheckOptions): Promise<CheckOutcome> {
     profile: profile === undefined ? { path: opts.profileDir } : { inline: profile },
     evidenceDir: opts.evidenceDir,
   })
+  notes.push(...runNotes)
   const { result: executed } = await runJob(job, opts.run ?? {})
 
   const rules = redactionRules(profile?.redact)
@@ -134,21 +139,66 @@ export async function checkCriteria(opts: CheckOptions): Promise<CheckOutcome> {
   return { criteria, executed, judged, notes }
 }
 
-async function planOrReport(planner: AgentRunner, criteria: { id: string; text: string }[], profile: QaProfile): Promise<Plan> {
+/**
+ * Plan against the profile, with the profile's registered MCP servers started
+ * for the plan step (#93). The planner's session looks through them over one
+ * channel the harness serves; every call and every result is recorded to the
+ * run's evidence as mcp-calls.jsonl; and a registered server that cannot be
+ * started or reached is reported in the notes, never silently skipped.
+ * Whatever started is closed before this returns.
+ */
+async function planOrReport(
+  planner: AgentRunner,
+  criteria: { id: string; text: string }[],
+  profile: QaProfile,
+  evidenceDir: string,
+  notes: string[],
+): Promise<Plan> {
+  const registered = profile.mcp ?? []
+  const records: McpCallRecord[] = []
+  let sources: McpSource[] = []
+  let server: McpToolServer | undefined
+  let plan: Plan
   try {
-    return await planRun(planner, {
+    const started = await startRegisteredMcpSources(registered, 'plan', {
+      record: (record) => records.push(record),
+    })
+    sources = started.sources
+    for (const failure of started.failures)
+      notes.push(`host mcp server '${failure.server}' is unreachable: ${failure.reason}`)
+    server = sources.length === 0 ? undefined : await startMcpToolServer(sources)
+    plan = await planRun(planner, {
       criteria,
       suites: profile.suites.map((suite) => suite.name),
       driver: BROWSER_FLOW_DRIVER,
       ...(profile.target === undefined ? {} : { target: profile.target.url }),
+      ...(server === undefined
+        ? {}
+        : {
+            mcp: {
+              endpoint: server.url,
+              servers: sources.map((source) => ({
+                name: source.name,
+                tools: source.tools.map((tool) =>
+                  tool.description === undefined ? { name: tool.name } : { name: tool.name, description: tool.description },
+                ),
+              })),
+            },
+          }),
     })
   } catch (error) {
     // A planner that could not run, for whatever reason, leaves every
     // criterion unverified, naming the error and its kind: the run still
     // reports each one, and a bug still shows as one, by name.
     const named = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
-    return unplanned(criteria, `planning failed (${named})`)
+    plan = unplanned(criteria, `planning failed (${named})`)
+  } finally {
+    await server?.close().catch(() => {})
+    await Promise.all(sources.map((source) => source.close().catch(() => {})))
+    if (registered.length > 0 && records.length > 0)
+      await writeFile(join(evidenceDir, 'mcp-calls.jsonl'), `${records.map((record) => JSON.stringify(record)).join('\n')}\n`)
   }
+  return plan
 }
 
 function unplanned(criteria: { id: string; text: string }[], reason: string): Plan {

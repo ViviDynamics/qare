@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { lstat, mkdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { shellCharacter } from './duration.js'
 import { Artefacts, type ArtefactField } from './artefacts.js'
 import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
 import { bootApp, CANCEL_DOWN_TIMEOUT_MS, killActiveCompose, stopApp, type BootOpts } from './boot.js'
@@ -1338,14 +1339,11 @@ function resolveCheckCwd(cwd: string | undefined, repoPath: string): string | un
  * rather than failed: a check that cannot run disproves nothing.
  */
 /**
- * The runner's shell-syntax judgment, shared with plan-time validation (#136):
- * plan-step must reject exactly the commands this runner would, so both sides
- * read one character class instead of two copies that can drift apart.
+ * The runner's shell-syntax judgment, shared with plan-time validation (#136).
+ * It lives in duration.ts, a module with no imports, so the profile's command
+ * validation (#93) reads the same class without a cycle through this module.
  */
-export function shellCharacter(run: string): string | undefined {
-  return run.match(/[|&;<>$`"'\\()\n\r]/)?.[0]
-}
-
+export { shellCharacter } from './duration.js'
 function unrunnableCommandReason(run: string): string | undefined {
   const character = shellCharacter(run)
   if (character === undefined) return undefined

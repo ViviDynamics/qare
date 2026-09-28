@@ -219,6 +219,16 @@ jobs:
           name: plan.json
           path: plan.json
           if-no-files-found: error
+      - name: Upload mcp calls
+        uses: actions/upload-artifact@v4
+        with:
+          # The planner's look through the profile's registered host MCP
+          # servers (#93), as the plan step served it. Written only when a
+          # profile registered servers, so its absence is an ordinary no
+          # rather than a fault.
+          name: mcp-calls.jsonl
+          path: mcp-calls.jsonl
+          if-no-files-found: ignore
 
   # label: execute (no secrets)
   execute:
