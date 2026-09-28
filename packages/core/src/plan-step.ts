@@ -1,6 +1,6 @@
 import type { AgentRunner, AgentToolChannel } from './runner.js'
 import type { FlowDriverCapabilities } from './flow.js'
-import { EXPLORATION_TOOLS, type ExplorationTool } from './explore.js'
+import { EXPLORATION_TOOLS, isExplorableUrl, type ExplorationTool } from './explore.js'
 import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
 import { shellCharacter } from './run.js'
 
@@ -110,6 +110,8 @@ export class PlanStepError extends Error {
 function exploreChannel(exploration: NonNullable<PlanInputs['exploration']>): AgentToolChannel {
   if (typeof exploration.endpoint !== 'string' || exploration.endpoint.trim() === '')
     throw new PlanStepError('the exploration channel carries no endpoint, so there is nothing the model session can explore')
+  if (!isExplorableUrl(exploration.endpoint))
+    throw new PlanStepError('the exploration endpoint is not an absolute http or https URL, so the model session cannot reach it')
   const allowlist = exploration.tools ?? EXPLORATION_TOOLS
   const unknown = allowlist.filter((tool) => !EXPLORATION_TOOLS.includes(tool as ExplorationTool))
   if (unknown.length > 0)

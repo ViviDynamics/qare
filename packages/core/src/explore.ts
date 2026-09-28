@@ -120,7 +120,7 @@ export function untrustedToolResult(result: string): string {
  */
 export function startExplorationServer(
   page: ExplorationPage,
-  options: { host?: string; port?: number } = {},
+  options: { host?: string; port?: number; advertise?: string } = {},
 ): Promise<ExplorationServer> {
   const { host = '127.0.0.1', port = 0 } = options
   return new Promise((resolve, reject) => {
@@ -140,7 +140,11 @@ export function startExplorationServer(
       }
       resolve({
         port: bound,
-        url: `http://${host === '127.0.0.1' ? '127.0.0.1' : host}:${bound}`,
+        // The session that explores is often outside the sandbox's own
+        // network view, so what the server answers on and what the model
+        // session reaches through can be different addresses: the caller
+        // names the endpoint the topology actually serves (#88, #89).
+        url: options.advertise ?? `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${bound}`,
         tools: [...EXPLORATION_TOOLS],
         close: () =>
           new Promise<void>((closeResolve, closeReject) => {
@@ -195,11 +199,11 @@ function handle(request: IncomingMessage, response: ServerResponse, page: Explor
 }
 
 /**
- * A URL a tool call may navigate the page to. The page the tools drive is the
- * app the sandbox booted, so a channel that could point it at `file://` or
- * ssh would turn a read-only tool into something else entirely.
+ * A URL a tool call may navigate the page to, and the only kind of endpoint
+ * the channel admits: absolute, and http or https only, so a channel that
+ * would point the page at `file://` or ssh is refused at validation too.
  */
-function isExplorableUrl(url: string): boolean {
+export function isExplorableUrl(url: string): boolean {
   try {
     const parsed = new URL(url)
     return parsed.protocol === 'http:' || parsed.protocol === 'https:'
@@ -232,15 +236,17 @@ function refuse(response: ServerResponse, status: number, message: string): void
 /**
  * One tool call across the channel (#87): the plan step's model session
  * reaches the sandbox's exploration server over the network, and the only
- * traffic is a tool call and its result. A refusal the server answers, a tool
- * outside the allowlist or a navigate that is not a page of the app, throws
- * with the server's reason; it never reads as a tool result.
+ * traffic is a tool call and its result. What comes back is the result
+ * fenced as the untrusted data it is — the server's answer was produced by
+ * the pull request's own code, so its words never read as instructions. A
+ * refusal the server answers, a tool outside the allowlist or a navigate
+ * that is not a page of the app, throws with the server's reason instead.
  */
 export async function callExplorationTool(
   endpoint: string,
   tool: string,
   input: { url?: string } = {},
-): Promise<unknown> {
+): Promise<string> {
   let target: URL
   try {
     target = new URL(`${endpoint.replace(/\/+$/, '')}/${tool}`)
@@ -275,7 +281,7 @@ export async function callExplorationTool(
             reject(new ExplorationError(message))
             return
           }
-          resolve(parsed)
+          resolve(untrustedToolResult(JSON.stringify(parsed)))
         })
       },
     )
