@@ -150,12 +150,18 @@ function toolFlag(policy: ToolPolicy): string {
  * nare's own tool flags stay untouched: the channel carries a read-only
  * allowlist, so nothing that writes files or runs commands is asked for.
  */
-function explorationEnv(tools: AgentToolChannel | undefined): Record<string, string> {
-  if (tools === undefined) return {}
-  return {
-    QARE_EXPLORATION_TOOLS: tools.allowlist.join(','),
-    QARE_EXPLORATION_ENDPOINT: tools.endpoint,
+function explorationEnv(tools: AgentToolChannel | undefined, over: Record<string, string> | undefined): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env, ...over }
+  if (tools === undefined) {
+    // The channel is opt-in per run: a run that named no channel gets none,
+    // even when the ambient environment carries a stale one.
+    delete env.QARE_EXPLORATION_TOOLS
+    delete env.QARE_EXPLORATION_ENDPOINT
+    return env
   }
+  env.QARE_EXPLORATION_TOOLS = tools.allowlist.join(',')
+  env.QARE_EXPLORATION_ENDPOINT = tools.endpoint
+  return env
 }
 
 /**
@@ -214,7 +220,7 @@ export class NareAgentRunner implements AgentRunner {
     return await new Promise((resolve, reject) => {
       const child = spawn(binary, argv, {
         cwd: this.options.cwd,
-        env: { ...process.env, ...this.options.env, ...explorationEnv(tools) },
+        env: explorationEnv(tools, this.options.env),
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       let stdout = ''
