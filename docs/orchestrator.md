@@ -89,6 +89,7 @@ The evidence directory holds everything a run produced:
   checks/<criterion id>/<n>/       # one directory per executed check
     stdout.txt
     stderr.txt
+    command.json                   # a command check: the command as run, its outcome and exit code
     outbound.json                  # a flow on a target run: every host its browser reached
 ```
 
@@ -97,7 +98,9 @@ A run against a target (a profile naming `target` rather than `app`) carries
 revision, so no regression was looked for.
 
 Every executed check captures its stdout and stderr there, and the result's
-`criteria[].evidence` arrays name those files. Evidence references are
+`criteria[].evidence` arrays name those files; a command check also records
+`command.json`: the command as run, its outcome, and the exit code it closed
+with. Evidence references are
 relative paths that stay inside the evidence directory: absolute paths and
 any `..` segment are rejected by the loaders. An orchestrator reads evidence
 files relative to the `evidenceDir` it named in the job.

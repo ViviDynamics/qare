@@ -70,7 +70,7 @@ Execute stages, per side (base, head):
 
 1. Boot from the `.qa/` recipe (compose, command, or preview URL); prove the app is up with a health check the harness runs.
 2. Seed fixtures, log in test accounts.
-3. Run `command` checks (exit code and output), `flow` checks (a fixed action set driven by a client driver, or existing suites), `visual` checks (named screenshots at named widths and themes), and `mail` checks (a message waited for and read).
+3. Run `command` checks (exit code and output), `flow` checks (a fixed action set driven by a client driver, or existing suites), `visual` checks (named screenshots at named widths and themes), and `mail` checks (a message waited for and read). Each `command` check also writes `command.json` beside its streams: the command as run, its outcome, and the exit code it closed with. A check that passes silently (`test -f`, `grep -q`) saves no output, so the streams alone read as a check that never ran; the record is the evidence that the harness ran it and captured its result.
 4. Record every outbound connection attempt. Anything outside the stub map is a `refused: missing stub` finding.
 
 Judge:

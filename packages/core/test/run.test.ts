@@ -100,12 +100,12 @@ test('a passing job proves both command criteria and writes loadable evidence', 
     {
       id: 'criterion-1',
       outcome: 'proven',
-      evidence: ['checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt'],
+      evidence: ['checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt', 'checks/criterion-1/0/command.json'],
     },
     {
       id: 'criterion-2',
       outcome: 'proven',
-      evidence: ['checks/criterion-2/0/stdout.txt', 'checks/criterion-2/0/stderr.txt'],
+      evidence: ['checks/criterion-2/0/stdout.txt', 'checks/criterion-2/0/stderr.txt', 'checks/criterion-2/0/command.json'],
     },
   ])
   for (const criterion of result.criteria) {
@@ -118,6 +118,11 @@ test('a passing job proves both command criteria and writes loadable evidence', 
   expect(
     await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'stdout.txt'), 'utf8'),
   ).toBe('ok\n')
+  expect(JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'command.json'), 'utf8'))).toEqual({
+    command: 'echo ok',
+    outcome: 'passed',
+    exit_code: 0,
+  })
 
   const written = loadResult(await readFile(join(job.evidenceDir, 'result.json'), 'utf8'))
   expect(written).toEqual(result)
@@ -137,9 +142,38 @@ test('a failing command fails its criterion and the run', async () => {
     {
       id: 'criterion-1',
       outcome: 'failed',
-      evidence: ['checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt'],
+      evidence: ['checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt', 'checks/criterion-1/0/command.json'],
     },
   ])
+  expect(JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'command.json'), 'utf8'))).toEqual({
+    command: 'false',
+    outcome: 'failed',
+    exit_code: 1,
+  })
+})
+
+test('a command that passes silently records the exit code it closed with', async () => {
+  const job = await makeJob({
+    criteria: commandCriteria('true'),
+    profile: { inline: INLINE_PROFILE },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('passed')
+  expect(result.criteria).toEqual([
+    {
+      id: 'criterion-1',
+      outcome: 'proven',
+      evidence: ['checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt', 'checks/criterion-1/0/command.json'],
+    },
+  ])
+  expect(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'stdout.txt'), 'utf8')).toBe('')
+  expect(JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'command.json'), 'utf8'))).toEqual({
+    command: 'true',
+    outcome: 'passed',
+    exit_code: 0,
+  })
 })
 
 test('a job with a profile path boots through the injected compose and proves its criterion', async () => {
@@ -155,7 +189,7 @@ test('a job with a profile path boots through the injected compose and proves it
     {
       id: 'criterion-1',
       outcome: 'proven',
-      evidence: ['checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt'],
+      evidence: ['checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt', 'checks/criterion-1/0/command.json'],
     },
   ])
 })
