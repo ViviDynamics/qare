@@ -2,7 +2,7 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import {
   FileLedgerStore,
   buildReadinessReport,
@@ -46,6 +46,7 @@ import type {
   Job,
   LedgerEntry,
   Plan,
+  QaProfile,
   RedactionRule,
   ReplayDifference,
   RunVerdict,
@@ -338,6 +339,36 @@ function unplannedPlan(criteria: { id: string; text: string }[], reason: string)
   }
 }
 
+/**
+ * The paths the diff adds or changes, from each file header's new-path side.
+ * Deletions carry no `+++ b/` header, and their subject is genuinely gone, so
+ * they are not declared (#162).
+ */
+function touchedPaths(diff: string): string[] {
+  const paths: string[] = []
+  for (const chunk of diff.split(/^diff --git /m).slice(1)) {
+    const header = chunk.split('\n').find((line) => line.startsWith('+++ b/'))
+    if (header === undefined) continue
+    const path = header.slice('+++ b/'.length).trim()
+    if (path !== '') paths.push(path)
+  }
+  return [...new Set(paths)]
+}
+
+/**
+ * The declared run inputs of the pipeline's plan (#162): the plan file itself,
+ * the profile directory, and every path the diff touches. The run's own
+ * outputs are never declared — result.json and its siblings are written when
+ * the run ends, which is exactly why the doomed checks of #162 looked
+ * plannable to a planner that had only the pipeline's own prose to go by.
+ */
+function declaredRunPaths(outPath: string, profilePath: string | undefined, diff: string): string[] {
+  const paths = [relative(process.cwd(), outPath)]
+  if (profilePath !== undefined) paths.push(profilePath)
+  paths.push(...touchedPaths(diff))
+  return [...new Set(paths.filter((path) => path !== ''))]
+}
+
 async function planCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
   try {
     const criteriaPath = flag(argv, '--criteria')
@@ -379,13 +410,14 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       criteria = loaded as { id: string; text: string }[]
     }
     let diff = await readFile(resolve(diffPath), 'utf8')
+    let profile: QaProfile | undefined
     if (profilePath !== undefined) {
       // The diff can be the very change that seeds the profile, so the seeded
       // values sweep from the model-facing text before the planner sees it
       // (#64). No profile means nothing seeded to sweep; a profile that is
       // there but broken throws, as everywhere else.
       try {
-        const profile = await loadProfile(resolve(profilePath))
+        profile = await loadProfile(resolve(profilePath))
         const login = profile.app?.login
         const redacted = redactText(diff, valueRules([login?.totp?.secret, login?.backupCode?.value]))
         if (redacted !== diff) out.write("the profile's seeded values are redacted from the diff before planning\n")
@@ -409,6 +441,7 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         criteria,
         diff,
         driver,
+        runInputs: { paths: declaredRunPaths(outPath, profilePath, diff) },
         ...(suites === undefined ? {} : { suites }),
         ...(flowActions.length === 0 ? {} : { flowActions }),
       })

@@ -8,6 +8,18 @@ export interface PlanCriterionInput {
   text: string
 }
 
+/**
+ * What the run declares a command check may read (#162): paths relative to the
+ * repository root that exist while a check runs. The run's own outputs are
+ * never among them — result.json, the judged result, the comment and the
+ * evidence directory are written when the run ends, so a check that reads one
+ * is doomed before it starts.
+ */
+export interface DeclaredRunInputs {
+  /** Paths, relative to the repository root, that exist at check time. */
+  paths: string[]
+}
+
 export interface PlanInputs {
   /** The acceptance criteria, as the ledger or the issue states them. */
   criteria: PlanCriterionInput[]
@@ -16,6 +28,13 @@ export interface PlanInputs {
    * (#123): the planner is told there is none, rather than handed an empty one.
    */
   diff?: string
+  /**
+   * The paths a command check may read (#162). Declared, the planner is told
+   * the run contract up front and a plan whose command checks read anything
+   * else is corrected, then refused; undeclared, the contract is not stated
+   * and command checks are validated only against the no-shell contract.
+   */
+  runInputs?: DeclaredRunInputs
   /** Suite names the profile declares, which a flow or command check may name. */
   suites?: string[]
   /** The URL of a running target the profile names (#122), which checks reach it at. */
@@ -185,6 +204,21 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     'pipes, semicolons, redirection, quotes, $, backticks, parentheses or backslashes; command',
     'checks already run in the repository root, and an argument containing spaces cannot be expressed.',
     '',
+    ...(inputs.runInputs === undefined
+      ? []
+      : [
+          'Command checks run on a machine that has the repository checked out, with the standard',
+          'tools (node, npm, git, jq, grep, test) on its PATH and nothing more. A command check may',
+          'read only these declared run inputs:',
+          ...inputs.runInputs.paths.map((path) => `- ${path}`),
+          'A declared directory covers the files under it.',
+          "The run's own outputs do not exist while a check runs: result.json, judged-result.json,",
+          'comment.md and everything under the evidence directory are written when the run ends, so a',
+          "check that reads one cannot pass, and neither can a command whose executable is not on the",
+          "runner's PATH (qare, this harness's own CLI, is not). Plan the check against the declared",
+          'run inputs, or mark the criterion unplannable.',
+          '',
+        ]),
     `A flow action is one of ${flowActionKinds.join(', ')}. An element reference is semantic:`,
     '{"role":"the aria role","name":"the accessible name"} or {"testId":"the data-testid value"}.',
     'Never a CSS selector, never coordinates, never a free-form instruction.',
@@ -260,6 +294,54 @@ function commandContractGap(plan: Plan): string | undefined {
 }
 
 /**
+ * The run's own outputs, named in the SPEC's run contract: a command check
+ * reading one of them reads a file the run writes when it ends, which is why
+ * they are the one artifact class doomed by construction rather than by
+ * absence.
+ */
+const RUN_OUTPUT_BASENAMES = ['result.json', 'judged-result.json', 'comment.md', 'checkrun.json']
+
+/** The harness's own CLI is never an executable on the runner's PATH (#162). */
+const HARNESS_CLI = 'qare'
+
+function isPathLike(token: string): boolean {
+  return token.includes('/') || /\.[A-Za-z0-9]+$/.test(token)
+}
+
+function undeclaredReference(command: string, declared: string[]): string | undefined {
+  const covered = (token: string) =>
+    declared.some((path) => token === path || token.startsWith(`${path}/`))
+  for (const token of command.split(/\s+/).filter((token) => token !== '')) {
+    if (token === HARNESS_CLI)
+      return `"${HARNESS_CLI}" is this harness's own CLI, and the runner never installs it on its PATH, so the command cannot start`
+    if (!isPathLike(token) || covered(token)) continue
+    if (RUN_OUTPUT_BASENAMES.includes(token.split(/[\\/]/).pop() ?? token))
+      return `${token} is an output the run writes when it ends, so it does not exist while a check runs`
+    return `${token} is not among the declared run inputs`
+  }
+  return undefined
+}
+
+/**
+ * Command checks may read only the declared run inputs (#162): a path the
+ * planner invented, or a run output, names a file that is not there at check
+ * time, and the check it anchors is doomed however green the change is.
+ */
+function undeclaredPathGap(plan: Plan, inputs: PlanInputs): string | undefined {
+  if (inputs.runInputs === undefined) return undefined
+  const declared = inputs.runInputs.paths
+  for (const criterion of plan.criteria) {
+    if (!('checks' in criterion)) continue
+    for (const check of criterion.checks) {
+      if (check.kind !== 'command') continue
+      const reference = undeclaredReference(check.command, declared)
+      if (reference !== undefined) return `criterion ${criterion.id} command check "${check.name}": ${reference}`
+    }
+  }
+  return undefined
+}
+
+/**
  * The plan step (#9): criteria and a diff in, a parsed plan out.
  *
  * Fails closed in every direction. A run that did not complete is never turned
@@ -306,6 +388,13 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
     const violation = commandContractGap(plan)
     if (violation !== undefined) {
       correction = `${violation}. The command is split on whitespace and spawned directly, with no shell.`
+      continue
+    }
+    const undeclared = undeclaredPathGap(plan, inputs)
+    if (undeclared !== undefined && inputs.runInputs !== undefined) {
+      correction =
+        `${undeclared}. A command check may read only the declared run inputs ` +
+        `(${inputs.runInputs.paths.join(', ')}); rewrite the command against them, or mark the criterion unplannable.`
       continue
     }
     return plan

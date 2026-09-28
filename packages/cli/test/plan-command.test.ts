@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
@@ -323,4 +323,117 @@ test('the planner never sees the seeded values the diff carries (#64)', async ()
   const argv = JSON.parse(await readFile(argvPath, 'utf8')) as string[]
   expect(argv[1]).not.toContain(secret)
   expect(argv[1]).toContain('[redacted]')
+})
+
+test('qare plan declares the run contract paths to the planner (#162)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-plan-decl-'))
+  const criteriaPath = join(dir, 'criteria.json')
+  const diffPath = join(dir, 'change.diff')
+  const outPath = join(dir, 'plan.json')
+  await writeFile(criteriaPath, JSON.stringify(CRITERIA), 'utf8')
+  await writeFile(diffPath, 'diff --git a/login.ts b/login.ts\n+++ b/login.ts\n+export {}', 'utf8')
+  await mkdir(join(dir, '.qa'), { recursive: true })
+  await writeFile(join(dir, '.qa', 'QA.md'), '# QA\n', 'utf8')
+  const argvPath = join(dir, 'argv.json')
+  const binary = join(dir, 'nare')
+  const script = [
+    '#!/usr/bin/env node',
+    `import { writeFileSync } from 'node:fs'`,
+    `writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)))`,
+    `const answer = ${JSON.stringify(JSON.stringify(PLAN))}`,
+    `console.log(JSON.stringify({ type: 'output', text: answer, detail: {} }))`,
+    `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
+    `  stop_reason: 'end_turn', turns: 1, contract: 1, output: JSON.parse(answer), error: null }))`,
+  ].join('\n')
+  await writeFile(`${binary}.mjs`, script, 'utf8')
+  await writeFile(binary, `#!/bin/sh\nexec node ${binary}.mjs "$@"\n`, 'utf8')
+  const { chmod } = await import('node:fs/promises')
+  await chmod(binary, 0o755)
+  const out = capture()
+
+  const code = await main(
+    [
+      'plan',
+      '--criteria',
+      criteriaPath,
+      '--diff',
+      diffPath,
+      '--out',
+      outPath,
+      '--nare',
+      binary,
+      '--profile',
+      join(dir, '.qa'),
+    ],
+    out.writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  const argv = JSON.parse(await readFile(argvPath, 'utf8')) as string[]
+  expect(argv[1]).toContain('declared run inputs')
+  expect(argv[1]).toContain('plan.json')
+  expect(argv[1]).toContain(join(dir, '.qa'))
+  expect(argv[1]).toContain('login.ts')
+  expect(argv[1]).toContain('result.json, judged-result.json')
+})
+
+test('a command check that reads a run output is corrected, then neutral, not red (#162)', async () => {
+  const { criteriaPath, diffPath, outPath } = await inputs()
+  const answer = {
+    schemaVersion: '1',
+    criteria: [
+      {
+        id: 'c1',
+        text: CRITERIA[0].text,
+        checks: [{ kind: 'command', name: 'profiles', command: 'grep profiles result.json' }],
+      },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+    ],
+  }
+  const out = capture()
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', outPath, '--nare', await fakeNare(answer)],
+    out.writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  const plan = JSON.parse(await readFile(outPath, 'utf8'))
+  expect(plan.criteria[0].unplannable).toContain('result.json is an output the run writes when it ends')
+  expect(plan.criteria[0].unplannable).toContain('planning failed')
+  expect(plan.criteria[1].unplannable).toContain('planning failed')
+})
+
+test('a plan whose command checks read only the declared run inputs is written as planned (#162)', async () => {
+  const { criteriaPath, diffPath, outPath } = await inputs()
+  await writeFile(
+    diffPath,
+    'diff --git a/login.ts b/login.ts\n+++ b/login.ts\n+export the login form',
+    'utf8',
+  )
+  const answer = {
+    schemaVersion: '1',
+    criteria: [
+      {
+        id: 'c1',
+        text: CRITERIA[0].text,
+        checks: [{ kind: 'command', name: 'login', command: 'grep login login.ts' }],
+      },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+    ],
+  }
+  const out = capture()
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', outPath, '--nare', await fakeNare(answer)],
+    out.writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  const plan = JSON.parse(await readFile(outPath, 'utf8'))
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ command: 'grep login login.ts' }] })
+  expect(out.lines.join('')).toContain('1 unplannable')
 })
