@@ -2,7 +2,7 @@
 // verbatim and rejects anything else. Type-only import: the loader adds no
 // runtime dependency on the runner.
 import type { FlowAction, FlowDriverCapabilities, FlowElement } from './flow.js'
-import { isSnapshotPath } from './locator.js'
+import { identityOfPath, isSnapshotPath } from './locator.js'
 import { isUnsafeProfileName } from './profile.js'
 import { DEFAULT_PROFILE_NAME } from './monorepo.js'
 
@@ -454,6 +454,8 @@ function parseFlowElement(value: unknown, base: string): FlowElement {
   }
   if (!hasRole || !hasName)
     fail(base, 'an element reference names a role with its accessible name, or a test id')
+  const role = nonEmptyString(value.role, `${base}.role`, 'role')
+  const name = nonEmptyString(value.name, `${base}.name`, 'accessible name')
   // The path the element sat at in the snapshot the plan was shown (#83): the
   // one reference locator repair can compare an identity against. Optional,
   // and only the shape the normalised snapshot itself produces.
@@ -466,9 +468,17 @@ function parseFlowElement(value: unknown, base: string): FlowElement {
             `${base}.at`,
             'a snapshot path starts at document and walks roles, quoted accessible names and occurrence indexes: document/main/region "Billing"/button "Save"[2]',
           )
+  // The path ends on the element the reference names: a path whose terminal
+  // role or accessible name differs would have the driver reach for an
+  // element the reference itself does not name, repairs included.
+  if (at !== undefined) {
+    const terminal = identityOfPath(at)
+    if (terminal.role !== role || terminal.name !== name)
+      fail(`${base}.at`, 'a snapshot path ends on the element the reference names: its last role and accessible name must match the role and accessible name beside it')
+  }
   return {
-    role: nonEmptyString(value.role, `${base}.role`, 'role'),
-    name: nonEmptyString(value.name, `${base}.name`, 'accessible name'),
+    role,
+    name,
     ...(at === undefined ? {} : { at }),
   }
 }

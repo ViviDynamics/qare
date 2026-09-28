@@ -369,6 +369,7 @@ export function redactResult(result: RunResult, rules: readonly RedactionRule[] 
         ? {
             repairs: criterion.repairs.map((repair) => ({
               ...repair,
+              check: redactText(repair.check, rules),
               reference: redactText(repair.reference, rules),
               ...(repair.repaired === undefined ? {} : { repaired: redactText(repair.repaired, rules) }),
               ...(repair.refusedReason === undefined ? {} : { refusedReason: redactText(repair.refusedReason, rules) }),
@@ -467,10 +468,24 @@ function redactResultText(text: string, name: string, rules: readonly RedactionR
   }
   let changed = false
   for (const criterion of raw.criteria) {
-    if (typeof criterion.reason !== 'string') continue
-    const reason = redactText(criterion.reason, rules)
-    if (reason !== criterion.reason) changed = true
-    criterion.reason = reason
+    if (typeof criterion.reason === 'string') {
+      const reason = redactText(criterion.reason, rules)
+      if (reason !== criterion.reason) changed = true
+      criterion.reason = reason
+    }
+    // Repair records quote the snapshot's own free text, so the standalone
+    // result sweep loses their secrets too (#83).
+    if (Array.isArray(criterion.repairs))
+      for (const repair of criterion.repairs) {
+        if (typeof repair !== 'object' || repair === null) continue
+        for (const field of ['check', 'reference', 'repaired', 'refusedReason'] as const) {
+          const value = repair[field]
+          if (typeof value !== 'string') continue
+          const redacted = redactText(value, rules)
+          if (redacted !== value) changed = true
+          repair[field] = redacted
+        }
+      }
   }
   return changed ? `${JSON.stringify(raw, null, 2)}\n` : text
 }

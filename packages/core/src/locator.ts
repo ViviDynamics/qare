@@ -22,7 +22,27 @@ export const LANDMARK_ROLES: readonly string[] = [
 export const REPAIRS_SCHEMA_VERSION = 1
 
 /** One step of a snapshot path: `role`, `role "name"`, with an optional `[n]` occurrence index. */
-const SEGMENT = /^([a-z]+)(?:\s+("(?:[^"\\]|\\.)*"))?(?:\[(\d+)\])?$/
+const SEGMENT = /^([a-z]+(?:-[a-z]+)*)(?:\s+("(?:[^"\\]|\\.)*"))?(?:\[(\d+)\])?$/
+
+/** What one step of a snapshot path names. */
+export interface ParsedSegment {
+  role: string
+  name?: string
+  occurrence?: number
+}
+
+/** The role, accessible name and occurrence a path step carries, or undefined when it is not a step. */
+export function parseSegment(segment: string): ParsedSegment | undefined {
+  const match = SEGMENT.exec(segment)
+  if (match === null) return undefined
+  const name = match[2] === undefined ? undefined : (JSON.parse(match[2]) as string)
+  const occurrence = match[3] === undefined ? undefined : Number(match[3])
+  return {
+    role: match[1] ?? segment,
+    ...(name === undefined ? {} : { name }),
+    ...(occurrence === undefined ? {} : { occurrence }),
+  }
+}
 
 /**
  * A path is split on the slashes between steps, never on a slash inside a

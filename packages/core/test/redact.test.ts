@@ -350,3 +350,41 @@ test('a repair record loses the secrets its free text quotes (#83)', () => {
   expect(repairs[0]?.identity).toBe('same role, same accessible name, same landmark ancestry (main/form)')
   expect(repairs[1]?.refusedReason).toBe(`different landmarks: ${REDACTED}`)
 })
+
+test('the standalone result sweep loses the secrets a repair record quotes too (#83)', async () => {
+  const dir = await evidenceDir()
+  const result: RunResult = {
+    schemaVersion: '1',
+    verdict: 'passed',
+    criteria: [
+      {
+        id: 'flow:1',
+        outcome: 'proven',
+        evidence: ['checks/flow:1/0/repairs.json'],
+        repairs: [
+          {
+            check: `sign-in ${SLACK}`,
+            action: 1,
+            reference: `role=button name=Save at=document/main/form "${GITHUB_TOKEN}"/button "Save"`,
+            identity: 'same role, same accessible name, same landmark ancestry (main/form)',
+            status: 'refused',
+            refusedReason: `the element moved: ${AWS_KEY_ID}`,
+          },
+        ],
+      },
+    ],
+  }
+  await writeFile(join(dir, 'result.json'), `${JSON.stringify(result, null, 2)}\n`)
+
+  await redactEvidenceDir(dir)
+
+  const written = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as { criteria: Array<{ repairs?: Array<Record<string, string>> }> }
+  const repair = written.criteria[0]?.repairs?.[0] ?? {}
+  expect(JSON.stringify(written)).not.toContain(GITHUB_TOKEN)
+  expect(JSON.stringify(written)).not.toContain(SLACK)
+  expect(JSON.stringify(written)).not.toContain(AWS_KEY_ID)
+  expect(repair.check).toBe(`sign-in ${REDACTED}`)
+  expect(repair.reference).toBe(`role=button name=Save at=document/main/form "${REDACTED}"/button "Save"`)
+  expect(repair.refusedReason).toBe(`the element moved: ${REDACTED}`)
+  expect(repair.identity).toBe('same role, same accessible name, same landmark ancestry (main/form)')
+})

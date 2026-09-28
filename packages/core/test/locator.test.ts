@@ -137,3 +137,11 @@ test('a quoted name with an escaped quote is one step, and a malformed escape is
   expect(identityOfPath(path).name).toBe('Say "hi" now')
   expect(isSnapshotPath('document/main/button "ends with escape \\\\"')).toBe(true)
 })
+
+test('a path may walk the hyphenated roles the snapshot itself writes (#83)', () => {
+  const path = 'document/doc-chapter "Rules"/doc-pagebreak "Section 1"/button "Save"'
+  expect(isSnapshotPath(path)).toBe(true)
+  expect(identityOfPath(path).role).toBe('button')
+  expect(identityOfPath(path).name).toBe('Save')
+  expect(identityOfPath('document/main/doc-chapter "Rules"/button "Save"').landmarks).toBe('main')
+})

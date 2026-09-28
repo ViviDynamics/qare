@@ -1,6 +1,6 @@
 import type { EgressAttempt } from './egress.js'
 import type { FlowDriverCapabilities, FlowElement, FlowPage, FlowTrace } from './flow.js'
-import { splitSegments } from './locator.js'
+import { parseSegment, splitSegments } from './locator.js'
 import { normaliseAriaSnapshot } from './snapshot.js'
 
 const NOT_INSTALLED_MESSAGE =
@@ -106,12 +106,11 @@ export async function makePlaywrightFlowSession(
     parent: BrowserPage | ReturnType<BrowserPage['getByRole']>,
     step: string,
   ): ReturnType<BrowserPage['getByRole']> => {
-    const match = /^([a-z]+)(?:\s+("(?:[^"\\]|\\.)*"))?(?:\[(\d+)\])?$/.exec(step)
-    const role = (match === null ? step : match[1]) as never
-    const name = match?.[2] === undefined ? undefined : (JSON.parse(match[2]) as string)
-    const locator = parent.getByRole(role, name === undefined ? {} : { name, exact: true })
-    const occurrence = match?.[3]
-    return occurrence === undefined ? locator : locator.nth(Number(occurrence) - 1)
+    const parsed = parseSegment(step)
+    if (parsed === undefined)
+      throw new Error(`a snapshot path step is a role, an optional quoted accessible name and an optional occurrence index: ${step}`)
+    const locator = parent.getByRole(parsed.role as never, parsed.name === undefined ? {} : { name: parsed.name, exact: true })
+    return parsed.occurrence === undefined ? locator : locator.nth(parsed.occurrence - 1)
   }
 
   const resolve = (

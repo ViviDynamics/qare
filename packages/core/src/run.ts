@@ -837,13 +837,17 @@ async function runCriterion(
       )
       evidence.push(...outcome.evidence)
       // A repair is recorded with the criterion and check it happened in (#83),
-      // so the comment can name it; the reference strings are swept again when
-      // the run's result is written.
+      // so the comment can name it. Its free text is swept by the run's own
+      // dynamic rules first — mail values and generated codes included —
+      // because the result redaction later on only knows the profile's rules.
       if (outcome.repairs !== undefined)
         criterionRepairs.push(
           ...outcome.repairs.map((repair) => ({
             ...repair,
-            check: substituted.name ?? `${criterion.id} check ${index}`,
+            check: redactText(substituted.name ?? `${criterion.id} check ${index}`, sweepRules),
+            reference: redactText(repair.reference, sweepRules),
+            ...(repair.repaired === undefined ? {} : { repaired: redactText(repair.repaired, sweepRules) }),
+            ...(repair.refusedReason === undefined ? {} : { refusedReason: redactText(repair.refusedReason, sweepRules) }),
           })),
         )
       if (outcome.status === 'failed') failed = true
@@ -1102,6 +1106,7 @@ async function runFlowCheckJob(
           status: 'unverified',
           reason: `refused: undeclared host: ${undeclared.join(', ')}; the target profile does not list it in target.hosts`,
           evidence,
+          ...(outcome?.repairs === undefined ? {} : { repairs: outcome.repairs }),
         }
       }
     }

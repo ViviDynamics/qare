@@ -390,3 +390,17 @@ test('a snapshot path is validated against the shape the snapshot itself produce
   expect(bad({ role: 'button', name: 'Save', at: 'document/main/button "Save"[0]' })).toThrow(PlanValidationError)
   expect(bad({ testId: 'save', at: 'document/main' })).toThrow(PlanValidationError)
 })
+
+test('a snapshot path ends on the element the reference names (#83)', () => {
+  expect(() =>
+    parseFlowActions([{ action: 'click', element: { role: 'button', name: 'Save', at: 'document/main/button "Delete"' } }], 'flow-83'),
+  ).toThrow(PlanValidationError)
+  expect(() =>
+    parseFlowActions([{ action: 'click', element: { role: 'button', name: 'Save', at: 'document/main/region "Billing"/button "Delete"' } }], 'flow-83'),
+  ).toThrow(PlanValidationError)
+  // The occurrence is the pinning the path exists for: the role and name are
+  // what the reference itself names.
+  expect(
+    parseFlowActions([{ action: 'click', element: { role: 'button', name: 'Save', at: 'document/main/button "Save"[2]' } }], 'flow-83'),
+  ).toEqual([{ action: 'click', element: { role: 'button', name: 'Save', at: 'document/main/button "Save"[2]' } }])
+})
