@@ -555,3 +555,13 @@ test('the comment of a single-profile run has no per-app sections', () => {
   }
   expect(renderComment(result)).not.toContain('###')
 })
+
+test('a named profile cannot be read from a repository whose .qa root also carries the root form', async () => {
+  const job = await makeSeveralJob([
+    { name: 'admin', profile: { path: '.qa/admin' }, criteria: [commandCriterion('admin-c1')] },
+  ])
+  await writeProfile(join(job.repoPath, '.qa', 'admin'), APP_BOOT_CONFIG)
+  await writeFile(join(job.repoPath, '.qa', 'config.yml'), 'stubs: []\n', 'utf8')
+
+  await expect(runJob(job, HEALTHY_BOOT)).rejects.toThrow(/not both/)
+})

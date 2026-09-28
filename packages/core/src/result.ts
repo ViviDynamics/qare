@@ -1,5 +1,6 @@
 import type { RunEnvironment } from './environment.js'
 import { parseProfileRef, type JobProfileRef } from './job.js'
+import { isUnsafeProfileName } from './profile.js'
 
 export const RESULT_SCHEMA_VERSION = '1'
 
@@ -188,6 +189,8 @@ function parseProfiles(
   return value.map((entry, index) => {
     if (!isRecord(entry)) fail(`profiles[${index}]`, 'profile entry must be a JSON object')
     const name = nonEmptyString(entry.name, `profiles[${index}].name`, 'profile name')
+    if (isUnsafeProfileName(name))
+      fail(`profiles[${index}].name`, `profile name ${JSON.stringify(name)} must not contain path separators, ".." or control characters; judge and redact read every named profile from the .qa root the run publishes, so a crafted name cannot point outside it`)
     const verdict = entry.verdict
     if (typeof verdict !== 'string' || !RUN_VERDICTS.includes(verdict as RunVerdict))
       fail(`profiles[${index}].verdict`, `unknown verdict ${JSON.stringify(verdict)} (expected "passed", "failed", "blocked", "refused" or "waived")`)

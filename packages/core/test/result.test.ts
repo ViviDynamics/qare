@@ -260,3 +260,14 @@ test('a profile reference that is neither a path nor an inline profile fails clo
     }),
   ).toThrow(/profile entry must be a JSON object|profile must be a YAML object/)
 })
+
+test('a result entry whose profile name would escape the .qa root fails closed', () => {
+  expect(() =>
+    parseResult({
+      schemaVersion: '1',
+      verdict: 'blocked',
+      criteria: [{ id: 'c1', outcome: 'unverified', reason: 'r' }],
+      profiles: [{ name: '../../outside', verdict: 'refused', criteria: ['c1'] }],
+    }),
+  ).toThrow(/must not contain path separators/)
+})

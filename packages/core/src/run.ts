@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Artefacts, type ArtefactField } from './artefacts.js'
 import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
@@ -693,7 +693,19 @@ async function resolveProfileRef(repoPath: string, ref: JobProfileRef): Promise<
   // stubs when it keeps none of its own, exactly as discovery loads it (#55).
   const qaDir = resolve(repoPath, '.qa')
   const shared = dirname(dir) === qaDir ? { resources: qaDir } : undefined
+  // The two layouts are mutually exclusive wherever they are read, not only
+  // at discovery (#55): a named profile loaded from a repository whose .qa
+  // root also carries a config.yml is a layout nobody can select from, so the
+  // run refuses instead of reading whichever one it happens to find.
+  if (dirname(dir) === qaDir && (await exists(join(qaDir, 'config.yml'))) && (await exists(join(dir, 'config.yml'))))
+    throw new Error(
+      `either one profile at ${qaDir}, or named profiles in its subdirectories, not both; the job names ${ref.path}, and the root form at ${join(qaDir, 'config.yml')} cannot be read alongside it`,
+    )
   return loadProfile(dir, shared)
+}
+
+function exists(path: string): Promise<boolean> {
+  return lstat(path).then(() => true, () => false)
 }
 
 async function finishRun(
