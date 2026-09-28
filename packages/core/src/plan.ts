@@ -3,6 +3,7 @@
 // runtime dependency on the runner.
 import type { FlowAction, FlowDriverCapabilities, FlowElement } from './flow.js'
 import { isUnsafeProfileName } from './profile.js'
+import { DEFAULT_PROFILE_NAME } from './monorepo.js'
 
 export const PLAN_SCHEMA_VERSION = '1'
 
@@ -196,6 +197,11 @@ function parseProfiles(value: unknown): PlanProfileRef[] {
       fail(`${base}.name`, `profile name "${name}" contains ":"; ":" is reserved for namespace prefixes, so it cannot appear in a profile name`)
     if (isUnsafeProfileName(name))
       fail(`${base}.name`, `profile name ${JSON.stringify(name)} must not contain path separators, ".." or control characters; profile names become evidence file names`)
+    if (name === DEFAULT_PROFILE_NAME)
+      fail(
+        `${base}.name`,
+        `a planned profile cannot be called ${DEFAULT_PROFILE_NAME}: the name is reserved for the single root profile, so a plan naming default is a layout nobody can select from`,
+      )
     if (seen.has(name)) fail(`${base}.name`, `two planned profiles are named ${JSON.stringify(name)}; a plan names each app once`)
     seen.add(name)
     const path = nonEmptyString(entry.path, `${base}.path`, 'path')

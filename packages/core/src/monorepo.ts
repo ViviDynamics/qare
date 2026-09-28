@@ -126,8 +126,11 @@ export function pathUnderArea(touched: string, area: string): boolean {
 /**
  * The repository paths a git diff touches, from the file headers a diff
  * carries: `diff --git a/<path> b/<path>`, plus the `---`/`+++` sides, so a
- * rename is covered on both sides. Unparsable or exotic headers contribute
- * nothing: selection misses quietly rather than inventing a path.
+ * rename is covered on both sides. Git quotes a path that carries spaces,
+ * quotes, tabs or non-ASCII bytes in C style (`diff --git "a/x y" "b/x y"`),
+ * so the quoted form is unquoted before the path is read and an exotic path
+ * still selects the app whose area declares it. Unparsable or exotic headers
+ * contribute nothing: selection misses quietly rather than inventing a path.
  */
 export function touchedPathsFromDiff(diff: string): string[] {
   const paths = new Set<string>()
@@ -140,9 +143,78 @@ export function touchedPathsFromDiff(diff: string): string[] {
       if (after !== undefined) paths.add(after)
       continue
     }
+    const quotedHeader = line.match(/^diff --git ("(?:[^"\\]|\\.)*") (".*")$/)
+    if (quotedHeader !== null) {
+      const before = quotedHeader[1]
+      const after = quotedHeader[2]
+      if (before !== undefined) paths.add(withoutSidePrefix(gitPathFromQuoted(before)))
+      if (after !== undefined) paths.add(withoutSidePrefix(gitPathFromQuoted(after)))
+      continue
+    }
     const side = line.match(/^(?:--- a\/|\+\+\+ b\/)(.+?)(?:\t|$)/)
     const path = side?.[1]
     if (path !== undefined) paths.add(path)
+    const quotedSide = line.match(/^(?:--- |\+\+\+ )("(?:[^"\\]|\\.)*")/)
+    const quotedSpec = quotedSide?.[1]
+    if (quotedSpec !== undefined) paths.add(withoutSidePrefix(gitPathFromQuoted(quotedSpec)))
   }
   return [...paths].sort()
+}
+
+/**
+ * The `a/` or `b/` side prefix git writes before every path in a diff header,
+ * quoted or not, is not part of the repository path.
+ */
+function withoutSidePrefix(path: string): string {
+  return path.startsWith('a/') || path.startsWith('b/') ? path.slice(2) : path
+}
+
+const C_ESCAPES: Record<string, string> = {
+  a: '\x07',
+  b: '\x08',
+  t: '\t',
+  n: '\n',
+  v: '\v',
+  f: '\f',
+  r: '\r',
+  '"': '"',
+  '\\': '\\',
+}
+
+/**
+ * Reads one side of a git header as the path it names: git wraps such a path
+ * in double quotes and escapes specials in C style when the path carries
+ * spaces, quotes, tabs or non-ASCII bytes. An octal escape carries one UTF-8
+ * byte, so the bytes are assembled and decoded as UTF-8, not read one
+ * character at a time.
+ */
+function gitPathFromQuoted(spec: string): string {
+  if (!spec.startsWith('"') || !spec.endsWith('"')) return spec
+  const bytes: number[] = []
+  const pushUtf8 = (char: string): void => {
+    for (const byte of new TextEncoder().encode(char)) bytes.push(byte)
+  }
+  const inner = spec.slice(1, -1)
+  for (let i = 0; i < inner.length; i++) {
+    const char = inner[i]
+    if (char === undefined) break
+    if (char !== '\\') {
+      pushUtf8(char)
+      continue
+    }
+    const next = inner[i + 1]
+    i += 1
+    if (next === undefined) break
+    if (next in C_ESCAPES) pushUtf8(C_ESCAPES[next] as string)
+    else if (next >= '0' && next <= '7') {
+      const octal = /^([0-7]{3})/.exec(inner.slice(i))
+      if (octal === null) {
+        pushUtf8(next)
+        continue
+      }
+      bytes.push(parseInt(octal[1] as string, 8))
+      i += 2
+    } else pushUtf8(next)
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes))
 }

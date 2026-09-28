@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { parse as parseYaml } from 'yaml'
 import { isUnsafeProfileName, type QaProfile } from './profile.js'
 import { PlanValidationError, parseFlowActions, type FlowActionStep } from './plan.js'
+import { DEFAULT_PROFILE_NAME } from './monorepo.js'
 
 export type JobProfileRef = { path: string } | { inline: QaProfile }
 
@@ -195,6 +196,11 @@ function parseProfileGroups(value: unknown): JobProfileGroup[] {
       fail(`${base}.name`, `profile name "${name}" contains ":"; ":" is reserved for namespace prefixes, so it cannot appear in a profile name`)
     if (isUnsafeProfileName(name))
       fail(`${base}.name`, `profile name ${JSON.stringify(name)} must not contain path separators, ".." or control characters`)
+    if (name === DEFAULT_PROFILE_NAME)
+      fail(
+        `${base}.name`,
+        `a named profile cannot be called ${DEFAULT_PROFILE_NAME}: the name is reserved for the single root profile, so a job group named default is a layout nobody can select from`,
+      )
     const profile = parseProfileRef(entry.profile)
     // A several-app run publishes where each app's profile lives, and judge
     // and redact re-read every named profile from the .qa root the run

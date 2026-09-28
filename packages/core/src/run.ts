@@ -275,6 +275,28 @@ async function runSeveralProfiles(
   execution: ExecutionKind = detectExecution(),
 ): Promise<{ result: RunResult; isolation?: RunIsolation; isolations?: Array<{ name: string; isolation: RunIsolation }> }> {
   const groups = job.profiles
+  // Every profile is resolved before any other refusal is decided, and before
+  // any app runs: a malformed profile fails closed wherever the run stops, so
+  // a refusal about the caller's isolation cannot carry it past validation,
+  // and evidence is swept with the union of every app's rules (#55).
+  const planned: Array<{ group: JobProfileGroup; profile?: QaProfile; refusal?: string }> = []
+  for (const group of groups) {
+    try {
+      planned.push({ group, profile: await resolveProfileRef(job.repoPath, group.profile) })
+    } catch (error) {
+      if (!(error instanceof ProfileMissingError)) throw error
+      // Absent is refusal — for this app alone, so the other apps still run (#107).
+      planned.push({
+        group,
+        refusal: `this repository has no usable .qa/ profile for ${group.name} yet, so qare will not claim to have checked it: ${error.message}`,
+      })
+    }
+  }
+  const rules: RedactionRule[] = [...BUILTIN_REDACTION_RULES]
+  for (const entry of planned) {
+    const login = entry.profile?.app?.login
+    rules.push(...redactionRules(entry.profile?.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value]))
+  }
   // A caller-carried isolation belongs to a single-profile run: one isolation
   // cannot be several apps' own, so a several-profile run that was handed one
   // refuses instead of quietly sharing it (#55).
@@ -305,28 +327,6 @@ async function runSeveralProfiles(
     )
     await feedIfOptedIn(opts, job, finished.result)
     return { result: finished.result }
-  }
-  // Every profile is resolved and every app's redaction rules are known before
-  // any app runs: evidence is swept the moment it is written, with the union
-  // of every app's rules, so a secret an app declares is swept from the whole
-  // run's evidence, not just its own (#55).
-  const planned: Array<{ group: JobProfileGroup; profile?: QaProfile; refusal?: string }> = []
-  for (const group of groups) {
-    try {
-      planned.push({ group, profile: await resolveProfileRef(job.repoPath, group.profile) })
-    } catch (error) {
-      if (!(error instanceof ProfileMissingError)) throw error
-      // Absent is refusal — for this app alone, so the other apps still run (#107).
-      planned.push({
-        group,
-        refusal: `this repository has no usable .qa/ profile for ${group.name} yet, so qare will not claim to have checked it: ${error.message}`,
-      })
-    }
-  }
-  const rules: RedactionRule[] = [...BUILTIN_REDACTION_RULES]
-  for (const entry of planned) {
-    const login = entry.profile?.app?.login
-    rules.push(...redactionRules(entry.profile?.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value]))
   }
   // Flow masks are swept the same way, before any app runs: a screenshot one
   // app captures must carry every app's mask regions, or one app's pixels can

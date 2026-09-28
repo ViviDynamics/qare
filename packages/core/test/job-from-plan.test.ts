@@ -321,6 +321,16 @@ test('a planned profile name that cannot be an evidence file name is refused at 
   ).toThrow(/must not contain path separators/)
 })
 
+test('a planned profile cannot take the name the single root profile reserves', () => {
+  expect(() =>
+    parsePlan({
+      schemaVersion: '1',
+      profiles: [{ name: 'default', path: '.qa/default' }],
+      criteria: [{ id: 'c1', text: 'x', checks: [COMMAND], profile: 'default' }],
+    }),
+  ).toThrow(/reserved for the single root profile/)
+})
+
 test('a several-app job whose profile lives outside the .qa layout is refused', async () => {
   const { parseJob } = await import('../src/index.js')
   expect(() =>

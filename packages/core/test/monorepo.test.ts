@@ -205,6 +205,20 @@ test('touched paths come from the diff file headers, both sides of a rename', ()
   expect(touchedPathsFromDiff(diff)).toEqual(['apps/admin/src/a.ts', 'apps/web/b.ts', 'apps/web/renamed.ts'])
 })
 
+test('diff headers git quotes for exotic paths still select the app whose area declares them', () => {
+  // Git quotes a path that carries spaces, quotes, tabs or non-ASCII bytes in
+  // C style; the quoted header is unquoted before the path is read, so such a
+  // change under a declared area selects the app instead of reporting it
+  // unmatched (#55).
+  const diff = [
+    'diff --git "a/apps/web/my app.ts" "b/apps/web/my app.ts"',
+    '--- "a/apps/web/my app.ts"',
+    '+++ "b/apps/web/my app.ts"',
+    'diff --git "a/apps/web/d\\303\\251cor.ts" "b/apps/web/d\\303\\251cor.ts"',
+  ].join('\n')
+  expect(touchedPathsFromDiff(diff)).toEqual(['apps/web/d\u00e9cor.ts', 'apps/web/my app.ts'])
+})
+
 function severalJob(groups: JobProfileGroup[]): SeveralProfilesJob {
   return {
     id: 'job-monorepo-smoke',
@@ -270,6 +284,18 @@ test('a several-profile run refuses a caller-carried isolation instead of sharin
   expect(result.verdict).toBe('refused')
   expect(result.profiles?.map((profile) => profile.verdict)).toEqual(['refused', 'refused'])
   expect(result.criteria.every((criterion) => criterion.outcome === 'unverified' && criterion.reason.includes('an isolation of its own'))).toBe(true)
+})
+
+test('a several-profile run fails closed on a malformed profile even when the caller carries an isolation', async () => {
+  // The isolation refusal is decided after every profile is resolved, so a
+  // profile that cannot validate fails the run wherever it appears: no run
+  // mode serializes a profile that was never validated (#55).
+  const job = await makeSeveralJob([
+    { name: 'admin', profile: { inline: {} as unknown as QaProfile }, criteria: [commandCriterion('admin-c1')] },
+  ])
+  const isolation = { runId: 'r1', project: 'qare-r1', startedAt: '2026-01-01T00:00:00Z', port: 3000 }
+
+  await expect(runJob(job, { ...HEALTHY_BOOT, isolation })).rejects.toThrow()
 })
 
 test('an app that declares a hosted target is refused in a several-app run, and the other app still runs', async () => {
@@ -462,6 +488,12 @@ test('an empty profiles list fails closed', () => {
 
 test('a profile name may not carry the namespace separator', () => {
   expect(() => loadJobFromText(SEVERAL_JOB_TEXT.replace('name: admin', 'name: a:admin'))).toThrow(JobValidationError)
+})
+
+test('a named group cannot take the name the single root profile reserves', () => {
+  expect(() => loadJobFromText(SEVERAL_JOB_TEXT.replace('name: admin', `name: ${DEFAULT_PROFILE_NAME}`))).toThrow(
+    JobValidationError,
+  )
 })
 
 test('a named boot profile shares the fixtures and stubs the root keeps when it has none of its own', async () => {
