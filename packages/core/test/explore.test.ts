@@ -226,6 +226,23 @@ test('the server can advertise the endpoint the session actually reaches through
   }
 })
 
+test('the exploration prompt describes exactly the tools the channel serves', async () => {
+  const narrowed = new FakeAgentRunner([completed(planned())])
+  await planRun(narrowed, { ...INPUTS, exploration: { endpoint: url('sandbox.internal:8080'), tools: ['observe'] } })
+  const [request] = narrowed.requests
+  expect(request.prompt).toContain('Its tools are observe (where the page stands, its URL and title).')
+  expect(request.prompt).not.toContain('the page structure')
+  expect(request.prompt).not.toContain('open a URL on the app')
+
+  const every = new FakeAgentRunner([completed(planned())])
+  await planRun(every, { ...INPUTS, exploration: { endpoint: url('sandbox.internal:8080') } })
+  expect(every.requests[0].prompt).toContain(
+    'Its tools are observe (where the page stands, its URL and title), ' +
+      'snapshot (the page structure as a normalised accessibility snapshot), ' +
+      'navigate (open a URL on the app) and capture (a screenshot).',
+  )
+})
+
 test('an exploration channel outside the read-only allowlist is refused before any model call', async () => {
   const refused = new FakeAgentRunner([completed(planned())])
   await expect(
@@ -238,6 +255,14 @@ test('an exploration channel outside the read-only allowlist is refused before a
     planRun(unreachable, { ...INPUTS, exploration: { endpoint: '   ' } }),
   ).rejects.toThrow(PlanStepError)
   expect(unreachable.requests).toHaveLength(0)
+
+  // A channel that names no tools would start a server with nothing to call
+  // and prompt the model about a channel with nothing on it.
+  const hollow = new FakeAgentRunner([completed(planned())])
+  await expect(
+    planRun(hollow, { ...INPUTS, exploration: { endpoint: url('127.0.0.1:1'), tools: [] } }),
+  ).rejects.toThrow(PlanStepError)
+  expect(hollow.requests).toHaveLength(0)
 
   const malformed = new FakeAgentRunner([completed(planned())])
   await expect(
