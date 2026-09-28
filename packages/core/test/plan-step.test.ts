@@ -490,20 +490,27 @@ test('a plan that still reads undeclared artifacts after its correction round fa
   expect(runner.requests).toHaveLength(2)
 })
 
-test('a path that climbs out of a declared directory with .. is corrected, not covered (#162)', async () => {
-  const doomed = JSON.stringify({
-    schemaVersion: '1',
-    criteria: [
-      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'secrets', command: 'grep x .qa/../secrets.txt' }] },
-      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
-    ],
-  })
-  const runner = new FakeAgentRunner([completed(doomed), completed(planned())])
+test('a path that escapes with .. is corrected, and one that normalizes back inside is accepted (#162)', async () => {
+  const criteria = [
+    { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'secrets', command: 'PLACEHOLDER' }] },
+    { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+  ]
+  const planWith = (command: string): string =>
+    JSON.stringify({ schemaVersion: '1', criteria: [{ ...criteria[0], checks: [{ kind: 'command', name: 'secrets', command }] }, criteria[1]] })
 
-  await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+  const escape = new FakeAgentRunner([completed(planWith('grep x ../secrets.txt')), completed(planned())])
+  await planRun(escape, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+  expect(escape.requests).toHaveLength(2)
+  expect(escape.requests[1].prompt).toContain('climbs outside the repository root')
 
-  expect(runner.requests).toHaveLength(2)
-  expect(runner.requests[1].prompt).toContain('climbs outside the repository root')
+  const escapeDeclared = new FakeAgentRunner([completed(planWith('grep x .qa/../secrets.txt')), completed(planned())])
+  await planRun(escapeDeclared, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+  expect(escapeDeclared.requests).toHaveLength(2)
+  expect(escapeDeclared.requests[1].prompt).toContain('.qa/../secrets.txt is not among the declared run inputs')
+
+  const inside = new FakeAgentRunner([completed(planWith('grep x .qa/fixtures/../QA.md'))])
+  await planRun(inside, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+  expect(inside.requests).toHaveLength(1)
 })
 
 test('the evidence directory is a forbidden run output with or without an extension (#162)', async () => {

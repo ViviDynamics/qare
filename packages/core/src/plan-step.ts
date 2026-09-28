@@ -309,6 +309,24 @@ function isPathLike(token: string): boolean {
   return token.includes('/') || /\.[A-Za-z0-9]+$/.test(token)
 }
 
+/**
+ * Resolve "." and ".." segments lexically, and report whether the path climbs
+ * above the repository root. A ".." that normalizes back inside a declared
+ * directory is harmless; one that escapes the root is not (#162).
+ */
+function normalizedSegments(token: string): { segments: string[]; escapes: boolean } {
+  const segments: string[] = []
+  let escapes = false
+  for (const part of token.split(/[\\/]/)) {
+    if (part === '.' || part === '') continue
+    if (part === '..') {
+      if (segments.length === 0) escapes = true
+      else segments.pop()
+    } else segments.push(part)
+  }
+  return { segments, escapes }
+}
+
 function undeclaredReference(command: string, declared: string[]): string | undefined {
   const covered = (token: string) =>
     declared.some((path) => token === path || token.startsWith(`${path}/`))
@@ -316,15 +334,15 @@ function undeclaredReference(command: string, declared: string[]): string | unde
     if (token === HARNESS_CLI)
       return `"${HARNESS_CLI}" is this harness's own CLI, and the runner never installs it on its PATH, so the command cannot start`
     if (token.startsWith('http://') || token.startsWith('https://') || token.startsWith('{{')) continue
-    const segments = token.split(/[\\/]/)
-    if (segments.includes('..'))
+    const { segments, escapes } = normalizedSegments(token)
+    if (escapes)
       return `${token} climbs outside the repository root with "..", so it is not among the declared run inputs`
     if (
       RUN_OUTPUT_BASENAMES.includes(segments[segments.length - 1] ?? '') ||
       RUN_OUTPUT_DIRECTORIES.includes(segments[0] ?? '')
     )
       return `${token} is an output the run writes when it ends, so it does not exist while a check runs`
-    if (!isPathLike(token) || covered(token)) continue
+    if (!isPathLike(token) || covered(segments.join('/'))) continue
     return `${token} is not among the declared run inputs`
   }
   return undefined
