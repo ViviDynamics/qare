@@ -311,3 +311,42 @@ test('an absent mask list validates to nothing', () => {
   expect(() => validateMaskSelectors(undefined)).not.toThrow()
   expect(() => validateMaskSelectors([])).not.toThrow()
 })
+
+test('a repair record loses the secrets its free text quotes (#83)', () => {
+  const result: RunResult = {
+    schemaVersion: '1',
+    verdict: 'passed',
+    criteria: [
+      {
+        id: 'flow:1',
+        outcome: 'proven',
+        evidence: ['checks/flow:1/0/repairs.json'],
+        repairs: [
+          {
+            check: 'sign-in',
+            action: 1,
+            reference: `role=button name=Save at=document/main/form "${GITHUB_TOKEN}"/button "Save"`,
+            repaired: `role=button name=Save at=document/main/form "Sign in"/button "Save" (token ${GITHUB_TOKEN})`,
+            identity: 'same role, same accessible name, same landmark ancestry (main/form)',
+            status: 'applied',
+          },
+          {
+            check: 'sign-in',
+            action: 2,
+            reference: `role=button name=Send at=document/main/form "${GITHUB_TOKEN}"/button "Send"`,
+            identity: 'same role, same accessible name, same landmark ancestry (main/form)',
+            status: 'refused',
+            refusedReason: `different landmarks: ${GITHUB_TOKEN}`,
+          },
+        ],
+      },
+    ],
+  }
+  const redacted = redactResult(result)
+  expect(JSON.stringify(redacted)).not.toContain(GITHUB_TOKEN)
+  const repairs = (redacted.criteria[0] as { repairs?: Array<Record<string, unknown>> }).repairs ?? []
+  expect(repairs[0]?.reference).toContain(REDACTED)
+  expect(repairs[0]?.repaired).toContain(REDACTED)
+  expect(repairs[0]?.identity).toBe('same role, same accessible name, same landmark ancestry (main/form)')
+  expect(repairs[1]?.refusedReason).toBe(`different landmarks: ${REDACTED}`)
+})

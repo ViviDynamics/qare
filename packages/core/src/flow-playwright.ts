@@ -1,5 +1,6 @@
 import type { EgressAttempt } from './egress.js'
 import type { FlowDriverCapabilities, FlowElement, FlowPage, FlowTrace } from './flow.js'
+import { splitSegments } from './locator.js'
 import { normaliseAriaSnapshot } from './snapshot.js'
 
 const NOT_INSTALLED_MESSAGE =
@@ -121,7 +122,7 @@ export async function makePlaywrightFlowSession(
     if (element.at === undefined) return page.getByRole(element.role as never, { name: element.name })
     // The path's own root step is the document, which is the page the walk
     // starts from; the steps below it chain one into the next.
-    const [first, ...rest] = element.at.split('/').slice(1)
+    const [first, ...rest] = splitSegments(element.at).slice(1)
     if (first === undefined) return page.getByRole(element.role as never, { name: element.name })
     let chain: ReturnType<BrowserPage['getByRole']> = resolveStep(page, first)
     for (const step of rest) chain = resolveStep(chain, step)

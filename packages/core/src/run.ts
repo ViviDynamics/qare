@@ -837,8 +837,8 @@ async function runCriterion(
       )
       evidence.push(...outcome.evidence)
       // A repair is recorded with the criterion and check it happened in (#83),
-      // so the comment can name it; the reference strings were swept by the
-      // flow itself, at write time.
+      // so the comment can name it; the reference strings are swept again when
+      // the run's result is written.
       if (outcome.repairs !== undefined)
         criterionRepairs.push(
           ...outcome.repairs.map((repair) => ({
@@ -921,7 +921,14 @@ async function runCriterion(
       ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }),
     }
   // Everything that ran passed, but the plan asked for more than ran.
-  if (criterion.skipped !== undefined) return { id: criterion.id, outcome: 'unverified', reason: criterion.skipped, evidence }
+  if (criterion.skipped !== undefined)
+    return {
+      id: criterion.id,
+      outcome: 'unverified',
+      reason: criterion.skipped,
+      evidence,
+      ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }),
+    }
   return { id: criterion.id, outcome: 'proven', evidence, ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }) }
 }
 

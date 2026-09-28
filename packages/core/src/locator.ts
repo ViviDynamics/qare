@@ -25,6 +25,34 @@ export const REPAIRS_SCHEMA_VERSION = 1
 const SEGMENT = /^([a-z]+)(?:\s+("(?:[^"\\]|\\.)*"))?(?:\[(\d+)\])?$/
 
 /**
+ * A path is split on the slashes between steps, never on a slash inside a
+ * quoted accessible name: the snapshot writes names JSON-quoted, so the
+ * splitter tracks quotes and their escapes exactly as the snapshot wrote
+ * them, and a name like `Save / Continue` stays one step (#83).
+ */
+export function splitSegments(path: string): string[] {
+  const segments: string[] = []
+  let current = ''
+  let quoted = false
+  for (let index = 0; index < path.length; index++) {
+    const char = path[index] ?? ''
+    if (char === '\\' && quoted) {
+      const next = path[index + 1]
+      current += next === undefined ? '\\' : char + next
+      if (next !== undefined) index++
+      continue
+    }
+    if (char === '"') quoted = !quoted
+    if (char === '/' && !quoted) {
+      segments.push(current)
+      current = ''
+    } else current += char
+  }
+  segments.push(current)
+  return segments
+}
+
+/**
  * The identity a reference claims: the role and accessible name it names, and
  * the landmarks its snapshot path sat in. A reference that carries a path has
  * an identity; a reference without one has nothing to compare, so no repair
@@ -40,7 +68,7 @@ export interface ElementIdentity {
 /** The landmark roles an element sits in, from its own path (its own step excluded). */
 export function landmarkAncestry(path: string): string {
   const chain: string[] = []
-  const segments = path.split('/')
+  const segments = splitSegments(path)
   for (const segment of segments.slice(0, -1)) {
     const match = SEGMENT.exec(segment)
     const role = match === null ? segment : (match[1] ?? segment)
@@ -51,7 +79,7 @@ export function landmarkAncestry(path: string): string {
 
 /** The identity the reference's own snapshot path claims. */
 export function identityOfPath(path: string): ElementIdentity {
-  const segment = path.split('/').at(-1) ?? ''
+  const segment = splitSegments(path).at(-1) ?? ''
   const match = SEGMENT.exec(segment)
   const role = match === null ? segment : (match[1] ?? segment)
   const quoted = match?.[2]
@@ -85,7 +113,7 @@ export function sameIdentity(a: ElementIdentity, b: ElementIdentity): boolean {
  */
 export function isSnapshotPath(path: unknown): path is string {
   if (typeof path !== 'string' || path === '') return false
-  const segments = path.split('/')
+  const segments = splitSegments(path)
   if (segments[0] !== 'document') return false
   return segments.slice(1).every((segment) => {
     const match = SEGMENT.exec(segment)

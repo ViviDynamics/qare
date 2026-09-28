@@ -120,3 +120,20 @@ test('a repair is refused when no candidate, an ambiguous pair, or the same path
   expect(same.decision).toBe('review')
   if (same.decision === 'review') expect(same.reason).toContain('still resolves to the same element')
 })
+
+test('a path is split on the slashes between steps, never on one inside a quoted name (#83)', () => {
+  const path = 'document/main/region "Save / Continue"/button "Save"'
+  expect(isSnapshotPath(path)).toBe(true)
+  const identity = identityOfPath(path)
+  expect(identity.name).toBe('Save')
+  expect(identity.landmarks).toBe('main/region')
+  const yaml = '- main:\n  - region "Save / Continue":\n    - button "Save"'
+  expect(identityOfNode(buttonIn(yaml))).toEqual(identity)
+})
+
+test('a quoted name with an escaped quote is one step, and a malformed escape is rejected (#83)', () => {
+  const path = 'document/main/button "Say \\"hi\\" now"'
+  expect(isSnapshotPath(path)).toBe(true)
+  expect(identityOfPath(path).name).toBe('Say "hi" now')
+  expect(isSnapshotPath('document/main/button "ends with escape \\\\"')).toBe(true)
+})
