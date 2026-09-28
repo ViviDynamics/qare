@@ -128,6 +128,19 @@ export { runFlowCheck, runSuiteCheck } from './flow.js'
 export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult, FlowTotpConfig, FlowDriverCapabilities } from './flow.js'
 export { SNAPSHOT_SCHEMA_VERSION, nameFindings, normaliseAriaSnapshot, trimToSubtree } from './snapshot.js'
 export type { SnapshotNode } from './snapshot.js'
+export {
+  LANDMARK_ROLES,
+  REPAIRS_SCHEMA_VERSION,
+  decideRepair,
+  findCandidates,
+  identityOfNode,
+  identityOfPath,
+  identityText,
+  isSnapshotPath,
+  landmarkAncestry,
+  sameIdentity,
+} from './locator.js'
+export type { ElementIdentity, FlowRepairRecord, RepairDecision } from './locator.js'
 export { decodeBase32, totpCode, totpWindow, windowRemaining } from './totp.js'
 export {
   makePlaywrightScreenshot,

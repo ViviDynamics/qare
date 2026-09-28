@@ -1,5 +1,6 @@
 import type { EgressAttempt } from './egress.js'
 import type { FlowDriverCapabilities, FlowElement, FlowPage, FlowTrace } from './flow.js'
+import { parseSegment, splitSegments } from './locator.js'
 import { normaliseAriaSnapshot } from './snapshot.js'
 
 const NOT_INSTALLED_MESSAGE =
@@ -97,14 +98,35 @@ export async function makePlaywrightFlowSession(
 
   // Elements are resolved against the page here, from the semantic reference
   // the plan carries (#70, #121): the model names a role with its accessible
-  // name or a test id, never a selector, never coordinates.
+  // name or a test id, never a selector, never coordinates. A reference that
+  // carries a snapshot path (#83) resolves by walking the path itself: each
+  // step names a role, an optional accessible name and an optional occurrence
+  // index, so the walk lands on the element the snapshot named.
+  const resolveStep = (
+    parent: BrowserPage | ReturnType<BrowserPage['getByRole']>,
+    step: string,
+  ): ReturnType<BrowserPage['getByRole']> => {
+    const parsed = parseSegment(step)
+    if (parsed === undefined)
+      throw new Error(`a snapshot path step is a role, an optional quoted accessible name and an optional occurrence index: ${step}`)
+    const locator = parent.getByRole(parsed.role as never, parsed.name === undefined ? {} : { name: parsed.name, exact: true })
+    return parsed.occurrence === undefined ? locator : locator.nth(parsed.occurrence - 1)
+  }
+
   const resolve = (
     page: BrowserPage,
     element: FlowElement,
-  ): ReturnType<BrowserPage['getByRole']> | ReturnType<BrowserPage['getByTestId']> =>
-    'testId' in element
-      ? page.getByTestId(element.testId)
-      : page.getByRole(element.role as never, { name: element.name })
+  ): ReturnType<BrowserPage['getByRole']> | ReturnType<BrowserPage['getByTestId']> => {
+    if ('testId' in element) return page.getByTestId(element.testId)
+    if (element.at === undefined) return page.getByRole(element.role as never, { name: element.name })
+    // The path's own root step is the document, which is the page the walk
+    // starts from; the steps below it chain one into the next.
+    const [first, ...rest] = splitSegments(element.at).slice(1)
+    if (first === undefined) return page.getByRole(element.role as never, { name: element.name })
+    let chain: ReturnType<BrowserPage['getByRole']> = resolveStep(page, first)
+    for (const step of rest) chain = resolveStep(chain, step)
+    return chain
+  }
 
   const page: FlowPage = {
     open: async (url) => {

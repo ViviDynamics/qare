@@ -1,6 +1,15 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ExecutionKind } from './environment.js'
+import {
+  REPAIRS_SCHEMA_VERSION,
+  decideRepair,
+  describeReference,
+  findCandidates,
+  identityOfPath,
+  identityText,
+  type FlowRepairRecord,
+} from './locator.js'
 import { DEFAULT_CHECK_TIMEOUT_MS, runCommandCheck } from './run.js'
 import { SNAPSHOT_SCHEMA_VERSION, nameFindings, trimToSubtree, type SnapshotNode } from './snapshot.js'
 import { totpCode, totpWindow, windowRemaining } from './totp.js'
@@ -11,7 +20,7 @@ import { totpCode, totpWindow, windowRemaining } from './totp.js'
  * driver that declares the same set; the driver resolves element references
  * against the page, and nothing here names a selector.
  */
-export type FlowElement = { role: string; name: string } | { testId: string }
+export type FlowElement = { role: string; name: string; at?: string } | { testId: string }
 
 export type FlowAction =
   | { action: 'open'; url: string }
@@ -116,6 +125,8 @@ export interface FlowCheckResult {
   outcome: 'passed' | 'failed' | 'unverified'
   reason?: string
   evidence: string[]
+  /** Every repair proposed this check, applied or refused (#83). */
+  repairs?: FlowRepairRecord[]
 }
 
 const KNOWN_KINDS: readonly string[] = [
@@ -303,81 +314,140 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
     }
   }
 
-  for (const [index, action] of actions.entries()) {
-    let line = describeAction(action, index)
-    try {
-      switch (action.action) {
-        case 'open':
-          await page.open(action.url)
-          break
-        case 'type':
-          await page.type(action.element, action.value)
-          break
-        case 'click':
-          await page.click(action.element)
-          break
-        case 'choose':
-          await page.choose(action.element, action.value)
-          break
-        case 'waitFor':
-          await page.waitFor(action.element)
-          break
-        case 'assertText':
-          await page.assertText(action.text)
-          await snapshotAt(index, action.text)
-          break
-        case 'assertElement':
-          await page.assertElement(action.element)
-          await snapshotAt(index, 'name' in action.element ? action.element.name : undefined)
-          break
-        case 'capture': {
-          const name = `capture-${index}.png`
-          const taken = await screenshot(name, { required: true })
-          if (taken !== undefined) captures.push(name)
-          break
-        }
-        case 'totp': {
-          const config = totp!
-          // A code generated against a window that ends before the app reads
-          // it is born stale: wait out the boundary and mint the next
-          // window's code instead (#64).
-          const remaining = windowRemaining(config.period, now())
-          if (remaining < BOUNDARY_GUARD_MS) {
-            await new Promise((resolve) => setTimeout(resolve, remaining))
-          }
-          const window = totpWindow(config.period, now())
-          const code = totpCode(config.secret, config, now())
-          // The code is on the page from the moment the type is attempted:
-          // a type that half-succeeds and then throws must not publish a
-          // capture of the input, so the flag is set before the attempt (#64).
-          codeOnPage = true
-          // The sweep knows the value from the moment the seam may: a type
-          // that throws after partially filling the input still has the value
-          // swept from the failure reason (#64).
-          generatedCodes?.push(code)
-          await page.type(action.element, code)
-          line = `action ${index}: totp code generated for window ${window} and typed into ${describeElement(action.element)}`
-          // A boundary that crosses while the flow is moving can leave the
-          // app validating the old window's code; the code is retried once,
-          // in the window it now sits in (#64).
-          if (totpWindow(config.period, now()) !== window) {
-            const retried = totpCode(config.secret, config, now())
-            generatedCodes?.push(retried)
-            await page.type(action.element, retried)
-            line = `action ${index}: the code straddled a window boundary; the next window's code is typed in its place into ${describeElement(action.element)}`
-          }
-          break
-        }
-        case 'backupCode': {
-          const value = totp!.backupCode!
-          // The recovery value is fail-closed the same way: the capture is
-          // withheld from a type that throws, whatever the seam did first (#64).
-          codeOnPage = true
-          generatedCodes?.push(value)
-          await page.type(action.element, value)
-          break
-        }
+  // The element actions a locator repair may act on (#83): the assertion
+  // kinds are absent on purpose. A repair never touches what a check asserts,
+  // and an `open` or `capture` names no element at all.
+  const REPAIRABLE_ACTIONS: readonly string[] = ['type', 'click', 'choose', 'waitFor', 'totp', 'backupCode']
+
+  // One action, driven through the seam. Both the plan's own drive and a
+  // repaired re-drive land here, and everything the switch touches — the
+  // captures, the codes the flow puts on the page — is the check's own state,
+  // shared by both (#83).
+  const drive = async (current: FlowAction, index: number): Promise<string | undefined> => {
+    switch (current.action) {
+      case 'open':
+        await page.open(current.url)
+        break
+      case 'type':
+        await page.type(current.element, current.value)
+        break
+      case 'click':
+        await page.click(current.element)
+        break
+      case 'choose':
+        await page.choose(current.element, current.value)
+        break
+      case 'waitFor':
+        await page.waitFor(current.element)
+        break
+      case 'assertText':
+        await page.assertText(current.text)
+        await snapshotAt(index, current.text)
+        break
+      case 'assertElement':
+        await page.assertElement(current.element)
+        await snapshotAt(index, 'name' in current.element ? current.element.name : undefined)
+        break
+      case 'capture': {
+        const name = `capture-${index}.png`
+        const taken = await screenshot(name, { required: true })
+        if (taken !== undefined) captures.push(name)
+        break
       }
+      case 'totp': {
+        const config = totp!
+        // A code generated against a window that ends before the app reads
+        // it is born stale: wait out the boundary and mint the next
+        // window's code instead (#64).
+        const remaining = windowRemaining(config.period, now())
+        if (remaining < BOUNDARY_GUARD_MS) {
+          await new Promise((resolve) => setTimeout(resolve, remaining))
+        }
+        const window = totpWindow(config.period, now())
+        const code = totpCode(config.secret, config, now())
+        // The code is on the page from the moment the type is attempted:
+        // a type that half-succeeds and then throws must not publish a
+        // capture of the input, so the flag is set before the attempt (#64).
+        codeOnPage = true
+        // The sweep knows the value from the moment the seam may: a type
+        // that throws after partially filling the input still has the value
+        // swept from the failure reason (#64).
+        generatedCodes?.push(code)
+        await page.type(current.element, code)
+        // A boundary that crosses while the flow is moving can leave the
+        // app validating the old window's code; the code is retried once,
+        // in the window it now sits in (#64).
+        if (totpWindow(config.period, now()) !== window) {
+          const retried = totpCode(config.secret, config, now())
+          generatedCodes?.push(retried)
+          await page.type(current.element, retried)
+          return `action ${index}: the code straddled a window boundary; the next window's code is typed in its place into ${describeElement(current.element)}`
+        }
+        return `action ${index}: totp code generated for window ${window} and typed into ${describeElement(current.element)}`
+      }
+      case 'backupCode': {
+        const value = totp!.backupCode!
+        // The recovery value is fail-closed the same way: the capture is
+        // withheld from a type that throws, whatever the seam did first (#64).
+        codeOnPage = true
+        generatedCodes?.push(value)
+        await page.type(current.element, value)
+        break
+      }
+    }
+    return undefined
+  }
+
+  // The locator repair itself (#83): an element action failed, its reference
+  // carries the snapshot path it was authored against, and the page holds a
+  // snapshot now. The repair is proposed, applied with one re-drive, or
+  // refused to review, by the identity rule in locator.ts; whichever way it
+  // goes it is recorded, and the check's assertions are never touched.
+  const repairLocator = async (
+    action: FlowAction,
+    index: number,
+    log: string[],
+    records: FlowRepairRecord[],
+  ): Promise<{ line: string } | { refused: string } | undefined> => {
+    if (!REPAIRABLE_ACTIONS.includes(action.action)) return undefined
+    const element = 'element' in action ? action.element : undefined
+    if (element === undefined || 'testId' in element || element.at === undefined || page.snapshot === undefined) return undefined
+    const identity = identityText(identityOfPath(element.at).landmarks)
+    let root: SnapshotNode
+    try {
+      root = await page.snapshot()
+    } catch (error) {
+      log.push(`locator repair skipped: the snapshot the repair needed failed: ${String(error)}`)
+      return undefined
+    }
+    const decision = decideRepair(element.at, findCandidates(root, element))
+    if (decision.decision === 'review') {
+      records.push({ action: index, reference: describeReference(element), identity, status: 'refused', refusedReason: decision.reason })
+      log.push(`locator repair refused: ${decision.reason}`)
+      return { refused: decision.reason }
+    }
+    const repaired: FlowElement = { role: element.role, name: element.name, at: decision.path }
+    records.push({ action: index, reference: describeReference(element), repaired: describeReference(repaired), identity, status: 'applied' })
+    log.push(`locator repair applied: action ${index} ${describeReference(element)} -> ${describeReference(repaired)}: ${identity}`)
+    try {
+      const repairedAction = { ...action, element: repaired }
+      const driven = await drive(repairedAction, index)
+      return { line: driven ?? describeAction(repairedAction, index) }
+    } catch (error) {
+      log.push(`locator repair re-drove action ${index} and it still failed: ${String(error)}`)
+      return undefined
+    }
+  }
+
+  // Every repair this check proposed, applied or refused (#83), recorded
+  // whether it fixed the action or sent it to review.
+  const records: FlowRepairRecord[] = []
+
+  for (const [index, action] of actions.entries()) {
+    const line = describeAction(action, index)
+    try {
+      const driven = await drive(action, index)
+      log.push(driven ?? line)
     } catch (error) {
       if (action.action === 'assertText' || action.action === 'assertElement') {
         outcome = 'failed'
@@ -391,17 +461,28 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
         // the whole tree for a test-id reference (#82).
         if (action.action === 'assertText') await snapshotAt(index, action.text)
         else await snapshotAt(index, 'name' in action.element ? action.element.name : undefined)
-      } else {
-        // The failure reason quotes what the action saw, and the action may
-        // have seen a value the flow put on the page: the same sweep that
-        // follows the code through the log follows it into the reason (#64).
-        outcome = 'unverified'
-        reason = `action ${index} failed: ${redactLog === undefined ? String(error) : redactLog(String(error))}`
+        failureScreenshot = await screenshot(FAILURE_SCREENSHOT)
+        break
       }
+      // A locator repair is the one second chance an element action gets (#83):
+      // the reference is re-driven in the repaired element's place, and the
+      // action's own line stands in the log when the re-drive succeeds.
+      const repaired = await repairLocator(action, index, log, records)
+      if (repaired !== undefined && 'line' in repaired) {
+        log.push(repaired.line)
+        continue
+      }
+      // The failure reason quotes what the action saw, and the action may
+      // have seen a value the flow put on the page: the same sweep that
+      // follows the code through the log follows it into the reason (#64).
+      outcome = 'unverified'
+      reason =
+        repaired !== undefined && 'refused' in repaired
+          ? `action ${index} failed: ${redactLog === undefined ? String(error) : redactLog(String(error))}; the locator repair was refused: ${repaired.refused}`
+          : `action ${index} failed: ${redactLog === undefined ? String(error) : redactLog(String(error))}`
       failureScreenshot = await screenshot(FAILURE_SCREENSHOT)
       break
     }
-    log.push(line)
   }
 
   evidence.push(...captures)
@@ -410,6 +491,13 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
     if (final !== undefined) evidence.push(final)
   } else if (failureScreenshot !== undefined) {
     evidence.push(failureScreenshot)
+  }
+  // The repairs are evidence like the log is: written through the same
+  // redaction sweep, listed in the evidence, and named in the run's comment.
+  if (records.length > 0) {
+    const serialized = `${JSON.stringify({ schemaVersion: REPAIRS_SCHEMA_VERSION, repairs: records }, null, 2)}\n`
+    await writeFile(join(outDir, 'repairs.json'), redactLog === undefined ? serialized : redactLog(serialized))
+    evidence.push('repairs.json')
   }
   await writeLog()
 
@@ -424,7 +512,9 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
     await writeLog()
   }
 
-  return outcome === 'passed' ? { outcome, evidence } : { outcome, reason, evidence }
+  return outcome === 'passed'
+    ? { outcome, evidence, ...(records.length === 0 ? {} : { repairs: records }) }
+    : { outcome, reason, evidence, ...(records.length === 0 ? {} : { repairs: records }) }
 }
 
 /**

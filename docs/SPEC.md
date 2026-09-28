@@ -552,6 +552,18 @@ trimmed to the subtree the assertion touched, and a control in that subtree
 with no accessible name is recorded as a named accessibility finding rather
 than a silent pass.
 
+An element reference in a flow action may pin the snapshot path it was authored
+against. When the action then misses, the check looks for one element with the
+same role, the same accessible name and the same landmark ancestry, and
+re-points the reference only when exactly that element is found; anything else
+goes to review, named in the reason the check carries. An assertion is never
+repaired: if the element an assertion names has moved, the check fails as
+itself, because a repair that reached for a different element could otherwise
+turn a regression into a pass. Every repair, applied or refused, is recorded
+with the reference it came from, the reference it became and the identity
+comparison that decided it, written to the run's evidence and named in the
+comment the run leaves behind.
+
 Two things do differ by client and belong in the profile rather than in a check.
 Getting the application in front of the driver means starting a server for one
 client, installing an artefact for another, and launching a binary for a third.

@@ -283,3 +283,41 @@ test('a result without an environment record says nothing about where it ran', (
   const body = renderComment(result('passed', [{ id: 'c1', outcome: 'proven', evidence: ['checks/c1/0/stdout.txt'] }]))
   expect(body).not.toContain('Executed')
 })
+
+test('the repairs a run made are named in its comment, applied and refused alike (#83)', () => {
+  const run = result('passed', [
+    {
+      id: 'flow-83',
+      outcome: 'proven',
+      evidence: ['checks/flow-83/0/actions.log', 'checks/flow-83/0/repairs.json'],
+      repairs: [
+        {
+          check: 'sign-in flow',
+          action: 1,
+          reference: 'role=button name=Save at=document/main/form "Log in"/button "Save"',
+          repaired: 'role=button name=Save at=document/main/form "Sign in"/button "Save"',
+          identity: 'same role, same accessible name, same landmark ancestry (main/form)',
+          status: 'applied',
+        },
+        {
+          check: 'sign-in flow',
+          action: 2,
+          reference: 'role=button name=Send at=document/main/form "Log in"/button "Send"',
+          identity: 'same role, same accessible name, same landmark ancestry (main/form)',
+          status: 'refused',
+          refusedReason: 'the element sits under different landmarks',
+        },
+      ],
+    },
+  ])
+  const body = renderComment(run)
+  expect(body).toContain('## Locator repairs')
+  expect(body).toContain(
+    '| flow-83 | sign-in flow | 1 | role=button name=Save at=document/main/form "Log in"/button "Save" | role=button name=Save at=document/main/form "Sign in"/button "Save" | same role, same accessible name, same landmark ancestry (main/form) | applied |',
+  )
+  expect(body).toContain('| flow-83 | sign-in flow | 2 | role=button name=Send at=document/main/form "Log in"/button "Send" | the element sits under different landmarks | same role, same accessible name, same landmark ancestry (main/form) | refused |')
+})
+
+test('a run without repairs renders no repairs section (#83)', () => {
+  expect(renderComment(allProven)).not.toContain('Locator repairs')
+})

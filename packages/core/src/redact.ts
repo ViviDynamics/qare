@@ -350,20 +350,33 @@ function redactNode(value: unknown, rules: readonly RedactionRule[]): unknown {
 }
 
 /**
- * A result with its reasons and target URL redacted, the only free text in it. Ids and
- * evidence paths are identities: a criterion id may legally read `token:1`,
- * and redacting it would detach the result from its plan and its files.
+ * A result with its reasons, target URL and repair records redacted, the only
+ * free text in it. Ids and evidence paths are identities: a criterion id may
+ * legally read `token:1`, and redacting it would detach the result from its
+ * plan and its files.
  */
 export function redactResult(result: RunResult, rules: readonly RedactionRule[] = BUILTIN_REDACTION_RULES): RunResult {
   return {
     ...result,
     // A target URL can carry credentials in its userinfo or query.
     ...(result.target === undefined ? {} : { target: { ...result.target, url: redactText(result.target.url, rules) } }),
-    criteria: result.criteria.map((criterion) =>
-      'reason' in criterion && typeof criterion.reason === 'string'
-        ? { ...criterion, reason: redactText(criterion.reason, rules) }
-        : criterion,
-    ),
+    criteria: result.criteria.map((criterion) => ({
+      ...criterion,
+      ...('reason' in criterion && typeof criterion.reason === 'string' ? { reason: redactText(criterion.reason, rules) } : {}),
+      // A repair record quotes element references: free text the snapshot
+      // read back, swept like every other reason (#83).
+      ...('repairs' in criterion && criterion.repairs !== undefined
+        ? {
+            repairs: criterion.repairs.map((repair) => ({
+              ...repair,
+              check: redactText(repair.check, rules),
+              reference: redactText(repair.reference, rules),
+              ...(repair.repaired === undefined ? {} : { repaired: redactText(repair.repaired, rules) }),
+              ...(repair.refusedReason === undefined ? {} : { refusedReason: redactText(repair.refusedReason, rules) }),
+            })),
+          }
+        : {}),
+    })),
   }
 }
 
@@ -455,10 +468,24 @@ function redactResultText(text: string, name: string, rules: readonly RedactionR
   }
   let changed = false
   for (const criterion of raw.criteria) {
-    if (typeof criterion.reason !== 'string') continue
-    const reason = redactText(criterion.reason, rules)
-    if (reason !== criterion.reason) changed = true
-    criterion.reason = reason
+    if (typeof criterion.reason === 'string') {
+      const reason = redactText(criterion.reason, rules)
+      if (reason !== criterion.reason) changed = true
+      criterion.reason = reason
+    }
+    // Repair records quote the snapshot's own free text, so the standalone
+    // result sweep loses their secrets too (#83).
+    if (Array.isArray(criterion.repairs))
+      for (const repair of criterion.repairs) {
+        if (typeof repair !== 'object' || repair === null) continue
+        for (const field of ['check', 'reference', 'repaired', 'refusedReason'] as const) {
+          const value = repair[field]
+          if (typeof value !== 'string') continue
+          const redacted = redactText(value, rules)
+          if (redacted !== value) changed = true
+          repair[field] = redacted
+        }
+      }
   }
   return changed ? `${JSON.stringify(raw, null, 2)}\n` : text
 }

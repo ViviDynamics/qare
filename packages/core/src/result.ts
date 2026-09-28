@@ -12,6 +12,8 @@ export interface ProvenCriterionResult {
   id: string
   outcome: 'proven'
   evidence: string[]
+  /** Locator repairs recorded while checking this criterion (#83). */
+  repairs?: RunRepairRecord[]
 }
 
 export interface FailedCriterionResult {
@@ -20,6 +22,8 @@ export interface FailedCriterionResult {
   evidence: string[]
   /** Why, when something other than the check itself decided it failed (the verifier). */
   reason?: string
+  /** Locator repairs recorded while checking this criterion (#83). */
+  repairs?: RunRepairRecord[]
 }
 
 export interface UnverifiedCriterionResult {
@@ -27,9 +31,28 @@ export interface UnverifiedCriterionResult {
   outcome: 'unverified'
   reason: string
   evidence?: string[]
+  /** Locator repairs recorded while checking this criterion (#83). */
+  repairs?: RunRepairRecord[]
 }
 
 export type CriterionResult = ProvenCriterionResult | FailedCriterionResult | UnverifiedCriterionResult
+
+/**
+ * One locator repair a run recorded (#83), named for the flow check and
+ * action it happened in: the reference as the plan carried it, the reference
+ * it was repaired to (or the reason a repair was refused), and the identity
+ * comparison that decided it. A repair never names an assertion: an
+ * assertion that fails is the check's own outcome, never a repair.
+ */
+export interface RunRepairRecord {
+  check: string
+  action: number
+  reference: string
+  repaired?: string
+  identity: string
+  status: 'applied' | 'refused'
+  refusedReason?: string
+}
 
 /**
  * A run against an app qare did not boot (#122). There is only the one side,
@@ -249,23 +272,63 @@ function parseCriterionResult(value: unknown, index: number): CriterionResult {
   if (typeof outcome !== 'string' || !CRITERION_OUTCOMES.includes(outcome as CriterionOutcome))
     fail(`${base}.outcome`, `unknown outcome ${JSON.stringify(outcome)} (expected "proven", "failed" or "unverified")`)
 
+  const repairs = value.repairs === undefined ? undefined : parseRepairs(value.repairs, `${base}.repairs`)
+  const withRepairs = <T>(record: T): T => (repairs === undefined ? record : { ...record, repairs })
+
   switch (outcome as CriterionOutcome) {
     case 'proven':
-      return { id, outcome: 'proven', evidence: requiredEvidence(value.evidence, `${base}.evidence`, id, 'proven') }
+      return withRepairs({
+        id,
+        outcome: 'proven',
+        evidence: requiredEvidence(value.evidence, `${base}.evidence`, id, 'proven'),
+      })
     case 'failed': {
       const evidence = requiredEvidence(value.evidence, `${base}.evidence`, id, 'failed')
-      return value.reason === undefined
-        ? { id, outcome: 'failed', evidence }
-        : { id, outcome: 'failed', evidence, reason: nonEmptyString(value.reason, `${base}.reason`, 'reason') }
+      return withRepairs(
+        value.reason === undefined
+          ? { id, outcome: 'failed', evidence }
+          : { id, outcome: 'failed', evidence, reason: nonEmptyString(value.reason, `${base}.reason`, 'reason') },
+      )
     }
     case 'unverified': {
       const reason = nonEmptyString(value.reason, `${base}.reason`, 'reason')
       const evidence = value.evidence === undefined ? undefined : relativePathArray(value.evidence, `${base}.evidence`, 'evidence')
-      return evidence === undefined
-        ? { id, outcome: 'unverified', reason }
-        : { id, outcome: 'unverified', reason, evidence }
+      return withRepairs(
+        evidence === undefined ? { id, outcome: 'unverified', reason } : { id, outcome: 'unverified', reason, evidence },
+      )
     }
   }
+}
+
+/** The repairs a criterion result may carry (#83), each named for its check and action. */
+function parseRepairs(value: unknown, base: string): RunRepairRecord[] {
+  if (!Array.isArray(value)) fail(base, 'repairs must be an array of repair records')
+  return value.map((entry, index) => {
+    const field = `${base}[${index}]`
+    if (!isRecord(entry)) fail(field, 'a repair record must be a JSON object')
+    const check = nonEmptyString(entry.check, `${field}.check`, 'check name')
+    const action = entry.action
+    if (typeof action !== 'number' || !Number.isInteger(action) || action < 0)
+      fail(`${field}.action`, 'a repair record names the action it repaired, by index')
+    const reference = nonEmptyString(entry.reference, `${field}.reference`, 'reference')
+    const identity = nonEmptyString(entry.identity, `${field}.identity`, 'identity comparison')
+    const status = entry.status
+    if (status !== 'applied' && status !== 'refused')
+      fail(`${field}.status`, `unknown repair status ${JSON.stringify(status)} (expected "applied" or "refused")`)
+    if (status === 'refused' && entry.refusedReason === undefined)
+      fail(`${field}.refusedReason`, 'a refused repair names the reason it went to review')
+    if (status === 'applied' && entry.repaired === undefined)
+      fail(`${field}.repaired`, 'an applied repair names the reference it re-pointed to')
+    return {
+      check,
+      action,
+      reference,
+      ...(entry.repaired === undefined ? {} : { repaired: nonEmptyString(entry.repaired, `${field}.repaired`, 'repaired reference') }),
+      identity,
+      status,
+      ...(entry.refusedReason === undefined ? {} : { refusedReason: nonEmptyString(entry.refusedReason, `${field}.refusedReason`, 'refusal reason') }),
+    }
+  })
 }
 
 function requiredEvidence(

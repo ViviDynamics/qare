@@ -271,3 +271,75 @@ test('a result entry whose profile name would escape the .qa root fails closed',
     }),
   ).toThrow(/must not contain path separators/)
 })
+
+test('a criterion result may carry the repairs the run recorded (#83)', () => {
+  const loaded = loadResult(
+    JSON.stringify({
+      schemaVersion: RESULT_SCHEMA_VERSION,
+      verdict: 'passed',
+      criteria: [
+        {
+          id: 'flow-83',
+          outcome: 'proven',
+          evidence: ['checks/flow-83/0/actions.log', 'checks/flow-83/0/repairs.json'],
+          repairs: [
+            {
+              check: 'sign-in flow',
+              action: 1,
+              reference: 'role=button name=Save at=document/main/form "Log in"/button "Save"',
+              repaired: 'role=button name=Save at=document/main/form "Sign in"/button "Save"',
+              identity: 'same role, same accessible name, same landmark ancestry (main/form)',
+              status: 'applied',
+            },
+            {
+              check: 'sign-in flow',
+              action: 2,
+              reference: 'role=button name=Send at=document/main/form "Log in"/button "Send"',
+              identity: 'same role, same accessible name, same landmark ancestry (main/form)',
+              status: 'refused',
+              refusedReason: 'a different element sits there',
+            },
+          ],
+        },
+      ],
+    }),
+  )
+  expect(loaded.verdict).toBe('passed')
+  expect(loaded.criteria[0]?.repairs).toEqual([
+    {
+      check: 'sign-in flow',
+      action: 1,
+      reference: 'role=button name=Save at=document/main/form "Log in"/button "Save"',
+      repaired: 'role=button name=Save at=document/main/form "Sign in"/button "Save"',
+      identity: 'same role, same accessible name, same landmark ancestry (main/form)',
+      status: 'applied',
+    },
+    {
+      check: 'sign-in flow',
+      action: 2,
+      reference: 'role=button name=Send at=document/main/form "Log in"/button "Send"',
+      identity: 'same role, same accessible name, same landmark ancestry (main/form)',
+      status: 'refused',
+      refusedReason: 'a different element sits there',
+    },
+  ])
+})
+
+test('a repair record without the fields the comment renders fails closed (#83)', () => {
+  const base = {
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'passed',
+    criteria: [
+      {
+        id: 'flow-83',
+        outcome: 'proven',
+        evidence: ['checks/flow-83/0/actions.log'],
+        repairs: [{ check: 'sign-in flow', action: 1, reference: 'r', identity: 'i', status: 'applied' }],
+      },
+    ],
+  }
+  expect(() => loadResult(JSON.stringify(base))).toThrow(ResultValidationError)
+  const refusedWithoutReason = structuredClone(base)
+  refusedWithoutReason.criteria[0].repairs[0].status = 'refused'
+  expect(() => loadResult(JSON.stringify(refusedWithoutReason))).toThrow(ResultValidationError)
+})
