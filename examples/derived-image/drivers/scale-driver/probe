@@ -1,0 +1,4 @@
+#!/bin/sh
+# The scale-driver probe: the custom driver family's entry. An executable the
+# qare user can run, answering on stdout.
+printf 'scale-driver: ready\n'

@@ -35,6 +35,14 @@ hold for every change here, are in [CONSTITUTION.md](CONSTITUTION.md).
 
 Status: design. See [docs/SPEC.md](docs/SPEC.md).
 
+## Extending the images
+
+Images are layered: a project starts from the base and adds what it needs. The
+paths, entry point, user and tags a derived image can rely on are the image
+extension contract in [docs/images.md](docs/images.md), and
+[examples/derived-image](examples/derived-image) is a worked example that adds
+a driver and a host tool.
+
 ## Licensing
 
 qare is source-available under the
