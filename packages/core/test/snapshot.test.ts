@@ -85,3 +85,69 @@ test('named controls produce no findings', async () => {
 
   expect(nameFindings(trimToSubtree(snapshot, 'Ada Lovelace'))).toEqual([])
 })
+
+test('a quoted attribute value keeps its spaces (#82)', async () => {
+  const snapshot = normaliseAriaSnapshot([
+    '- main:',
+    '  - textbox "Motto" [value="hello world"]',
+  ].join('\n'))
+
+  const textbox = snapshot.children[0]?.children[0]
+  expect(textbox?.value).toBe('hello world')
+  // The quoted value is one token, so no bogus state joins the node.
+  expect(textbox?.states).toEqual({})
+})
+
+test('siblings that would share one path are stamped with their occurrence (#82)', async () => {
+  const snapshot = normaliseAriaSnapshot([
+    '- main:',
+    '  - list:',
+    '    - listitem',
+    '    - listitem',
+  ].join('\n'))
+
+  const list = snapshot.children[0]?.children[0]
+  expect(list?.children.map((child) => child.path)).toEqual([
+    'document/main/list/listitem[1]',
+    'document/main/list/listitem[2]',
+  ])
+
+  // Descendants are built under the stamped path.
+  const nested = normaliseAriaSnapshot([
+    '- main:',
+    '  - list:',
+    '    - listitem:',
+    '      - button "Alpha"',
+    '    - listitem:',
+    '      - button "Beta"',
+  ].join('\n'))
+  const inner = nested.children[0]?.children[0]
+  expect(inner?.children[0]?.children[0]?.path).toBe('document/main/list/listitem[1]/button "Alpha"')
+  expect(inner?.children[1]?.children[0]?.path).toBe('document/main/list/listitem[2]/button "Beta"')
+
+  // Findings say which of the duplicates is the one missing its name.
+  const unnamed = normaliseAriaSnapshot([
+    '- main:',
+    '  - button',
+    '  - button',
+  ].join('\n'))
+  expect(nameFindings(unnamed)).toEqual([
+    'accessibility finding: document/main/button[1] has no accessible name',
+    'accessibility finding: document/main/button[2] has no accessible name',
+  ])
+})
+
+test('the required-name role set is complete, scrollbar and listbox included (#82)', async () => {
+  const snapshot = normaliseAriaSnapshot([
+    '- main:',
+    '  - listbox',
+    '  - scrollbar',
+    '  - gridcell',
+  ].join('\n'))
+
+  expect(nameFindings(snapshot)).toEqual([
+    'accessibility finding: document/main/listbox has no accessible name',
+    'accessibility finding: document/main/scrollbar has no accessible name',
+    'accessibility finding: document/main/gridcell has no accessible name',
+  ])
+})

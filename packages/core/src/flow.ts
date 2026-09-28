@@ -277,18 +277,19 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   // the subtree the assertion touched is written to the evidence (#82), so the
   // same criterion yields comparable snapshots across clients. A control in
   // that subtree with no accessible name is a named finding, not a silent pass.
-  const snapshotAt = async (index: number, text: string): Promise<void> => {
+  const snapshotAt = async (index: number, trim?: string): Promise<void> => {
     if (page.snapshot === undefined) {
       log.push('snapshot not taken: the driver exposes no accessibility snapshot')
       return
     }
     try {
-      const trimmed = trimToSubtree(await page.snapshot(), text)
+      const full = await page.snapshot()
+      const trimmed = trim === undefined ? full : trimToSubtree(full, trim)
       const findings = nameFindings(trimmed)
       const name = `assert-${index}.json`
       const record = {
         schemaVersion: SNAPSHOT_SCHEMA_VERSION,
-        assertedText: text,
+        ...(trim === undefined ? {} : { assertedText: trim }),
         snapshot: trimmed,
         findings,
       }
@@ -327,6 +328,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
           break
         case 'assertElement':
           await page.assertElement(action.element)
+          await snapshotAt(index, 'name' in action.element ? action.element.name : undefined)
           break
         case 'capture': {
           const name = `capture-${index}.png`
@@ -384,8 +386,11 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
             ? `assert failed: the text ${JSON.stringify(action.text)} is not visible`
             : `assert failed: the element ${describeElement(action.element)} is not visible`
         // The snapshot at a failed assert shows what the page held instead,
-        // trimmed as far as the asserted text would have sat (#82).
+        // trimmed as far as the assertion would have sat (#82). An element
+        // assertion trims to its accessible name when it names one and keeps
+        // the whole tree for a test-id reference (#82).
         if (action.action === 'assertText') await snapshotAt(index, action.text)
+        else await snapshotAt(index, 'name' in action.element ? action.element.name : undefined)
       } else {
         // The failure reason quotes what the action saw, and the action may
         // have seen a value the flow put on the page: the same sweep that

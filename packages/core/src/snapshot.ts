@@ -56,7 +56,7 @@ function parseAttrLine(line: string, parentPath: string): SnapshotNode {
     const bracket = /\[([^\]]*)\]\s*$/.exec(head)
     if (bracket === null || bracket[1] === undefined) break
     head = head.slice(0, bracket.index).trim()
-    for (const token of bracket[1].split(/\s+/)) if (token !== '') tokens.unshift(token)
+    for (const token of splitAttrs(bracket[1])) tokens.unshift(token)
   }
   const split = /\s/.exec(head)
   const role = split === null ? head : head.slice(0, split.index)
@@ -84,7 +84,32 @@ function parseAttrLine(line: string, parentPath: string): SnapshotNode {
   return { role, ...(name === undefined ? {} : { name }), ...(value === undefined ? {} : { value }), states, path, children: [] }
 }
 
+/**
+ * Attribute groups split on whitespace, except that a double-quoted value is
+ * one token whatever it holds: `[value="hello world"]` is the control's value,
+ * not a value plus a state (#82).
+ */
+function splitAttrs(text: string): string[] {
+  const tokens: string[] = []
+  let token = ''
+  let quoted = false
+  for (const character of text) {
+    if (character === '"') {
+      quoted = !quoted
+      token += character
+    } else if (/\s/.test(character) && !quoted) {
+      if (token !== '') tokens.push(token)
+      token = ''
+    } else {
+      token += character
+    }
+  }
+  if (token !== '') tokens.push(token)
+  return tokens
+}
+
 function asStateValue(raw: string): NodeState {
+  if (raw.startsWith('"')) return parseName(raw)
   if (raw === 'true') return true
   if (raw === 'false') return false
   if (raw !== '' && /^[+-]?\d+$/.test(raw)) return Number(raw)
@@ -92,19 +117,35 @@ function asStateValue(raw: string): NodeState {
 }
 
 function parseEntries(entries: unknown[], parentPath: string): SnapshotNode[] {
-  const nodes: SnapshotNode[] = []
+  // Siblings are parsed with bare paths first, so a sibling group that would
+  // share one path is known before its members' children are built.
+  const parsed: Array<{ node: SnapshotNode; nested: unknown }> = []
   for (const entry of entries) {
     if (typeof entry === 'object' && entry !== null) {
       for (const [line, nested] of Object.entries(entry)) {
-        const node = parseAttrLine(line, parentPath)
-        node.children = Array.isArray(nested) ? parseEntries(nested, node.path) : []
-        nodes.push(node)
+        parsed.push({
+          node: parseAttrLine(line, parentPath),
+          nested: Array.isArray(nested) ? nested : [],
+        })
       }
     } else if (typeof entry === 'string' && entry.trim() !== '') {
-      nodes.push(parseAttrLine(entry, parentPath))
+      parsed.push({ node: parseAttrLine(entry, parentPath), nested: [] })
     }
   }
-  return nodes
+  // Siblings that share one path get an occurrence index in document order:
+  // two unnamed buttons under the same parent stay distinguishable, and the
+  // index is the tree's own order, never a generated ref or a coordinate (#82).
+  const groupSize = new Map<string, number>()
+  for (const { node } of parsed) groupSize.set(node.path, (groupSize.get(node.path) ?? 0) + 1)
+  const seen = new Map<string, number>()
+  for (const { node } of parsed) {
+    if ((groupSize.get(node.path) ?? 0) <= 1) continue
+    const occurrence = (seen.get(node.path) ?? 0) + 1
+    seen.set(node.path, occurrence)
+    node.path = `${node.path}[${occurrence}]`
+  }
+  for (const { node, nested } of parsed) node.children = parseEntries(nested as unknown[], node.path)
+  return parsed.map(({ node }) => node)
 }
 
 /**
@@ -171,6 +212,11 @@ const ROLES_REQUIRING_NAME: readonly string[] = [
   'img',
   'image',
   'heading',
+  'scrollbar',
+  'columnheader',
+  'gridcell',
+  'listbox',
+  'rowheader',
 ]
 
 /**
