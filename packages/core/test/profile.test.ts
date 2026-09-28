@@ -307,6 +307,28 @@ test('a server name that could not be addressed as server.tool is refused (#93)'
   expect(() => validateProfileConfig({ target: MCP_HEALTH, mcp: [{ name: '..', ...base }] })).toThrow(/server name/)
 })
 
+test('two servers whose names and tools build the same channel name are refused (#93)', () => {
+  expect(() =>
+    validateProfileConfig({
+      target: MCP_HEALTH,
+      mcp: [
+        { name: 'a', command: 'node a.mjs', tools: ['b.c'], steps: ['plan'] },
+        { name: 'a.b', command: 'node ab.mjs', tools: ['c'], steps: ['plan'] },
+      ],
+    }),
+  ).toThrow(/names "a\.b\.c" twice/)
+  // Different tools on different servers build different names, and are fine.
+  expect(() =>
+    validateProfileConfig({
+      target: MCP_HEALTH,
+      mcp: [
+        { name: 'a', command: 'node a.mjs', tools: ['c'], steps: ['plan'] },
+        { name: 'a.b', command: 'node ab.mjs', tools: ['d'], steps: ['plan'] },
+      ],
+    }),
+  ).not.toThrow()
+})
+
 test('a command that a shell would interpret is refused, like command checks are (#93)', async () => {
   expect(() =>
     validateProfileConfig({ target: MCP_HEALTH, mcp: [{ name: 'rig', command: 'node rig.mjs && rm -rf /', tools: ['x'], steps: ['plan'] }] }),

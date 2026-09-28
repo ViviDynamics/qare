@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createServer, request, type IncomingMessage, type ServerResponse } from 'node:http'
+import { redactValue, type RedactionRule } from './redact.js'
 import type { ProfileMcpServer, McpStep } from './profile.js'
 
 /**
@@ -31,6 +32,16 @@ export interface McpCallRecord {
 }
 
 export type McpRecorder = (record: McpCallRecord) => void
+
+/**
+ * The records as they are written to mcp-calls.jsonl: one JSON line each,
+ * redacted with the profile's rules and the built-in ones first. Tool
+ * arguments and results are evidence, and evidence is published, so a secret
+ * a tool carried is redacted out before the file is written anywhere (#52).
+ */
+export function mcpRecordsFile(records: readonly McpCallRecord[], rules: readonly RedactionRule[]): string {
+  return `${records.map((record) => JSON.stringify(redactValue(record, rules))).join('\n')}\n`
+}
 
 export class McpError extends Error {
   constructor(message: string) {
@@ -108,13 +119,12 @@ interface JsonRpcResponse {
 export async function connectMcpServer(spec: ProfileMcpServer, options: ConnectOptions = {}): Promise<McpSource> {
   const handshakeTimeoutMs = options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS
   const callTimeoutMs = options.callTimeoutMs ?? CALL_TIMEOUT_MS
-  const wire = spec.command !== undefined ? stdioWire(spec) : httpWire(spec)
+  const wire = spec.command !== undefined ? stdioWire(spec) : await httpWire(spec)
   let listed: unknown
   try {
     await wire.request(
       {
         jsonrpc: '2.0',
-        id: 1,
         method: 'initialize',
         params: {
           protocolVersion: '2024-11-05',
@@ -125,7 +135,7 @@ export async function connectMcpServer(spec: ProfileMcpServer, options: ConnectO
       handshakeTimeoutMs,
     )
     await wire.notify({ jsonrpc: '2.0', method: 'notifications/initialized' })
-    listed = await wire.request({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, handshakeTimeoutMs)
+    listed = await wire.request({ jsonrpc: '2.0', method: 'tools/list' }, handshakeTimeoutMs)
   } catch (error) {
     await wire.close().catch(() => {})
     const reason = error instanceof Error ? error.message : String(error)
@@ -167,7 +177,6 @@ async function callMcpTool(
     const answer = await wire.request(
       {
         jsonrpc: '2.0',
-        id: 3,
         method: 'tools/call',
         params: { name: tool, ...(args === undefined ? {} : { arguments: args }) },
       },
@@ -231,15 +240,14 @@ function stdioWire(spec: ProfileMcpServer): McpWire {
   let child: ReturnType<typeof spawn> | undefined
   let stdin: NodeJS.WritableStream | undefined
   const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
+  let nextId = 1
   let buffer = ''
   return {
     request(payload, timeoutMs) {
       return new Promise((resolve, reject) => {
-        const id = payload.id
-        if (typeof id !== 'number') {
-          reject(new McpError('a request without an id cannot be answered'))
-          return
-        }
+        // The id is the wire's, not the payload's: concurrent calls to the
+        // same server must not overwrite one another's answer.
+        const id = nextId++
         started()
           .then((stream) => {
             const timer = setTimeout(() => {
@@ -259,7 +267,7 @@ function stdioWire(spec: ProfileMcpServer): McpWire {
                 reject(error)
               },
             })
-            stream.write(`${JSON.stringify(payload)}\n`)
+            stream.write(`${JSON.stringify({ ...payload, id })}\n`)
           })
           .catch((error: Error) => reject(error))
       })
@@ -289,6 +297,15 @@ function stdioWire(spec: ProfileMcpServer): McpWire {
       })
       spawned.stdout!.on('data', (chunk) => {
         buffer += String(chunk)
+        // A result past the cap is refused before the process buffers it
+        // whole: a line this long never terminates into a JSON-RPC answer,
+        // so the pending request fails named and the server is killed.
+        if (Buffer.byteLength(buffer) > MAX_RESULT_BYTES) {
+          buffer = ''
+          child?.kill()
+          failAll('the server sent a line past the 4 MiB cap')
+          return
+        }
         for (;;) {
           const at = buffer.indexOf('\n')
           if (at === -1) break
@@ -325,60 +342,96 @@ function stdioWire(spec: ProfileMcpServer): McpWire {
 }
 
 /** One JSON-RPC request answered over the server's HTTP endpoint. */
-function httpWire(spec: ProfileMcpServer): McpWire {
+async function httpWire(spec: ProfileMcpServer): Promise<McpWire> {
   const target = new URL(spec.url!)
+  // The profile's URL is the server's: https is reached with the TLS client,
+  // and a query the profile carries (a token, say) reaches the server.
+  const transport = (await import(target.protocol === 'https:' ? 'node:https' : 'node:http')) as typeof import('node:http')
+  const path = `${target.pathname}${target.search}`
+  let nextId = 1
   return {
     request(payload, timeoutMs) {
       return new Promise((resolve, reject) => {
-        const body = JSON.stringify(payload)
+        const body = JSON.stringify({ ...payload, id: nextId++ })
+        let settled = false
+        let raw = ''
+        const finish = (failure: McpError | undefined, answer?: unknown) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          if (failure === undefined) resolve(answer)
+          else reject(failure)
+        }
         const timer = setTimeout(() => {
           outgoing.destroy()
-          reject(new McpError(`no answer within ${Math.round(timeoutMs / 1000)}s`))
+          finish(new McpError(`no answer within ${Math.round(timeoutMs / 1000)}s`))
         }, timeoutMs)
-        const outgoing = request(
+        const outgoing = transport.request(
           {
             hostname: target.hostname,
             ...(target.port === '' ? {} : { port: Number(target.port) }),
-            path: target.pathname,
+            path,
             method: 'POST',
             headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
           },
           (incoming) => {
-            let raw = ''
-            incoming.on('data', (chunk) => (raw += String(chunk)))
-            incoming.on('error', (error) => {
-              clearTimeout(timer)
-              reject(new McpError(error.message))
+            let bytes = 0
+            incoming.on('data', (chunk) => {
+              // The cap holds while the response streams, not after it has
+              // been buffered whole: a server that answers huge never gets
+              // the chance to exhaust the process.
+              bytes += chunk.length
+              if (bytes <= MAX_RESULT_BYTES) {
+                raw += String(chunk)
+                return
+              }
+              outgoing.destroy()
+              finish(new McpError('the result is past the 4 MiB cap'))
             })
+            incoming.on('error', (error) => finish(new McpError(error.message)))
             incoming.on('end', () => {
-              clearTimeout(timer)
               if (incoming.statusCode !== 200) {
-                reject(new McpError(`the server answered ${incoming.statusCode}`))
+                finish(new McpError(`the server answered ${incoming.statusCode}`))
                 return
               }
               let parsed: JsonRpcResponse
               try {
                 parsed = JSON.parse(raw)
               } catch {
-                reject(new McpError('the server answered with something that is not a JSON-RPC response'))
+                finish(new McpError('the server answered with something that is not a JSON-RPC response'))
                 return
               }
               if (parsed.error !== undefined) {
-                reject(new McpError(parsed.error.message || 'the server refused the request'))
+                finish(new McpError(parsed.error.message || 'the server refused the request'))
                 return
               }
-              resolve(parsed.result)
+              finish(undefined, parsed.result)
             })
           },
         )
-        outgoing.on('error', (error) => {
-          clearTimeout(timer)
-          reject(new McpError(error.message))
-        })
+        outgoing.on('error', (error) => finish(new McpError(error.message)))
         outgoing.end(body)
       })
     },
-    async notify() {},
+    // A notification is sent, never awaited the way a request is: the POST
+    // is written, and whatever the server answers, the handshake goes on.
+    notify(payload) {
+      return new Promise((resolve) => {
+        const body = JSON.stringify(payload)
+        const outgoing = transport.request(
+          {
+            hostname: target.hostname,
+            ...(target.port === '' ? {} : { port: Number(target.port) }),
+            path,
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+          },
+          () => resolve(),
+        )
+        outgoing.on('error', () => resolve())
+        outgoing.end(body)
+      })
+    },
     close: async () => {},
   }
 }
@@ -432,7 +485,9 @@ const MAX_RESULT_BYTES = 4 * 1024 * 1024
 export function callChannelTool(server: McpToolServer, name: string, args?: unknown): Promise<string> {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(args ?? {})
-    const target = new URL(`${server.url}/${name}`)
+    // The tool's name is encoded, so a name carrying URL syntax (?, #, a
+    // space) still addresses its route and nothing else.
+    const target = new URL(`${server.url}/${encodeURIComponent(name)}`)
     const outgoing = request(
       {
         hostname: target.hostname,
@@ -474,14 +529,25 @@ export function callChannelTool(server: McpToolServer, name: string, args?: unkn
  * host's, so this side runs where they run, and the only traffic that
  * crosses is a tool call and its result.
  */
-export function startMcpToolServer(
+export async function startMcpToolServer(
   sources: readonly McpSource[],
   options: { host?: string; port?: number; advertise?: string } = {},
 ): Promise<McpToolServer> {
   const { host = '127.0.0.1', port = 0 } = options
   const routed = new Map<string, { source: McpSource; tool: string }>()
   for (const source of sources)
-    for (const tool of source.tools) routed.set(channelToolName(source.name, tool.name), { source, tool: tool.name })
+    for (const tool of source.tools) {
+      // Two valid names can still build the same channel name (server "a"
+      // with tool "b.c" against server "a.b" with tool "c"): a route that
+      // would be ambiguous is refused, not silently overwritten.
+      const name = channelToolName(source.name, tool.name)
+      const existing = routed.get(name)
+      if (existing !== undefined)
+        throw new McpError(
+          `the channel names ${JSON.stringify(name)} twice: server ${JSON.stringify(existing.source.name)} tool ${JSON.stringify(existing.tool)} and server ${JSON.stringify(source.name)} tool ${JSON.stringify(tool.name)} both want it, so rename a server or a tool`,
+        )
+      routed.set(name, { source, tool: tool.name })
+    }
   return new Promise((resolve, reject) => {
     const server = createServer((request, response) => {
       response.on('error', () => {})
@@ -521,7 +587,13 @@ async function handle(
     refuse(response, 404, `the tool channel serves the registered tools over POST, and ${url} is not one of them`)
     return
   }
-  const route = routed.get(url.slice(1))
+  // The caller addresses a tool by its raw name, URL-encoded; a tool name may
+  // carry any characters the server publishes, so the route is decoded first.
+  let routeName = url.slice(1)
+  try {
+    routeName = decodeURIComponent(routeName)
+  } catch {}
+  const route = routed.get(routeName)
   if (route === undefined) {
     refuse(response, 404, `the channel serves ${[...routed.keys()].join(', ') || 'nothing'}; ${url} registers no tool`)
     return

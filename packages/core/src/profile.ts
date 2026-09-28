@@ -2,6 +2,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { parseDurationMs, shellCharacter } from './duration.js'
+import { channelToolName } from './mcp.js'
 import { RedactionError, redactionRules, validateMaskSelectors, type ProfileRedaction } from './redact.js'
 
 /**
@@ -520,7 +521,7 @@ const MCP_STEPS: McpStep[] = ['plan', 'execute']
 function parseMcp(value: unknown): ProfileMcpServer[] {
   if (!Array.isArray(value)) fail('mcp', 'mcp must be an array of host tool server entries')
   const seen: string[] = []
-  return value.map((entry, index) => {
+  const servers = value.map((entry, index) => {
     const base = `mcp[${index}]`
     if (!isRecord(entry)) fail(base, 'a host tool server must be a YAML object with name, command or url, tools and steps')
     const name = nonEmptyString(entry.name, `${base}.name`, 'name')
@@ -565,4 +566,19 @@ function parseMcp(value: unknown): ProfileMcpServer[] {
       )
     return { name, ...(command !== undefined ? { command } : { url }), tools, steps, ...(credential === undefined ? {} : { credential }) }
   })
+  // Two servers whose names and tools build the same channel name (server "a"
+  // with tool "b.c" against server "a.b" with tool "c") would leave one of the
+  // two unreachable: the profile is refused, by name, before anything starts.
+  const routes = new Set<string>()
+  for (const server of servers)
+    for (const tool of server.tools) {
+      const route = channelToolName(server.name, tool)
+      if (routes.has(route))
+        fail(
+          'mcp',
+          `the channel names ${JSON.stringify(route)} twice: server tools cannot share one name, so rename a server or a tool`,
+        )
+      routes.add(route)
+    }
+  return servers
 }

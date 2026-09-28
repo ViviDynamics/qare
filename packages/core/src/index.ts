@@ -110,6 +110,7 @@ export {
   callChannelTool,
   channelToolName,
   connectMcpServer,
+  mcpRecordsFile,
   splitMcpCommand,
   startMcpToolServer,
   startRegisteredMcpSources,

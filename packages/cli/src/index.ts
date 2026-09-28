@@ -32,6 +32,7 @@ import {
   valueRules,
   startMcpToolServer,
   startRegisteredMcpSources,
+  mcpRecordsFile,
   criteriaFromIssue,
   criteriaFromIssues,
   IssueCriteriaError,
@@ -738,11 +739,17 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
     } finally {
       await mcpServer?.close().catch(() => {})
       await Promise.all(mcpSources.map((source) => source.close().catch(() => {})))
-      if (mcpRecords.length > 0) {
-        const mcpPath = join(dirname(outPath), 'mcp-calls.jsonl')
-        await writeFile(mcpPath, `${mcpRecords.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8')
-        out.write(`recorded ${mcpRecords.length} host tool calls; ${mcpPath}\n`)
-      }
+    if (mcpRecords.length > 0) {
+      const mcpPath = join(dirname(outPath), 'mcp-calls.jsonl')
+      // The records are evidence, so they leave through the same redaction
+      // the rest of the evidence sweeps: built-in rules, the profile's, and
+      // the seeded values, before the file is written for the workflow to
+      // upload (#93, #52).
+      const login = profile?.app?.login
+      const rules = [...redactionRules(profile?.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value])]
+      await writeFile(mcpPath, mcpRecordsFile(mcpRecords, rules), 'utf8')
+      out.write(`recorded ${mcpRecords.length} host tool calls; ${mcpPath}\n`)
+    }
     }
     if (flowActions.length > 0)
       out.write(`planning with the change's flow action kinds: ${flowActions.join(', ')}\n`)

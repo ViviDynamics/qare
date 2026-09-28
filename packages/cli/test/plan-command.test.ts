@@ -536,7 +536,7 @@ async function fakeMcpBinary(dir: string, published: { name: string; description
   return scriptPath
 }
 
-async function profileWithMcp(dir: string, mcpLines: string[]): Promise<string> {
+async function profileWithMcp(dir: string, configLines: string[]): Promise<string> {
   const healthUrl = ['http:', '//127.0.0.1:1/health'].join('')
   await mkdir(join(dir, '.qa', 'fixtures'), { recursive: true })
   await mkdir(join(dir, '.qa', 'stubs'), { recursive: true })
@@ -555,7 +555,7 @@ async function profileWithMcp(dir: string, mcpLines: string[]): Promise<string> 
       '  widths: [390]',
       '  themes: [light]',
       'suites: []',
-      ...mcpLines,
+      ...configLines,
     ].join('\n'),
     'utf8',
   )
@@ -582,7 +582,7 @@ test('a registered host MCP server reaches the planner as an environment, and it
   // one tool through the channel, records what it saw, and answers with PLAN.
   const nareFixture = fileURLToPath(new URL('./fixtures/fake-nare-mcp.mjs', import.meta.url))
   const binary = join(dir, 'nare')
-  await writeFile(binary, `#!/bin/sh\nexec node ${nareFixture} ${seenPath} '${JSON.stringify(PLAN)}' "$@"\n`, 'utf8')
+  await writeFile(binary, `#!/bin/sh\nexec node ${nareFixture} ${seenPath} '${JSON.stringify(PLAN)}' rig.power_on '{"volts":5}' "$@"\n`, 'utf8')
   const { chmod } = await import('node:fs/promises')
   await chmod(binary, 0o755)
   const out = capture()
@@ -639,4 +639,65 @@ test('a registered server that cannot be started is reported, and the plan is st
     .split('\n')
     .map((line) => JSON.parse(line))
   expect(records).toEqual([{ server: 'ghost', error: expect.stringContaining('unreachable') }])
+})
+
+test('the mcp call records are redacted like the evidence they are (#93)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-plan-mcp-'))
+  const criteriaPath = join(dir, 'criteria.json')
+  const diffPath = join(dir, 'change.diff')
+  const outPath = join(dir, 'plan.json')
+  await writeFile(criteriaPath, JSON.stringify(CRITERIA), 'utf8')
+  await writeFile(diffPath, 'diff --git a/login.ts b/login.ts', 'utf8')
+  const profilePath = await profileWithMcp(dir, [
+    'redact:',
+    '  values: [hunter2]',
+    'mcp:',
+    `  - name: rig`,
+    `    command: node ${await fakeMcpBinary(dir, [{ name: 'power_on' }])}`,
+    '    tools: [power_on]',
+    '    steps: [plan]',
+  ])
+  const seenPath = join(dir, 'seen.json')
+  // The nare stand-in calls the tool with a secret in the arguments, the way
+  // a model session's look could: what the model saw, and what the published
+  // record keeps, are two different things.
+  const nareFixture = fileURLToPath(new URL('./fixtures/fake-nare-mcp.mjs', import.meta.url))
+  const binary = join(dir, 'nare')
+  await writeFile(
+    binary,
+    [
+      '#!/bin/sh',
+      `exec node ${nareFixture} ${seenPath} '${JSON.stringify(PLAN)}' rig.power_on '{"password":"hunter2","note":"the hunter2 vault"}' "$@"`,
+    ].join('\n'),
+    'utf8',
+  )
+  const { chmod } = await import('node:fs/promises')
+  await chmod(binary, 0o755)
+  const out = capture()
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', outPath, '--nare', binary, '--profile', profilePath],
+    out.writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  const seen = JSON.parse(await readFile(seenPath, 'utf8')) as { tool: string }
+  // The model session read the tool's real answer; redaction is for what is
+  // published, not for the session.
+  expect(seen.tool).toBe('power_on saw {"password":"hunter2","note":"the hunter2 vault"}')
+  const records = (await readFile(join(dir, 'mcp-calls.jsonl'), 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line))
+  expect(records[0]).toMatchObject({
+    server: 'rig',
+    tool: 'power_on',
+    arguments: { password: '[redacted]', note: 'the [redacted] vault' },
+  })
+  // The result is free text, so the rules compose over it; what matters is
+  // that no secret survives into the published record.
+  const result = String((records[0] as { result?: string }).result)
+  expect(result).not.toContain('hunter2')
+  expect(result).toContain('[redacted]')
 })

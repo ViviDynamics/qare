@@ -6,15 +6,18 @@ import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
 
 import {
-  McpError,
   McpUnreachable,
+  BUILTIN_REDACTION_RULES,
   callChannelTool,
   channelToolName,
   connectMcpServer,
+  mcpRecordsFile,
+  redactionRules,
   splitMcpCommand,
   startMcpToolServer,
   startRegisteredMcpSources,
   type McpCallRecord,
+  type McpSource,
   type ProfileMcpServer,
 } from '../src/index.js'
 
@@ -30,7 +33,13 @@ const HTTP_MCP_FIXTURE = fileURLToPath(new URL('./fixtures/http-mcp-server.mjs',
  * any allowlist, which is the point of narrowing — and answers calls in text.
  */
 async function fakeMcpServer(
-  options: { tools?: unknown; call?: (name: string, args: unknown) => unknown } = {},
+  options: {
+    tools?: unknown
+    allowlist?: string[]
+    call?: (name: string, args: unknown) => unknown
+    concurrent?: boolean
+    flood?: boolean
+  } = {},
 ): Promise<ProfileMcpServer> {
   const dir = await mkdtemp(join(tmpdir(), 'qare-mcp-'))
   const script = join(dir, 'fake-mcp.mjs')
@@ -40,12 +49,19 @@ async function fakeMcpServer(
     "const rl = readline.createInterface({ input: process.stdin })",
     `const published = ${tools}`,
     `const call = ${options.call === undefined ? 'null' : options.call.toString()}`,
+    `const concurrent = ${options.concurrent === true ? 'true' : 'false'}`,
+    `const flood = ${options.flood === true ? 'true' : 'false'}`,
     "rl.on('line', (line) => {",
     "  if (line.trim() === '') return",
     "  const msg = JSON.parse(line)",
     "  const answer = (result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\\n')",
     "  if (msg.method === 'initialize') answer({ protocolVersion: '2024-11-05' })",
     "  else if (msg.method === 'tools/list') answer({ tools: published })",
+    "  else if (msg.method === 'tools/call' && flood) process.stdout.write('z'.repeat(5.5 * 1024 * 1024))",
+    "  else if (msg.method === 'tools/call' && concurrent) {",
+    "    if (msg.params?.name === 'slow') setTimeout(() => answer({ content: [{ type: 'text', text: 'slow done' }] }), 100)",
+    "    else answer({ content: [{ type: 'text', text: 'fast done' }] })",
+    "  }",
     "  else if (msg.method === 'tools/call') {",
     "    if (call === null) answer({ content: [{ type: 'text', text: 'power: on' }] })",
     "    else answer(call(msg.params?.name, msg.params?.arguments))",
@@ -53,7 +69,7 @@ async function fakeMcpServer(
     "})",
   ].join('\n')
   await writeFile(script, lines, 'utf8')
-  return { name: 'rig', command: `node ${script}`, tools: ['power_on'], steps: ['plan'] }
+  return { name: 'rig', command: `node ${script}`, tools: options.allowlist ?? ['power_on'], steps: ['plan'] }
 }
 
 test('a command is split on whitespace, with no shell', () => {
@@ -121,7 +137,8 @@ test('a result past the cap is refused named, not buffered whole', async () => {
   const records: McpCallRecord[] = []
   const source = await connectMcpServer(spec, { record: (record) => records.push(record) })
   try {
-    await expect(source.call('power_on', undefined)).rejects.toThrow(McpError)
+    // One call, and the server does not survive it: the line is cut off and
+    // the server killed, so the record carries the reason and nothing else.
     await expect(source.call('power_on', undefined)).rejects.toThrow('past the 4 MiB cap')
     expect(records[0]?.error).toContain('4 MiB cap')
   } finally {
@@ -229,5 +246,113 @@ test('the channel refuses a body past its cap, and tools it does not register', 
   } finally {
     await server?.close().catch(() => {})
     await Promise.all(started.sources.map((source) => source.close()))
+  }
+})
+
+test('the records file is redacted like the evidence it is', () => {
+  const rules = [...BUILTIN_REDACTION_RULES, ...redactionRules({ values: ['hunter2'] })]
+  const line = mcpRecordsFile(
+    [
+      {
+        server: 'rig',
+        tool: 'power_on',
+        arguments: { password: 'hunter2', note: 'the hunter2 vault' },
+        result: 'the hunter2 vault',
+      },
+    ],
+    rules,
+  )
+  const record = JSON.parse(line.trim()) as { arguments: { password: string; note: string }; result: string }
+  expect(record.arguments.password).toBe('[redacted]')
+  expect(record.arguments.note).toBe('the [redacted] vault')
+  expect(record.result).toBe('the [redacted] vault')
+})
+
+test('concurrent calls each keep their own answer', async () => {
+  const spec = await fakeMcpServer({ concurrent: true, allowlist: ['slow', 'fast'] })
+  const source = await connectMcpServer(spec)
+  try {
+    const [slow, fast] = await Promise.all([source.call('slow', undefined), source.call('fast', undefined)])
+    expect(slow).toBe('slow done')
+    expect(fast).toBe('fast done')
+  } finally {
+    await source.close()
+  }
+})
+
+test('a channel name two servers would share is refused, by name', async () => {
+  const a: McpSource = { name: 'a', tools: [{ name: 'b.c' }], call: async () => 'x', close: async () => {} }
+  const ab: McpSource = { name: 'a.b', tools: [{ name: 'c' }], call: async () => 'x', close: async () => {} }
+  await expect(startMcpToolServer([a, ab])).rejects.toThrow(/names "a\.b\.c" twice/)
+})
+
+test('a tool whose name carries URL syntax still reaches its route', async () => {
+  const spec = await fakeMcpServer({ tools: [{ name: 'weird?x' }], allowlist: ['weird?x'] })
+  const started = await startRegisteredMcpSources([spec], 'plan')
+  let server: Awaited<ReturnType<typeof startMcpToolServer>> | undefined
+  try {
+    server = await startMcpToolServer(started.sources)
+    expect(server.tools).toEqual(['rig.weird?x'])
+    expect(await callChannelTool(server, 'rig.weird?x', {})).toBe('power: on')
+  } finally {
+    await server?.close().catch(() => {})
+    await Promise.all(started.sources.map((source) => source.close()))
+  }
+})
+
+test('a result past the cap is cut off while it streams, not buffered whole', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-mcp-http-'))
+  const portFile = join(dir, 'port.txt')
+  const fixture = spawn(process.execPath, [HTTP_MCP_FIXTURE, portFile, JSON.stringify([{ name: 'flood' }])])
+  try {
+    const source = await connectMcpServer({
+      name: 'httpd',
+      url: await waitForPortFile(portFile),
+      tools: ['flood'],
+      steps: ['plan'],
+    })
+    try {
+      await expect(source.call('flood', undefined)).rejects.toThrow('past the 4 MiB cap')
+    } finally {
+      await source.close()
+    }
+  } finally {
+    fixture.kill()
+  }
+})
+
+test('a stdio line past the cap never buffers whole', async () => {
+  const spec = await fakeMcpServer({ flood: true })
+  const source = await connectMcpServer(spec)
+  try {
+    await expect(source.call('power_on', undefined)).rejects.toThrow('past the 4 MiB cap')
+  } finally {
+    await source.close()
+  }
+})
+
+test('the HTTP handshake sends its initialized notification, and the profile URL query rides along', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-mcp-http-'))
+  const portFile = join(dir, 'port.txt')
+  const methodsFile = join(dir, 'methods.txt')
+  const fixture = spawn(process.execPath, [HTTP_MCP_FIXTURE, portFile, JSON.stringify([{ name: 'ping' }]), methodsFile])
+  try {
+    const source = await connectMcpServer({
+      name: 'httpd',
+      url: (await waitForPortFile(portFile)) + '/mcp?token=q1',
+      tools: ['ping'],
+      steps: ['plan'],
+    })
+    try {
+      const answer = await source.call('ping', undefined)
+      expect(answer).toContain('token=q1')
+      const methods = (await readFile(methodsFile, 'utf8')).trim().split('\n')
+      expect(methods.indexOf('notifications/initialized')).toBeGreaterThan(methods.indexOf('initialize'))
+      expect(methods.indexOf('tools/list')).toBeGreaterThan(methods.indexOf('notifications/initialized'))
+    } finally {
+      await source.close()
+    }
+  } finally {
+    fixture.kill()
   }
 })

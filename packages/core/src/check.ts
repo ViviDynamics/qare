@@ -6,7 +6,7 @@ import { BROWSER_FLOW_DRIVER } from './flow-playwright.js'
 import { jobFromPlan } from './job-from-plan.js'
 import { judgeExecuted } from './judge.js'
 import type { ReadMail } from './mailbox.js'
-import { startMcpToolServer, startRegisteredMcpSources, type McpCallRecord, type McpSource, type McpToolServer } from './mcp.js'
+import { startMcpToolServer, startRegisteredMcpSources, mcpRecordsFile, type McpCallRecord, type McpSource, type McpToolServer } from './mcp.js'
 import { PLAN_SCHEMA_VERSION, type Plan } from './plan.js'
 import { NO_DIFF, planRun } from './plan-step.js'
 import { ProfileMissingError, loadProfile, type QaProfile } from './profile.js'
@@ -195,8 +195,12 @@ async function planOrReport(
   } finally {
     await server?.close().catch(() => {})
     await Promise.all(sources.map((source) => source.close().catch(() => {})))
-    if (registered.length > 0 && records.length > 0)
-      await writeFile(join(evidenceDir, 'mcp-calls.jsonl'), `${records.map((record) => JSON.stringify(record)).join('\n')}\n`)
+    if (registered.length > 0 && records.length > 0) {
+      // The records are evidence, so they leave through the same redaction
+      // the rest of the evidence sweeps: a tool argument or result that
+      // carried a secret is redacted before the file is published.
+      await writeFile(join(evidenceDir, 'mcp-calls.jsonl'), mcpRecordsFile(records, redactionRules(profile.redact)))
+    }
   }
   return plan
 }

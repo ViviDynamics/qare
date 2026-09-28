@@ -6,7 +6,7 @@
 import { writeFileSync } from 'node:fs'
 import { request } from 'node:http'
 
-const [seenPath, planJson] = process.argv.slice(2)
+const [seenPath, planJson, toolPath = 'rig.power_on', argsJson = '{"volts":5}'] = process.argv.slice(2)
 const seen = {
   tools: process.env.QARE_MCP_TOOLS,
   endpoint: process.env.QARE_MCP_ENDPOINT,
@@ -15,7 +15,7 @@ const seen = {
 }
 
 try {
-  seen.tool = await probe(process.env.QARE_MCP_ENDPOINT, 'rig.power_on', { volts: 5 })
+  seen.tool = await probe(process.env.QARE_MCP_ENDPOINT, toolPath, JSON.parse(argsJson))
 } catch (problem) {
   seen.tool = 'channel error: ' + problem
 }
@@ -40,7 +40,7 @@ console.log(
 function probe(endpoint, path, args) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(args ?? {})
-    const target = new URL(endpoint + '/' + path)
+    const target = new URL(endpoint + '/' + encodeURIComponent(path))
     const outgoing = request(
       {
         hostname: target.hostname,
