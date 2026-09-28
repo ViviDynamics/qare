@@ -1,5 +1,18 @@
 export type ToolPolicy = 'none' | 'read-only'
 
+/**
+ * The exploration channel (#87): the read-only tool server the sandbox runs
+ * beside the application, and where it answers. It rides the request as data,
+ * never as the runner's own tool policy, so nare's file tools stay off and
+ * nothing that writes files or runs commands crosses the channel.
+ */
+export interface AgentToolChannel {
+  /** The tools the session may call: the read-only exploration allowlist. */
+  allowlist: readonly string[]
+  /** Where the sandbox's exploration server answers. */
+  endpoint: string
+}
+
 export interface AgentBudget {
   maxOutputTokens: number
 }
@@ -10,6 +23,7 @@ export interface AgentRunRequest {
   toolPolicy: ToolPolicy
   outputSchema: string
   budget: AgentBudget
+  tools?: AgentToolChannel
 }
 
 export type AgentRunStatus = 'completed' | 'failed'
@@ -131,6 +145,20 @@ function toolFlag(policy: ToolPolicy): string {
 }
 
 /**
+ * The exploration channel reaches nare as environment (#87), the way a
+ * registered tool server is handed to the step that may look through it.
+ * nare's own tool flags stay untouched: the channel carries a read-only
+ * allowlist, so nothing that writes files or runs commands is asked for.
+ */
+function explorationEnv(tools: AgentToolChannel | undefined): Record<string, string> {
+  if (tools === undefined) return {}
+  return {
+    QARE_EXPLORATION_TOOLS: tools.allowlist.join(','),
+    QARE_EXPLORATION_ENDPOINT: tools.endpoint,
+  }
+}
+
+/**
  * Model access through nare (qare #34), the constitution's single seam.
  *
  * nare is a separate process. This runner hands it flags, reads its typed JSONL
@@ -173,20 +201,20 @@ export class NareAgentRunner implements AgentRunner {
         await writeFile(schemaPath, request.outputSchema, 'utf8')
         argv.push('--schema', schemaPath)
       }
-      const { code, stdout } = await this.spawn(argv)
+      const { code, stdout } = await this.spawn(argv, request.tools)
       return this.readOutcome(code, stdout)
     } finally {
       await rm(workDir, { recursive: true, force: true })
     }
   }
 
-  private async spawn(argv: string[]): Promise<{ code: number; stdout: string }> {
+  private async spawn(argv: string[], tools?: AgentToolChannel): Promise<{ code: number; stdout: string }> {
     const { spawn } = await import('node:child_process')
     const binary = this.options.binary ?? 'nare'
     return await new Promise((resolve, reject) => {
       const child = spawn(binary, argv, {
         cwd: this.options.cwd,
-        env: { ...process.env, ...this.options.env },
+        env: { ...process.env, ...this.options.env, ...explorationEnv(tools) },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       let stdout = ''
