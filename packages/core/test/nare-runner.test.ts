@@ -5,6 +5,10 @@ import { expect, test } from 'vitest'
 
 import { NareAgentRunner, type AgentRunRequest } from '../src/index.js'
 
+// Test files carry no network literals (runner.test.ts's guard), so URLs are
+// assembled at runtime, the way isolation.test.ts does it.
+const url = (rest: string, scheme = 'http'): string => [scheme, '://', rest].join('')
+
 /**
  * A stand-in for the nare binary: a real executable the runner really spawns,
  * so these tests exercise argv, stdout parsing and exit codes rather than a
@@ -14,10 +18,16 @@ import { NareAgentRunner, type AgentRunRequest } from '../src/index.js'
 async function fakeNare(
   lines: unknown[],
   exitCode = 0,
-): Promise<{ binary: string; argv: () => Promise<string[]>; schemaSeen: () => Promise<string> }> {
+): Promise<{
+  binary: string
+  argv: () => Promise<string[]>
+  schemaSeen: () => Promise<string>
+  envSeen: () => Promise<{ tools: string | null; endpoint: string | null }>
+}> {
   const dir = await mkdtemp(join(tmpdir(), 'qare-nare-'))
   const argvPath = join(dir, 'argv.json')
   const schemaPath = join(dir, 'schema-seen.json')
+  const envPath = join(dir, 'env-seen.json')
   const binary = join(dir, 'nare')
   const script = [
     '#!/usr/bin/env node',
@@ -28,6 +38,7 @@ async function fakeNare(
     // directory up afterwards, which is what a caller should be able to rely on.
     `const at = argv.indexOf('--schema')`,
     `if (at !== -1) writeFileSync(${JSON.stringify(schemaPath)}, readFileSync(argv[at + 1], 'utf8'))`,
+    `writeFileSync(${JSON.stringify(envPath)}, JSON.stringify({ tools: process.env.QARE_EXPLORATION_TOOLS ?? null, endpoint: process.env.QARE_EXPLORATION_ENDPOINT ?? null }))`,
     `for (const line of ${JSON.stringify(lines)}) console.log(JSON.stringify(line))`,
     `process.exit(${exitCode})`,
   ].join('\n')
@@ -38,6 +49,7 @@ async function fakeNare(
     binary,
     argv: async () => JSON.parse(await readFile(argvPath, 'utf8')) as string[],
     schemaSeen: async () => await readFile(schemaPath, 'utf8'),
+    envSeen: async () => JSON.parse(await readFile(envPath, 'utf8')) as { tools: string | null; endpoint: string | null },
   }
 }
 
@@ -162,11 +174,37 @@ test('the schema is handed over as a file nare can read', async () => {
 })
 
 test('no schema means no --schema flag', async () => {
-  const nare = await fakeNare([ANSWER, result({ output: null })])
+  const nare = await fakeNare([ANSWER, result()])
 
   await new NareAgentRunner({ binary: nare.binary }).run({ ...REQUEST, outputSchema: '' })
 
   expect(await nare.argv()).not.toContain('--schema')
+})
+
+test('an explicit exploration channel reaches nare as environment (#87)', async () => {
+  const nare = await fakeNare([ANSWER, result()])
+
+  await new NareAgentRunner({ binary: nare.binary }).run({
+    ...REQUEST,
+    tools: { allowlist: ['observe', 'snapshot'], endpoint: url('sandbox.internal:8080') },
+  })
+
+  const seen = await nare.envSeen()
+  expect(seen.tools).toBe('observe,snapshot')
+  expect(seen.endpoint).toBe(url('sandbox.internal:8080'))
+})
+
+test('a run that named no channel gets none, even an ambient one (#87)', async () => {
+  const nare = await fakeNare([ANSWER, result()])
+
+  await new NareAgentRunner({
+    binary: nare.binary,
+    env: { QARE_EXPLORATION_TOOLS: 'observe', QARE_EXPLORATION_ENDPOINT: url('leak.internal:9090') },
+  }).run(REQUEST)
+
+  const seen = await nare.envSeen()
+  expect(seen.tools).toBeNull()
+  expect(seen.endpoint).toBeNull()
 })
 
 test('a blocked run fails closed', async () => {

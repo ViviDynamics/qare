@@ -87,10 +87,21 @@ export type {
   AgentRunResult,
   AgentRunStatus,
   AgentStopReason,
+  AgentToolChannel,
   AgentUsage,
   NareAgentRunnerOptions,
   ToolPolicy,
 } from './runner.js'
+export {
+  EXPLORATION_TOOLS,
+  callExplorationTool,
+  needsSandboxSplit,
+  sandboxEnvironment,
+  startExplorationServer,
+  untrustedToolResult,
+  ExplorationError,
+} from './explore.js'
+export type { ExplorationPage, ExplorationSource, ExplorationTool } from './explore.js'
 export { IssueCriteriaError, criteriaFromIssue, criteriaFromIssues, criterionIdFor } from './issue-criteria.js'
 export type { IssueCriteriaProblem } from './issue-criteria.js'
 export { linkedIssues } from './linked-issues.js'
