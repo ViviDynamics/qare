@@ -1,4 +1,5 @@
 import { BROWSER_FLOW_DRIVER } from './flow-playwright.js'
+import { normalizeWording } from './criterion-identity.js'
 import { IssueCriteriaError, criteriaFromIssue } from './issue-criteria.js'
 import { integrityOf, serializeLedger, type LedgerEntry } from './ledger.js'
 import { type PlanCriterion } from './plan.js'
@@ -72,7 +73,13 @@ export async function ingestCriteria(
   const duplicates: IngestDuplicate[] = []
   const candidates: PlanCriterionInput[] = []
   for (const [id, candidate] of stated) {
-    const existing = opts.ledger.find((entry) => entry.criterion === id)
+    // Two ways to say "the ledger already carries this": the entry's id is the
+    // wording's hash, the way every pipeline-adopted entry is named, or the
+    // entry's note carries the same words, which covers a rule adopted under a
+    // hand-minted id. Either way the wording is decided, so not proposing.
+    const existing = opts.ledger.find(
+      (entry) => entry.criterion === id || normalizeWording(entry.note ?? '') === normalizeWording(candidate.text),
+    )
     if (existing !== undefined) {
       duplicates.push({ id, text: candidate.text, status: existing.status, sources: candidate.sources })
       continue

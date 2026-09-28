@@ -68,6 +68,19 @@ test('a criterion the ledger already carries is a duplicate, not a proposal', as
   expect(outcome.fingerprint).toBe(integrityOf(ledger))
 })
 
+test('the same wording under a hand-minted id is still a duplicate', async () => {
+  const text = 'the payouts page shows the 1099 notice for a host paid past the annual threshold'
+  const ledger: LedgerEntry[] = [
+    { criterion: 'c-handminted00000000000000000000ff', status: 'active', source: [link('example.test', '/issues/9')], proof: 'command', note: text },
+  ]
+  const outcome = await ingestCriteria([source({ body: `## Acceptance criteria\n\n- [ ] ${text}\n` })], {
+    ledger,
+    planner: planner(planWith([])),
+  })
+  expect(outcome.proposals).toEqual([])
+  expect(outcome.duplicates).toHaveLength(1)
+})
+
 test('every proposal names the issue or pull request that stated it', async () => {
   const outcome = await ingestCriteria(
     [
