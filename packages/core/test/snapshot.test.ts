@@ -90,12 +90,15 @@ test('a quoted attribute value keeps its spaces (#82)', async () => {
   const snapshot = normaliseAriaSnapshot([
     '- main:',
     '  - textbox "Motto" [value="hello world"]',
+    '  - textbox "Motto" [value="say \\"hi\\" now"]',
   ].join('\n'))
 
   const textbox = snapshot.children[0]?.children[0]
   expect(textbox?.value).toBe('hello world')
   // The quoted value is one token, so no bogus state joins the node.
   expect(textbox?.states).toEqual({})
+  // An escaped quote stays inside the value instead of closing it early.
+  expect(snapshot.children[0]?.children[1]?.value).toBe('say "hi" now')
 })
 
 test('siblings that would share one path are stamped with their occurrence (#82)', async () => {

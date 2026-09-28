@@ -87,14 +87,22 @@ function parseAttrLine(line: string, parentPath: string): SnapshotNode {
 /**
  * Attribute groups split on whitespace, except that a double-quoted value is
  * one token whatever it holds: `[value="hello world"]` is the control's value,
- * not a value plus a state (#82).
+ * not a value plus a state (#82). A backslash inside quotes escapes the next
+ * character, so `[value="say \"hi\""]` keeps its inner quotes.
  */
 function splitAttrs(text: string): string[] {
   const tokens: string[] = []
   let token = ''
   let quoted = false
+  let escaped = false
   for (const character of text) {
-    if (character === '"') {
+    if (escaped) {
+      token += character
+      escaped = false
+    } else if (character === '\\' && quoted) {
+      token += character
+      escaped = true
+    } else if (character === '"') {
       quoted = !quoted
       token += character
     } else if (/\s/.test(character) && !quoted) {
