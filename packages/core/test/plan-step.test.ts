@@ -513,6 +513,20 @@ test('a path that escapes with .. is corrected, and one that normalizes back ins
   expect(inside.requests).toHaveLength(1)
 })
 
+test('an absolute path is corrected, not normalized into a declared path (#162)', async () => {
+  const criteria = [
+    { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'secrets', command: 'grep x /plan.json' }] },
+    { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+  ]
+  const doomed = JSON.stringify({ schemaVersion: '1', criteria })
+  const runner = new FakeAgentRunner([completed(doomed), completed(planned())])
+
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('/plan.json is an absolute path')
+})
+
 test('the evidence directory is a forbidden run output with or without an extension (#162)', async () => {
   for (const command of ['ls evidence', 'grep done evidence/streams']) {
     const doomed = JSON.stringify({

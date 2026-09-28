@@ -334,6 +334,8 @@ function undeclaredReference(command: string, declared: string[]): string | unde
     if (token === HARNESS_CLI)
       return `"${HARNESS_CLI}" is this harness's own CLI, and the runner never installs it on its PATH, so the command cannot start`
     if (token.startsWith('http://') || token.startsWith('https://') || token.startsWith('{{')) continue
+    if (token.startsWith('/') || token.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(token))
+      return `${token} is an absolute path, so it does not name an input inside this repository`
     const { segments, escapes } = normalizedSegments(token)
     if (escapes)
       return `${token} climbs outside the repository root with "..", so it is not among the declared run inputs`
