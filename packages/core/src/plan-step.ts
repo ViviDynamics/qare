@@ -213,8 +213,8 @@ function prompt(inputs: PlanInputs, correction?: string): string {
           ...inputs.runInputs.paths.map((path) => `- ${path}`),
           'A declared directory covers the files under it.',
           "The run's own outputs do not exist while a check runs: result.json, judged-result.json,",
-          'comment.md and everything under the evidence directory are written when the run ends, so a',
-          "check that reads one cannot pass, and neither can a command whose executable is not on the",
+          'comment.md, checkrun.json and everything under the evidence directory are written when the',
+          'run ends, so a check that reads one cannot pass, and neither can a command whose executable is not on the',
           "runner's PATH (qare, this harness's own CLI, is not). Plan the check against the declared",
           'run inputs, or mark the criterion unplannable.',
           '',
@@ -327,12 +327,18 @@ function normalizedSegments(token: string): { segments: string[]; escapes: boole
   return { segments, escapes }
 }
 
+/**
+ * The command is one executable followed by arguments: the harness-CLI gap is
+ * about the executable token, while every path rule applies to the arguments.
+ * A "qare" that names a search pattern or a file is harmless (#162).
+ */
 function undeclaredReference(command: string, declared: string[]): string | undefined {
   const covered = (token: string) =>
     declared.some((path) => token === path || token.startsWith(`${path}/`))
-  for (const token of command.split(/\s+/).filter((token) => token !== '')) {
-    if (token === HARNESS_CLI)
-      return `"${HARNESS_CLI}" is this harness's own CLI, and the runner never installs it on its PATH, so the command cannot start`
+  const [executable, ...arguments_] = command.split(/\s+/).filter((token) => token !== '')
+  if (executable === HARNESS_CLI)
+    return `"${HARNESS_CLI}" is this harness's own CLI, and the runner never installs it on its PATH, so the command cannot start`
+  for (const token of arguments_) {
     if (token.startsWith('http://') || token.startsWith('https://') || token.startsWith('{{')) continue
     if (token.startsWith('/') || token.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(token))
       return `${token} is an absolute path, so it does not name an input inside this repository`

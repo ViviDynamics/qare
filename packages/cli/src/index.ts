@@ -340,17 +340,34 @@ function unplannedPlan(criteria: { id: string; text: string }[], reason: string)
 }
 
 /**
- * The paths the diff adds or changes, from each file header's new-path side.
- * Deletions carry no `+++ b/` header, and their subject is genuinely gone, so
- * they are not declared (#162).
+ * The paths the diff adds or changes. A content change carries the new path in
+ * its `+++ b/` header; a rename, a binary file and a mode-only change carry it
+ * in the git header's b/ side or the rename-to line instead. Deleted files are
+ * genuinely gone, so they are not declared (#162).
  */
 function touchedPaths(diff: string): string[] {
   const paths: string[] = []
   for (const chunk of diff.split(/^diff --git /m).slice(1)) {
-    const header = chunk.split('\n').find((line) => line.startsWith('+++ b/'))
-    if (header === undefined) continue
-    const path = header.slice('+++ b/'.length).trim()
-    if (path !== '') paths.push(path)
+    const lines = chunk.split('\n')
+    const added = lines.find((line) => line.startsWith('+++ b/'))
+    if (added !== undefined) {
+      const path = added.slice('+++ b/'.length).trim()
+      if (path !== '') paths.push(path)
+      continue
+    }
+    const renamed = lines.find((line) => line.startsWith('rename to '))
+    if (renamed !== undefined) {
+      const path = renamed.slice('rename to '.length).trim()
+      if (path !== '') paths.push(path)
+      continue
+    }
+    const header = (lines[0] ?? '').match(/ b\/(.+)$/)
+    const binary = lines.some((line) => line.startsWith('Binary files ') || line.startsWith('GIT binary patch'))
+    const modeOnly = lines.some((line) => line.startsWith('old mode '))
+    if ((binary || modeOnly) && header !== null) {
+      const path = (header[1] ?? '').trim()
+      if (path !== '') paths.push(path)
+    }
   }
   return [...new Set(paths)]
 }

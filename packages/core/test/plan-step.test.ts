@@ -398,7 +398,20 @@ test('the planner is told the run contract when run inputs are declared (#162)',
   expect(prompt).toContain('- plan.json')
   expect(prompt).toContain('- .qa')
   expect(prompt).toContain('result.json, judged-result.json')
+  expect(prompt).toContain('checkrun.json')
   expect(prompt).toContain("qare, this harness's own CLI, is not")
+})
+
+test('qare as a search pattern is harmless; only the executable is the harness CLI (#162)', async () => {
+  const criteria = [
+    { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'grep', command: 'grep qare plan.json' }] },
+    { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+  ]
+  const runner = new FakeAgentRunner([completed(JSON.stringify({ schemaVersion: '1', criteria }))])
+
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+
+  expect(runner.requests).toHaveLength(1)
 })
 
 test('the planner is not told a run contract when no run inputs are declared', async () => {
