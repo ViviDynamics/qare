@@ -120,6 +120,11 @@ function exploreChannel(exploration: NonNullable<PlanInputs['exploration']>): Ag
       'the exploration endpoint carries credentials, query or fragment data, and it reaches the model prompt verbatim: ' +
         'the client never speaks userinfo, so nothing may ride the channel URL but where the app is',
     )
+  if (parsed.pathname !== '/')
+    throw new PlanStepError(
+      'the exploration endpoint carries a base path, but the channel serves its tools at the root: ' +
+        `a client that appends the tool name to a base path would call ${parsed.pathname}/observe, which the server refuses`,
+    )
   const allowlist = exploration.tools ?? EXPLORATION_TOOLS
   const unknown = allowlist.filter((tool) => !EXPLORATION_TOOLS.includes(tool as ExplorationTool))
   if (unknown.length > 0)
