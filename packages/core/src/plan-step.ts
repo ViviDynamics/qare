@@ -115,9 +115,9 @@ function exploreChannel(exploration: NonNullable<PlanInputs['exploration']>): Ag
   const parsed = new URL(exploration.endpoint)
   if (parsed.protocol !== 'http:')
     throw new PlanStepError('the exploration endpoint must be an http URL: the channel is served in clear inside the sandbox, and the client does not speak https')
-  if (parsed.username !== '' || parsed.password !== '' || parsed.search !== '')
+  if (parsed.username !== '' || parsed.password !== '' || parsed.search !== '' || parsed.hash !== '')
     throw new PlanStepError(
-      'the exploration endpoint carries credentials or query data, and it reaches the model prompt verbatim: ' +
+      'the exploration endpoint carries credentials, query or fragment data, and it reaches the model prompt verbatim: ' +
         'the client never speaks userinfo, so nothing may ride the channel URL but where the app is',
     )
   const allowlist = exploration.tools ?? EXPLORATION_TOOLS

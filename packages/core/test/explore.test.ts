@@ -263,6 +263,12 @@ test('an exploration channel outside the read-only allowlist is refused before a
   ).rejects.toThrow(PlanStepError)
   expect(queryyed.requests).toHaveLength(0)
 
+  const fragmentted = new FakeAgentRunner([completed(planned())])
+  await expect(
+    planRun(fragmentted, { ...INPUTS, exploration: { endpoint: `${url('sandbox.internal:8080')}/#token` } }),
+  ).rejects.toThrow(PlanStepError)
+  expect(fragmentted.requests).toHaveLength(0)
+
   const secure = new FakeAgentRunner([completed(planned())])
   await expect(
     planRun(secure, { ...INPUTS, exploration: { endpoint: url('sandbox.internal:8443', 'https') } }),
