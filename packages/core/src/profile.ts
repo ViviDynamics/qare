@@ -73,6 +73,41 @@ export interface QaProfile {
   mail?: ProfileMail
   /** Fixture data that must not be published in evidence (#52). */
   redact?: ProfileRedaction
+  /**
+   * The areas of the repository this profile covers (#55): the touched paths
+   * that select it when `.qa/` holds several profiles. A single root profile
+   * covers the whole repository and is selected without them.
+   */
+  paths?: string[]
+}
+
+/**
+ * The profile's criteria areas (#55): repo-relative paths, matched as
+ * prefixes at a path-segment boundary, so `apps/admin` covers `apps/admin/src`
+ * but never `apps/admin-ui`. `.` covers the whole repository. A path that
+ * climbs out of the repository, or that no git diff path can carry, is a
+ * profile mistake and fails the profile when it loads.
+ */
+function parseProfilePaths(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) fail(field, `${field} must be an array of repo-relative paths`)
+  const paths = stringArray(value, field, 'area path')
+  for (const [index, path] of paths.entries()) {
+    const base = `${field}[${index}]`
+    if (path.includes('\\'))
+      fail(base, `area path ${JSON.stringify(path)} must use "/" as its separator; a git diff path never carries a backslash`)
+    if (path.startsWith('/')) fail(base, `area path ${JSON.stringify(path)} must be repo-relative, not absolute`)
+    if (path.endsWith('/')) fail(base, `area path ${JSON.stringify(path)} must not end in "/"`)
+    if (path.split('/').includes('..'))
+      fail(base, `area path ${JSON.stringify(path)} climbs out of the repository (".." is not allowed)`)
+    if (path !== '.' && path.split('/').includes('.'))
+      fail(base, `area path ${JSON.stringify(path)} carries a "." segment, which no git diff path can match (write the path without it)`)
+    if (path !== '.' && path.split('/').some((segment) => segment === ''))
+      fail(base, `area path ${JSON.stringify(path)} carries an empty path segment`)
+    // Evidence is published: a control character in a path is one way to
+    // write something a reader cannot name.
+    if (/[\x00-\x1f\x7f]/.test(path)) fail(base, `area path ${JSON.stringify(path)} carries control characters`)
+  }
+  return paths
 }
 
 export interface ProfileMail {
@@ -108,6 +143,19 @@ export class ProfileMissingError extends ProfileValidationError {
 
 function fail(field: string, message: string): never {
   throw new ProfileValidationError(field, message)
+}
+
+/**
+ * Whether a profile name is one a run cannot publish under (#55). Profile
+ * names become evidence file names (`isolation-<name>.json`,
+ * `values-<name>.json`) and profile directories, wherever the name came from:
+ * a hand-written job, a plan that names its apps, or the directory discovery
+ * prints for `qare profiles`. ":" is reserved for namespace prefixes, and
+ * separators, ".." and control characters would carry the name out of the
+ * evidence directory it is published into.
+ */
+export function isUnsafeProfileName(name: string): boolean {
+  return name.includes(':') || /[/\\]|\.\./.test(name) || /[\x00-\x1f\x7f]/.test(name)
 }
 
 function missing(field: string, message: string): never {
@@ -146,13 +194,33 @@ async function requireFile(filePath: string, field: string, label: string): Prom
   if (!info.isFile()) fail(field, `${label} must be a file, but ${filePath} is not`)
 }
 
-async function requireDirectory(dirPath: string, field: string, label: string): Promise<void> {
-  const info = await stat(dirPath).catch(() => undefined)
-  if (!info) missing(field, `${label} is required but missing at ${dirPath}`)
-  if (!info.isDirectory()) fail(field, `${label} must be a directory, but ${dirPath} is not`)
+/**
+ * The directory a boot profile's fixtures and stubs live in: beside the
+ * profile's own config.yml by default, or the ones the `.qa/` root keeps when
+ * the profile is one of a repository's several and shares them (#55).
+ */
+async function requireBootResource(dir: string, sharedRoot: string | undefined, name: string, field: string, label: string): Promise<void> {
+  if (await isDirectory(join(dir, name))) return
+  if (sharedRoot !== undefined && (await isDirectory(join(sharedRoot, name)))) return
+  missing(
+    field,
+    sharedRoot === undefined
+      ? `${label} is required but missing at ${join(dir, name)}`
+      : `${label} is required but missing: keep it at ${join(dir, name)}, or share the root's at ${join(sharedRoot, name)}`,
+  )
 }
 
-export async function loadProfile(dir: string): Promise<QaProfile> {
+async function isDirectory(dirPath: string): Promise<boolean> {
+  return (await stat(dirPath).catch(() => undefined))?.isDirectory() ?? false
+}
+
+/**
+ * Load the profile at `dir`. A named profile of a monorepo passes
+ * `shared.resources` — its `.qa/` root — so fixtures and stubs the named
+ * profile does not keep of its own can come from the repository's shared
+ * directories (#55).
+ */
+export async function loadProfile(dir: string, shared?: { resources?: string }): Promise<QaProfile> {
   await requireFile(join(dir, 'QA.md'), 'QA.md', 'the .qa/ profile instructions')
 
   const configPath = join(dir, 'config.yml')
@@ -179,8 +247,8 @@ export async function loadProfile(dir: string): Promise<QaProfile> {
   const profile = validateProfileConfig(input)
   // Fixtures and stubs feed the stack qare boots; a target profile has none.
   if (profile.app !== undefined) {
-    await requireDirectory(join(dir, 'fixtures'), 'fixtures', 'the .qa/ fixtures directory')
-    await requireDirectory(join(dir, 'stubs'), 'stubs', 'the .qa/ stubs directory')
+    await requireBootResource(dir, shared?.resources, 'fixtures', 'fixtures', 'the .qa/ fixtures directory')
+    await requireBootResource(dir, shared?.resources, 'stubs', 'stubs', 'the .qa/ stubs directory')
   }
   return profile
 }
@@ -196,6 +264,7 @@ export function validateProfileConfig(config: unknown): QaProfile {
     suites: parseSuites(config.suites),
     ...(config.mail === undefined ? {} : { mail: parseMail(config.mail) }),
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
+    ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
   }
 }
 
@@ -218,6 +287,7 @@ function validateTargetConfig(config: Record<string, unknown>): QaProfile {
     suites: config.suites === undefined ? [] : parseSuites(config.suites),
     ...(config.mail === undefined ? {} : { mail: parseMail(config.mail) }),
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
+    ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
   }
 }
 

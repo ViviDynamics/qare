@@ -126,9 +126,39 @@ function escapeLinkText(text: string): string {
   return text.replace(/[\[\]]/g, ' ')
 }
 
+/**
+ * A profile name is repository content, so it is escaped before it becomes a
+ * heading: a name that carries Markdown or HTML cannot reshape the comment or
+ * inject markup into it (#55).
+ */
+function escapeHeading(text: string): string {
+  return (
+    text
+      // A line break in the name ends the heading early and injects Markdown
+      // below it, so it flattens to a space first.
+      .replaceAll('\r', ' ')
+      .replaceAll('\n', ' ')
+      .replaceAll('\\', '\\\\')
+      .replaceAll('`', '\\`')
+      .replaceAll('|', '\\|')
+      .replaceAll('<', '\\<')
+      .replaceAll('>', '\\>')
+      .replaceAll('[', '\\[')
+      .replaceAll(']', '\\]')
+      .replaceAll('*', '\\*')
+      .replaceAll('_', '\\_')
+      .replaceAll('~', '\\~')
+  )
+}
+
 export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 'relative' }): string {
   const posted = links.kind === 'artifact'
   const cell = posted ? cellSpan : escapeCell
+  const table = (criteria: CriterionResult[]): string[] => [
+    '| criterion | outcome | reason |',
+    '| --- | --- | --- |',
+    ...criteria.map(criterion => `| ${cell(criterion.id)} | ${criterion.outcome} | ${cell(reasonCell(criterion))} |`),
+  ]
   const job = result.job === undefined ? '' : ` (job ${posted ? codeSpan(result.job.id) : result.job.id})`
   const environment = result.environment === undefined
     ? []
@@ -147,11 +177,20 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
     // Where the run executed and what it ran with (issue #91): a host run and
     // an image run are readable side by side.
     ...environment,
-    '| criterion | outcome | reason |',
-    '| --- | --- | --- |',
-    ...result.criteria.map(
-      criterion => `| ${cell(criterion.id)} | ${criterion.outcome} | ${cell(reasonCell(criterion))} |`,
-    ),
+    // Several apps in one run (#55): one section per app, each with the
+    // verdict it earned, because one app failing says nothing about another.
+    ...(result.profiles === undefined
+      ? table(result.criteria)
+      : [
+          `This run checked ${result.profiles.length} apps, each under a profile of its own; each verdict is that app's alone.`,
+          '',
+          ...result.profiles.flatMap(summary => [
+            `### ${escapeHeading(summary.name)} — verdict ${summary.verdict}`,
+            '',
+            ...table(result.criteria.filter(criterion => summary.criteria.includes(criterion.id))),
+            '',
+          ]),
+        ]),
   ]
   if (links.kind === 'relative') {
     const details = detailLinks(result.criteria)

@@ -133,6 +133,76 @@ Agent-written stubs are allowed only when flagged: any check that depends on a
 stub QARE wrote itself is shown as such and cannot count as `proven` without a
 human note.
 
+### Several profiles (monorepo)
+
+A repository that holds several apps keeps one profile per app, in its own
+subdirectory of `.qa/` (#55):
+
+```
+.qa/
+  admin/config.yml   # boots the admin app
+  admin/QA.md
+  storefront/config.yml
+  storefront/QA.md
+  fixtures/          # shared across profiles: no config.yml here
+  stubs/
+```
+
+Discovery finds the single root profile at `.qa/config.yml`, or named profiles
+in the subdirectories that carry a `config.yml`. The two forms do not mix: a
+`.qa/` that holds both is a layout nobody can select from, and loading it fails
+closed. The root form is present exactly when `.qa/config.yml` is, so a root
+profile whose `QA.md` is missing is malformed, not absent, and fails closed
+rather than reading as a named-profile layout. The name `default` is reserved
+for the root form: a `.qa/default/config.yml` is a layout nobody can select
+from, so it fails closed too. A subdirectory without a `config.yml` is not a
+profile; it is fixtures, stubs or learned notes the profiles share. A boot
+profile keeps its `fixtures/` and `stubs/` beside its own `config.yml`, or
+shares the ones the `.qa/` root keeps when it has none of its own.
+
+Selection follows what a change touches: the root profile is always selected,
+and a named profile is selected when a touched path falls under an area its
+`paths` (added to `config.yml` as a list of `apps/admin` style prefixes,
+matched at a segment boundary; the area `.` covers the whole repository), or
+under the profile's own `.qa/<name>/` directory, so editing a boot recipe
+selects the app it boots. A profile that declares no `paths` is selected only
+by its own directory. A change that matches no profile selects none, and the
+caller refuses: nothing was checked, and a verdict would have to say so.
+
+`qare profiles [path] [--diff <path> | --paths a,b]` reports the selection
+before anything runs.
+
+A run may also check several apps in one run: its job carries named profiles,
+one group per app, each with its own criteria. Every app of the group boots
+under an isolation of its own (its own compose project, network and host
+port); a run over several apps always mints each isolation itself, so a
+caller-carried isolation is refused instead of shared, and the run hands
+every app's isolation back, so a caller can stop each stack it booted. The run
+writes one result carrying a verdict per app, and the comment reports them in
+one comment, one section per app. Every app's redaction rules are known before
+any app runs, so a secret any app declares is swept from the whole run's
+evidence, not just its own. Criterion ids must be unique across every group of
+the job, because a criterion's id names its evidence directory. A group that
+cannot run (a profile that is not there, an isolation that will not mint, a
+boot that never came up) reports its criteria unverified with the reason named,
+and the other apps still run.
+
+A plan may name the apps it is planned against: `profiles`, one
+`{ name, path }` per app, whose path is exactly `.qa/<name>` — judge and
+redact re-read every named profile from the .qa root the run publishes, so a
+plan selects its apps from the named directories of that root — and every
+criterion names the app it is checked against. `qare run --plan` builds the
+several-app run from such a plan and takes no `--profile` for it. An app that
+declares a hosted target is checked in its own single run instead: a
+several-app result names no target.
+
+The result of a several-app run carries where each app's profile lives, so
+judge and redact apply the same rules the run did: an inline profile travels
+in the result itself, and a named profile is re-read from the .qa root with
+the fixtures and stubs the root shares, exactly as the run loaded it. A
+profile reference the artifact cannot carry is refused, never silently read
+from the app's name alone.
+
 ### Run-scoped values
 
 Strings in the profile, the seed step, commands, flows and checks may carry

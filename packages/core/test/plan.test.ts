@@ -353,3 +353,23 @@ test('a plan whose actions all sit in the driver\'s declared set loads with that
 
   expect(plan.criteria[0].checks[0]).toMatchObject({ kind: 'flow', name: 'ledger-export' })
 })
+
+test('a criterion names a profile the plan does not carry is refused, because the single-profile run would silently ignore the routing (#55)', () => {
+  const error = planError(() =>
+    parsePlan({
+      schemaVersion: '1',
+      criteria: [
+        {
+          id: 'c1',
+          text: 'admin boots',
+          checks: [{ kind: 'command', name: 'boot', command: 'true' }],
+          profile: 'admin',
+        },
+      ],
+    }),
+  )
+
+  expect(error.field).toBe('criteria[0].profile')
+  expect(error.message).toContain('"admin"')
+  expect(error.message).toContain('the plan names no profiles')
+})

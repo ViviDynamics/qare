@@ -281,7 +281,7 @@ test('runSuiteCheck stays unverified when the suite binary is missing', async ()
   )
 
   expect(result.outcome).toBe('unverified')
-  expect(result.reason).toContain('could not start')
+  expect(result.reason).toContain('the planned command cannot run')
 })
 
 const TOTP_SECRET = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'

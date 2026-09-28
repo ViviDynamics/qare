@@ -55,13 +55,24 @@ function canonicalChecks(checks: PlanCheck[] | undefined): PlanCheck[] {
 
 function canonicalCriterion(criterion: PlanCriterion): PlanCriterion {
   if ('checks' in criterion)
-    return { id: criterion.id, text: criterion.text, checks: canonicalChecks(criterion.checks) }
-  return { id: criterion.id, text: criterion.text, unplannable: criterion.unplannable }
+    return {
+      id: criterion.id,
+      text: criterion.text,
+      ...(criterion.profile === undefined ? {} : { profile: criterion.profile }),
+      checks: canonicalChecks(criterion.checks),
+    }
+  return {
+    id: criterion.id,
+    text: criterion.text,
+    ...(criterion.profile === undefined ? {} : { profile: criterion.profile }),
+    unplannable: criterion.unplannable,
+  }
 }
 
 function canonicalizePlan(plan: Plan): Plan {
   return {
     schemaVersion: plan.schemaVersion,
+    ...(plan.profiles === undefined ? {} : { profiles: plan.profiles }),
     criteria: plan.criteria.map(canonicalCriterion).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : compareCanonically(a, b))),
   }
 }
@@ -69,8 +80,10 @@ function canonicalizePlan(plan: Plan): Plan {
 function fingerprintBody(plan: Plan): unknown {
   return {
     schemaVersion: plan.schemaVersion,
+    ...(plan.profiles === undefined ? {} : { profiles: plan.profiles }),
     criteria: plan.criteria.map(criterion => ({
       id: criterion.id,
+      ...(criterion.profile === undefined ? {} : { profile: criterion.profile }),
       checks: 'checks' in criterion ? canonicalChecks(criterion.checks) : [],
     })).sort(compareCanonically),
   }
@@ -93,6 +106,7 @@ export function comparePlan(current: Plan, locked: Plan): PlanComparison {
 
 function collectFindings(current: Plan, locked: Plan): string[] {
   const findings: string[] = []
+  compareProfiles(current, locked, findings)
   const currentById = new Map(current.criteria.map(criterion => [criterion.id, criterion] as const))
   const lockedById = new Map(locked.criteria.map(criterion => [criterion.id, criterion] as const))
   const ids = [...new Set([...currentById.keys(), ...lockedById.keys()])].sort()
@@ -110,8 +124,30 @@ function collectFindings(current: Plan, locked: Plan): string[] {
     const currentChecks = canonicalChecks('checks' in currentCriterion ? currentCriterion.checks : undefined)
     const lockedChecks = canonicalChecks('checks' in lockedCriterion ? lockedCriterion.checks : undefined)
     compareChecks(id, currentChecks, lockedChecks, findings)
+    if ((currentCriterion.profile ?? null) !== (lockedCriterion.profile ?? null))
+      findings.push(`criterion ${id}: planned against ${currentCriterion.profile ?? 'no app'}, the lock says ${lockedCriterion.profile ?? 'no app'}`)
   }
   return findings
+}
+
+function compareProfiles(current: Plan, locked: Plan, findings: string[]): void {
+  const currentProfiles = current.profiles ?? []
+  const lockedProfiles = locked.profiles ?? []
+  if (currentProfiles === lockedProfiles) return
+  const lockedByName = new Map(lockedProfiles.map(profile => [profile.name, profile] as const))
+  const currentNames = new Set(currentProfiles.map(profile => profile.name))
+  for (const profile of lockedProfiles) {
+    if (!currentNames.has(profile.name)) findings.push(`profile ${profile.name}: app removed from the plan`)
+  }
+  for (const profile of currentProfiles) {
+    const lockedProfile = lockedByName.get(profile.name)
+    if (lockedProfile === undefined) {
+      findings.push(`profile ${profile.name}: app added to the plan`)
+      continue
+    }
+    if (lockedProfile.path !== profile.path)
+      findings.push(`profile ${profile.name}: profile path changed from ${lockedProfile.path} to ${profile.path}`)
+  }
 }
 
 function compareChecks(criterionId: string, current: PlanCheck[], locked: PlanCheck[], findings: string[]): void {

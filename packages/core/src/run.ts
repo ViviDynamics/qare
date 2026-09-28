@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdir, writeFile } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { lstat, mkdir, writeFile } from 'node:fs/promises'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { Artefacts, type ArtefactField } from './artefacts.js'
 import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
 import { bootApp, CANCEL_DOWN_TIMEOUT_MS, killActiveCompose, stopApp, type BootOpts } from './boot.js'
@@ -9,13 +9,13 @@ import { matchesStub, type EgressAttempt } from './egress.js'
 import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
 import { BROWSER_FLOW_DRIVER, makePlaywrightFlowSession } from './flow-playwright.js'
 import { judgeRun, toSideResults } from './judge.js'
-import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck } from './job.js'
+import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck, type JobProfileGroup, type JobProfileRef, type SeveralProfilesJob, type SingleProfileJob } from './job.js'
 import type { FlowActionStep } from './plan.js'
 import { feedRunLedger } from './ledger-feed.js'
 import { extractCode, httpMailbox, mailEvidence, runMailCheck, type ReadMail } from './mailbox.js'
 import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
-import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult } from './result.js'
+import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunResult, type RunVerdict } from './result.js'
 import { mintRunValues, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 60000
@@ -96,14 +96,15 @@ export async function runJob(
     /** Where the run executes; detected from the process when not pinned (issue #91). */
     execution?: ExecutionKind
   } = {},
-): Promise<{ result: RunResult; isolation?: RunIsolation }> {
+): Promise<{ result: RunResult; isolation?: RunIsolation; isolations?: Array<{ name: string; isolation: RunIsolation }> }> {
   // Where this run executes is evidence like the verdict is: recorded in
   // result.json with the version set, so a host run and an image run are
   // readable side by side (issue #91).
   const execution = opts.execution ?? detectExecution()
+  if ('profiles' in job) return runSeveralProfiles(job, opts, execution)
   let profile: QaProfile
   try {
-    profile = await resolveProfile(job)
+    profile = await resolveProfileRef(job.repoPath, job.profile)
   } catch (error) {
     if (!(error instanceof ProfileMissingError)) throw error
     // A repository that has not onboarded is refused, not a caller mistake
@@ -168,16 +169,18 @@ export async function runJob(
   // A run against a target has one side only, and the result says so rather
   // than implying a base comparison it never made (#122).
   const targetNote = profile.target === undefined ? {} : { target: { url: profile.target.url, comparison: 'none' as const } }
-  try {
-    validatePlanValues(job, profile, values, opts.flowDriver ?? BROWSER_FLOW_DRIVER)
-  } catch (error) {
-    if (!(error instanceof JobValidationError)) throw error
-    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, error.message, targetNote, isolation, execution)
-  }
   // The seeded second-factor secret and any backup code never reach the
   // evidence either: they sweep alongside the profile's own rules (#64).
+  // The rules are built before the plan is validated, so a refusal that
+  // publishes minted values still sweeps them with the profile's own (#55).
   const login = profile.app?.login
   const rules = [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value])]
+  try {
+    validatePlanValues(job.criteria, profile, values, opts.flowDriver ?? BROWSER_FLOW_DRIVER)
+  } catch (error) {
+    if (!(error instanceof JobValidationError)) throw error
+    return refuseRun(job, opts, rules, error.message, targetNote, isolation, execution)
+  }
   if (isolation !== undefined) {
     await mkdir(job.evidenceDir, { recursive: true })
     // Evidence is published: this names the compose project a leftover stack
@@ -239,9 +242,261 @@ export async function runJob(
   }
 }
 
+/**
+ * A several-profile job (#55): one run boots and checks every app the job
+ * names, one after another, and writes one result that carries a verdict per
+ * app, in the order the job named them. Each group runs exactly as a
+ * single-profile run does, under an isolation of its own — its own compose
+ * project, network and host port — so one app's stack is never another's, and
+ * every project the run boots is one the reap sweep finds.
+ *
+ * A group that cannot run — a profile that is not there, an isolation that
+ * will not mint, a plan value the harness does not mint, a boot that never
+ * came up — reports its criteria unverified with the reason named, and the
+ * other apps still run: the comment says what happened per app, and the
+ * verdict judges the whole from every criterion it saw.
+ */
+interface ProfileGroupOutcome {
+  criteria: CriterionResult[]
+  verdict: RunVerdict
+  values?: RunValues
+  isolation?: RunIsolation
+  egressRefused?: boolean
+}
+
+async function runSeveralProfiles(
+  job: SeveralProfilesJob,
+  opts: BootOpts & {
+    ledgerFeed?: { dir: string }
+    readMail?: ReadMail
+    flowSession?: FlowSessionFactory
+    flowDriver?: FlowDriverCapabilities
+  },
+  execution: ExecutionKind = detectExecution(),
+): Promise<{ result: RunResult; isolation?: RunIsolation; isolations?: Array<{ name: string; isolation: RunIsolation }> }> {
+  const groups = job.profiles
+  // Every profile is resolved before any other refusal is decided, and before
+  // any app runs: a malformed profile fails closed wherever the run stops, so
+  // a refusal about the caller's isolation cannot carry it past validation,
+  // and evidence is swept with the union of every app's rules (#55).
+  const planned: Array<{ group: JobProfileGroup; profile?: QaProfile; refusal?: string }> = []
+  for (const group of groups) {
+    try {
+      planned.push({ group, profile: await resolveProfileRef(job.repoPath, group.profile) })
+    } catch (error) {
+      if (!(error instanceof ProfileMissingError)) throw error
+      // Absent is refusal — for this app alone, so the other apps still run (#107).
+      planned.push({
+        group,
+        refusal: `this repository has no usable .qa/ profile for ${group.name} yet, so qare will not claim to have checked it: ${error.message}`,
+      })
+    }
+  }
+  const rules: RedactionRule[] = [...BUILTIN_REDACTION_RULES]
+  for (const entry of planned) {
+    const login = entry.profile?.app?.login
+    rules.push(...redactionRules(entry.profile?.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value]))
+  }
+  // A caller-carried isolation belongs to a single-profile run: one isolation
+  // cannot be several apps' own, so a several-profile run that was handed one
+  // refuses instead of quietly sharing it (#55).
+  if (opts.isolation !== undefined) {
+    const criteria = groups.flatMap((group) =>
+      group.criteria.map((criterion) => ({
+        id: criterion.id,
+        outcome: 'unverified' as const,
+        reason: `the run was given an isolation of its own, but a run over several apps gives each app an isolation of its own, so nothing can attach to the one the caller carried; check ${group.name} on its own to reuse an isolation`,
+      })),
+    )
+    const finished = await finishRun(
+      job,
+      {
+        schemaVersion: RESULT_SCHEMA_VERSION,
+        verdict: 'refused',
+        criteria,
+        profiles: groups.map((group) => ({
+          name: group.name,
+          verdict: 'refused' as const,
+          criteria: group.criteria.map((criterion) => criterion.id),
+          profile: group.profile,
+        })),
+      },
+      BUILTIN_REDACTION_RULES,
+      undefined,
+      execution,
+    )
+    await feedIfOptedIn(opts, job, finished.result)
+    return { result: finished.result }
+  }
+  // Flow masks are swept the same way, before any app runs: a screenshot one
+  // app captures must carry every app's mask regions, or one app's pixels can
+  // publish another app's secret (#55).
+  const masks = [...new Set(planned.flatMap((entry) => entry.profile?.redact?.masks ?? []))]
+  // A several-app result names no target: the result's target metadata says a
+  // run against a target has one side only. An app that declares a hosted
+  // target is refused for this run, and the other apps still run, so the run
+  // never silently drops which URL it was checked against (#55).
+  for (const [index, entry] of planned.entries()) {
+    if (entry.profile?.target === undefined) continue
+    planned[index] = {
+      group: entry.group,
+      refusal:
+        'the profile declares a hosted target, and a run over several apps reports no target of its own; check this app in its own single run so the result can name what it was checked against',
+    }
+  }
+  const criteria: CriterionResult[] = []
+  const profiles: Array<{ name: string; verdict: RunVerdict; criteria: string[]; profile: JobProfileRef }> = []
+  const recorded: Array<{ name: string; values: RunValues }> = []
+  const isolations: Array<{ name: string; isolation: RunIsolation }> = []
+  let egressRefused = false
+  // Every started group's cancellation disposer is collected here and released
+  // only when the whole run is over, so a SIGINT at any point of the run tears
+  // down every app the run has booted (#55).
+  const cleanups: Array<() => void> = []
+  try {
+    for (const entry of planned) {
+      const outcome: ProfileGroupOutcome =
+        entry.refusal !== undefined
+          ? { criteria: entry.group.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified' as const, reason: entry.refusal! })), verdict: 'refused' }
+          : await runProfileGroup(job, entry.group, entry.profile!, rules, masks, opts, cleanups, execution)
+      criteria.push(...outcome.criteria)
+      profiles.push({ name: entry.group.name, verdict: outcome.verdict, criteria: outcome.criteria.map((criterion) => criterion.id), profile: entry.group.profile })
+      if (outcome.values !== undefined) recorded.push({ name: entry.group.name, values: outcome.values })
+      if (outcome.isolation !== undefined) isolations.push({ name: entry.group.name, isolation: outcome.isolation })
+      if (outcome.egressRefused === true) egressRefused = true
+    }
+  } finally {
+    for (const cleanup of cleanups) cleanup()
+  }
+  // The minted values of each app are written through the same redaction sweep
+  // as everything else the run publishes, with every app's rules applied: the
+  // evidence says which app ran under which project, and nothing else (#68).
+  for (const entry of recorded) {
+    await mkdir(job.evidenceDir, { recursive: true })
+    await writeFile(
+      join(job.evidenceDir, `values-${entry.name}.json`),
+      `${redactText(JSON.stringify(entry.values, null, 2), rules)}\n`,
+    )
+  }
+  const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
+  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, profiles }, rules, undefined, execution)
+  await feedIfOptedIn(opts, job, finished.result)
+  return { result: finished.result, ...(isolations.length > 0 ? { isolations } : {}) }
+}
+
+async function runProfileGroup(
+  job: SeveralProfilesJob,
+  group: JobProfileGroup,
+  profile: QaProfile,
+  rules: RedactionRule[],
+  masks: string[],
+  opts: BootOpts & {
+    ledgerFeed?: { dir: string }
+    readMail?: ReadMail
+    flowSession?: FlowSessionFactory
+    flowDriver?: FlowDriverCapabilities
+  },
+  cleanups: Array<() => void>,
+  execution: ExecutionKind = detectExecution(),
+): Promise<ProfileGroupOutcome> {
+  const unverifiedAll = (reason: string): CriterionResult[] =>
+    group.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified' as const, reason }))
+  // One compose project per app (#53), minted before anything boots, so two
+  // apps of one run never share a stack, a network, or a port. A caller-carried
+  // isolation is refused before any app runs, so none is reused here.
+  let isolation: RunIsolation | undefined
+  if (profile.app !== undefined) {
+    try {
+      isolation = await isolateRun()
+    } catch (error) {
+      return { criteria: unverifiedAll(`the harness could not isolate the run for ${group.name}, so it will not boot an app: ${error instanceof Error ? error.message : String(error)}`), verdict: 'refused' }
+    }
+    if (!hasUsablePort(isolation.port)) {
+      return {
+        criteria: unverifiedAll(`the run isolation for ${group.name} carries no usable app port, so two runs could publish their apps on the same host port; a run that boots an app needs an isolation with a host port in 1..65535 (isolateRun)`),
+        verdict: 'refused',
+      }
+    }
+    if (!hasMintedProject(isolation)) {
+      return {
+        criteria: unverifiedAll(`the run isolation for ${group.name} does not carry a usable project: the compose project is qare-<run id>, so a leftover stack is always findable by reap and a project qare never minted is never touched`),
+        verdict: 'refused',
+      }
+    }
+  }
+  // Run values are minted per app: the address a mail check waits for, the
+  // port an app is published on, and the target it points at name that app's
+  // run, while `{{run.id}}` names the run that booted it (#68).
+  const values = mintRunValues({
+    ...(profile.target === undefined ? {} : { targetUrl: profile.target.url }),
+    ...(isolation === undefined ? {} : { runId: isolation.runId }),
+    ...(isolation?.port === undefined ? {} : { appPort: String(isolation.port) }),
+  })
+  // One isolation file per app, written before validation, so a refusal still
+  // names the compose project a leftover stack runs under — the caller holds
+  // the isolation either way, which is what an orchestrator needs to reap it
+  // (#53, #55).
+  if (isolation !== undefined) {
+    await mkdir(job.evidenceDir, { recursive: true })
+    await writeFile(
+      join(job.evidenceDir, `isolation-${group.name}.json`),
+      `${JSON.stringify({ run_id: isolation.runId, project: isolation.project, started_at: isolation.startedAt, ...(isolation.port === undefined ? {} : { port: isolation.port }) }, null, 2)}\n`,
+    )
+  }
+  try {
+    validatePlanValues(group.criteria, profile, values, opts.flowDriver ?? BROWSER_FLOW_DRIVER)
+  } catch (error) {
+    if (!(error instanceof JobValidationError)) throw error
+    // The rules sweep the values the refusal publishes: they are the union of
+    // every app's, built before any app ran (#55).
+    return { criteria: unverifiedAll(error.message), verdict: 'refused', values, ...(isolation === undefined ? {} : { isolation }) }
+  }
+  const login = profile.app?.login
+  const bootedProfile =
+    isolation === undefined || profile.app === undefined
+      ? profile
+      : { ...profile, app: { ...profile.app, health: { ...profile.app.health, http: isolatedHealthUrl(substituteValues(profile.app.health.http, values), isolation.port) } } }
+  const cancelCleanup = isolation === undefined ? undefined : installCancelCleanup(bootedProfile, { ...opts, isolation })
+  try {
+    const boot = await bootApp(bootedProfile, { ...opts, isolation })
+    if (boot.kind === 'blocked') {
+      return {
+        criteria: unverifiedAll(boot.reason ?? 'boot did not come up'),
+        verdict: 'blocked',
+        values,
+        ...(isolation === undefined ? {} : { isolation }),
+      }
+    }
+    const criteria: CriterionResult[] = []
+    const mail = {
+      inbox: profile.mail?.inbox,
+      readMail: opts.readMail ?? (profile.mail?.inbox === undefined ? undefined : httpMailbox(profile.mail.inbox)),
+    }
+    // Single-use artefacts are a per-run ledger; per app, the ledger starts
+    // empty, so one app's checks cannot spend another app's artefacts (#69).
+    const artefacts = new Artefacts()
+    const target = profile.target === undefined ? undefined : targetContext(profile.target)
+    const totp =
+      login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
+    // The masks are the union of every app's, built before any app ran, so
+    // one app's screenshots cannot publish another app's secret region (#55).
+    const flow = { session: opts.flowSession, masks, suites: profile.suites, target, totp }
+    for (const criterion of group.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow, execution))
+    const egressRefused = target !== undefined && target.undeclared.length > 0
+    const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
+    return { criteria, verdict, values, ...(isolation === undefined ? {} : { isolation }), egressRefused }
+  } finally {
+    // The disposer stays installed until the whole several-app run ends, not
+    // just this group: the earlier apps' stacks are still up while a later
+    // group runs, so a SIGINT mid-run must tear down every started app, not
+    // only the one in flight (#55).
+    if (cancelCleanup !== undefined) cleanups.push(cancelCleanup)
+  }
+}
+
 /** Refuse the whole run without booting: every criterion is reported unverified, naming the gap. */
 async function refuseRun(
-  job: Job,
+  job: SingleProfileJob,
   opts: BootOpts & { ledgerFeed?: { dir: string } },
   rules: readonly RedactionRule[],
   reason: string,
@@ -323,7 +578,7 @@ export function installCancelCleanup(profile: QaProfile, opts: BootOpts): () => 
  * same way: a flow naming an action the driver lacks refuses the run before
  * anything boots, naming the action and the driver (#70).
  */
-function validatePlanValues(job: Job, profile: QaProfile, values: RunValues, flowDriver: FlowDriverCapabilities): void {
+function validatePlanValues(criteria: JobCriterion[], profile: QaProfile, values: RunValues, flowDriver: FlowDriverCapabilities): void {
   if (profile.app !== undefined) {
     validateValueReferences(profile.app.seed.command, values, 'app.seed.command')
     // The health URL may name the port the run publishes the app on (#53).
@@ -333,7 +588,7 @@ function validatePlanValues(job: Job, profile: QaProfile, values: RunValues, flo
   // artefact from a mail check that has already waited for its message (#69),
   // and only for the fields that check actually exposes (#64).
   const mailChecks = new Map<string, { count: number; code: boolean }>()
-  for (const [criterionIndex, criterion] of job.criteria.entries()) {
+  for (const [criterionIndex, criterion] of criteria.entries()) {
     for (const [checkIndex, check] of (criterion.checks ?? []).entries()) {
       const base = `criteria[${criterionIndex}].checks[${checkIndex}]`
       if (check.kind === 'mail') {
@@ -431,9 +686,26 @@ async function feedIfOptedIn(
   )
 }
 
-async function resolveProfile(job: Job) {
-  if ('inline' in job.profile) return validateProfileConfig(job.profile.inline)
-  return loadProfile(resolve(job.repoPath, job.profile.path))
+async function resolveProfileRef(repoPath: string, ref: JobProfileRef): Promise<QaProfile> {
+  if ('inline' in ref) return validateProfileConfig(ref.inline)
+  const dir = resolve(repoPath, ref.path)
+  // A profile that lives directly in .qa/ shares the root's fixtures and
+  // stubs when it keeps none of its own, exactly as discovery loads it (#55).
+  const qaDir = resolve(repoPath, '.qa')
+  const shared = dirname(dir) === qaDir ? { resources: qaDir } : undefined
+  // The two layouts are mutually exclusive wherever they are read, not only
+  // at discovery (#55): a named profile loaded from a repository whose .qa
+  // root also carries a config.yml is a layout nobody can select from, so the
+  // run refuses instead of reading whichever one it happens to find.
+  if (dirname(dir) === qaDir && (await exists(join(qaDir, 'config.yml'))) && (await exists(join(dir, 'config.yml'))))
+    throw new Error(
+      `either one profile at ${qaDir}, or named profiles in its subdirectories, not both; the job names ${ref.path}, and the root form at ${join(qaDir, 'config.yml')} cannot be read alongside it`,
+    )
+  return loadProfile(dir, shared)
+}
+
+function exists(path: string): Promise<boolean> {
+  return lstat(path).then(() => true, () => false)
 }
 
 async function finishRun(
@@ -1131,7 +1403,10 @@ export function runCommandCheck(
       else stderrTruncated = true
     })
     child.on('error', (error) => {
-      settle({ status: 'unverified', reason: `check could not start: ${String(error)}`, stdout, stderr })
+      // A spawn failure is a binary the plan named that this host does not
+      // have: nothing ran, so nothing about the change was tested, and the
+      // reason names the same planning gap the shell guard does (#64).
+      settle({ status: 'unverified', reason: `the planned command cannot run: ${String(error)}`, stdout, stderr })
     })
     child.on('close', (code) => {
       if (timedOut)

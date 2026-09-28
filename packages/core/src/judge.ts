@@ -357,6 +357,16 @@ export function judgedResult(
   evidenceById: Map<string, string[]>,
 ): RunResult {
   const executed = new Map(loaded.criteria.map((criterion) => [criterion.id, criterion]))
+  // Judging can only downgrade a criterion, so an app summary computed at run
+  // time can go stale: it is recomputed from the final criteria of its subset
+  // — the job's order and names kept — or the per-app heading would contradict
+  // the table and the judged verdict (#55).
+  const waived = new Set((loaded.waived ?? []).map((waiver) => waiver.criterionId))
+  const profiles = loaded.profiles?.map((profile) => {
+    const ids = new Set(profile.criteria)
+    const subset = criteria.filter((criterion) => ids.has(criterion.criterionId))
+    return { ...profile, verdict: judgedProfileVerdict(profile.verdict, subset, waived) }
+  })
   return {
     schemaVersion: RESULT_SCHEMA_VERSION,
     verdict,
@@ -389,7 +399,31 @@ export function judgedResult(
     // Where the run executed is evidence like the verdict is, so judging it
     // again does not erase it (issue #91).
     ...(loaded.environment === undefined ? {} : { environment: loaded.environment }),
+    // The per-app report survives judging and replay, or `qare judge` and the
+    // action would render the single-table comment over a several-app run (#55).
+    ...(profiles === undefined ? {} : { profiles }),
   }
+}
+
+/**
+ * The verdict an app's summary carries after judging. A criterion the judge
+ * failed fails the app; a `passed` summary whose criteria are no longer all
+ * proven is downgraded exactly as the whole run's verdict is; a refusal, a
+ * block or a waiver the run recorded stays, because judging did not change
+ * the facts those came from.
+ */
+function judgedProfileVerdict(
+  original: RunVerdict,
+  subset: CriterionVerdict[],
+  waived: Set<string>,
+): RunVerdict {
+  if (subset.some((criterion) => criterion.outcome === 'failed')) return 'failed'
+  if (original === 'passed') {
+    const unverified = subset.filter((criterion) => criterion.outcome === 'unverified')
+    if (unverified.length === 0) return 'passed'
+    return unverified.every((criterion) => waived.has(criterion.criterionId)) ? 'waived' : 'blocked'
+  }
+  return original
 }
 
 /** The evidence a criterion result names; none for one that carries none. */

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
@@ -38,12 +39,16 @@ import {
   reapProjects,
   runDoctor,
   runJob,
+  discoverProfiles,
+  selectProfiles,
+  touchedPathsFromDiff,
   VERSION,
 } from '@qare/core'
 import type {
   BootOpts,
   FlowDriverCapabilities,
   Job,
+  JobProfileRef,
   LedgerEntry,
   Plan,
   QaProfile,
@@ -76,11 +81,12 @@ export async function main(
   if (argv[0] === 'replay') return replayCommand(argv.slice(1), out, err)
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
+  if (argv[0] === 'profiles') return profilesCommand(argv.slice(1), out, err)
   if (argv[0] === 'doctor') return doctorCommand(argv.slice(1), out, err)
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -235,7 +241,13 @@ async function redactCommand(argv: string[], out: Writer, err: Writer): Promise<
       if (arg !== '--evidence' && arg !== '--profile') throw new Error(`qare redact does not take ${arg}`)
     const evidence = flag(argv, '--evidence')
     if (evidence === undefined) throw new Error('qare redact requires --evidence <dir>')
-    const rules = await redactionRulesFor(flag(argv, '--profile'), out)
+    // The result, when the run left one, says which apps ran, and every app's
+    // rules sweep the directory they all published into (#55).
+    const resultPath = join(resolve(evidence), 'result.json')
+    const profiles = existsSync(resultPath)
+      ? loadResult(await readFile(resultPath, 'utf8')).profiles
+      : undefined
+    const rules = await redactionRulesForRun(flag(argv, '--profile'), profiles, out)
     const report = await redactEvidenceDir(resolve(evidence), rules)
     for (const name of report.changed) out.write(`redacted ${name}\n`)
     out.write(
@@ -292,6 +304,71 @@ async function redactionRulesFor(profileDir: string | undefined, out: Writer): P
     out.write(`no usable .qa/ profile at ${profileDir}, so only the built-in redaction rules apply\n`)
     return BUILTIN_REDACTION_RULES
   }
+}
+
+/**
+ * The rules a result is judged or redacted with, given the profiles the result
+ * says it ran (#55). One app is the path above: the rules its --profile names
+ * plus the built-in ones. A result of several apps names every app it checked,
+ * and each app's rules apply: the verifier reads the diff, and the diff can
+ * carry fixture values any app's rules exist for. Every named app's profile is
+ * read from under the .qa root the --profile gives, so one that cannot be read
+ * fails the command: redacting with fewer rules than the run asks for would
+ * publish what it names.
+ */
+async function redactionRulesForRun(
+  profileDir: string | undefined,
+  profiles: readonly { name: string; profile?: JobProfileRef }[] | undefined,
+  out: Writer,
+): Promise<readonly RedactionRule[]> {
+  if (profiles === undefined) return redactionRulesFor(profileDir, out)
+  if (profileDir === undefined)
+    throw new Error(
+      'the result names the apps it ran, and judge redacts with the rules of every app it checked; pass --profile <dir>, the .qa root the run resolved them from',
+    )
+  const rules = [...BUILTIN_REDACTION_RULES]
+  try {
+    // A monorepo's .qa root carries no profile of its own: the named apps hold
+    // the rules, and the loop below reads each of them.
+    rules.push(...(await rulesOf(resolve(profileDir))))
+  } catch (error) {
+    if (!(error instanceof ProfileMissingError)) throw error
+  }
+  for (const entry of profiles) {
+    try {
+      // An inline profile travels in the result itself: there is no directory
+      // to read, so its rules are applied from the result alone.
+      if (entry.profile !== undefined && 'inline' in entry.profile) {
+        rules.push(...profileRules(entry.profile.inline))
+        continue
+      }
+      // A path the qa-profile artifact cannot carry is refused rather than
+      // silently read from the app's name alone (#55).
+      if (entry.profile !== undefined && 'path' in entry.profile && entry.profile.path !== `.qa/${entry.name}`)
+        throw new Error(
+          `the result names profile path ${JSON.stringify(entry.profile.path)} for app ${JSON.stringify(entry.name)}, which the qa-profile artifact cannot carry: judge and redact read every named profile from the .qa root, so a run keeps them at .qa/${entry.name}`,
+        )
+      // A named profile shares the .qa root's fixtures and stubs, exactly as
+      // the run that produced the result loaded it (issue #55).
+      rules.push(...(await rulesOf(resolve(join(profileDir, entry.name)), resolve(profileDir))))
+    } catch (error) {
+      if (!(error instanceof ProfileMissingError)) throw error
+      throw new Error(
+        `no usable profile for app ${JSON.stringify(entry.name)} at ${join(profileDir, entry.name)}: judge redacts with the rules of every app the result checked, and this app's rules cannot be read`,
+      )
+    }
+  }
+  return rules
+}
+
+function profileRules(profile: QaProfile): readonly RedactionRule[] {
+  const login = profile.app?.login
+  return [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value])]
+}
+
+async function rulesOf(profileDir: string, resources?: string): Promise<readonly RedactionRule[]> {
+  const profile = await loadProfile(profileDir, resources === undefined ? undefined : { resources })
+  return profileRules(profile)
 }
 
 /**
@@ -559,6 +636,85 @@ async function doctorCommand(argv: string[], out: Writer, err: Writer): Promise<
   }
 }
 
+/**
+ * `qare profiles`: say which `.qa/` profiles a run would select, before any
+ * check runs. Reads the same selection a several-profile run does (#55): all
+ * profiles when no diff or paths are given, the profiles whose areas (or own
+ * directory) a change touches otherwise. A repository without `.qa/` is not
+ * an error here — the report says so; a malformed profile is (#107).
+ */
+async function profilesCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
+  try {
+    let path: string | undefined
+    let outSpec: string | undefined
+    let qaDir: string | undefined
+    let diffSpec: string | undefined
+    let paths: string[] | undefined
+    for (let i = 0; i < argv.length; i += 1) {
+      const arg = argv[i]
+      if (arg === '--out') {
+        outSpec = argv[i + 1]
+        if (outSpec === undefined) throw new Error('qare profiles requires a file value after --out')
+        i += 1
+        continue
+      }
+      if (arg === '--diff') {
+        diffSpec = argv[i + 1]
+        if (diffSpec === undefined) throw new Error('qare profiles requires a file value after --diff')
+        i += 1
+        continue
+      }
+      if (arg === '--paths') {
+        const spec = argv[i + 1]
+        if (spec === undefined) throw new Error('qare profiles requires a comma-separated list after --paths')
+        paths = spec.split(',').filter(entry => entry !== '')
+        i += 1
+        continue
+      }
+      if (arg === '--qa') {
+        qaDir = argv[i + 1]
+        if (qaDir === undefined) throw new Error('qare profiles requires a directory value after --qa')
+        i += 1
+        continue
+      }
+      if (arg === '--help' || arg === '-h') {
+        out.write('qare profiles [path] [--diff <path> | --paths a,b] [--out <file>]\n  report which .qa/ profiles a run would select; never runs checks\n')
+        return 0
+      }
+      if (arg!.startsWith('-')) throw new Error(`unknown profiles flag ${JSON.stringify(arg)}`)
+      if (path !== undefined) throw new Error('qare profiles accepts at most one path argument')
+      path = arg
+    }
+    if (diffSpec !== undefined && paths !== undefined)
+      throw new Error('qare profiles takes --diff or --paths, not both: one change selects profiles one way')
+    const repoPath = path === undefined ? process.cwd() : resolve(path)
+    const qa = resolve(qaDir ?? join(repoPath, '.qa'))
+    const all = await discoverProfiles(qa)
+    // Without a diff or paths this reports every profile the repository
+    // holds; with one, it reports the profiles a change touching those
+    // paths would run (#55).
+    const selected =
+      diffSpec === undefined && paths === undefined
+        ? all
+        : selectProfiles(all, diffSpec !== undefined ? touchedPathsFromDiff(await readFile(resolve(diffSpec), 'utf8')) : (paths ?? []))
+    const lines =
+      selected.length === 0
+        ? ['no .qa/ profile matches what this change touches']
+        : selected.map(profile => `${profile.name}\t${profile.dir}`)
+    const report = `${lines.join('\n')}\n`
+    out.write(report)
+    if (outSpec !== undefined) {
+      await mkdir(dirname(outSpec), { recursive: true })
+      await writeFile(outSpec, report, 'utf8')
+      out.write(`report ${outSpec}\n`)
+    }
+    return 0
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 4
+  }
+}
+
 async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
   try {
     const resultFlag = argv.indexOf('--result')
@@ -578,13 +734,15 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     const planPath = flag(argv, '--plan')
     const diffPath = flag(argv, '--diff')
     const flowActions = flowActionKinds(flag(argv, '--flow-actions'))
-    // Everything judge writes is published, and the verifier's reasons are
-    // model text about evidence and a diff that can carry fixture data.
-    const rules = await redactionRulesFor(flag(argv, '--profile'), out)
 
     const resultPath = resolve(resultSpec)
     const outDir = outDirSpec === undefined ? dirname(resultPath) : resolve(outDirSpec)
     const loaded = loadResult(await readFile(resultPath, 'utf8'))
+    // Everything judge writes is published, and the verifier's reasons are
+    // model text about evidence and a diff that can carry fixture data. The
+    // rules are read once the result is: a result of several apps is swept
+    // with the rules of every app it checked (#55).
+    const rules = await redactionRulesForRun(flag(argv, '--profile'), loaded.profiles, out)
     // Nothing ran on a refused run, so there is no evidence for the verifier
     // to read and a model call would be spent on nothing.
     const verify = runnerSpec === 'nare' && loaded.verdict !== 'refused'
@@ -827,18 +985,27 @@ async function runCommand(
     if (planSpec !== undefined) {
       // A plan is the same wherever it runs; these are the facts about this
       // run, and they come from the caller rather than from the model.
-      const missing = ['--id', '--repo', '--base', '--head', '--profile', '--evidence'].filter(
+      const missing = ['--id', '--repo', '--base', '--head', '--evidence'].filter(
         (name) => flag(argv, name) === undefined,
       )
       if (missing.length > 0)
         throw new Error(`qare run --plan also requires ${missing.join(', ')}`)
       const plan = loadPlan(await readFile(resolve(planSpec), 'utf8'), [], BROWSER_FLOW_DRIVER)
+      // A plan that names its profiles carries them (repo-relative), so the
+      // single-profile flag has nothing to attach to (#55).
+      const singleProfile = flag(argv, '--profile')
+      if (singleProfile !== undefined && plan.profiles !== undefined)
+        throw new Error(
+          'this plan already names the profiles it is planned against; qare run --plan takes no --profile',
+        )
+      if (singleProfile === undefined && plan.profiles === undefined)
+        throw new Error('qare run --plan also requires --profile')
       const built = jobFromPlan(plan, {
         id: flag(argv, '--id') as string,
         repoPath: resolve(flag(argv, '--repo') as string),
         baseRef: flag(argv, '--base') as string,
         headRef: flag(argv, '--head') as string,
-        profile: { path: resolve(flag(argv, '--profile') as string) },
+        ...(singleProfile === undefined ? {} : { profile: { path: resolve(singleProfile) } }),
         evidenceDir: resolve(flag(argv, '--evidence') as string),
         ...(flag(argv, '--post') === undefined ? {} : { post: flag(argv, '--post') as string }),
       })

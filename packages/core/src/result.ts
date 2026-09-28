@@ -1,4 +1,6 @@
 import type { RunEnvironment } from './environment.js'
+import { parseProfileRef, type JobProfileRef } from './job.js'
+import { isUnsafeProfileName } from './profile.js'
 
 export const RESULT_SCHEMA_VERSION = '1'
 
@@ -48,6 +50,16 @@ export interface RunResult {
   target?: RunTarget
   /** Where and with which versions this run executed (issue #91). */
   environment?: RunEnvironment
+  /**
+   * The profiles a several-profile run checked, in the order the job named
+   * them (#55): one verdict per app, and the criterion ids that belong to it,
+   * so a reader can see what each app was asked and which app a criterion
+   * checked. Each entry carries the profile reference the job checked — the
+   * inline profile itself, or the path under the .qa root — because judge and
+   * redact re-read the rules from the result and the .qa artifact alone.
+   * Absent when the run checked one profile.
+   */
+  profiles?: Array<{ name: string; verdict: RunVerdict; criteria: string[]; profile?: JobProfileRef }>
 }
 
 const CRITERION_OUTCOMES: CriterionOutcome[] = ['proven', 'failed', 'unverified']
@@ -130,6 +142,7 @@ export function parseResult(input: unknown): RunResult {
   const waived = parseWaived(input.waived)
   const target = parseTarget(input.target)
   const environment = parseEnvironment(input.environment)
+  const profiles = parseProfiles(input.profiles)
 
   return {
     schemaVersion,
@@ -139,6 +152,7 @@ export function parseResult(input: unknown): RunResult {
     ...(waived === undefined ? {} : { waived }),
     ...(target === undefined ? {} : { target }),
     ...(environment === undefined ? {} : { environment }),
+    ...(profiles === undefined ? {} : { profiles }),
   }
 }
 
@@ -163,6 +177,38 @@ function parseEnvironment(value: unknown): RunEnvironment | undefined {
         : fail('environment.versions.nareContract', 'nare contract must be a number'),
     },
   }
+}
+
+function parseProfiles(
+  value: unknown,
+): Array<{ name: string; verdict: RunVerdict; criteria: string[]; profile?: JobProfileRef }> | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value))
+    fail('profiles', 'result.json profiles must be an array of { name, verdict, criteria, profile }')
+  if (value.length === 0) fail('profiles', 'result.json profiles must not be empty when present')
+  return value.map((entry, index) => {
+    if (!isRecord(entry)) fail(`profiles[${index}]`, 'profile entry must be a JSON object')
+    const name = nonEmptyString(entry.name, `profiles[${index}].name`, 'profile name')
+    if (isUnsafeProfileName(name))
+      fail(`profiles[${index}].name`, `profile name ${JSON.stringify(name)} must not contain path separators, ".." or control characters; judge and redact read every named profile from the .qa root the run publishes, so a crafted name cannot point outside it`)
+    const verdict = entry.verdict
+    if (typeof verdict !== 'string' || !RUN_VERDICTS.includes(verdict as RunVerdict))
+      fail(`profiles[${index}].verdict`, `unknown verdict ${JSON.stringify(verdict)} (expected "passed", "failed", "blocked", "refused" or "waived")`)
+    if (!Array.isArray(entry.criteria))
+      fail(`profiles[${index}].criteria`, 'profile entry must carry the criterion ids the profile checked')
+    // The profile reference the run checked: judge and redact re-read the
+    // rules from the result and the .qa artifact alone, so the reference is
+    // carried here rather than reconstructed from the app's name alone.
+    const profile = entry.profile === undefined ? undefined : parseProfileRef(entry.profile)
+    return {
+      name,
+      verdict: verdict as RunVerdict,
+      criteria: entry.criteria.map((criterion, criterionIndex) =>
+        nonEmptyString(criterion, `profiles[${index}].criteria[${criterionIndex}]`, 'criterion id'),
+      ),
+      ...(profile === undefined ? {} : { profile }),
+    }
+  })
 }
 
 function parseTarget(value: unknown): RunTarget | undefined {
