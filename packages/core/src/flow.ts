@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ExecutionKind } from './environment.js'
 import { DEFAULT_CHECK_TIMEOUT_MS, runCommandCheck } from './run.js'
+import { SNAPSHOT_SCHEMA_VERSION, nameFindings, trimToSubtree, type SnapshotNode } from './snapshot.js'
 import { totpCode, totpWindow, windowRemaining } from './totp.js'
 
 /**
@@ -60,6 +61,12 @@ export interface FlowPage {
   assertText(text: string): Promise<void>
   assertElement(element: FlowElement): Promise<void>
   screenshot(path: string): Promise<void>
+  /**
+   * The page's accessibility snapshot in the normalised schema (#82), mapped
+   * from the driver's own tree. Optional: a driver without a snapshot seam
+   * keeps working; its flow checks carry no snapshot evidence.
+   */
+  snapshot?: () => Promise<SnapshotNode>
 }
 
 export interface FlowTrace {
@@ -264,6 +271,37 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   // A capture is evidence the flow took on the way past, so it is listed in
   // the result whatever happens to the actions that follow it (#70).
   const captures: string[] = []
+  const evidence: string[] = [ACTION_LOG]
+
+  // At every assertion the page is snapshotted into the normalised schema and
+  // the subtree the assertion touched is written to the evidence (#82), so the
+  // same criterion yields comparable snapshots across clients. A control in
+  // that subtree with no accessible name is a named finding, not a silent pass.
+  const snapshotAt = async (index: number, trim?: string): Promise<void> => {
+    if (page.snapshot === undefined) {
+      log.push('snapshot not taken: the driver exposes no accessibility snapshot')
+      return
+    }
+    try {
+      const full = await page.snapshot()
+      const trimmed = trim === undefined ? full : trimToSubtree(full, trim)
+      const findings = nameFindings(trimmed)
+      const name = `assert-${index}.json`
+      const record = {
+        schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+        ...(trim === undefined ? {} : { assertedText: trim }),
+        snapshot: trimmed,
+        findings,
+      }
+      const serialized = `${JSON.stringify(record, null, 2)}\n`
+      await writeFile(join(outDir, name), redactLog === undefined ? serialized : redactLog(serialized))
+      evidence.push(name)
+      log.push(`snapshot ${name}: ${trimmed.path}`)
+      for (const finding of findings) log.push(finding)
+    } catch (error) {
+      log.push(`snapshot failed: ${String(error)}`)
+    }
+  }
 
   for (const [index, action] of actions.entries()) {
     let line = describeAction(action, index)
@@ -286,9 +324,11 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
           break
         case 'assertText':
           await page.assertText(action.text)
+          await snapshotAt(index, action.text)
           break
         case 'assertElement':
           await page.assertElement(action.element)
+          await snapshotAt(index, 'name' in action.element ? action.element.name : undefined)
           break
         case 'capture': {
           const name = `capture-${index}.png`
@@ -345,6 +385,12 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
           action.action === 'assertText'
             ? `assert failed: the text ${JSON.stringify(action.text)} is not visible`
             : `assert failed: the element ${describeElement(action.element)} is not visible`
+        // The snapshot at a failed assert shows what the page held instead,
+        // trimmed as far as the assertion would have sat (#82). An element
+        // assertion trims to its accessible name when it names one and keeps
+        // the whole tree for a test-id reference (#82).
+        if (action.action === 'assertText') await snapshotAt(index, action.text)
+        else await snapshotAt(index, 'name' in action.element ? action.element.name : undefined)
       } else {
         // The failure reason quotes what the action saw, and the action may
         // have seen a value the flow put on the page: the same sweep that
@@ -358,7 +404,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
     log.push(line)
   }
 
-  const evidence: string[] = [ACTION_LOG, ...captures]
+  evidence.push(...captures)
   if (outcome === 'passed') {
     const final = await screenshot(FINAL_SCREENSHOT)
     if (final !== undefined) evidence.push(final)

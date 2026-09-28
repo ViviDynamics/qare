@@ -469,6 +469,16 @@ those platforms exposes an accessibility tree, so element references stay
 semantic on all of them: a role and an accessible name, never a coordinate and
 never a label a model invented.
 
+Every driver turns its client's accessibility tree into one normalised snapshot
+(#82). A node carries its role from the W3C Core Accessibility API Mappings, its
+accessible name, its value, its states and its children, plus a stable path
+built from roles, names and landmark ancestry, never from a coordinate or a
+generated id. The browser driver maps Playwright's ARIA snapshot onto this
+schema. A flow check writes a snapshot to the evidence at every assertion,
+trimmed to the subtree the assertion touched, and a control in that subtree
+with no accessible name is recorded as a named accessibility finding rather
+than a silent pass.
+
 Two things do differ by client and belong in the profile rather than in a check.
 Getting the application in front of the driver means starting a server for one
 client, installing an artefact for another, and launching a binary for a third.

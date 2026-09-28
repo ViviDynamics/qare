@@ -1,5 +1,6 @@
 import type { EgressAttempt } from './egress.js'
 import type { FlowDriverCapabilities, FlowElement, FlowPage, FlowTrace } from './flow.js'
+import { normaliseAriaSnapshot } from './snapshot.js'
 
 const NOT_INSTALLED_MESSAGE =
   'playwright-core is not installed; flow checks are unverified without a browser backend'
@@ -156,6 +157,13 @@ export async function makePlaywrightFlowSession(
               maskColor: '#000000',
             },
       )
+    },
+    // The browser driver's mapping into the normalised schema (#82): the page's
+    // ARIA snapshot, turned into nodes whose roles come from Core-AAM and whose
+    // paths carry no generated ids.
+    snapshot: async () => {
+      const started = await start()
+      return normaliseAriaSnapshot(await started.page.ariaSnapshot())
     },
   }
 

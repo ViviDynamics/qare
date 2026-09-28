@@ -106,6 +106,8 @@ export type { FlowSessionFactory } from './run.js'
 export { runVisualCheck, type VisualRevision, type VisualCheckOpts, type VisualScreenshot, type VisualDiff, type VisualCheckResult } from './visual.js'
 export { runFlowCheck, runSuiteCheck } from './flow.js'
 export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult, FlowTotpConfig, FlowDriverCapabilities } from './flow.js'
+export { SNAPSHOT_SCHEMA_VERSION, nameFindings, normaliseAriaSnapshot, trimToSubtree } from './snapshot.js'
+export type { SnapshotNode } from './snapshot.js'
 export { decodeBase32, totpCode, totpWindow, windowRemaining } from './totp.js'
 export {
   makePlaywrightScreenshot,

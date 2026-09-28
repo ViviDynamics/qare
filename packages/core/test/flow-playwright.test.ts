@@ -225,3 +225,34 @@ test('a connection attempt carries the default port when the URL names none', ()
   expect(attemptOf('not a url')).toBeUndefined()
   expect(attemptOf('about:blank')).toBeUndefined()
 })
+
+test('the browser driver maps the page ARIA snapshot onto the normalised schema (#82)', async () => {
+  const session = await makePlaywrightFlowSession({
+    loadPlaywright: async () =>
+      ({
+        chromium: {
+          launch: () =>
+            Promise.resolve({
+              newContext: async () => ({
+                on: () => undefined,
+                newPage: async () => ({
+                  goto: async () => undefined,
+                  ariaSnapshot: async () => '- main:\n  - heading "QARE" [level=1]',
+                }),
+              }),
+              close: async () => undefined,
+            }),
+        },
+      }) as never,
+  })
+
+  const snapshot = await session.page.snapshot!()
+  await session.dispose()
+
+  expect(snapshot.path).toBe('document')
+  expect(snapshot.children[0]?.role).toBe('main')
+  const heading = snapshot.children[0]?.children[0]
+  expect(heading?.name).toBe('QARE')
+  expect(heading?.states).toEqual({ level: 1 })
+  expect(heading?.path).toBe('document/main/heading "QARE"')
+})

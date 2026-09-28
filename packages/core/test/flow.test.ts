@@ -6,7 +6,9 @@ import {
   runFlowCheck,
   runSuiteCheck,
   totpCode,
+  normaliseAriaSnapshot,
   type FlowAction,
+  type FlowElement,
   type FlowPage,
   type FlowTrace,
 } from '../src/index.js'
@@ -516,4 +518,148 @@ test('a capture whose screenshot fails leaves the check unverified, not passed (
   expect(result.evidence).toEqual(['actions.log'])
   const log = await actionsLog(dir)
   expect(log).toContain('screenshot capture-1.png failed')
+})
+
+const SNAPSHOT_YAML = [
+  '- main:',
+  '  - group "Welcome panel":',
+  '    - button',
+].join('\n')
+
+function pageWithSnapshot(snapshotYaml: string, fails: PageFails = {}): FlowPage {
+  const snapshot = normaliseAriaSnapshot(snapshotYaml)
+  return { ...fakePage(fails).page, snapshot: async () => snapshot }
+}
+
+test('an assertion writes the trimmed normalised snapshot to the evidence, with the unnamed controls named (#82)', async () => {
+  const page = pageWithSnapshot(SNAPSHOT_YAML)
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [
+      { action: 'open', url: APP_URL },
+      { action: 'assertText', text: 'Welcome panel' },
+    ],
+  })
+
+  expect(result.outcome).toBe('passed')
+  expect(result.evidence).toEqual(['actions.log', 'assert-1.json', 'final.png'])
+  const written = JSON.parse(await readFile(join(dir, 'assert-1.json'), 'utf8'))
+  expect(written.schemaVersion).toBe(1)
+  expect(written.assertedText).toBe('Welcome panel')
+  // The subtree the assertion touched is kept whole, so the unnamed button in
+  // it is a finding with a path to where it sits, not a silent pass.
+  expect(written.snapshot.path).toBe('document')
+  expect(written.findings).toEqual([
+    'accessibility finding: document/main/group "Welcome panel"/button has no accessible name',
+  ])
+  const log = await actionsLog(dir)
+  expect(log).toContain('snapshot assert-1.json: document')
+  expect(log).toContain('accessibility finding: document/main/group "Welcome panel"/button has no accessible name')
+})
+
+test('a failed assert still writes the snapshot the page held at that point (#82)', async () => {
+  const page = pageWithSnapshot(SNAPSHOT_YAML, { assertText: new Error('text absent') })
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [
+      { action: 'open', url: APP_URL },
+      { action: 'assertText', text: 'Welcome' },
+    ],
+  })
+
+  expect(result.outcome).toBe('failed')
+  expect(result.evidence).toEqual(['actions.log', 'assert-1.json', 'failure.png'])
+  const written = JSON.parse(await readFile(join(dir, 'assert-1.json'), 'utf8'))
+  expect(written.assertedText).toBe('Welcome')
+  // Nothing on the page names the text, so the snapshot is left untrimmed: what
+  // the page held instead is the evidence the failure needs.
+  expect(written.snapshot).toEqual(normaliseAriaSnapshot(SNAPSHOT_YAML))
+})
+
+test('an element assertion writes its snapshot evidence, trimmed by name (#82)', async () => {
+  const page = pageWithSnapshot(SNAPSHOT_YAML)
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [
+      { action: 'open', url: APP_URL },
+      { action: 'assertElement', element: { role: 'group', name: 'Welcome panel' } },
+    ],
+  })
+
+  expect(result.outcome).toBe('passed')
+  expect(result.evidence).toEqual(['actions.log', 'assert-1.json', 'final.png'])
+  const written = JSON.parse(await readFile(join(dir, 'assert-1.json'), 'utf8'))
+  expect(written.assertedText).toBe('Welcome panel')
+  // The unnamed button inside the asserted group is a finding, not a silent pass.
+  expect(written.findings).toEqual([
+    'accessibility finding: document/main/group "Welcome panel"/button has no accessible name',
+  ])
+})
+
+test('an element assertion by test id keeps the whole tree in its evidence (#82)', async () => {
+  const page = pageWithSnapshot(SNAPSHOT_YAML)
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [
+      { action: 'open', url: APP_URL },
+      { action: 'assertElement', element: { testId: 'welcome-panel' } },
+    ],
+  })
+
+  expect(result.outcome).toBe('passed')
+  const written = JSON.parse(await readFile(join(dir, 'assert-1.json'), 'utf8'))
+  // A test id is no trim target in the snapshot, so the evidence is untrimmed,
+  // and the record names no asserted text.
+  expect(written.snapshot).toEqual(normaliseAriaSnapshot(SNAPSHOT_YAML))
+  expect(written.findings).toEqual([
+    'accessibility finding: document/main/group "Welcome panel"/button has no accessible name',
+  ])
+  expect(written.assertedText).toBeUndefined()
+})
+
+test('a failed element assertion still writes the snapshot the page held (#82)', async () => {
+  const page = pageWithSnapshot(SNAPSHOT_YAML, { assertElement: new Error('element absent') })
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [
+      { action: 'open', url: APP_URL },
+      { action: 'assertElement', element: { role: 'group', name: 'Welcome panel' } },
+    ],
+  })
+
+  expect(result.outcome).toBe('failed')
+  expect(result.evidence).toEqual(['actions.log', 'assert-1.json', 'failure.png'])
+  const written = JSON.parse(await readFile(join(dir, 'assert-1.json'), 'utf8'))
+  expect(written.assertedText).toBe('Welcome panel')
+  expect(written.snapshot).toEqual(normaliseAriaSnapshot(SNAPSHOT_YAML))
+})
+
+test('a driver without a snapshot seam notes the gap and carries no snapshot evidence (#82)', async () => {
+  const { page } = fakePage()
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    actions: [{ action: 'assertText', text: 'Welcome' }],
+  })
+
+  expect(result.outcome).toBe('passed')
+  expect(result.evidence).toEqual(['actions.log', 'final.png'])
+  expect(await actionsLog(dir)).toContain('snapshot not taken: the driver exposes no accessibility snapshot')
 })
