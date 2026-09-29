@@ -24,6 +24,8 @@ export { mintRunValues, substituteValues, validateValueReferences } from './valu
 export type { RunValues } from './values.js'
 export { mintCriterionId, normalizeWording, resolveCriterion } from './criterion-identity.js'
 export type { CriterionRevision, CriterionResolution } from './criterion-identity.js'
+export { shardCriteria, criterionOwnBoot } from './shards.js'
+export type { LanePlan } from './shards.js'
 export {
   RESULT_SCHEMA_VERSION,
   ResultValidationError,

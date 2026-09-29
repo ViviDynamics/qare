@@ -60,6 +60,12 @@ export interface ProfileSuite {
   name: string
   command: string
   kind: ProfileSuiteKind
+  /**
+   * True when the suite's command mutates shared state of the app (#48), so
+   * a criterion the ledger verifies by this suite runs against an app
+   * instance of its own instead of the run's shared one.
+   */
+  isolated?: boolean
 }
 
 /**
@@ -504,10 +510,13 @@ function parseSuite(value: unknown, index: number): ProfileSuite {
   const kind = value.kind
   if (typeof kind !== 'string' || !SUITE_KINDS.includes(kind as ProfileSuiteKind))
     fail(`${base}.kind`, `unknown suite kind ${JSON.stringify(kind)} (expected "command", "flow" or "visual")`)
+  if (value.isolated !== undefined && typeof value.isolated !== 'boolean')
+    fail(`${base}.isolated`, 'isolated must be a boolean')
   return {
     name: nonEmptyString(value.name, `${base}.name`, 'name'),
     command: nonEmptyString(value.command, `${base}.command`, 'command'),
     kind: kind as ProfileSuiteKind,
+    ...(value.isolated === undefined ? {} : { isolated: value.isolated as boolean }),
   }
 }
 

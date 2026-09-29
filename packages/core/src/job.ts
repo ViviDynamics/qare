@@ -53,6 +53,13 @@ export interface JobCriterion {
   text: string
   checks?: JobCheck[]
   /**
+   * True when the checks mutate shared state of the app, so the criterion
+   * runs against an app instance of its own instead of the run's shared one
+   * (#48). A criterion that mutates what its neighbours read must not run
+   * beside them, whatever a parallel worker schedule would otherwise allow.
+   */
+  isolated?: boolean
+  /**
    * Why nothing runs for it, when a plan says: the planner could not plan it,
    * or its checks are kinds the runner does not execute. Reported as its
    * unverified reason (#123), and never alongside checks.
@@ -287,6 +294,9 @@ function parseCriterion(value: unknown, index: number): JobCriterion {
       `criterion id ${JSON.stringify(id)} must not contain path separators, ".." or control characters; criterion ids become evidence directory names`,
     )
   const text = nonEmptyString(value.text, `${base}.text`, 'text')
+  if (value.isolated !== undefined && typeof value.isolated !== 'boolean')
+    fail(`${base}.isolated`, 'isolated must be a boolean')
+  const isolated = value.isolated as boolean | undefined
   const checks = value.checks === undefined ? undefined : parseChecks(value.checks, base)
   const unrunnable = value.unrunnable === undefined ? undefined : nonEmptyString(value.unrunnable, `${base}.unrunnable`, 'unrunnable reason')
   const skipped = value.skipped === undefined ? undefined : nonEmptyString(value.skipped, `${base}.skipped`, 'skipped reason')
@@ -296,6 +306,7 @@ function parseCriterion(value: unknown, index: number): JobCriterion {
     id,
     text,
     ...(checks === undefined ? {} : { checks }),
+    ...(isolated === undefined ? {} : { isolated }),
     ...(unrunnable === undefined ? {} : { unrunnable }),
     ...(skipped === undefined ? {} : { skipped }),
   }
