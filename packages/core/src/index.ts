@@ -286,6 +286,7 @@ export {
   ingestCommentMarker,
   ingestCriteria,
   renderUncheckableComment,
+  WRITING_CRITERIA_GUIDE,
 } from './ledger-ingest.js'
 export type { IngestSource, IngestOutcome, IngestDuplicate, UncheckableCriterion } from './ledger-ingest.js'
 export {

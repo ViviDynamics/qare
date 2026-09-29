@@ -190,6 +190,15 @@ export function hasIngestComment(comments: string[], criterionId: string): boole
 }
 
 /**
+ * Where the house style for acceptance criteria is written down (#56). Ingest
+ * links it wherever it asks a human for a rewrite, so the ask carries its own
+ * how-to: one behavior per criterion, a stated proof type, an observable
+ * outcome.
+ */
+export const WRITING_CRITERIA_GUIDE =
+  'https://github.com/ViviDynamics/qare/blob/main/docs/writing-criteria.md'
+
+/**
  * The comment an uncheckable criterion earns: it names the author of the
  * source that stated the criterion, says why no check can carry it, and asks
  * for a wording a check can prove, with the marker hidden inside.
@@ -199,7 +208,7 @@ export function renderUncheckableComment(uncheckable: UncheckableCriterion): str
   return [
     `${author === undefined ? 'This criterion' : `@${author}`} — the criterion \`${uncheckable.text}\` cannot be proposed to the criteria ledger as written: ${uncheckable.why}.`,
     '',
-    'To propose it, restate it as something a check can prove: name what to run or what to do, and what should hold as a result (for example, `the payouts page shows the 1099 notice for a host paid past the annual threshold`). Once the wording states an observable outcome, ingest will propose it.',
+    `To propose it, restate it as something a check can prove: name what to run or what to do, and what should hold as a result (for example, \`the payouts page shows the 1099 notice for a host paid past the annual threshold\`). Once the wording states an observable outcome, ingest will propose it. The house style, with worked rewrites of weak criteria, is the criteria guide: ${WRITING_CRITERIA_GUIDE}.`,
     '',
     `<!-- ${ingestCommentMarker(uncheckable.id)} -->`,
   ].join('\n')

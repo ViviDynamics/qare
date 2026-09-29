@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
-import { criterionIdFor, integrityOf, LEDGER_SCHEMA_VERSION } from '@qare/core'
+import { criterionIdFor, integrityOf, LEDGER_SCHEMA_VERSION, WRITING_CRITERIA_GUIDE } from '@qare/core'
 import { main } from '../src/index.js'
 import type { Writer } from '../src/index.js'
 
@@ -86,6 +86,7 @@ test('ingest proposes what the ledger lacks, keeps duplicates back, and queues o
   expect(proposal.ledgerText).not.toContain(criterionIdFor(VAGUE))
   expect(proposal.branch).toMatch(/^qare-ledger-proposal-[0-9a-f]{8}$/)
   expect(proposal.sources[0]!.link).toBe(link('example.test', '/issues/37'))
+  expect(proposal.body).toContain(WRITING_CRITERIA_GUIDE)
   const comments = JSON.parse(await readFile(join(outDir, 'ingest-comments.json'), 'utf8'))
   expect(comments).toHaveLength(1)
   expect(comments[0]!.issue).toBe(37)

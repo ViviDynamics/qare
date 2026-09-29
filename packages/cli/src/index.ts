@@ -62,6 +62,7 @@ import {
   serializeLedger,
   touchedPathsFromDiff,
   VERSION,
+  WRITING_CRITERIA_GUIDE,
 } from '@qare/core'
 import type {
   BootOpts,
@@ -399,6 +400,9 @@ function renderProposalBody(
     )
   }
   lines.push('Nothing here is part of the ledger until a human applies the proposal.')
+  lines.push(
+    `For how to word a criterion a check can carry, read the criteria guide: ${WRITING_CRITERIA_GUIDE}.`,
+  )
   return lines.join('\n')
 }
 

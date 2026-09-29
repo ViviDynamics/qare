@@ -6,6 +6,7 @@ import {
   ingestCommentMarker,
   ingestCriteria,
   renderUncheckableComment,
+  WRITING_CRITERIA_GUIDE,
   type IngestSource,
 } from '../src/ledger-ingest.js'
 import type { AgentRunResult, AgentRunner } from '../src/runner.js'
@@ -146,6 +147,7 @@ test('a criterion no check can prove is proposed nowhere and its comment names t
   expect(body).toContain('pleasant is not something a check can show')
   expect(body).toContain('the article is pleasant to read')
   expect(body).toContain('restate it as something a check can prove')
+  expect(body).toContain(WRITING_CRITERIA_GUIDE)
   expect(body).toContain(ingestCommentMarker(outcome.uncheckable[0]!.id))
   expect(hasIngestComment([body], outcome.uncheckable[0]!.id)).toBe(true)
   expect(hasIngestComment(['a comment about something else'], outcome.uncheckable[0]!.id)).toBe(false)
