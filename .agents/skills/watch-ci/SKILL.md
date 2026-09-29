@@ -1,8 +1,8 @@
 ---
 name: watch-ci
 description: Use when a pull request has CI running or red and you need to wait for it, retry safely, or find out why it failed. Also use when asked "is CI green" or "watch the build".
-license: Proprietary
-compatibility: Requires gh, jq, git and a repo.env in the consumer repo (see ADOPTING.md). Scripts are bash 3.2 compatible.
+license: Elastic-2.0
+compatibility: Requires gh, jq, git and a repo.env (copy repo.env.example to repo.env). Scripts are bash 3.2 compatible.
 metadata:
   version: "1.0.0"
   owner: Vivi Dynamics

@@ -1,12 +1,16 @@
 # Test commands
 
-Each area's local command, mirroring pnpm scripts. Run `pnpm build && pnpm typecheck && pnpm lint && pnpm test` to do all of them in the same order CI does.
+Run by `preflight` before every push. A row runs only when the branch's diff touches
+its paths; rows run top to bottom, cheapest first, and stop at the first failure.
+`{files}` is the changed files the row matched. These mirror the pnpm scripts CI runs:
+`pnpm build && pnpm typecheck && pnpm lint && pnpm test`.
 
-| Area | Command |
-| --- | --- |
-| Build | `pnpm build` |
-| Types | `pnpm typecheck` |
-| Lint | `pnpm lint` |
-| Tests | `pnpm test` |
-| One test | `pnpm test -- <file>` |
-| Skills wiring | `.agents/skills/ci-safety/scripts/check-wiring` |
+| Area | Paths | Command |
+| --- | --- | --- |
+| Lint, changed files | *.ts, *.tsx, *.js, *.mjs, *.cjs | pnpm exec eslint {files} |
+| Lint, whole tree | eslint.config.js, package.json, pnpm-lock.yaml | pnpm lint |
+| Build and types | packages/*, tsconfig.base.json, package.json, pnpm-lock.yaml, pnpm-workspace.yaml | pnpm build && pnpm typecheck |
+| Tests | packages/*, plugin/*, examples/*, package.json, pnpm-lock.yaml | pnpm build && pnpm test |
+| Skills wiring | .agents/*, repo.env.example | .agents/skills/ci-safety/scripts/check-wiring |
+
+To run one test: `pnpm test -- <file>`.

@@ -29,3 +29,19 @@ jobs:
             case "$f" in *.json) continue;; esac
             bash -n "$f"
           done
+
+  quality-guard:
+    name: quality guard
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Block weakened quality gates unless the PR justifies them
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp repo.env.example repo.env
+          .agents/skills/merge-pr/scripts/quality-guard --pr ${{ github.event.pull_request.number }}

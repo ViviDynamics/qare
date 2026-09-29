@@ -11,7 +11,7 @@ vivi_load_env() {
   local root file line key val
   root=$(vivi_root) || exit 2
   file="$root/repo.env"
-  [ -f "$file" ] || vivi_die 2 "repo.env not found at $file (see ADOPTING.md)"
+  [ -f "$file" ] || vivi_die 2 "repo.env not found at $file (copy repo.env.example to repo.env)"
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in VIVI_*=*) ;; *) continue;; esac
     key=${line%%=*}; val=${line#*=}

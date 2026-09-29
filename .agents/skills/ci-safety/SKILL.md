@@ -1,7 +1,7 @@
 ---
 name: ci-safety
 description: Use when reading CI state, deciding whether a CI failure is a flake, retrying a GitHub Actions run, or writing any poll loop over CI. Background rules for watch-ci, merge-pr, and ship-issue.
-license: Proprietary
+license: Elastic-2.0
 compatibility: Requires gh, jq, git. Scripts are bash 3.2 compatible.
 metadata:
   version: "1.0.0"
