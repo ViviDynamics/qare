@@ -41,7 +41,7 @@ Acceptance criteria decide what every run checks, and the criteria ledger keeps
 them over time. The house style for wording them, one behavior per criterion
 with a stated proof type and an observable outcome, plus worked rewrites and
 what `qare ingest` can and cannot infer, is in
-[docs/writing-criteria.md](docs/writing-criteria.md).
+[docs/writing-criteria.md](https://github.com/ViviDynamics/qare/blob/main/docs/writing-criteria.md).
 
 ## Extending the images
 
