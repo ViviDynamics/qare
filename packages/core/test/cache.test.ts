@@ -14,6 +14,7 @@ import {
   type CacheKeyParts,
   type Job,
   type QaProfile,
+  type SeveralProfilesJob,
 } from '../src/index.js'
 
 const localUrl = (rest: string): string => ['http:', rest].join('')
@@ -25,6 +26,22 @@ const PROFILE = {
 }
 
 const BOOT = { probe: async () => ({ ok: true }) }
+
+// A several-app run boots each group's app for real (through the compose
+// seam), so this profile carries the app shape the validator demands and the
+// boot stub answers the compose up and the health probe.
+const APP_PROFILE = {
+  app: {
+    boot: { compose: 'compose.qa.yaml', service: 'admin' },
+    health: { http: localUrl('//app-host:3000/up'), timeout: '5s' },
+    seed: { command: 'bin/rails' },
+    login: { fixture: 'fixtures/users.yml', role: 'admin' },
+  },
+  stubs: [],
+  visual: { widths: [1440], themes: ['light'] },
+  suites: [],
+}
+const SEVERAL_BOOT = { ...BOOT, runCompose: async () => ({ code: 0, stdout: 'up out', stderr: 'up err' }) }
 
 const dirs: string[] = []
 afterAll(async () => {
@@ -201,6 +218,36 @@ test('a run whose refs do not resolve executes uncached and says so', async () =
   } finally {
     spy.mockRestore()
   }
+})
+
+test('a several-app run merges every cache hit into one summary', async () => {
+  const { repo, base, head } = await gitRepo()
+  const job: SeveralProfilesJob = {
+    id: 'job-cache-several',
+    repoPath: repo,
+    baseRef: base,
+    headRef: head,
+    profiles: [
+      {
+        name: 'one',
+        profile: { inline: APP_PROFILE },
+        criteria: [{ id: 'criterion-1', text: 'criterion 1', checks: [{ kind: 'command' as const, run: 'echo ok' }] }],
+      },
+      {
+        name: 'two',
+        profile: { inline: APP_PROFILE },
+        criteria: [{ id: 'criterion-2', text: 'criterion 2', checks: [{ kind: 'command' as const, run: 'echo ok' }] }],
+      },
+    ],
+    evidenceDir: join(repo, 'evidence-1'),
+    post: 'none',
+  }
+  const first = await runJob(job, { ...SEVERAL_BOOT, cacheDir: join(repo, 'cache') })
+  expect(first.result.verdict).toBe('passed')
+  const second = await runJob({ ...job, evidenceDir: join(repo, 'evidence-2') }, { ...SEVERAL_BOOT, cacheDir: join(repo, 'cache') })
+  expect(second.result.criteria.map((criterion) => criterion.cached)).toEqual([true, true])
+  const summary = JSON.parse(await readFile(join(repo, 'evidence-2', 'cache.json'), 'utf8'))
+  expect(summary.hits.map((hit: { criterion: string }) => hit.criterion)).toEqual(['criterion-1', 'criterion-2'])
 })
 
 test('resolveRefSha resolves a commit name and leaves what it cannot resolve undefined', async () => {

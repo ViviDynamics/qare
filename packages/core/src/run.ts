@@ -238,7 +238,7 @@ export async function runJob(
       login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
     const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target, totp, mcp: profile.mcp }
     for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow, execution, cache))
-    await writeCacheHits(job, cache)
+    await writeCacheHits(job.evidenceDir, cache?.hits ?? [])
     // The judge is the verdict decision. Base execution and egress interception
     // of a booted stack land with the orchestrator; a target run records what its
     // browser reached, and a host the profile does not declare refuses the run.
@@ -272,6 +272,8 @@ interface ProfileGroupOutcome {
   values?: RunValues
   isolation?: RunIsolation
   egressRefused?: boolean
+  /** The criteria this group served from the run's cache (#47). */
+  cacheHits?: RunCacheContext['hits']
 }
 
 async function runSeveralProfiles(
@@ -382,6 +384,7 @@ async function runSeveralProfiles(
   const profiles: Array<{ name: string; verdict: RunVerdict; criteria: string[]; profile: JobProfileRef }> = []
   const recorded: Array<{ name: string; values: RunValues }> = []
   const isolations: Array<{ name: string; isolation: RunIsolation }> = []
+  const cacheHits: RunCacheContext['hits'] = []
   let egressRefused = false
   // Every started group's cancellation disposer is collected here and released
   // only when the whole run is over, so a SIGINT at any point of the run tears
@@ -398,6 +401,7 @@ async function runSeveralProfiles(
       if (outcome.values !== undefined) recorded.push({ name: entry.group.name, values: outcome.values })
       if (outcome.isolation !== undefined) isolations.push({ name: entry.group.name, isolation: outcome.isolation })
       if (outcome.egressRefused === true) egressRefused = true
+      if (outcome.cacheHits !== undefined) cacheHits.push(...outcome.cacheHits)
     }
   } finally {
     for (const cleanup of cleanups) cleanup()
@@ -413,6 +417,7 @@ async function runSeveralProfiles(
     )
   }
   const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
+  await writeCacheHits(job.evidenceDir, cacheHits)
   const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, profiles }, rules, undefined, execution)
   await feedIfOptedIn(opts, job, finished.result)
   return { result: finished.result, ...(isolations.length > 0 ? { isolations } : {}) }
@@ -519,10 +524,9 @@ async function runProfileGroup(
     // one app's screenshots cannot publish another app's secret region (#55).
     const flow = { session: opts.flowSession, masks, suites: profile.suites, target, totp, mcp: profile.mcp }
     for (const criterion of group.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow, execution, cache))
-    await writeCacheHits(job, cache)
     const egressRefused = target !== undefined && target.undeclared.length > 0
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
-    return { criteria, verdict, values, ...(isolation === undefined ? {} : { isolation }), egressRefused }
+    return { criteria, verdict, values, ...(isolation === undefined ? {} : { isolation }), egressRefused, ...(cache === undefined ? {} : { cacheHits: cache.hits }) }
   } finally {
     // The disposer stays installed until the whole several-app run ends, not
     // just this group: the earlier apps' stacks are still up while a later
@@ -864,14 +868,15 @@ function cacheKeyFor(criterion: JobCriterion, checks: JobCheck[], cache: RunCach
 /**
  * Write the run's cache summary: every criterion that was served from the
  * cache, named by criterion and by key, so a reader can tell a replayed
- * criterion from a re-run one without diffing result.json.
+ * criterion from a re-run one without diffing result.json. The hits of every
+ * group of a several-app run are merged into this one summary.
  */
-async function writeCacheHits(job: Job, cache: RunCacheContext | undefined): Promise<void> {
-  if (cache === undefined || cache.hits.length === 0) return
-  await mkdir(job.evidenceDir, { recursive: true })
+async function writeCacheHits(evidenceDir: string, hits: RunCacheContext['hits']): Promise<void> {
+  if (hits.length === 0) return
+  await mkdir(evidenceDir, { recursive: true })
   await writeFile(
-    join(job.evidenceDir, 'cache.json'),
-    `${JSON.stringify({ version: 1, hits: cache.hits }, null, 2)}\n`,
+    join(evidenceDir, 'cache.json'),
+    `${JSON.stringify({ version: 1, hits }, null, 2)}\n`,
   )
 }
 
