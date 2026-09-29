@@ -52,6 +52,8 @@ export type {
   ProfileVisual,
   ProfileSuite,
   ProfileSuiteKind,
+  ProfileMcpServer,
+  McpStep,
 } from './profile.js'
 export {
   DEFAULT_PROFILE_NAME,
@@ -102,6 +104,18 @@ export {
   ExplorationError,
 } from './explore.js'
 export type { ExplorationPage, ExplorationSource, ExplorationTool } from './explore.js'
+export {
+  McpError,
+  McpUnreachable,
+  callChannelTool,
+  channelToolName,
+  connectMcpServer,
+  mcpRecordsFile,
+  splitMcpCommand,
+  startMcpToolServer,
+  startRegisteredMcpSources,
+} from './mcp.js'
+export type { McpCallRecord, McpRecorder, McpSource, McpTool, McpToolServer, ConnectOptions } from './mcp.js'
 export { IssueCriteriaError, criteriaFromIssue, criteriaFromIssues, criterionIdFor } from './issue-criteria.js'
 export type { IssueCriteriaProblem } from './issue-criteria.js'
 export { linkedIssues } from './linked-issues.js'

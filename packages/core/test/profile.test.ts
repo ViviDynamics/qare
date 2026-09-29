@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
-import { ProfileValidationError, loadProfile } from '../src/index.js'
+import { ProfileValidationError, loadProfile, validateProfileConfig } from '../src/index.js'
 
 const fixtureDir = fileURLToPath(new URL('../fixtures/qa-valid/.qa', import.meta.url))
 const HEALTH_URL = ['http:', '//localhost:3000/up'].join('')
@@ -225,4 +225,146 @@ test('a backup code without a totp section fails: it is an alternative, not a su
   expect(error.field).toBe('app.login.backupCode')
 
   rmSync(dir, { recursive: true })
+})
+
+const MCP_HEALTH = { url: ['http:', '//staging.example.test'].join(''), health: { http: '/health', timeout: '1s' } }
+const MCP_COMMAND_SERVER = { name: 'rig', command: 'node rig.mjs', tools: ['power_on'], steps: ['plan'] }
+
+test('a profile registers a host MCP server to start or reach, with its allowlist and steps (#93)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(
+    join(dir, 'config.yml'),
+    [
+      fixtureConfig(),
+      'mcp:',
+      '  - name: rig',
+      '    command: node rig.mjs --port 8080',
+      '    tools: [power_on, read_led]',
+      '    steps: [plan]',
+    ].join('\n'),
+  )
+  const profile = await loadProfile(dir)
+  expect(profile.mcp).toEqual([
+    { name: 'rig', command: 'node rig.mjs --port 8080', tools: ['power_on', 'read_led'], steps: ['plan'] },
+  ])
+
+  writeFileSync(
+    join(dir, 'config.yml'),
+    [
+      fixtureConfig(),
+      'mcp:',
+      '  - name: hosted',
+      `    url: ${['http:', '//tools.hosted.internal/mcp'].join('')}`,
+      '    tools: [ping]',
+      '    steps: [plan, execute]',
+    ].join('\n'),
+  )
+  const hosted = await loadProfile(dir)
+  expect(hosted.mcp).toEqual([
+    { name: 'hosted', url: ['http:', '//tools.hosted.internal/mcp'].join(''), tools: ['ping'], steps: ['plan', 'execute'] },
+  ])
+
+  rmSync(dir, { recursive: true })
+})
+
+test('a registered MCP server is refused when it says nothing about how to reach it, or both ways at once (#93)', async () => {
+  expect(() => validateProfileConfig({ target: MCP_HEALTH, mcp: [{ name: 'rig', tools: ['x'], steps: ['plan'] }] })).toThrow(
+    /must say how to start or reach it/,
+  )
+  expect(() =>
+    validateProfileConfig({
+      target: MCP_HEALTH,
+      mcp: [{ name: 'rig', command: 'node rig.mjs', url: ['http:', '//x.internal'].join(''), tools: ['x'], steps: ['plan'] }],
+    }),
+  ).toThrow(/one of command/)
+})
+
+test('an MCP server with no tools, an unknown step or a duplicate name is refused (#93)', async () => {
+  const base = { command: 'node rig.mjs' }
+  expect(() => validateProfileConfig({ target: MCP_HEALTH, mcp: [{ name: 'rig', ...base, tools: [], steps: ['plan'] }] })).toThrow(
+    /at least one tool/,
+  )
+  expect(() => validateProfileConfig({ target: MCP_HEALTH, mcp: [{ name: 'rig', ...base, tools: ['x'], steps: ['deploy'] }] })).toThrow(
+    /unknown step "deploy"/,
+  )
+  expect(() => validateProfileConfig({ target: MCP_HEALTH, mcp: [{ name: 'rig', ...base, tools: ['x'], steps: [] }] })).toThrow(
+    /must name the steps/,
+  )
+  expect(() =>
+    validateProfileConfig({
+      target: MCP_HEALTH,
+      mcp: [
+        { name: 'rig', ...base, tools: ['x'], steps: ['plan'] },
+        { name: 'rig', url: ['http:', '//x.internal'].join(''), tools: ['x'], steps: ['plan'] },
+      ],
+    }),
+  ).toThrow(/already registered/)
+})
+
+test('a server name that could not be addressed as server.tool is refused (#93)', async () => {
+  const base = { command: 'node rig.mjs', tools: ['x'], steps: ['plan'] }
+  expect(() => validateProfileConfig({ target: MCP_HEALTH, mcp: [{ name: 'a/b', ...base }] })).toThrow(/server name/)
+  expect(() => validateProfileConfig({ target: MCP_HEALTH, mcp: [{ name: '..', ...base }] })).toThrow(/server name/)
+})
+
+test('two servers whose names and tools build the same channel name are refused (#93)', () => {
+  expect(() =>
+    validateProfileConfig({
+      target: MCP_HEALTH,
+      mcp: [
+        { name: 'a', command: 'node a.mjs', tools: ['b.c'], steps: ['plan'] },
+        { name: 'a.b', command: 'node ab.mjs', tools: ['c'], steps: ['plan'] },
+      ],
+    }),
+  ).toThrow(/names "a\.b\.c" twice/)
+  // Different tools on different servers build different names, and are fine.
+  expect(() =>
+    validateProfileConfig({
+      target: MCP_HEALTH,
+      mcp: [
+        { name: 'a', command: 'node a.mjs', tools: ['c'], steps: ['plan'] },
+        { name: 'a.b', command: 'node ab.mjs', tools: ['d'], steps: ['plan'] },
+      ],
+    }),
+  ).not.toThrow()
+})
+
+test('a command that a shell would interpret is refused, like command checks are (#93)', async () => {
+  expect(() =>
+    validateProfileConfig({ target: MCP_HEALTH, mcp: [{ name: 'rig', command: 'node rig.mjs && rm -rf /', tools: ['x'], steps: ['plan'] }] }),
+  ).toThrow(/shell would interpret/)
+})
+
+test('a server that needs a credential is refused in the step that runs pull request code, by name (#93)', () => {
+  const run = () =>
+    validateProfileConfig({
+      target: MCP_HEALTH,
+      mcp: [{ ...MCP_COMMAND_SERVER, steps: ['plan', 'execute'], credential: 'rig-token' }],
+    })
+  expect(run).toThrow(ProfileValidationError)
+  expect(run).toThrow(/cannot run in the execute step/)
+  expect(run).toThrow(/pull request code/)
+  expect(run).toThrow(/rig-token/)
+  // The same server in the plan step alone is fine: the planner holds no secret.
+  expect(() => validateProfileConfig({ target: MCP_HEALTH, mcp: [{ ...MCP_COMMAND_SERVER, credential: 'rig-token' }] })).not.toThrow()
+})
+
+test('a url that carries userinfo is refused: the server is never reached with it (#167 review)', () => {
+  const run = () =>
+    validateProfileConfig({
+      target: MCP_HEALTH,
+      mcp: [{ name: 'rig', url: ['http:', '//ops:secret@127.0.0.1:1/mcp'].join(''), tools: ['x'], steps: ['plan'] }],
+    })
+  expect(run).toThrow(ProfileValidationError)
+  expect(run).toThrow(/carries userinfo/)
+})
+
+test('a tool name carrying the channel delimiter is refused (#167 review)', () => {
+  const run = () =>
+    validateProfileConfig({
+      target: MCP_HEALTH,
+      mcp: [{ ...MCP_COMMAND_SERVER, tools: ['read,raw'] }],
+    })
+  expect(run).toThrow(ProfileValidationError)
+  expect(run).toThrow(/comma delimiter or a control character/)
 })

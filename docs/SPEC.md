@@ -626,19 +626,31 @@ it ran with.
 
 A host that installs QARE will have tools QARE has never heard of: an in-house
 device rig, a proprietary simulator, a test data service. Rather than a plug-in
-system per tool, QARE speaks one generic protocol to them. A profile can
-register a host's MCP servers in two ways:
+system per tool, QARE speaks one generic protocol to them: MCP. A profile
+registers a host's MCP servers by saying how to start or reach each one
+(`command` or `url` — start splits on whitespace and spawns with no shell, reach
+speaks JSON-RPC over HTTP), which of each server's tools are allowed, and which
+steps the server may run in:
 
-- **For the planner to look through.** They reach the model through nare, like
-  every other model tool.
-- **As a driver or a check.** QARE's code calls the tools directly, with no model
-  in between, by mapping its action vocabulary onto them. The rules do not
-  change: references stay semantic, the harness records what the tool returned,
-  and code decides the verdict. A tool that can only act on coordinates is not a
-  driver.
+- **For the planner to look through (`steps: [plan]`), shipped (#93).** The plan
+  step starts the servers its profile registers, speaks the MCP handshake, and
+  serves the allowed tools to the model session over one channel, the way the
+  exploration channel (#87) serves its four: only tool calls and their results
+  cross, each tool addressed as `server.tool` so two servers' tools cannot
+  collide, and every result treated as untrusted data. A server that cannot be
+  started or reached is reported, never silently skipped; the calls the planner
+  made, their arguments and their results are recorded with the run's evidence
+  as `mcp-calls.jsonl`.
+- **As a driver or a check, planned.** QARE's code would call the tools
+  directly, with no model in between, by mapping its action vocabulary onto
+  them. The rules do not change: references stay semantic, the harness records
+  what the tool returned, and code decides the verdict. A tool that can only
+  act on coordinates is not a driver.
 
-A registered tool declares which steps it may run in, so a tool that needs a
-credential can never be placed in the step that runs pull request code.
+A registered server declares which steps it may run in. A server that needs a
+credential says so by name, and the profile refuses to place it in the execute
+step — the step that runs pull request code — so the refusal is a profile
+mistake named when the profile loads, not a leak found later.
 
 ## Running against a deployed environment
 

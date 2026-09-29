@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
 import { criterionIdFor } from '@qare/core'
 import { main } from '../src/index.js'
@@ -507,4 +508,196 @@ test('a plan whose command checks read only the declared run inputs is written a
   const plan = JSON.parse(await readFile(outPath, 'utf8'))
   expect(plan.criteria[0]).toMatchObject({ checks: [{ command: 'grep login login.ts' }] })
   expect(out.lines.join('')).toContain('1 unplannable')
+})
+
+/** A host MCP server over stdio: the real JSON-RPC handshake, on the wire. */
+async function fakeMcpBinary(dir: string, published: { name: string; description?: string }[]): Promise<string> {
+  const script = [
+    `import { createInterface } from 'node:readline'`,
+    `const published = ${JSON.stringify(published)}`,
+    `createInterface({ input: process.stdin }).on('line', (line) => {`,
+    `  let message`,
+    `  try { message = JSON.parse(line) } catch { return }`,
+    `  const id = typeof message.id === 'number' ? message.id : undefined`,
+    `  if (id === undefined) return`,
+    `  let answer`,
+    `  if (message.method === 'initialize' || message.method === 'tools/list') answer = { tools: published }`,
+    `  else if (message.method === 'tools/call')`,
+    `    answer = { content: [{ type: 'text', text: message.params.name + ' saw ' + JSON.stringify(message.params.arguments ?? {}) }] }`,
+    `  else answer = {}`,
+    `  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result: answer }) + '\\n')`,
+    `})`,
+  ].join('\n')
+  // The profile's command names this script directly (node <script>), so it
+  // needs no executable bit and no shim: the path is absolute because the
+  // server starts in the harness's working directory.
+  const scriptPath = join(dir, 'rig.mjs')
+  await writeFile(scriptPath, script, 'utf8')
+  return scriptPath
+}
+
+async function profileWithMcp(dir: string, configLines: string[]): Promise<string> {
+  const healthUrl = ['http:', '//127.0.0.1:1/health'].join('')
+  await mkdir(join(dir, '.qa', 'fixtures'), { recursive: true })
+  await mkdir(join(dir, '.qa', 'stubs'), { recursive: true })
+  await writeFile(join(dir, '.qa', 'QA.md'), '# QA\n', 'utf8')
+  await writeFile(join(dir, '.qa', 'fixtures', 'seed.sql'), '', 'utf8')
+  await writeFile(
+    join(dir, '.qa', 'config.yml'),
+    [
+      'app:',
+      '  boot: { compose: compose.yml, service: app }',
+      `  health: { http: ${healthUrl}, timeout: 1s }`,
+      '  seed: { command: "true" }',
+      '  login: { fixture: seed.sql, role: admin }',
+      'stubs: []',
+      'visual:',
+      '  widths: [390]',
+      '  themes: [light]',
+      'suites: []',
+      ...configLines,
+    ].join('\n'),
+    'utf8',
+  )
+  return join(dir, '.qa')
+}
+
+test('a registered host MCP server reaches the planner as an environment, and its calls land beside the plan (#93)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-plan-mcp-'))
+  const criteriaPath = join(dir, 'criteria.json')
+  const diffPath = join(dir, 'change.diff')
+  const outPath = join(dir, 'plan.json')
+  await writeFile(criteriaPath, JSON.stringify(CRITERIA), 'utf8')
+  await writeFile(diffPath, 'diff --git a/login.ts b/login.ts', 'utf8')
+  const profilePath = await profileWithMcp(dir, [
+    'mcp:',
+    `  - name: rig`,
+    `    command: node ${await fakeMcpBinary(dir, [{ name: 'power_on', description: 'turn the rig on' }])}`,
+    '    tools: [power_on]',
+    '    steps: [plan]',
+  ])
+
+  const seenPath = join(dir, 'seen.json')
+  // The nare stand-in is a static fixture: it reads the MCP environment, calls
+  // one tool through the channel, records what it saw, and answers with PLAN.
+  const nareFixture = fileURLToPath(new URL('./fixtures/fake-nare-mcp.mjs', import.meta.url))
+  const binary = join(dir, 'nare')
+  await writeFile(binary, `#!/bin/sh\nexec node ${nareFixture} ${seenPath} '${JSON.stringify(PLAN)}' rig.power_on '{"volts":5}' "$@"\n`, 'utf8')
+  const { chmod } = await import('node:fs/promises')
+  await chmod(binary, 0o755)
+  const out = capture()
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', outPath, '--nare', binary, '--profile', profilePath],
+    out.writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  const seen = JSON.parse(await readFile(seenPath, 'utf8')) as { tools?: string; endpoint?: string; exploration?: string; tool: string }
+  expect(seen.tools).toBe('rig.power_on')
+  expect(seen.endpoint).toMatch(/^http:/)
+  // Only the MCP channel is on: this is not the exploration channel (#87).
+  expect(seen.exploration).toBeUndefined()
+  expect(seen.tool).toBe('power_on saw {"volts":5}')
+  const callsPath = join(dir, 'mcp-calls.jsonl')
+  const records = (await readFile(callsPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+  expect(records).toHaveLength(1)
+  expect(records[0]).toMatchObject({ server: 'rig', tool: 'power_on', arguments: { volts: 5 }, result: 'power_on saw {"volts":5}' })
+  expect(out.lines.join('')).toContain(`recorded 1 host tool calls; ${callsPath}`)
+})
+
+test('a registered server that cannot be started is reported, and the plan is still written (#93)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-plan-mcp-'))
+  const criteriaPath = join(dir, 'criteria.json')
+  const diffPath = join(dir, 'change.diff')
+  const outPath = join(dir, 'plan.json')
+  await writeFile(criteriaPath, JSON.stringify(CRITERIA), 'utf8')
+  await writeFile(diffPath, 'diff --git a/login.ts b/login.ts', 'utf8')
+  const profilePath = await profileWithMcp(dir, [
+    'mcp:',
+    '  - name: ghost',
+    '    command: qare-no-such-mcp-binary-here',
+    '    tools: [power_on]',
+    '    steps: [plan]',
+  ])
+  const out = capture()
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', outPath, '--nare', await fakeNare(PLAN), '--profile', profilePath],
+    out.writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  expect(out.lines.join('')).toContain("host mcp server 'ghost' is unreachable")
+  expect(JSON.parse(await readFile(outPath, 'utf8'))).toEqual(PLAN)
+  // Even the failure is evidence: the declared-but-unreachable server leaves a
+  // record, so the run shows what the host tried and why nothing answered.
+  const records = (await readFile(join(dir, 'mcp-calls.jsonl'), 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line))
+  expect(records).toEqual([{ server: 'ghost', error: expect.stringContaining('unreachable') }])
+})
+
+test('the mcp call records are redacted like the evidence they are (#93)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-plan-mcp-'))
+  const criteriaPath = join(dir, 'criteria.json')
+  const diffPath = join(dir, 'change.diff')
+  const outPath = join(dir, 'plan.json')
+  await writeFile(criteriaPath, JSON.stringify(CRITERIA), 'utf8')
+  await writeFile(diffPath, 'diff --git a/login.ts b/login.ts', 'utf8')
+  const profilePath = await profileWithMcp(dir, [
+    'redact:',
+    '  values: [hunter2]',
+    'mcp:',
+    `  - name: rig`,
+    `    command: node ${await fakeMcpBinary(dir, [{ name: 'power_on' }])}`,
+    '    tools: [power_on]',
+    '    steps: [plan]',
+  ])
+  const seenPath = join(dir, 'seen.json')
+  // The nare stand-in calls the tool with a secret in the arguments, the way
+  // a model session's look could: what the model saw, and what the published
+  // record keeps, are two different things.
+  const nareFixture = fileURLToPath(new URL('./fixtures/fake-nare-mcp.mjs', import.meta.url))
+  const binary = join(dir, 'nare')
+  await writeFile(
+    binary,
+    [
+      '#!/bin/sh',
+      `exec node ${nareFixture} ${seenPath} '${JSON.stringify(PLAN)}' rig.power_on '{"password":"hunter2","note":"the hunter2 vault"}' "$@"`,
+    ].join('\n'),
+    'utf8',
+  )
+  const { chmod } = await import('node:fs/promises')
+  await chmod(binary, 0o755)
+  const out = capture()
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', outPath, '--nare', binary, '--profile', profilePath],
+    out.writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  const seen = JSON.parse(await readFile(seenPath, 'utf8')) as { tool: string }
+  // The model session read the tool's real answer; redaction is for what is
+  // published, not for the session.
+  expect(seen.tool).toBe('power_on saw {"password":"hunter2","note":"the hunter2 vault"}')
+  const records = (await readFile(join(dir, 'mcp-calls.jsonl'), 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line))
+  expect(records[0]).toMatchObject({
+    server: 'rig',
+    tool: 'power_on',
+    arguments: { password: '[redacted]', note: 'the [redacted] vault' },
+  })
+  // The result is free text, so the rules compose over it; what matters is
+  // that no secret survives into the published record.
+  const result = String((records[0] as { result?: string }).result)
+  expect(result).not.toContain('hunter2')
+  expect(result).toContain('[redacted]')
 })
