@@ -421,6 +421,40 @@ export class FileLedgerStore implements LedgerStore {
     await writeFile(tmp, text)
     await rename(tmp, this.file)
   }
+
+  /**
+   * Where the ledger sits right now, named by the content it holds, so a
+   * writer can find out later whether the file still holds what it observed.
+   * An absent ledger is undefined, not an empty document.
+   */
+  async head(): Promise<string | undefined> {
+    let text: string
+    try {
+      text = await readFile(this.file, 'utf8')
+    } catch (error) {
+      if (isErrno(error, 'ENOENT')) return undefined
+      throw error
+    }
+    return createHash('sha256').update(text, 'utf8').digest('hex')
+  }
+
+  /**
+   * Write only when the ledger still holds what `head` named. The recheck
+   * happens immediately before the rename, so a destination that moved while
+   * the migration prepared its write is refused instead of clobbered.
+   */
+  async saveDocumentIfUnchanged(
+    entries: LedgerEntry[],
+    changes: LedgerChange[],
+    head: string | undefined,
+  ): Promise<void> {
+    const live = await this.head()
+    if (live !== head)
+      throw new Error(
+        'ledger: the destination changed while the migration prepared it; run the migration again',
+      )
+    await this.saveDocument(entries, changes)
+  }
 }
 
 function isErrno(error: unknown, code: string): boolean {
@@ -489,6 +523,46 @@ export class BranchLedgerStore implements LedgerStore {
         )
       changes = current.changes
     }
+    const commit = await this.buildCommit(entries, changes)
+    await this.run(['update-ref', `refs/heads/${this.branch}`, commit])
+  }
+
+  /**
+   * Where the ledger sits right now, named by the commit the branch points
+   * at, so a writer can ask later whether the branch still holds what it
+   * observed. A branch that does not exist is undefined, not an empty
+   * document.
+   */
+  async head(): Promise<string | undefined> {
+    try {
+      return (await this.run(['rev-parse', '--verify', `refs/heads/${this.branch}`])).stdout.trim()
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Write only when the branch still points where `head` named. The refusal
+   * is git's own update-ref old-value check, which is atomic under git's
+   * lock, so a ledger written while the migration ran is never clobbered.
+   */
+  async saveDocumentIfUnchanged(
+    entries: LedgerEntry[],
+    changes: LedgerChange[],
+    head: string | undefined,
+  ): Promise<void> {
+    const commit = await this.buildCommit(entries, changes)
+    const absent = '0000000000000000000000000000000000000000'
+    try {
+      await this.run(['update-ref', `refs/heads/${this.branch}`, commit, head ?? absent])
+    } catch (error) {
+      throw new Error(
+        `ledger: the destination changed while the migration prepared it; run the migration again (${String(error)})`,
+      )
+    }
+  }
+
+  private async buildCommit(entries: LedgerEntry[], changes: LedgerChange[]): Promise<string> {
     // The same strict loader a run reads with judges the document before any
     // of it is written out, so invalid entries or a broken chain never commit.
     const text = serializeLedgerDocument(entries, changes)
@@ -501,13 +575,12 @@ export class BranchLedgerStore implements LedgerStore {
     } catch {
       parent = undefined
     }
-    const commit = (
+    return (
       await this.run(
         parent === undefined
           ? ['commit-tree', tree, '-m', 'criteria ledger update']
           : ['commit-tree', tree, '-p', parent, '-m', 'criteria ledger update'],
       )
     ).stdout.trim()
-    await this.run(['update-ref', `refs/heads/${this.branch}`, commit])
   }
 }

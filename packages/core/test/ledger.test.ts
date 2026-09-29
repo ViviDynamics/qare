@@ -184,6 +184,41 @@ describe('FileLedgerStore', () => {
     expect(await store.load()).toEqual([])
     await rm(dir, { recursive: true })
   })
+
+  test('head names the content an absent file does not have', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qare-ledger-file-'))
+    const store = new FileLedgerStore(dir)
+    expect(await store.head()).toBeUndefined()
+    await store.save([entry()])
+    const head = await store.head()
+    expect(head).toBeDefined()
+    await store.save([entry({ status: 'proposed' })])
+    expect(await store.head()).not.toEqual(head)
+    await rm(dir, { recursive: true })
+  })
+
+  test('saveDocumentIfUnchanged refuses a destination that moved after it was observed', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qare-ledger-file-'))
+    const store = new FileLedgerStore(dir)
+    await store.saveDocument([entry()], [])
+    const head = await store.head()
+    await store.saveDocument([entry({ status: 'proposed' })], [])
+    await expect(store.saveDocumentIfUnchanged([entry({ status: 'retired' })], [], head)).rejects.toThrow(
+      /destination changed while the migration prepared it/,
+    )
+    expect(await store.load()).toEqual([entry({ status: 'proposed' })])
+    await rm(dir, { recursive: true })
+  })
+
+  test('saveDocumentIfUnchanged writes when the destination still holds what head named', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qare-ledger-file-'))
+    const store = new FileLedgerStore(dir)
+    const head = await store.head()
+    expect(head).toBeUndefined()
+    await store.saveDocumentIfUnchanged([entry()], [], head)
+    expect(await store.load()).toEqual([entry()])
+    await rm(dir, { recursive: true })
+  })
 })
 
 describe('BranchLedgerStore', () => {
@@ -226,6 +261,35 @@ describe('BranchLedgerStore', () => {
     execSync(`git update-ref refs/heads/qare-ledger ${seed}`, { cwd: repo })
     const store = new BranchLedgerStore(repo, 'qare-ledger')
     await expect(store.load()).rejects.toThrow(/unreadable/)
+  })
+
+  test('head names the commit an absent branch does not have', async () => {
+    const repo = await realRepo()
+    const store = new BranchLedgerStore(repo, 'qare-ledger')
+    expect(await store.head()).toBeUndefined()
+    await store.save([entry({ status: 'proposed' })])
+    expect(await store.head()).toBeDefined()
+  })
+
+  test('saveDocumentIfUnchanged refuses a branch that moved after it was observed', async () => {
+    const repo = await realRepo()
+    const store = new BranchLedgerStore(repo, 'qare-ledger')
+    await store.save([entry({ status: 'proposed' })])
+    const head = await store.head()
+    await store.save([entry({ status: 'active', note: 'moved' })])
+    await expect(store.saveDocumentIfUnchanged([entry({ status: 'retired' })], [], head)).rejects.toThrow(
+      /destination changed while the migration prepared it/,
+    )
+    expect(await store.load()).toEqual([entry({ status: 'active', note: 'moved' })])
+  })
+
+  test('saveDocumentIfUnchanged writes when the branch still holds the observed head', async () => {
+    const repo = await realRepo()
+    const store = new BranchLedgerStore(repo, 'qare-ledger')
+    const head = await store.head()
+    expect(head).toBeUndefined()
+    await store.saveDocumentIfUnchanged([entry({ status: 'proposed' })], [])
+    expect(await store.load()).toEqual([entry({ status: 'proposed' })])
   })
 
   test('injected runner records plumbing commands; mktree input pinned', async () => {

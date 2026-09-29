@@ -5,6 +5,7 @@ import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { dirname, join, relative, resolve } from 'node:path'
 import {
+  BranchLedgerStore,
   FileLedgerStore,
   resolveCriteriaSubset,
   criteriaSubsetPlan,
@@ -120,7 +121,7 @@ export async function main(
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -1103,7 +1104,7 @@ export async function runLedgerCommand(argv: string[], out: Writer, err: Writer)
     const dir = resolve(ledgerSpec ?? '.qa')
     if (sub === undefined)
       throw new Error(
-        'qare ledger requires a subcommand; usage: qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish> [--ledger <dir>]',
+        'qare ledger requires a subcommand; usage: qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>]',
       )
     if (sub === 'list') return await ledgerList(dir, out)
     if (sub === 'show') return await ledgerShow(dir, subArgs[0], out)
@@ -1115,8 +1116,9 @@ export async function runLedgerCommand(argv: string[], out: Writer, err: Writer)
     if (sub === 'export') return await ledgerExport(subArgs, dir, out)
     if (sub === 'import') return await ledgerImport(subArgs, dir, out)
     if (sub === 'publish') return await ledgerPublish(subArgs, dir, out)
+    if (sub === 'migrate') return await ledgerMigrate(subArgs, dir, out)
     throw new Error(
-      `unknown ledger subcommand ${JSON.stringify(sub)}; usage: qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish> [--ledger <dir>]`,
+      `unknown ledger subcommand ${JSON.stringify(sub)}; usage: qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>]`,
     )
   } catch (error) {
     err.write(`${formatError(error)}\n`)
@@ -1267,6 +1269,74 @@ async function ledgerImport(argv: string[], ledgerDir: string, out: Writer): Pro
     `imported ${imported.entries.length} entries with ${changes.length} change records: history intact\n`,
   )
   out.write(`published view refreshed: ${resolve(publishFlag)}\n`)
+  return 0
+}
+
+/**
+ * A count read the way a person writes it: one entry, two entries.
+ */
+function counted(n: number, singular: string, plural: string): string {
+  return n === 1 ? `1 ${singular}` : `${n} ${plural}`
+}
+
+/**
+ * `qare ledger migrate`: move a ledger between the two backends (#59). The
+ * document travels whole, entries and hash-chained history, so ids and
+ * history arrive exactly as they left. `--dry-run` reports what would move
+ * and writes nothing, and a migration onto a backend that already holds a
+ * ledger is refused unless `--force` names the replacement. A source that
+ * holds nothing is refused too, because a typo in the flags would otherwise
+ * look like a migration of nothing, and the write onto the destination is
+ * checked against the state the migration observed, so a ledger that moved
+ * under the run is never clobbered.
+ */
+async function ledgerMigrate(argv: string[], ledgerDir: string, out: Writer): Promise<number> {
+  const to = flag(argv, '--to')
+  if (to === undefined) throw new Error('qare ledger migrate requires --to <branch|files>')
+  if (to !== 'branch' && to !== 'files')
+    throw new Error(`ledger migrate: --to must be "branch" or "files", not ${JSON.stringify(to)}`)
+  const repo = resolve(flag(argv, '--repo') ?? '.')
+  const branch = flag(argv, '--branch') ?? 'qare-ledger'
+  const dryRun = argv.includes('--dry-run')
+  const force = argv.includes('--force')
+  const files = resolve(ledgerDir)
+  const source =
+    to === 'branch'
+      ? { backend: `files (${files})`, store: new FileLedgerStore(ledgerDir) }
+      : { backend: `branch (${branch} in ${repo})`, store: new BranchLedgerStore(repo, branch) }
+  const destination =
+    to === 'branch'
+      ? { backend: `branch (${branch} in ${repo})`, store: new BranchLedgerStore(repo, branch) }
+      : { backend: `files (${files})`, store: new FileLedgerStore(ledgerDir) }
+  const document = await source.store.loadDocument()
+  if (document.entries.length === 0 && document.changes.length === 0)
+    throw new Error(
+      `ledger migrate: the ${source.backend} holds no ledger (0 entries and 0 change records); check the --ledger, --repo and --branch flags`,
+    )
+  const destinationHead = await destination.store.head()
+  const settled = await destination.store.loadDocument()
+  const occupied = settled.entries.length > 0 || settled.changes.length > 0
+  const what = `${counted(document.entries.length, 'entry', 'entries')} and ${counted(
+    document.changes.length,
+    'change record',
+    'change records',
+  )}`
+  if (dryRun) {
+    out.write(`migrate: ${what} would move from ${source.backend} to ${destination.backend}\n`)
+    if (occupied && !force)
+      out.write('migrate: the destination is non-empty, so the migration would be refused without --force\n')
+    return 0
+  }
+  if (occupied && !force)
+    throw new Error(
+      `ledger migrate: the ${destination.backend} backend already holds a ledger (${counted(
+        settled.entries.length,
+        'entry',
+        'entries',
+      )}, ${counted(settled.changes.length, 'change record', 'change records')}); pass --force to replace it`,
+    )
+  await destination.store.saveDocumentIfUnchanged(document.entries, document.changes, destinationHead)
+  out.write(`migrate: ${what} moved from ${source.backend} to ${destination.backend}\n`)
   return 0
 }
 
