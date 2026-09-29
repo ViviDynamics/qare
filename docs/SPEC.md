@@ -527,6 +527,17 @@ ledger, a pull request, or GitHub at all:
   is reported as not selected, never as passed.
 - **A sweep.** On a schedule, QARE works through the ledger to refresh staleness
   and catch drift that no pull request would have touched.
+- **Any of the above, twice.** A run that names a cache directory
+  (`qare run --cache <dir>`) skips unchanged work. A criterion whose checks as
+  authored, plan, profile, and base and head revisions are all unchanged
+  replays the result the earlier run published, evidence files included,
+  instead of re-running the checks; its result row carries a cached marker,
+  and the evidence directory carries a cache summary naming every criterion
+  the cache served. Any input that moves (a changed check, a changed profile,
+  a different revision) changes the key, so that criterion runs for real. A
+  cache entry that cannot be read back is a miss, never a claim: the cache can
+  cost a re-run, but it cannot invent a result. The boot is not cached, only
+  the criteria are, so a cached run still pays for the app it brings up.
 
 Selection, caching, sharding and budgets are what make the large case possible;
 they never change what a verdict means.

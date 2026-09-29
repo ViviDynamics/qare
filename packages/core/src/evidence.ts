@@ -157,7 +157,7 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
   const table = (criteria: CriterionResult[]): string[] => [
     '| criterion | outcome | reason |',
     '| --- | --- | --- |',
-    ...criteria.map(criterion => `| ${cell(criterion.id)} | ${criterion.outcome} | ${cell(reasonCell(criterion))} |`),
+    ...criteria.map(criterion => `| ${cell(criterion.id)} | ${criterion.outcome}${criterion.cached === true ? ' (cached)' : ''} | ${cell(reasonCell(criterion))} |`),
   ]
   const job = result.job === undefined ? '' : ` (job ${posted ? codeSpan(result.job.id) : result.job.id})`
   const environment = result.environment === undefined
