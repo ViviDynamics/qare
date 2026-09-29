@@ -128,7 +128,7 @@ test('the drop note names flow among the kinds the runner executes', () => {
     CONTEXT,
   )
 
-  expect(notes.join(' ')).toMatch(/command, mail and flow checks only/)
+  expect(notes.join(' ')).toMatch(/command, mail, flow and tool checks only/)
 })
 
 test('a plan whose criteria are all unrunnable says so', () => {

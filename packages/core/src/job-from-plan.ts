@@ -43,6 +43,15 @@ function runnable(check: PlanCheck): JobCheck | undefined {
         ...(check.singleUse === undefined ? {} : { singleUse: check.singleUse }),
         ...(check.code === undefined ? {} : { code: check.code }),
       }
+    case 'tool':
+      return {
+        kind: 'tool',
+        ...(check.name === undefined ? {} : { name: check.name }),
+        tool: check.tool,
+        ...(check.args === undefined ? {} : { args: check.args }),
+        assert: check.assert,
+        ...(check.timeoutMs === undefined ? {} : { timeoutMs: check.timeoutMs }),
+      }
     default:
       return undefined
   }
@@ -69,7 +78,7 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
     const skipped = criterion.checks.filter((check) => runnable(check) === undefined)
     if (skipped.length > 0)
       notes.push(
-        `${criterion.id}: ${skipped.length} check(s) not run, because the runner executes command, mail and flow checks only ` +
+        `${criterion.id}: ${skipped.length} check(s) not run, because the runner executes command, mail, flow and tool checks only ` +
           `(${[...new Set(skipped.map((check) => check.kind))].join(', ')})`,
       )
     const kinds = [...new Set(skipped.map((check) => check.kind))].join(', ')

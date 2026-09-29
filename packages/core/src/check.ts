@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { BootOpts } from './boot.js'
 import { BROWSER_FLOW_DRIVER } from './flow-playwright.js'
+import { mcpDriverCapabilities } from './mcp.js'
 import { jobFromPlan } from './job-from-plan.js'
 import { judgeExecuted } from './judge.js'
 import type { ReadMail } from './mailbox.js'
@@ -170,7 +171,10 @@ async function planOrReport(
     plan = await planRun(planner, {
       criteria,
       suites: profile.suites.map((suite) => suite.name),
-      driver: BROWSER_FLOW_DRIVER,
+      // The profile's MCP mapping is the driver when it declares one (#94):
+      // the mapping is the capability declaration, so plan time rejects an
+      // action the mapped tools cannot perform, before anything runs.
+      driver: mcpDriverCapabilities(profile.mcp) ?? BROWSER_FLOW_DRIVER,
       ...(profile.target === undefined ? {} : { target: profile.target.url }),
       ...(server === undefined
         ? {}

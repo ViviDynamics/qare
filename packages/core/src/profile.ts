@@ -82,6 +82,36 @@ export interface ProfileMcpServer {
   steps: McpStep[]
   /** The credential the server needs, by name; never a value (#93). */
   credential?: string
+  /**
+   * The flow intents this server's tools drive (#94). The mapping is the
+   * driver's capability declaration, so a plan is rejected at plan time for
+   * an action the mapping does not bind; one server at most may carry it.
+   */
+  driver?: Record<string, ProfileMcpToolMap>
+}
+
+/**
+ * The flow intents a driver mapping may name, and the action fields each
+ * intent carries (#94): the mapping binds a tool argument to every slot, so
+ * the harness knows what to hand the tool when the step runs.
+ */
+export const MCP_DRIVER_INTENTS: Record<string, { slots: readonly string[] }> = {
+  open: { slots: ['url'] },
+  type: { slots: ['element', 'value'] },
+  click: { slots: ['element'] },
+  choose: { slots: ['element', 'value'] },
+  waitFor: { slots: ['element'] },
+  assertText: { slots: ['text'] },
+  assertElement: { slots: ['element'] },
+  capture: { slots: [] },
+  snapshot: { slots: [] },
+}
+
+export interface ProfileMcpToolMap {
+  /** The tool the intent's action drives. */
+  tool: string
+  /** Tool argument names bound to the slots the intent carries. */
+  args?: Record<string, string>
 }
 
 export interface QaProfile {
@@ -577,7 +607,15 @@ function parseMcp(value: unknown): ProfileMcpServer[] {
         `${base}.steps`,
         `a server that needs the credential ${JSON.stringify(credential)} cannot run in the execute step: the execute step runs pull request code, which must never hold it`,
       )
-    return { name, ...(command !== undefined ? { command } : { url }), tools, steps, ...(credential === undefined ? {} : { credential }) }
+    const driver = entry.driver === undefined ? undefined : parseMcpDriver(entry.driver, base, tools)
+    return {
+      name,
+      ...(command !== undefined ? { command } : { url }),
+      tools,
+      steps,
+      ...(credential === undefined ? {} : { credential }),
+      ...(driver === undefined ? {} : { driver }),
+    }
   })
   // Two servers whose names and tools build the same channel name (server "a"
   // with tool "b.c" against server "a.b" with tool "c") would leave one of the
@@ -593,5 +631,60 @@ function parseMcp(value: unknown): ProfileMcpServer[] {
         )
       routes.add(route)
     }
+  const drivers = servers.filter((server) => server.driver !== undefined)
+  if (drivers.length > 1) fail('mcp', 'one server at most may carry a driver mapping: the flow is driven by one host, not two')
   return servers
 }
+
+/**
+ * The driver mapping on one server entry (#94): each intent must be one the
+ * harness carries, and every argument the intent carries must be bound to a
+ * tool argument, so the mapping is the driver's capability declaration and
+ * nothing is guessed when a step runs. A mapped tool must be on the entry's
+ * allowlist, or the plan could reach a tool the profile never published.
+ */
+function parseMcpDriver(
+  value: unknown,
+  base: string,
+  allowed: readonly string[],
+): Record<string, ProfileMcpToolMap> {
+  if (!isRecord(value) || Object.keys(value).length === 0)
+    fail(`${base}.driver`, `${base}.driver must be a YAML object mapping flow intents to host tools, and cannot be empty`)
+  const driver: Record<string, ProfileMcpToolMap> = {}
+  for (const [intent, entry] of Object.entries(value)) {
+    const intentBase = `${base}.driver.${intent}`
+    const slots = MCP_DRIVER_INTENTS[intent]?.slots
+    if (slots === undefined)
+      fail(
+        `${intentBase}`,
+        `${JSON.stringify(intent)} is not a flow intent the driver can map; map one of ${Object.keys(MCP_DRIVER_INTENTS).join(', ')}`,
+      )
+    if (!isRecord(entry)) fail(intentBase, `${intentBase} must be a YAML object with tool, and the arguments its tool takes`)
+    const tool = nonEmptyString(entry.tool, `${intentBase}.tool`, 'tool name')
+    if (!allowed.includes(tool))
+      fail(
+        `${intentBase}.tool`,
+        `the tool ${JSON.stringify(tool)} the ${intent} mapping drives is not on the server's allowlist, so the plan could never reach it`,
+      )
+    const args: Record<string, string> = {}
+    for (const [arg, slot] of Object.entries(entry.args ?? {})) {
+      if (arg === '') fail(`${intentBase}.args`, `${intentBase}.args cannot carry an empty argument name`)
+      if (typeof slot !== 'string' || !slots.includes(slot))
+        fail(
+          `${intentBase}.args.${arg}`,
+          `${intentBase}.args.${arg} must be one of the action fields the ${intent} intent carries: ${slots.join(', ')}`,
+        )
+      args[arg] = slot
+    }
+    const bound = new Set(Object.values(args))
+    const missing = slots.filter((slot) => !bound.has(slot))
+    if (missing.length > 0)
+      fail(
+        intentBase,
+        `the ${intent} mapping binds no tool argument to ${missing.join(', ')}, which the intent carries`,
+      )
+    driver[intent] = { tool, ...(Object.keys(args).length > 0 ? { args } : {}) }
+  }
+  return driver
+}
+

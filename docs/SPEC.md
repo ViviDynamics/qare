@@ -641,7 +641,7 @@ steps the server may run in:
   started or reached is reported, never silently skipped; the calls the planner
   made, their arguments and their results are recorded with the run's evidence
   as `mcp-calls.jsonl`.
-- **As a driver or a check, planned.** QARE's code would call the tools
+- **As a driver or a check, shipped (#94).** QARE's code calls the tools
   directly, with no model in between, by mapping its action vocabulary onto
   them. The rules do not change: references stay semantic, the harness records
   what the tool returned, and code decides the verdict. A tool that can only
@@ -651,6 +651,51 @@ A registered server declares which steps it may run in. A server that needs a
 credential says so by name, and the profile refuses to place it in the execute
 step — the step that runs pull request code — so the refusal is a profile
 mistake named when the profile loads, not a leak found later.
+
+### The MCP adapter
+
+The generic protocol is Model Context Protocol (JSON-RPC 2.0, no model in the
+loop). A profile registers host servers in an `mcp` list, one entry per server,
+each saying how to reach it (`command` or `url`), which of its tools are
+allowed, and which steps it may run in (#93). One entry at most may also carry
+a `driver` mapping — the mapping is what makes that server a driver.
+
+The `driver` mapping is the driver-capability declaration: it maps each flow
+intent (`open`, `click`, `type`, `choose`, `waitFor`, `assertText`,
+`assertElement`, `capture`, `snapshot`) onto a tool on that entry's allowlist
+and binds every argument the intent carries. A plan that names an intent the
+mapping does not bind is refused at plan time, before a job runs — the mapping,
+not a string in the check, is what makes the server a driver, so a plan cannot
+ask a driver for a step the host never mapped. The mapping is also checked
+against the server's own tool schemas at connect time: a tool whose bound
+argument is a number takes coordinates, not element references, and the
+connect refuses it with that named ("only acts on coordinates"), so a
+coordinate-only tool can never be a driver.
+
+```yaml
+mcp:
+  - name: device rig
+    url: http://127.0.0.1:9/mcp
+    tools: [navigate, click_ref, page_text]
+    steps: [execute]
+    driver:
+      open: { tool: navigate, args: { url: url } }
+      click: { tool: click_ref, args: { ref: element } }
+```
+
+A plan can also name a `tool` check: one call to a tool on a registered
+entry's allowlist, with arguments the plan substitutes, and an `assert` list
+naming explicit matchers (`equals`, `contains`, `matches`, or a path into the
+tool's structured result). A tool check with no assertions does not parse — a
+free-text result is never judged by a model; code decides from the matchers the
+plan names. Every call is evidence: the runner writes the tool name, the
+substituted arguments, the redacted result and the assertion outcomes to the
+check's `tool.json`, and a driven flow records each mapped call in the flow
+directory's `tool-calls.json`, swept with the profile's redaction rules.
+
+A run can prove a criterion through a sample MCP server this repository
+ships for tests: a plain loopback server with element-reference tools,
+proving the done-when with no model call and no outside network.
 
 ## Running against a deployed environment
 

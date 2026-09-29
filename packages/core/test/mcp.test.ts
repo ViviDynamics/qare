@@ -11,15 +11,27 @@ import {
   callChannelTool,
   channelToolName,
   connectMcpServer,
+  mcpDriverCapabilities,
   mcpRecordsFile,
+  PLAN_SCHEMA_VERSION,
   redactionRules,
+  runJob,
   splitMcpCommand,
   startMcpToolServer,
   startRegisteredMcpSources,
+  validateProfileConfig,
+  loadPlan,
+  loadJobFromText,
+  type BootOpts,
+  type Job,
+  type JobCriterion,
+  type JobProfileRef,
   type McpCallRecord,
   type McpSource,
   type ProfileMcpServer,
+  type QaProfile,
 } from '../src/index.js'
+import { startSampleServer, SECRET } from './sample-server.js'
 
 // The HTTP stand-in lives in a fixture file: test files hold no network
 // clients, so the fixture process is spawned and the test talks to it through
@@ -411,4 +423,297 @@ test('a server that answers no POST at all is unreachable within the handshake t
   } finally {
     fixture.kill()
   }
+})
+
+// --- the driver adapter (#94) ---
+
+// Assembled like the boot URLs elsewhere: no network marker sits as a literal
+// in a test file, which the marker scanner reads.
+const stubUrl = ['http:', '//localhost:9/mcp'].join('')
+const REDACTED = '[redacted]'
+
+const HEALTH_URL = ['http:', '//localhost:3000/up'].join('')
+
+const DRIVER_PROFILE: Pick<QaProfile, 'app' | 'stubs' | 'visual' | 'redact'> = {
+  app: {
+    boot: { compose: 'compose.qa.yaml', service: 'admin' },
+    health: { http: HEALTH_URL, timeout: '120s' },
+    seed: { command: 'bin/rails db:seed:qa' },
+    login: { fixture: 'fixtures/users.yml', role: 'admin' },
+  },
+  stubs: [
+    { service: 'billing', hosts: ['api.billing-vendor.example'], provided_by: { compose_service: 'billing-stub' } },
+    { service: 'mail', hosts: ['api.mailgun.net'], provided_by: { compose_service: 'mailpit' } },
+  ],
+  visual: { widths: [1440, 390], themes: ['light', 'dark'] },
+  suites: [],
+  redact: { values: [SECRET] },
+}
+
+const HEALTHY_DRIVER_BOOT: BootOpts = {
+  runCompose: async () => ({ code: 0, stdout: 'up out', stderr: 'up err' }),
+  probe: async () => ({ ok: true }),
+  pollIntervalMs: 1,
+}
+
+async function makeDriverJob(mcp: QaProfile['mcp'], criteria: JobCriterion[]): Promise<Job> {
+  const repoPath = await mkdtemp(join(tmpdir(), 'qare-mcp-'))
+  const profile: QaProfile = { ...DRIVER_PROFILE, ...(mcp === undefined ? {} : { mcp }) }
+  return {
+    id: 'job-mcp-driver',
+    repoPath,
+    baseRef: 'main',
+    headRef: 'HEAD~1',
+    profile: { inline: profile } satisfies JobProfileRef,
+    evidenceDir: join(repoPath, 'evidence'),
+    post: 'none',
+    criteria,
+  }
+}
+
+test('a criterion is proven through the sample MCP server with no model call in the run', async () => {
+  const server = await startSampleServer()
+  try {
+    const job = await makeDriverJob(
+      [
+        {
+          name: 'sample',
+          url: server.url,
+          tools: ['page_text', 'navigate'],
+          steps: ['plan', 'execute'],
+          driver: { open: { tool: 'navigate', args: { url: 'url' } } },
+        },
+      ],
+      [
+        {
+          id: 'c1',
+          text: 'the page shows the total',
+          checks: [{ kind: 'tool', tool: 'page_text', args: {}, assert: [{ path: 'title', equals: 'Welcome' }] }],
+        },
+      ],
+    )
+    const { result } = await runJob(job, HEALTHY_DRIVER_BOOT)
+    expect(result.verdict).toBe('passed')
+    expect(result.criteria[0]?.outcome).toBe('proven')
+    // The call and its result are evidence, redacted like everything else (#94).
+    const tool = JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'c1', '0', 'tool.json'), 'utf8'))
+    expect(tool.tool).toBe('page_text')
+    expect(tool.outcome).toBe('passed')
+    expect(tool.result.structured.secret).toBe(REDACTED)
+    expect(JSON.stringify(tool)).not.toContain(SECRET)
+  } finally {
+    await server.close()
+  }
+})
+
+test('a flow check drives the mapped tools and records redacted calls as evidence', async () => {
+  const server = await startSampleServer()
+  try {
+    const job = await makeDriverJob(
+      [
+        {
+          name: 'sample',
+          url: server.url,
+          tools: ['navigate', 'type_ref', 'click_ref', 'wait_ref', 'expect_text'],
+          steps: ['plan', 'execute'],
+          driver: {
+            open: { tool: 'navigate', args: { url: 'url' } },
+            type: { tool: 'type_ref', args: { ref: 'element', text: 'value' } },
+            click: { tool: 'click_ref', args: { ref: 'element' } },
+            waitFor: { tool: 'wait_ref', args: { ref: 'element' } },
+            assertText: { tool: 'expect_text', args: { text: 'text' } },
+          },
+        },
+      ],
+      [
+        {
+          id: 'c1',
+          text: 'the checkout flow works',
+          checks: [
+            {
+              kind: 'flow',
+              name: 'checkout',
+              actions: [
+                { action: 'open', url: '/checkout' },
+                { action: 'type', element: { role: 'spinbutton', name: 'quantity' }, value: '2' },
+                { action: 'click', element: { role: 'button', name: 'pay' } },
+                { action: 'waitFor', element: { role: 'heading', name: 'receipt' } },
+                { action: 'assertText', text: 'the checkout page shows the total and a pay button' },
+              ],
+            },
+          ],
+        },
+      ],
+    )
+    const { result } = await runJob(job, HEALTHY_DRIVER_BOOT)
+    expect(result.verdict).toBe('passed')
+    const calls = JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'c1', '0', 'tool-calls.json'), 'utf8'))
+    expect(calls.map((call: { intent: string; tool: string }) => `${call.intent}:${call.tool}`)).toEqual([
+      'open:navigate',
+      'type:type_ref',
+      'click:click_ref',
+      'waitFor:wait_ref',
+      'assertText:expect_text',
+    ])
+    expect(JSON.stringify(calls)).not.toContain(SECRET)
+  } finally {
+    await server.close()
+  }
+})
+
+test('a mapping that omits an intent rejects a plan naming it, at plan time', () => {
+  const driver = mcpDriverCapabilities([
+    { name: 'sample', url: stubUrl, tools: ['navigate'], steps: ['plan', 'execute'], driver: { open: { tool: 'navigate', args: { url: 'url' } } } },
+  ])
+  expect(driver).toBeDefined()
+  const plan = {
+    schemaVersion: PLAN_SCHEMA_VERSION,
+    criteria: [
+      {
+        id: 'c1',
+        text: 'x',
+        checks: [
+          {
+            kind: 'flow',
+            name: 'f',
+            actions: [
+              { action: 'open', url: '/a' },
+              { action: 'click', element: { role: 'button', name: 'pay' } },
+            ],
+          },
+        ],
+      },
+    ],
+  }
+  expect(() => loadPlan(JSON.stringify(plan), [], driver)).toThrow(/click/)
+})
+
+test('a plan naming only mapped intents loads against the mapping', () => {
+  const driver = mcpDriverCapabilities([
+    {
+      name: 'sample',
+      url: stubUrl,
+      tools: ['navigate', 'click_ref'],
+      steps: ['plan', 'execute'],
+      driver: {
+        open: { tool: 'navigate', args: { url: 'url' } },
+        click: { tool: 'click_ref', args: { ref: 'element' } },
+      },
+    },
+  ])
+  const plan = {
+    schemaVersion: PLAN_SCHEMA_VERSION,
+    criteria: [
+      {
+        id: 'c1',
+        text: 'x',
+        checks: [
+          { kind: 'flow', name: 'f', actions: [{ action: 'open', url: '/a' }, { action: 'click', element: { role: 'button', name: 'pay' } }] },
+        ],
+      },
+    ],
+  }
+  expect(() => loadPlan(JSON.stringify(plan), [], driver)).not.toThrow()
+})
+
+test('a tool that only acts on coordinates is refused as a driver, with the reason named', async () => {
+  const server = await startSampleServer()
+  try {
+    const job = await makeDriverJob(
+      [
+        {
+          name: 'sample',
+          url: server.url,
+          tools: ['navigate', 'tap_at'],
+          steps: ['plan', 'execute'],
+          driver: {
+            open: { tool: 'navigate', args: { url: 'url' } },
+            click: { tool: 'tap_at', args: { x: 'element' } },
+          },
+        },
+      ],
+      [{ id: 'c1', text: 'x', checks: [{ kind: 'flow', name: 'f', actions: [{ action: 'open', url: '/a' }] }] }],
+    )
+    const { result } = await runJob(job, HEALTHY_DRIVER_BOOT)
+    expect(result.verdict).toBe('blocked')
+    expect(result.criteria[0]?.outcome).toBe('unverified')
+    expect(result.criteria[0]?.reason).toMatch(/only acts on coordinates/)
+  } finally {
+    await server.close()
+  }
+})
+
+test('a tool check naming a tool the profile does not register refuses the run', async () => {
+  const server = await startSampleServer()
+  try {
+    const job = await makeDriverJob(
+      [
+        {
+          name: 'sample',
+          url: server.url,
+          tools: ['navigate'],
+          steps: ['plan', 'execute'],
+          driver: { open: { tool: 'navigate', args: { url: 'url' } } },
+        },
+      ],
+      [{ id: 'c1', text: 'x', checks: [{ kind: 'tool', tool: 'page_text', assert: [{ contains: 'anything' }] }] }],
+    )
+    const { result } = await runJob(job, HEALTHY_DRIVER_BOOT)
+    expect(result.verdict).toBe('refused')
+    expect(result.criteria[0]?.reason).toMatch(/page_text/)
+    expect(result.criteria[0]?.reason).toMatch(/registers/)
+  } finally {
+    await server.close()
+  }
+})
+
+test('a tool check asserts nothing unless the plan names explicit matchers', () => {
+  expect(() =>
+    loadJobFromText(
+      'id: job-tool\nrepoPath: /tmp/qare\nbaseRef: main\nheadRef: HEAD~1\nevidenceDir: /tmp/qare/evidence\nprofile: { inline: {} }\npost: none\ncriteria:\n  - id: c1\n    text: x\n    checks:\n      - kind: tool\n        tool: page_text\n',
+    ),
+  ).toThrow(/asserts nothing/)
+})
+
+test("a tool check's matcher is validated at parse time, one per assertion", () => {
+  expect(() =>
+    loadJobFromText(
+      'id: job-tool\nrepoPath: /tmp/qare\nbaseRef: main\nheadRef: HEAD~1\nevidenceDir: /tmp/qare/evidence\nprofile: { inline: {} }\npost: none\ncriteria:\n  - id: c1\n    text: x\n    checks:\n      - kind: tool\n        tool: page_text\n        assert:\n          - equals: welcome\n            contains: el\n',
+    ),
+  ).toThrow(/one matcher/)
+  expect(() =>
+    loadJobFromText(
+      'id: job-tool\nrepoPath: /tmp/qare\nbaseRef: main\nheadRef: HEAD~1\nevidenceDir: /tmp/qare/evidence\nprofile: { inline: {} }\npost: none\ncriteria:\n  - id: c1\n    text: x\n    checks:\n      - kind: tool\n        tool: page_text\n        assert:\n          - matches: "["\n',
+    ),
+  ).toThrow(/not a valid pattern/)
+})
+
+test('the profile parses a driver mapping, and refuses a second one or an unallowlisted tool', () => {
+  const parsed = validateProfileConfig({
+    ...DRIVER_PROFILE,
+    mcp: [
+      {
+        name: 'sample',
+        url: stubUrl,
+        tools: ['page_text', 'navigate'],
+        steps: ['plan', 'execute'],
+        driver: { open: { tool: 'navigate', args: { url: 'url' } } },
+      },
+    ],
+  })
+  expect(parsed.mcp?.[0]?.driver?.open?.tool).toBe('navigate')
+  expect(mcpDriverCapabilities(parsed.mcp)?.actions).toEqual(['open'])
+  expect(mcpDriverCapabilities(parsed.mcp)?.evidence).toEqual(['action-log'])
+  expect(() =>
+    validateProfileConfig({
+      ...DRIVER_PROFILE,
+      mcp: [
+        { name: 'a', url: stubUrl, tools: ['navigate'], steps: ['plan', 'execute'], driver: { open: { tool: 'navigate', args: { url: 'url' } } } },
+        { name: 'b', url: stubUrl, tools: ['navigate'], steps: ['plan', 'execute'], driver: { open: { tool: 'navigate', args: { url: 'url' } } } },
+      ],
+    }),
+  ).toThrow(/one server at most/)
+  expect(() =>
+    validateProfileConfig({ ...DRIVER_PROFILE, mcp: [{ name: 'a', url: stubUrl, tools: ['other'], steps: ['plan', 'execute'], driver: { open: { tool: 'navigate', args: { url: 'url' } } } }] }),
+  ).toThrow(/allowlist/)
 })

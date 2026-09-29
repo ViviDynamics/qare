@@ -11,11 +11,12 @@ import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowDriverCapab
 import type { FlowRepairRecord } from './locator.js'
 import { BROWSER_FLOW_DRIVER, makePlaywrightFlowSession } from './flow-playwright.js'
 import { judgeRun, toSideResults } from './judge.js'
-import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck, type JobProfileGroup, type JobProfileRef, type SeveralProfilesJob, type SingleProfileJob } from './job.js'
+import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck, type JobProfileGroup, type JobProfileRef, type JobToolCheck, type SeveralProfilesJob, type SingleProfileJob } from './job.js'
 import type { FlowActionStep } from './plan.js'
 import { feedRunLedger } from './ledger-feed.js'
 import { extractCode, httpMailbox, mailEvidence, runMailCheck, type ReadMail } from './mailbox.js'
-import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
+import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCapabilities, mcpDriverServer, type McpToolResult } from './mcp.js'
+import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { mintRunValues, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
@@ -178,7 +179,7 @@ export async function runJob(
   const login = profile.app?.login
   const rules = [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value])]
   try {
-    validatePlanValues(job.criteria, profile, values, opts.flowDriver ?? BROWSER_FLOW_DRIVER)
+    validatePlanValues(job.criteria, profile, values, opts.flowDriver ?? mcpDriverCapabilities(profile.mcp) ?? BROWSER_FLOW_DRIVER)
   } catch (error) {
     if (!(error instanceof JobValidationError)) throw error
     return refuseRun(job, opts, rules, error.message, targetNote, isolation, execution)
@@ -229,7 +230,7 @@ export async function runJob(
     // itself never crosses into the plan (#64).
     const totp =
       login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
-    const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target, totp }
+    const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target, totp, mcp: profile.mcp }
     for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow, execution))
     // The judge is the verdict decision. Base execution and egress interception
     // of a booted stack land with the orchestrator; a target run records what its
@@ -446,7 +447,7 @@ async function runProfileGroup(
     )
   }
   try {
-    validatePlanValues(group.criteria, profile, values, opts.flowDriver ?? BROWSER_FLOW_DRIVER)
+    validatePlanValues(group.criteria, profile, values, opts.flowDriver ?? mcpDriverCapabilities(profile.mcp) ?? BROWSER_FLOW_DRIVER)
   } catch (error) {
     if (!(error instanceof JobValidationError)) throw error
     // The rules sweep the values the refusal publishes: they are the union of
@@ -482,7 +483,7 @@ async function runProfileGroup(
       login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
     // The masks are the union of every app's, built before any app ran, so
     // one app's screenshots cannot publish another app's secret region (#55).
-    const flow = { session: opts.flowSession, masks, suites: profile.suites, target, totp }
+    const flow = { session: opts.flowSession, masks, suites: profile.suites, target, totp, mcp: profile.mcp }
     for (const criterion of group.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow, execution))
     const egressRefused = target !== undefined && target.undeclared.length > 0
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
@@ -634,6 +635,39 @@ function validatePlanValues(criteria: JobCriterion[], profile: QaProfile, values
         if (suite !== undefined) validateRunReferences(suite.command, values, `suites[${suiteIndex}].command`)
         continue
       }
+      if (check.kind === 'tool') {
+        // A tool check calls a tool the profile named, either in the driver
+        // mapping or in the allowlist (#94): anything else would reach a host
+        // tool the profile never declared, so the plan refuses here.
+        const registered = new Set(
+          (profile.mcp ?? []).flatMap((entry) => [...entry.tools, ...Object.values(entry.driver ?? {}).map((map) => map.tool)]),
+        )
+        if (!registered.has(check.tool))
+          throw new JobValidationError(
+            `${base}.tool`,
+            `refused: ${JSON.stringify(check.tool)} is not a tool the profile's MCP server registers; a tool check calls only a tool the profile named`,
+          )
+        const allow = (field: string) => (name: string): boolean => {
+          if (!name.startsWith('mail.')) return false
+          validateMailArtefactName(name, mailChecks, field)
+          return true
+        }
+        for (const [key, value] of Object.entries(check.args ?? {})) {
+          if (key.includes('{{'))
+            throw new JobValidationError(`${base}.args.${key}`, 'an argument name names a variable and is not a substitution site; put the reference in the value')
+          validateValueReferences(value, values, `${base}.args.${key}`, allow(`${base}.args.${key}`))
+        }
+        for (const [index, assertion] of check.assert.entries()) {
+          const assertionBase = `${base}.assert[${index}]`
+          for (const field of ['contains', 'matches'] as const) {
+            const value = assertion[field]
+            if (value !== undefined) validateValueReferences(value, values, `${assertionBase}.${field}`, allow(`${assertionBase}.${field}`))
+          }
+          if (typeof assertion.equals === 'string')
+            validateValueReferences(assertion.equals, values, `${assertionBase}.equals`, allow(`${assertionBase}.equals`))
+        }
+        continue
+      }
       const allow = (field: string) => (name: string): boolean => {
         if (!name.startsWith('mail.')) return false
         validateMailArtefactName(name, mailChecks, field)
@@ -742,7 +776,7 @@ async function runCriterion(
   values: RunValues,
   mail: { inbox?: string; readMail?: ReadMail },
   artefacts: Artefacts,
-  flow: { session?: FlowSessionFactory; masks: string[]; suites: ProfileSuite[]; target?: FlowTargetContext; totp?: FlowTotpConfig },
+  flow: { session?: FlowSessionFactory; masks: string[]; suites: ProfileSuite[]; target?: FlowTargetContext; totp?: FlowTotpConfig; mcp?: ProfileMcpServer[] },
   execution: ExecutionKind,
 ): Promise<CriterionResult> {
   const checks = criterion.checks ?? []
@@ -835,6 +869,7 @@ async function runCriterion(
         sweepRules,
         flow.masks,
         execution,
+        flow.mcp,
       )
       evidence.push(...outcome.evidence)
       // A repair is recorded with the criterion and check it happened in (#83),
@@ -856,6 +891,16 @@ async function runCriterion(
         // The flow's reason quotes what the action saw, and the flow types
         // what it read from mail: the dynamic sweep covers model- and
         // evidence-facing text alike, result.json included (#64).
+        unverifiedReason = outcome.reason === undefined ? undefined : redactText(outcome.reason, sweepRules)
+      continue
+    }
+    if (substituted.kind === 'tool') {
+      // A tool check talks to the host's MCP server, never to a model (#94):
+      // the call, the result and the matcher verdicts are redacted evidence.
+      const outcome = await runToolCheckJob(substituted, flow.mcp, job.evidenceDir, checkDir, sweepRules)
+      evidence.push(...outcome.evidence)
+      if (outcome.status === 'failed') failed = true
+      else if (outcome.status === 'unverified' && unverifiedReason === undefined)
         unverifiedReason = outcome.reason === undefined ? undefined : redactText(outcome.reason, sweepRules)
       continue
     }
@@ -958,6 +1003,22 @@ function substituteCheck(check: JobCheck, values: RunValues): JobCheck {
       ...(check.body === undefined ? {} : { body: substituteValues(check.body, values) }),
     }
   }
+  if (check.kind === 'tool') {
+    // A tool check's strings — argument values and matcher text alike — may
+    // name run values, exactly as a command's do (#94).
+    return {
+      ...check,
+      ...(check.args === undefined
+        ? {}
+        : { args: Object.fromEntries(Object.entries(check.args).map(([key, value]) => [key, substituteValues(value, values)])) }),
+      assert: check.assert.map((assertion) => ({
+        ...assertion,
+        ...(assertion.contains === undefined ? {} : { contains: substituteValues(assertion.contains, values) }),
+        ...(assertion.matches === undefined ? {} : { matches: substituteValues(assertion.matches, values) }),
+        ...(typeof assertion.equals === 'string' ? { equals: substituteValues(assertion.equals, values) } : {}),
+      })),
+    }
+  }
   return {
     ...check,
     run: substituteValues(check.run, values),
@@ -1001,6 +1062,7 @@ async function runFlowCheckJob(
   rules: readonly RedactionRule[],
   masks: string[],
   execution: ExecutionKind,
+  mcp?: ProfileMcpServer[],
 ): Promise<{ status: 'passed' | 'failed' | 'unverified'; reason?: string; evidence: string[]; repairs?: FlowRepairRecord[] }> {
   const inEvidence = (names: readonly string[]): string[] => names.map((name) => `${checkDir}/${name}`)
   if (check.suite !== undefined) {
@@ -1037,7 +1099,11 @@ async function runFlowCheckJob(
   }
   // The masks are the profile's own (#119): they black out their page regions
   // in every screenshot the backend takes, and the action log names them.
-  const factory = session ?? makePlaywrightFlowSession
+  // When the profile maps an MCP driver, the run drives the host's own tools
+  // by default; an injected session still wins, so tests and callers keep
+  // their seam (#94).
+  const factory =
+    session ?? (mcpDriverServer(mcp) !== undefined ? makeMcpFlowSession(mcpDriverServer(mcp)!, join(evidenceDir, checkDir), rules) : makePlaywrightFlowSession)
   const timeoutMs = check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
   let started
   try {
@@ -1128,6 +1194,116 @@ async function runFlowCheckJob(
   } finally {
     await started.dispose()
   }
+}
+
+/**
+ * A flow session over the host's own tools (#94): every action becomes the
+ * mapped tool call, and every call and its result land in the check's
+ * `tool-calls.json`, redacted before anything is written. There is no trace
+ * to zip: the call log is the trace.
+ */
+function makeMcpFlowSession(mcp: ProfileMcpServer, dir: string, rules: readonly RedactionRule[]): FlowSessionFactory {
+  return async () => {
+    const session = await connectMcpDriver(mcp, {
+      redact: (value) => redactValue(value, rules),
+      record: async (calls) => {
+        await mkdir(dir, { recursive: true })
+        await writeFile(join(dir, 'tool-calls.json'), `${JSON.stringify(calls, null, 2)}\n`)
+      },
+    })
+    return {
+      capabilities: session.capabilities,
+      page: session.page,
+      trace: {
+        start: async () => 'no-trace',
+        stop: async () => undefined,
+      },
+      dispose: session.dispose,
+    }
+  }
+}
+
+/**
+ * Execute one tool check (#94): call a host tool through the profile's MCP
+ * server and judge its result only on the matchers the plan named, never a
+ * model. The call and its result are recorded redacted in `tool.json`;
+ * anything that is not the criterion's fault — no server at all, a tool that
+ * will not answer, a call outliving its timeout — is unverified, not failed.
+ */
+async function runToolCheckJob(
+  check: JobToolCheck,
+  mcp: ProfileMcpServer[] | undefined,
+  evidenceDir: string,
+  checkDir: string,
+  rules: readonly RedactionRule[],
+): Promise<{ status: 'passed' | 'failed' | 'unverified'; reason?: string; evidence: string[] }> {
+  if (mcp === undefined)
+    return { status: 'unverified', reason: 'the profile registers no MCP server, so a tool check has nothing to call', evidence: [] }
+  // The check calls a tool on one server's allowlist: the first entry that
+  // names it. A tool two entries allowlist is reached on the first.
+  const entry = mcp.find((one) => one.tools.includes(check.tool))
+  if (entry === undefined)
+    return { status: 'unverified', reason: `no registered MCP server allowlists ${JSON.stringify(check.tool)}`, evidence: [] }
+  const timeoutMs = check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
+  let result: McpToolResult | undefined
+  let timer: NodeJS.Timeout | undefined
+  try {
+    await Promise.race([
+      (async () => {
+        const source = await connectMcpServer(entry, { callTimeoutMs: timeoutMs })
+        try {
+          result = await source.callResult(check.tool, check.args ?? {})
+        } finally {
+          await source.close()
+        }
+      })(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`the tool call exceeded its ${timeoutMs} ms timeout`)), timeoutMs)
+        timer.unref()
+      }),
+    ])
+  } catch (error) {
+    const cause = (error as Error & { cause?: Error }).cause
+    return {
+      status: 'unverified',
+      reason: `the tool ${JSON.stringify(check.tool)} did not answer: ${cause ?? (error as Error).message}`,
+      evidence: [],
+    }
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+  if (result === undefined) return { status: 'unverified', reason: 'the tool call never finished', evidence: [] }
+  const failures = evaluateToolAssertions(check.assert, result)
+  const passed = !result.isError && failures.length === 0
+  const reason = result.isError
+    ? `the tool ${JSON.stringify(check.tool)} reported an error: ${result.text}`
+    : failures.length > 0
+      ? `the tool result failed ${failures.length} assertion(s): ${failures.join('; ')}`
+      : undefined
+  const dir = join(evidenceDir, checkDir)
+  await mkdir(dir, { recursive: true })
+  await writeFile(
+    join(dir, 'tool.json'),
+    `${JSON.stringify(
+      redactValue(
+        {
+          tool: check.tool,
+          ...(check.args === undefined ? {} : { args: check.args }),
+          result: {
+            text: result.text,
+            isError: result.isError,
+            ...(result.structured === undefined ? {} : { structured: result.structured }),
+          },
+          assertions: failures,
+          outcome: passed ? 'passed' : 'failed',
+        },
+        rules,
+      ),
+      null,
+      2,
+    )}\n`,
+  )
+  return { status: passed ? 'passed' : 'failed', ...(reason === undefined ? {} : { reason }), evidence: [`${checkDir}/tool.json`] }
 }
 
 function targetContext(target: ProfileTarget): FlowTargetContext {
