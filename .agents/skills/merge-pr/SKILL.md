@@ -1,7 +1,7 @@
 ---
 name: merge-pr
 description: Use when a pull request looks ready to merge, when mergeStateStatus shows BLOCKED or BEHIND with green checks, or when deciding whether a stacked child PR can merge ahead of its parent.
-license: Proprietary
+license: Elastic-2.0
 compatibility: Requires gh, jq, git and a repo.env in the consumer repo. Scripts are bash 3.2 compatible.
 metadata:
   version: "1.0.0"
@@ -23,7 +23,7 @@ script as `$S/<script>`.
 
 - PR number. If not given: `$S/vgh pr view --json number --jq .number`.
 
-## Preconditions (check all three, report any that fails)
+## Preconditions (check all four, report any that fails)
 
 1. Open: `$S/vgh pr view <pr> --json state --jq .state` is `OPEN`. If `MERGED`, run
    `$S/merge-verified <pr>` anyway; it is idempotent and prints the result.
@@ -41,6 +41,12 @@ script as `$S/<script>`.
 
    If neither holds, stop and report `preconditions_failed: review gate missing`;
    never merge silently past a missing gate.
+4. No quality gate weakened: `$S/quality-guard --pr <pr>` exits 0 (`clean`, or
+   `justified` by a `### Quality gate changes` section in the PR body naming each
+   file). Exit 1 means a lint, type, test, coverage or CI config changed, or a
+   suppression marker was added, without a justification: stop and report
+   `preconditions_failed: quality gate weakened` with the `hits`. Never add the
+   justification yourself to get past this; it must come from the issue's scope.
 
 ## BLOCKED and BEHIND are not red
 

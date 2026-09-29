@@ -61,5 +61,9 @@ Skills do not select models. They are written so the cheapest tier can follow th
 
 ## Adopting these skills in a repo
 
-See `ADOPTING.md` in the skills repository: create `repo.env`, ignore `.agents/state/`,
-run `$S/check-wiring` in CI, delete hand-copied skills.
+Copy `repo.env.example` to `repo.env` (it is gitignored, as is `.agents/state/`), then:
+
+    cp repo.env.example repo.env
+    .agents/skills/ci-safety/scripts/check-wiring
+
+`check-wiring` prints `{"ok":true}` when everything is in place, or a `problems` list.
