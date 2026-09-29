@@ -1,8 +1,17 @@
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { execSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
-import { FileLedgerStore, LEDGER_FILE, appendChange, criterionIdFor, questionIdFor, type LedgerEntry } from '@qare/core'
+import {
+  BranchLedgerStore,
+  FileLedgerStore,
+  LEDGER_FILE,
+  appendChange,
+  criterionIdFor,
+  questionIdFor,
+  type LedgerEntry,
+} from '@qare/core'
 import { main, runLedgerCommand } from '../src/index.js'
 import type { Writer } from '../src/index.js'
 
@@ -210,7 +219,7 @@ test('main rejects an unknown ledger subcommand with exit 1', async () => {
   expect(code).toBe(1)
   expect(linesOf(out.chunks)).toEqual([])
   expect(linesOf(errs.chunks)).toEqual([
-    'Error: unknown ledger subcommand "explode"; usage: qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish> [--ledger <dir>]',
+    'Error: unknown ledger subcommand "explode"; usage: qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>]',
   ])
 })
 
@@ -634,4 +643,170 @@ test('a held criterion whose question is answered and entry promoted is no longe
   const view = join(await mkdtemp(join(tmpdir(), 'qare-publish-')), 'CRITERIA.md')
   await runLedgerCommand(['publish', '--out', view, '--ledger', dir], capture().writer, capture().writer)
   expect(await readFile(view, 'utf8')).not.toContain('## Quarantined')
+})
+
+async function gitRepo(): Promise<string> {
+  const repo = await mkdtemp(join(tmpdir(), 'qare-migrate-repo-'))
+  execSync('git init -q', { cwd: repo })
+  execSync('git config user.email t@e.st', { cwd: repo })
+  execSync('git config user.name t', { cwd: repo })
+  return repo
+}
+
+async function ledgerWithHistory(): Promise<string> {
+  const dir = await ledgerDir([FLOW_LOGIN, EXPORT_CSV])
+  const changes = appendChange([], {
+    kind: 'ingest',
+    actor: 'jason',
+    timestamp: '2026-09-29T00:00:00Z',
+    reason: 'seeded the ledger',
+    criteria: ['flow-login', 'ledger-export-csv'],
+  })
+  await new FileLedgerStore(dir).saveDocument([FLOW_LOGIN, EXPORT_CSV], changes)
+  return dir
+}
+
+test('ledger migrate --to branch moves the document whole: ids unchanged, history intact', async () => {
+  const repo = await gitRepo()
+  const dir = await ledgerWithHistory()
+  const original = await new FileLedgerStore(dir).loadDocument()
+  const out = capture()
+  const code = await runLedgerCommand(
+    ['migrate', '--to', 'branch', '--ledger', dir, '--repo', repo],
+    out.writer,
+    capture().writer,
+  )
+  expect(code).toBe(0)
+  const migrated = await new BranchLedgerStore(repo, 'qare-ledger').loadDocument()
+  expect(migrated.entries).toEqual(original.entries)
+  expect(migrated.changes).toEqual(original.changes)
+  expect(linesOf(out.chunks)).toEqual([
+    `migrate: 2 entries and 1 change records moved from files (${dir}) to branch (qare-ledger in ${repo})`,
+  ])
+})
+
+test('ledger migrate --to files moves the branch document whole', async () => {
+  const repo = await gitRepo()
+  const source = await ledgerWithHistory()
+  await runLedgerCommand(
+    ['migrate', '--to', 'branch', '--ledger', source, '--repo', repo],
+    capture().writer,
+    capture().writer,
+  )
+  const target = join(await mkdtemp(join(tmpdir(), 'qare-migrate-')), '.qa')
+  const out = capture()
+  const code = await runLedgerCommand(
+    ['migrate', '--to', 'files', '--ledger', target, '--repo', repo],
+    out.writer,
+    capture().writer,
+  )
+  expect(code).toBe(0)
+  const migrated = await new FileLedgerStore(target).loadDocument()
+  expect(migrated.entries).toEqual([FLOW_LOGIN, EXPORT_CSV])
+  expect(migrated.changes).toEqual(await new BranchLedgerStore(repo, 'qare-ledger').loadDocument().then((d) => d.changes))
+  expect(linesOf(out.chunks)).toEqual([
+    expect.stringContaining(`moved from branch (qare-ledger in ${repo}) to files (${target})`),
+  ])
+})
+
+test('ledger migrate --dry-run reports what would move and writes nothing', async () => {
+  const repo = await gitRepo()
+  const dir = await ledgerWithHistory()
+  const out = capture()
+  const code = await runLedgerCommand(
+    ['migrate', '--to', 'branch', '--dry-run', '--ledger', dir, '--repo', repo],
+    out.writer,
+    capture().writer,
+  )
+  expect(code).toBe(0)
+  expect(linesOf(out.chunks)).toEqual([
+    'migrate: 2 entries and 1 change records would move from files (' +
+      dir +
+      ') to branch (qare-ledger in ' +
+      repo +
+      ')',
+  ])
+  expect(execSync('git for-each-ref refs/heads', { cwd: repo }).toString()).toBe('')
+  expect(await new FileLedgerStore(dir).load()).toEqual([FLOW_LOGIN, EXPORT_CSV])
+})
+
+test('a migration onto a non-empty destination is refused without --force', async () => {
+  const repo = await gitRepo()
+  const dir = await ledgerDir([FLOW_LOGIN])
+  await new BranchLedgerStore(repo, 'qare-ledger').save([EXPORT_CSV])
+  const errs = capture()
+  const code = await runLedgerCommand(
+    ['migrate', '--to', 'branch', '--ledger', dir, '--repo', repo],
+    capture().writer,
+    errs.writer,
+  )
+  expect(code).toBe(1)
+  expect(linesOf(errs.chunks)).toEqual([
+    expect.stringContaining('already holds a ledger (1 entries, 0 change records); pass --force to replace it'),
+  ])
+  const target = await ledgerDir([PAYOUT_NOTICE])
+  const fileErrs = capture()
+  const fileCode = await runLedgerCommand(
+    ['migrate', '--to', 'files', '--ledger', target, '--repo', repo],
+    capture().writer,
+    fileErrs.writer,
+  )
+  expect(fileCode).toBe(1)
+  expect(linesOf(fileErrs.chunks)).toEqual([
+    expect.stringContaining('already holds a ledger (1 entries, 0 change records); pass --force to replace it'),
+  ])
+})
+
+test('ledger migrate --force replaces a non-empty destination', async () => {
+  const repo = await gitRepo()
+  const dir = await ledgerDir([FLOW_LOGIN])
+  await new BranchLedgerStore(repo, 'qare-ledger').save([EXPORT_CSV])
+  const out = capture()
+  const code = await runLedgerCommand(
+    ['migrate', '--to', 'branch', '--force', '--ledger', dir, '--repo', repo],
+    out.writer,
+    capture().writer,
+  )
+  expect(code).toBe(0)
+  const migrated = await new BranchLedgerStore(repo, 'qare-ledger').loadDocument()
+  expect(migrated.entries).toEqual([FLOW_LOGIN])
+  expect(migrated.changes).toEqual([])
+})
+
+test('ledger migrate requires --to naming a backend', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-ledger-'))
+  const missing = capture()
+  const missingCode = await runLedgerCommand(['migrate', '--ledger', dir], capture().writer, missing.writer)
+  expect(missingCode).toBe(1)
+  expect(linesOf(missing.chunks)).toEqual(['Error: qare ledger migrate requires --to <branch|files>'])
+  const nonsense = capture()
+  const nonsenseCode = await runLedgerCommand(
+    ['migrate', '--to', 'git', '--ledger', dir],
+    capture().writer,
+    nonsense.writer,
+  )
+  expect(nonsenseCode).toBe(1)
+  expect(linesOf(nonsense.chunks)).toEqual(['Error: ledger migrate: --to must be "branch" or "files", not "git"'])
+})
+
+test('a ledger migrated in both directions ends up byte-identical on export', async () => {
+  const repo = await gitRepo()
+  const dir = await ledgerWithHistory()
+  const before = join(await mkdtemp(join(tmpdir(), 'qare-export-')), 'before')
+  await runLedgerCommand(['export', '--out', before, '--ledger', dir], capture().writer, capture().writer)
+  await runLedgerCommand(
+    ['migrate', '--to', 'branch', '--ledger', dir, '--repo', repo],
+    capture().writer,
+    capture().writer,
+  )
+  const back = join(await mkdtemp(join(tmpdir(), 'qare-migrate-')), '.qa')
+  await runLedgerCommand(
+    ['migrate', '--to', 'files', '--ledger', back, '--repo', repo],
+    capture().writer,
+    capture().writer,
+  )
+  const after = join(await mkdtemp(join(tmpdir(), 'qare-export-')), 'after')
+  await runLedgerCommand(['export', '--out', after, '--ledger', back], capture().writer, capture().writer)
+  for (const name of [LEDGER_FILE, 'CRITERIA.md', 'HISTORY.md'])
+    expect(await readFile(join(after, name), 'utf8')).toBe(await readFile(join(before, name), 'utf8'))
 })

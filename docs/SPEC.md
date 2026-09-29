@@ -373,7 +373,11 @@ of an entry, identical either way:
 ### Where the ledger lives
 
 Both backends hold the same entries and are readable by the same commands, and
-`qare ledger migrate` moves a ledger between them without losing history.
+`qare ledger migrate` moves a ledger between them without losing history. A
+migration carries the document whole, so ids and the hash-chained history
+arrive exactly as they left; `--dry-run` reports what would move, and a
+migration onto a backend that already holds a ledger is refused unless the run
+passes `--force`.
 
 | Backend | Where | Good for |
 | --- | --- | --- |
