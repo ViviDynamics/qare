@@ -235,14 +235,20 @@ export {
   LEDGER_FILE,
   LEDGER_SCHEMA_VERSION,
   LEDGER_STATUSES,
+  appendChange,
+  parseLedgerDocument,
   parseLedgerEntries,
   serializeLedger,
+  serializeLedgerDocument,
 } from './ledger.js'
 export type {
   LedgerEntry,
   LedgerStatus,
   LedgerStore,
   LedgerResolution,
+  LedgerChange,
+  LedgerChangeKind,
+  LedgerDocument,
   ResolutionClassification,
   GitRun,
   GitRunResult,
@@ -261,6 +267,12 @@ export type {
   LedgerProposalChange,
 } from './ledger-proposal.js'
 export { applyLedgerProposal } from './ledger-apply.js'
+export {
+  renderCriteriaMarkdown,
+  renderHistoryMarkdown,
+  verificationBuckets,
+} from './ledger-publish.js'
+export type { VerificationBuckets } from './ledger-publish.js'
 export { integrityOf } from './ledger.js'
 export {
   CONTRADICTION_SCHEMA_VERSION,

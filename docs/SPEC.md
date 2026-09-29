@@ -383,12 +383,23 @@ Both backends hold the same entries and are readable by the same commands, and
 A separate store only earns its keep if it stays legible, so transparency is a
 requirement of the backend, not a feature on top:
 
-- Every change records who made it, when, and why, and history is never rewritten.
+- Every change records who made it, when, and why, and the records are chained,
+  so editing, dropping or reordering any of them makes the ledger refuse to
+  load: history is never rewritten. Deleting the last records is the one thing
+  a chain cannot see from inside the document, so a rollback is checked
+  against an external copy of the chain's head, such as the published history
+  file.
 - `qare ledger` reads either backend the same way.
-- `qare ledger export` writes the whole ledger as plain files at any time, so
-  nobody is locked in.
-- The current state is published where the team already looks, not only in the
-  store.
+- `qare ledger export` writes the whole ledger, entries and history, as plain
+  files at any time, so nobody is locked in, and `qare ledger import` reads an
+  export back through the same strict loader, records the import itself with
+  who and why, and refuses an import that does not carry the target's own
+  history forward, so an export loses nothing and history is never truncated.
+- `qare ledger publish` writes the current state where the team already looks,
+  as a plain markdown file that names the criteria that are unverified, stale,
+  changed after the run that last verified them, or quarantined by an open
+  question whose criterion is still held. Publishing is explicit, and the
+  import that brings a ledger home refreshes the view it publishes.
 
 Lifecycle:
 

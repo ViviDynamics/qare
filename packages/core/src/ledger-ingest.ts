@@ -1,7 +1,7 @@
 import { BROWSER_FLOW_DRIVER } from './flow-playwright.js'
 import { normalizeWording } from './criterion-identity.js'
 import { IssueCriteriaError, criteriaFromIssue } from './issue-criteria.js'
-import { integrityOf, serializeLedger, type LedgerEntry } from './ledger.js'
+import { appendChange, integrityOf, serializeLedgerDocument, type LedgerChange, type LedgerEntry } from './ledger.js'
 import { type PlanCriterion } from './plan.js'
 import { NO_DIFF, planRun, type PlanCriterionInput } from './plan-step.js'
 import type { AgentRunner } from './runner.js'
@@ -42,6 +42,8 @@ export interface IngestOutcome {
   uncheckable: UncheckableCriterion[]
   /** The existing ledger with the proposals folded in, canonically serialized. */
   ledgerText: string
+  /** The change records the proposal carries, with the ingest recorded last. */
+  changes: LedgerChange[]
   /** The integrity of the resulting entries, which names the proposal branch. */
   fingerprint: string
 }
@@ -67,6 +69,10 @@ export async function ingestCriteria(
     planner: AgentRunner
     suites?: string[]
     target?: string
+    /** The change records the ledger already carries; the ingest's own is appended. */
+    changes?: LedgerChange[]
+    /** Injected clock for the change record; defaults to now. */
+    timestamp?: string
   },
 ): Promise<IngestOutcome> {
   const stated = groupByWording(sources)
@@ -131,11 +137,24 @@ export async function ingestCriteria(
   }
 
   const resulting = [...opts.ledger, ...proposals]
+  let changes = opts.changes ?? []
+  if (proposals.length > 0) {
+    changes = appendChange(changes, {
+      kind: 'ingest',
+      actor: 'qare ingest',
+      timestamp: opts.timestamp ?? new Date().toISOString(),
+      reason: `proposed from ${sources
+        .map((source) => `${source.kind} #${source.number} (${source.author})`)
+        .join(', ')}`,
+      criteria: proposals.map((proposal) => proposal.criterion),
+    })
+  }
   return {
     proposals,
     duplicates,
     uncheckable,
-    ledgerText: serializeLedger(resulting),
+    ledgerText: serializeLedgerDocument(resulting, changes),
+    changes,
     fingerprint: integrityOf(resulting),
   }
 }

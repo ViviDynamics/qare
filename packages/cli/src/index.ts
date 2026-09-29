@@ -22,7 +22,6 @@ import {
   nareRunners,
   loadPlan,
   loadResult,
-  parseLedgerEntries,
   renderUncheckableComment,
   NareAgentRunner,
   ProfileMissingError,
@@ -59,7 +58,11 @@ import {
   discoverProfiles,
   selectCriteria,
   selectProfiles,
-  serializeLedger,
+  appendChange,
+  parseLedgerDocument,
+  serializeLedgerDocument,
+  renderCriteriaMarkdown,
+  renderHistoryMarkdown,
   touchedPathsFromDiff,
   VERSION,
   WRITING_CRITERIA_GUIDE,
@@ -117,7 +120,7 @@ export async function main(
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -282,12 +285,13 @@ async function ingestCommand(argv: string[], out: Writer, err: Writer): Promise<
       manifest.sources.map(async (source) => ({ ...source, body: await readFile(resolve(source.body), 'utf8') })),
     )
     const ledgerDirFlag = flag(argv, '--ledger') ?? '.qa'
-    const ledger = await new FileLedgerStore(resolve(ledgerDirFlag)).load()
+    const ledgerDocument = await new FileLedgerStore(resolve(ledgerDirFlag)).loadDocument()
 
     const profileDir = flag(argv, '--profile')
     const profile = profileDir === undefined ? undefined : await loadProfile(resolve(profileDir))
     const outcome = await ingestCriteria(bodies, {
-      ledger,
+      ledger: ledgerDocument.entries,
+      changes: ledgerDocument.changes,
       planner: nareRunners(nare).planner,
       ...(profile === undefined ? {} : { suites: profile.suites.map((suite) => suite.name) }),
       ...(profile === undefined || profile.target === undefined ? {} : { target: profile.target.url }),
@@ -295,7 +299,7 @@ async function ingestCommand(argv: string[], out: Writer, err: Writer): Promise<
 
     const proposal: LedgerIngestProposal = {
       ledgerPath: join(ledgerDirFlag, LEDGER_FILE),
-      baseFingerprint: integrityOf(ledger),
+      baseFingerprint: integrityOf(ledgerDocument.entries),
       ledgerText: outcome.ledgerText,
       branch: `qare-ledger-proposal-${outcome.fingerprint.replace('sha256:', '').slice(0, 8)}`,
       title: `Propose ${outcome.proposals.length} ledger criteria`,
@@ -1099,7 +1103,7 @@ export async function runLedgerCommand(argv: string[], out: Writer, err: Writer)
     const dir = resolve(ledgerSpec ?? '.qa')
     if (sub === undefined)
       throw new Error(
-        'qare ledger requires a subcommand; usage: qare ledger <list|show|diff|status|contradict|resolve|decide> [--ledger <dir>]',
+        'qare ledger requires a subcommand; usage: qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish> [--ledger <dir>]',
       )
     if (sub === 'list') return await ledgerList(dir, out)
     if (sub === 'show') return await ledgerShow(dir, subArgs[0], out)
@@ -1108,8 +1112,11 @@ export async function runLedgerCommand(argv: string[], out: Writer, err: Writer)
     if (sub === 'contradict') return await ledgerContradict(subArgs, dir, out)
     if (sub === 'resolve') return await ledgerResolve(subArgs, dir, out)
     if (sub === 'decide') return await ledgerDecide(subArgs, dir, out)
+    if (sub === 'export') return await ledgerExport(subArgs, dir, out)
+    if (sub === 'import') return await ledgerImport(subArgs, dir, out)
+    if (sub === 'publish') return await ledgerPublish(subArgs, dir, out)
     throw new Error(
-      `unknown ledger subcommand ${JSON.stringify(sub)}; usage: qare ledger <list|show|diff|status|contradict|resolve|decide> [--ledger <dir>]`,
+      `unknown ledger subcommand ${JSON.stringify(sub)}; usage: qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish> [--ledger <dir>]`,
     )
   } catch (error) {
     err.write(`${formatError(error)}\n`)
@@ -1190,6 +1197,133 @@ async function ledgerStatus(dir: string, out: Writer, err: Writer): Promise<numb
   )
   out.write('integrity: ok\n')
   return 0
+}
+
+/**
+ * `qare ledger export`: write the whole ledger, entries and history, as plain
+ * files anyone can read with no QARE installed (#58): `ledger.json` carries
+ * the document that imports back with no loss, `CRITERIA.md` the current
+ * state, and `HISTORY.md` the recorded changes. It runs at any time and
+ * writes nothing to the store.
+ */
+async function ledgerExport(argv: string[], ledgerDir: string, out: Writer): Promise<number> {
+  const outFlag = flag(argv, '--out') ?? 'ledger-export'
+  const target = resolve(outFlag)
+  const document = await new FileLedgerStore(ledgerDir).loadDocument()
+  const quarantined = await heldCriteriaIn(ledgerDir, document.entries)
+  await mkdir(target, { recursive: true })
+  await writeFile(join(target, LEDGER_FILE), serializeLedgerDocument(document.entries, document.changes), 'utf8')
+  await writeFile(join(target, 'CRITERIA.md'), renderCriteriaMarkdown(document, quarantined), 'utf8')
+  await writeFile(join(target, 'HISTORY.md'), renderHistoryMarkdown(document.changes), 'utf8')
+  out.write(
+    `exported ${document.entries.length} entries and ${document.changes.length} change records to ${target}\n`,
+  )
+  return 0
+}
+
+/**
+ * `qare ledger import`: read an exported ledger through the strict loader —
+ * the chain must verify — and save it whole, so an exported ledger imports
+ * back with no loss (#58). The import itself is a recorded change: it names
+ * who imported, when, and why, and the target's own history must be carried
+ * forward intact by what is imported, or the import is refused. The
+ * published view is refreshed, because the published state follows the
+ * ledger whenever it changes.
+ */
+async function ledgerImport(argv: string[], ledgerDir: string, out: Writer): Promise<number> {
+  const from = flag(argv, '--from')
+  if (from === undefined) throw new Error('qare ledger import requires --from <export dir>')
+  const by = flag(argv, '--by')
+  if (by === undefined) throw new Error('qare ledger import requires --by <who made this change>')
+  const why = flag(argv, '--why')
+  if (why === undefined) throw new Error('qare ledger import requires --why <reason>')
+  const at = flag(argv, '--at') ?? new Date().toISOString()
+  const store = new FileLedgerStore(ledgerDir)
+  const imported = parseLedgerDocument(
+    JSON.parse(await readFile(join(resolve(from), LEDGER_FILE), 'utf8')),
+  )
+  const current = await store.loadDocument()
+  if (
+    current.changes.length > 0 &&
+    JSON.stringify(imported.changes.slice(0, current.changes.length)) !== JSON.stringify(current.changes)
+  )
+    throw new Error(
+      'ledger import: the imported history does not carry the ledger history forward; importing it would rewrite what is recorded',
+    )
+  const changes = appendChange(imported.changes, {
+    kind: 'import',
+    actor: by,
+    timestamp: at,
+    reason: why,
+    criteria: [],
+  })
+  await store.saveDocument(imported.entries, changes)
+  const publishFlag = flag(argv, '--publish') ?? 'CRITERIA.md'
+  await writeFile(resolve(publishFlag), renderCriteriaMarkdown(
+    { entries: imported.entries, changes },
+    await heldCriteriaIn(ledgerDir, imported.entries),
+  ), 'utf8')
+  out.write(
+    `imported ${imported.entries.length} entries with ${changes.length} change records: history intact\n`,
+  )
+  out.write(`published view refreshed: ${resolve(publishFlag)}\n`)
+  return 0
+}
+
+/**
+ * `qare ledger publish`: write the current state where the team already
+ * looks, as a plain markdown file, naming the criteria that are unverified,
+ * stale or quarantined (#58). A web application is out of scope; this is a
+ * file in the repository, refreshed whenever the ledger changes.
+ */
+async function ledgerPublish(argv: string[], ledgerDir: string, out: Writer): Promise<number> {
+  const outFlag = flag(argv, '--out') ?? 'CRITERIA.md'
+  const document = await new FileLedgerStore(ledgerDir).loadDocument()
+  const quarantined = await heldCriteriaIn(ledgerDir, document.entries)
+  await writeFile(resolve(outFlag), renderCriteriaMarkdown(document, quarantined), 'utf8')
+  out.write(`published ${document.entries.length} criteria to ${resolve(outFlag)}\n`)
+  return 0
+}
+
+/**
+ * The criteria a held result names as quarantined, when resolve wrote one
+ * into the ledger directory (`--hold-out <dir>/held-result.json`). A missing
+ * file is an ordinary no: an open question is only knowable from the report
+ * the resolution wrote. Anything else — an unreadable or malformed report —
+ * fails the command, because publishing a guessed-at quarantine state is
+ * worse than publishing none. A held criterion whose question has been
+ * answered and whose entry has since been promoted to active is no longer
+ * quarantined; the ledger, not the stale report, says where it stands.
+ */
+async function heldCriteriaIn(ledgerDir: string, entries: LedgerEntry[]): Promise<string[]> {
+  let held: unknown
+  try {
+    held = JSON.parse(await readFile(join(ledgerDir, 'held-result.json'), 'utf8'))
+  } catch (error) {
+    if (
+      typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
+    )
+      return []
+    throw new Error(`ledger publish: held-result.json is unreadable: ${formatError(error)}`)
+  }
+  const criteria = (held as { criteria?: unknown }).criteria
+  if (!Array.isArray(criteria))
+    throw new Error('ledger publish: held-result.json must carry a "criteria" array')
+  const heldIds = criteria
+    .filter((criterion): criterion is { id: string; outcome: string; reason: string } =>
+      typeof criterion === 'object' &&
+      criterion !== null &&
+      typeof (criterion as Record<string, unknown>).id === 'string' &&
+      typeof (criterion as Record<string, unknown>).outcome === 'string' &&
+      typeof (criterion as Record<string, unknown>).reason === 'string')
+    .filter((criterion) => criterion.outcome === 'unverified' && criterion.reason.startsWith('held for an open question'))
+    .map((criterion) => criterion.id)
+  const stillHeld = new Set(heldIds)
+  const kept: string[] = []
+  for (const entry of entries) {
+    if (stillHeld.has(entry.criterion) && entry.status === 'proposed') kept.push(entry.criterion)
+  }
+  return kept
 }
 
 /**
@@ -1387,7 +1521,8 @@ async function ledgerDecide(argv: string[], ledgerDir: string, out: Writer): Pro
   if (questionFlag !== undefined && questionFlag !== question)
     throw new Error(`qare ledger decide: --question ${JSON.stringify(questionFlag)} does not name this conflict; its id is ${question}`)
 
-  const ledger = await new FileLedgerStore(ledgerDir).load()
+  const ledgerDocument = await new FileLedgerStore(ledgerDir).loadDocument()
+  const ledger = ledgerDocument.entries
   const oldEntry = ledger.find((entry) => entry.criterion === criterion)
   if (oldEntry === undefined) throw new Error(`ledger: decide: no entry for criterion ${JSON.stringify(criterion)}`)
   if (oldEntry.status !== 'active')
@@ -1421,8 +1556,17 @@ async function ledgerDecide(argv: string[], ledgerDir: string, out: Writer): Pro
   }
   // The fold is only as good as the ledger it proposes: the same strict
   // loader a run reads with judges the proposal before it is written out.
-  const entries = parseLedgerEntries(JSON.parse(serializeLedger(folded)))
-  const text = serializeLedger(entries)
+  // The answer is itself a change to the ledger, so it is recorded in the
+  // history with who decided, when, and why (#58).
+  const changes = appendChange(ledgerDocument.changes, {
+    kind: answer,
+    actor: by,
+    timestamp: at,
+    reason: why,
+    criteria: answer === 'supersede' && replacement !== undefined ? [criterion, replacement] : [criterion],
+  })
+  const entries = parseLedgerDocument(JSON.parse(serializeLedgerDocument(folded, changes))).entries
+  const text = serializeLedgerDocument(entries, changes)
   if (outPath === undefined) out.write(text)
   else {
     const target = resolve(outPath)

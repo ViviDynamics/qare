@@ -9,6 +9,77 @@ export const LEDGER_FILE = 'ledger.json'
 export const LEDGER_STATUSES = ['proposed', 'active', 'superseded', 'retired'] as const
 export type LedgerStatus = (typeof LEDGER_STATUSES)[number]
 
+/** The kinds of change the ledger records; every ledger-writing path names its own. */
+export const LEDGER_CHANGE_KINDS = ['ingest', 'verify', 'supersede', 'regression', 'retire', 'import'] as const
+export type LedgerChangeKind = (typeof LEDGER_CHANGE_KINDS)[number]
+
+/**
+ * One recorded change to the ledger (#58): who made it, when, and why. The
+ * records form a hash chain — each carries the digest of the record before
+ * it — so editing, deleting or reordering history is detectable on load:
+ * history is never rewritten.
+ */
+export interface LedgerChange {
+  seq: number
+  kind: LedgerChangeKind
+  actor: string
+  timestamp: string
+  reason: string
+  criteria: string[]
+  digest: string
+}
+
+export function appendChange(
+  changes: LedgerChange[],
+  record: {
+    kind: LedgerChangeKind
+    actor: string
+    timestamp: string
+    reason: string
+    criteria?: string[]
+  },
+): LedgerChange[] {
+  if (typeof record.actor !== 'string' || record.actor.trim() === '')
+    throw new Error('ledger change: actor must be a non-empty string')
+  if (/[\r\n]/.test(record.actor)) throw new Error('ledger change: actor must not contain newlines')
+  if (typeof record.reason !== 'string' || record.reason.trim() === '')
+    throw new Error('ledger change: reason must be a non-empty string')
+  if (/[\r\n]/.test(record.reason)) throw new Error('ledger change: reason must not contain newlines')
+  if (!LEDGER_CHANGE_KINDS.includes(record.kind))
+    throw new Error(`ledger change: unknown kind ${JSON.stringify(record.kind)}`)
+  if (/[\r\n]/.test(record.timestamp)) throw new Error('ledger change: timestamp must not contain newlines')
+  const criteria = record.criteria ?? []
+  const seen = new Set<string>()
+  for (const criterion of criteria) {
+    if (seen.has(criterion)) throw new Error(`ledger change: criterion ${JSON.stringify(criterion)} repeated`)
+    seen.add(criterion)
+    validateCriterionId(criterion, 'ledger change.criteria')
+  }
+  const previous = changes.length === 0 ? '' : changes[changes.length - 1]?.digest ?? ''
+  const seq = changes.length + 1
+  return [
+    ...changes,
+    {
+      seq,
+      kind: record.kind,
+      actor: record.actor,
+      timestamp: record.timestamp,
+      reason: record.reason,
+      criteria: [...criteria],
+      digest: changeDigestOf(previous, { seq, kind: record.kind, actor: record.actor, timestamp: record.timestamp, reason: record.reason, criteria }),
+    },
+  ]
+}
+
+function changeDigestOf(
+  previous: string,
+  record: { seq: number; kind: string; actor: string; timestamp: string; reason: string; criteria: string[] },
+): string {
+  return `sha256:${createHash('sha256')
+    .update(JSON.stringify([previous, record.seq, record.kind, record.actor, record.timestamp, record.reason, record.criteria]), 'utf8')
+    .digest('hex')}`
+}
+
 /** A conflict's classification, as #40 named it and as an answer may record it. */
 export type ResolutionClassification = 'supersede' | 'regression'
 
@@ -181,9 +252,18 @@ export function integrityOf(entries: LedgerEntry[]): string {
 }
 
 export function parseLedgerEntries(input: unknown): LedgerEntry[] {
+  return parseLedgerDocument(input).entries
+}
+
+export interface LedgerDocument {
+  entries: LedgerEntry[]
+  changes: LedgerChange[]
+}
+
+export function parseLedgerDocument(input: unknown): LedgerDocument {
   if (!isRecord(input)) fail('document', 'ledger must be a JSON object with a "entries" array')
   for (const key of Object.keys(input)) {
-    if (key !== 'entries' && key !== 'schemaVersion' && key !== 'integrity')
+    if (key !== 'entries' && key !== 'schemaVersion' && key !== 'integrity' && key !== 'changes')
       fail(`document.${key}`, 'unknown field in ledger document')
   }
   if (input.schemaVersion !== LEDGER_SCHEMA_VERSION)
@@ -205,7 +285,62 @@ export function parseLedgerEntries(input: unknown): LedgerEntry[] {
       'document.integrity',
       `ledger integrity check failed: expected ${expected}, got ${JSON.stringify(input.integrity)}`,
     )
-  return entries
+  const changes = input.changes === undefined ? [] : parseChanges(input.changes)
+  return { entries, changes }
+}
+
+/** The chain is validated record by record: a rewritten history cannot load.
+ *
+ * An edit, a drop or a reorder of the records a document still carries is
+ * detected here. Deleting the last records cannot be detected from the
+ * document alone, because the document is the only thing carrying them; an
+ * external copy of the chain's head, such as the published history file, is
+ * what a rollback is checked against. */
+function parseChanges(value: unknown): LedgerChange[] {
+  if (!Array.isArray(value)) fail('document.changes', 'changes must be a JSON array')
+  let previous = ''
+  return value.map((entry, index) => {
+    const change = parseChange(entry, index)
+    if (change.seq !== index + 1)
+      fail(
+        `document.changes[${index}]`,
+        `history must be sequential: record ${index} carries seq ${change.seq}, expected ${index + 1}`,
+      )
+    const expectedDigest = changeDigestOf(previous, change)
+    if (change.digest !== expectedDigest)
+      fail(
+        `document.changes[${index}]`,
+        `history does not match its chain: record ${change.seq} claims ${change.digest} but the chain computes ${expectedDigest}; history has been rewritten`,
+      )
+    previous = change.digest
+    return change
+  })
+}
+
+function parseChange(entry: unknown, index: number): LedgerChange {
+  const field = `document.changes[${index}]`
+  if (!isRecord(entry)) fail(field, 'ledger change must be a JSON object')
+  const allowed = new Set(['seq', 'kind', 'actor', 'timestamp', 'reason', 'criteria', 'digest'])
+  for (const key of Object.keys(entry)) {
+    if (!allowed.has(key)) fail(`${field}.${key}`, 'unknown field in ledger change')
+  }
+  if (typeof entry.seq !== 'number' || !Number.isInteger(entry.seq) || entry.seq < 1)
+    fail(`${field}.seq`, 'seq must be a positive whole number')
+  const kind = entry.kind
+  if (typeof kind !== 'string' || !LEDGER_CHANGE_KINDS.includes(kind as LedgerChangeKind))
+    fail(`${field}.kind`, `unknown kind ${JSON.stringify(kind)}`)
+  const actor = nonEmptyString(entry.actor, `${field}.actor`, 'actor')
+  if (/[\r\n]/.test(actor)) fail(`${field}.actor`, 'actor must not contain newlines')
+  const timestamp = nonEmptyString(entry.timestamp, `${field}.timestamp`, 'timestamp')
+  if (/[\r\n]/.test(timestamp)) fail(`${field}.timestamp`, 'timestamp must not contain newlines')
+  const reason = nonEmptyString(entry.reason, `${field}.reason`, 'reason')
+  if (/[\r\n]/.test(reason)) fail(`${field}.reason`, 'reason must not contain newlines')
+  if (!Array.isArray(entry.criteria)) fail(`${field}.criteria`, 'criteria must be an array of criterion ids')
+  const criteria = entry.criteria.map((id, position) =>
+    validateCriterionId(nonEmptyString(id, `${field}.criteria[${position}]`, 'criterion id'), `${field}.criteria[${position}]`),
+  )
+  const digest = nonEmptyString(entry.digest, `${field}.digest`, 'digest')
+  return { seq: entry.seq, kind: kind as LedgerChangeKind, actor, timestamp, reason, criteria, digest }
 }
 
 export function serializeLedger(entries: LedgerEntry[]): string {
@@ -217,13 +352,22 @@ export function serializeLedger(entries: LedgerEntry[]): string {
   )}\n`
 }
 
-function validated(entries: LedgerEntry[]): LedgerEntry[] {
-  return parseLedgerEntries(JSON.parse(serializeLedger(entries)))
+export function serializeLedgerDocument(entries: LedgerEntry[], changes: LedgerChange[]): string {
+  const document =
+    changes.length === 0
+      ? { entries: canonicalEntries(entries), schemaVersion: LEDGER_SCHEMA_VERSION, integrity: integrityOf(entries) }
+      : {
+          entries: canonicalEntries(entries),
+          changes,
+          schemaVersion: LEDGER_SCHEMA_VERSION,
+          integrity: integrityOf(entries),
+        }
+  return `${JSON.stringify(document, null, 2)}\n`
 }
 
 export interface LedgerStore {
   load(): Promise<LedgerEntry[]>
-  save(entries: LedgerEntry[]): Promise<void>
+  save(entries: LedgerEntry[], changes?: LedgerChange[]): Promise<void>
 }
 
 export class FileLedgerStore implements LedgerStore {
@@ -234,18 +378,44 @@ export class FileLedgerStore implements LedgerStore {
   }
 
   async load(): Promise<LedgerEntry[]> {
+    return (await this.loadDocument()).entries
+  }
+
+  async loadDocument(): Promise<LedgerDocument> {
     let text: string
     try {
       text = await readFile(this.file, 'utf8')
     } catch (error) {
-      if (isErrno(error, 'ENOENT')) return []
+      if (isErrno(error, 'ENOENT')) return { entries: [], changes: [] }
       throw error
     }
-    return parseLedgerEntries(JSON.parse(text))
+    return parseLedgerDocument(JSON.parse(text))
   }
 
-  async save(entries: LedgerEntry[]): Promise<void> {
-    const text = serializeLedger(validated(entries))
+  async save(entries: LedgerEntry[], changes?: LedgerChange[]): Promise<void> {
+    // A write that omits the history must not silently drop it: history is
+    // never rewritten, so the changes already recorded are carried through.
+    // And once history exists, entries cannot change without a record of who
+    // made the change: a mutation a record does not name is refused.
+    if (changes === undefined) {
+      const current = await this.loadDocument()
+      if (
+        current.changes.length > 0 &&
+        integrityOf(current.entries) !== integrityOf(entries)
+      )
+        throw new Error(
+          'ledger: entries changed without a change record; append the record that names who made this change, when, and why',
+        )
+      changes = current.changes
+    }
+    await this.saveDocument(entries, changes)
+  }
+
+  async saveDocument(entries: LedgerEntry[], changes: LedgerChange[]): Promise<void> {
+    const text = serializeLedgerDocument(entries, changes)
+    // The fold is only as good as the ledger it writes: the same strict
+    // loader a run reads with judges the document before it is written out.
+    parseLedgerDocument(JSON.parse(text))
     await mkdir(join(this.file, '..'), { recursive: true })
     const tmp = `${this.file}.tmp`
     await writeFile(tmp, text)
@@ -289,10 +459,14 @@ export class BranchLedgerStore implements LedgerStore {
   }
 
   async load(): Promise<LedgerEntry[]> {
+    return (await this.loadDocument()).entries
+  }
+
+  async loadDocument(): Promise<LedgerDocument> {
     try {
       await this.run(['rev-parse', '--verify', `refs/heads/${this.branch}`])
     } catch {
-      return []
+      return { entries: [], changes: [] }
     }
     let text: string
     try {
@@ -300,13 +474,26 @@ export class BranchLedgerStore implements LedgerStore {
     } catch (error) {
       throw new Error(`ledger: branch exists but ${LEDGER_FILE} is unreadable: ${String(error)}`)
     }
-    return parseLedgerEntries(JSON.parse(text))
+    return parseLedgerDocument(JSON.parse(text))
   }
 
-  async save(entries: LedgerEntry[]): Promise<void> {
-    const blob = (
-      await this.run(['hash-object', '-w', '--stdin'], serializeLedger(validated(entries)))
-    ).stdout.trim()
+  async save(entries: LedgerEntry[], changes?: LedgerChange[]): Promise<void> {
+    if (changes === undefined) {
+      const current = await this.loadDocument()
+      if (
+        current.changes.length > 0 &&
+        integrityOf(current.entries) !== integrityOf(entries)
+      )
+        throw new Error(
+          'ledger: entries changed without a change record; append the record that names who made this change, when, and why',
+        )
+      changes = current.changes
+    }
+    // The same strict loader a run reads with judges the document before any
+    // of it is written out, so invalid entries or a broken chain never commit.
+    const text = serializeLedgerDocument(entries, changes)
+    parseLedgerDocument(JSON.parse(text))
+    const blob = (await this.run(['hash-object', '-w', '--stdin'], text)).stdout.trim()
     const tree = (await this.run(['mktree'], `100644 blob ${blob}\t${LEDGER_FILE}`)).stdout.trim()
     let parent: string | undefined
     try {
