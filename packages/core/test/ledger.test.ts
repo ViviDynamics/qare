@@ -102,6 +102,44 @@ describe('ledger schema', () => {
       /supersedes must not repeat a criterion id/,
     )
   })
+
+  test('an entry may carry the answer to a conflict question, and it round-trips', () => {
+    const answered = [
+      entry({
+        criterion: 'spec-up-201',
+        resolution: {
+          question: 'q-0123456789abcdef',
+          classification: 'supersede',
+          by: 'jason',
+          why: 'the new rule is the intended behaviour',
+          at: '2026-09-28',
+        },
+      }),
+    ]
+    expect(parseLedgerEntries(JSON.parse(serializeLedger(answered)))).toEqual(answered)
+  })
+
+  test('a recorded resolution must be well-formed', () => {
+    const resolution = {
+      question: 'q-0123456789abcdef',
+      classification: 'supersede' as const,
+      by: 'jason',
+      why: 'intended',
+      at: '2026-09-28',
+    }
+    expect(() => parseLedgerEntries(doc([entry({ resolution: { ...resolution, question: 'nothex' } })]))).toThrow(
+      /must match q- followed by 16 hex characters/,
+    )
+    expect(() => parseLedgerEntries(doc([entry({ resolution: { ...resolution, classification: 'unsure' as never } })]))).toThrow(
+      /unknown classification "unsure"/,
+    )
+    expect(() => parseLedgerEntries(doc([entry({ resolution: { ...resolution, by: 'multi\nline' } })]))).toThrow(
+      /decider must not contain newlines/,
+    )
+    expect(() => parseLedgerEntries(doc([entry({ resolution: { ...resolution, extra: 1 } })]))).toThrow(
+      /unknown field in ledger resolution/,
+    )
+  })
 })
 
 describe('FileLedgerStore', () => {
