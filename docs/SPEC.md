@@ -630,6 +630,34 @@ Results come back in plan order whatever the workers did, so a sharded run's
 result reads exactly as a serial run's does, and a one-worker run is the
 serial run.
 
+### Sweeps
+
+A sweep is a scheduled run over the whole ledger (`qare sweep --ledger
+<dir>`, on a schedule with no pull request anywhere in the picture, #49). It
+classifies every active or proposed criterion into one of five buckets and
+keeps the standing status report — one GitHub issue, found by its hidden
+marker and updated in place, never opened twice — current with that
+picture: proven (verified within its area's staleness threshold), stale
+(nothing has verified it within the threshold, or it changed after its last
+verification), unverified (admitted but never proven), quarantined (held for
+an open conflict question) and refused (the last run refused it).
+
+Staleness thresholds are per area, in a strict `sweep.json` beside the
+ledger: an area names its `staleAfter` as a duration (`30d`, `2w`, `1y`), a
+criterion's area comes from the suite or repository-relative path its
+verification names, and the strictest threshold among the areas a criterion
+touches wins. A criterion with no configured area uses the default
+threshold; a repository with no `sweep.json` at all uses the built-in
+default, so a sweep works before anyone writes configuration.
+
+A sweep failure is reported as a finding, not as a broken build: a scheduled
+sweep has no pull request to turn red, so a ledger or configuration it
+cannot read is filed through the findings flow (#154), one issue per
+problem, fingerprinted so the next sweep updates it in place instead of
+duplicating it, mentioning the person whose change last touched the ledger.
+The ledger, not the report, is the store: the standing report is written for
+someone with no QARE installed, exactly as the published view is.
+
 ## GitHub identity
 
 QARE posts comments, checks and pull requests, so it needs an identity. Both
