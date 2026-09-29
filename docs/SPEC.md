@@ -504,6 +504,12 @@ ledger, a pull request, or GitHub at all:
   criteria. No ledger is required to run at all.
 - **A named subset.** An orchestrator hands QARE a set of criterion ids for one
   card and gets back a verdict for exactly those.
+  `qare run --criteria BIL-014,BIL-021` (and the MCP `run_criteria` tool the
+  same way) resolves each id against the ledger, all-or-nothing: an id the
+  ledger does not carry, and one that is retired or superseded, are refused in
+  one message naming every offender and its state, never skipped. What runs is
+  what the ledger says verifies each criterion — the suites its checks name —
+  and the result records exactly the named subset, never implying more.
 - **The whole ledger.** For a diff, QARE selects the criteria the change could
   affect, plus a standing smoke set, within a time budget. What it did not run
   is reported as not selected, never as passed.

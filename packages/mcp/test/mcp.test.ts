@@ -1,9 +1,9 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
 import type { JobCriterion, QaProfile } from '@qare/core'
-import { VERSION } from '@qare/core'
+import { serializeLedger, VERSION } from '@qare/core'
 import { createMcpServer } from '../src/server.js'
 import type { McpServer } from '../src/server.js'
 
@@ -73,7 +73,7 @@ test('the MCP surface round-trips a full job through submit, result, and evidenc
     const toolNames = JSON.parse(client.lines[1]).result.tools.map(
       (tool: { name: string }) => tool.name,
     )
-    expect(toolNames).toEqual(['check', 'submit_job', 'get_result', 'get_evidence'])
+    expect(toolNames).toEqual(['check', 'run_criteria', 'submit_job', 'get_result', 'get_evidence'])
 
     const evidenceDir = join(repoPath, 'evidence')
     const job = {
@@ -246,4 +246,69 @@ test('the check tool advertises the criteria it accepts: at least one, none blan
   const response = await client.send({ jsonrpc: '2.0', id: 4, method: 'tools/list' })
   const check = (response.result as { tools: Array<{ name: string; inputSchema: { properties: { criteria: Record<string, unknown> } } }> }).tools.find((tool) => tool.name === 'check')
   expect(check?.inputSchema.properties.criteria).toMatchObject({ minItems: 1, items: { type: 'string', minLength: 1 } })
+})
+
+test('run_criteria runs the named subset through the ledger and returns exactly those criteria', async () => {
+  const repoPath = await mkdtemp(join(tmpdir(), 'qare-mcp-subset-'))
+  const client = new FakeClient()
+  try {
+    await mkdir(join(repoPath, '.qa'), { recursive: true })
+    const healthUrl = ['http:', '//localhost:3000/up'].join('')
+    await writeFile(
+      join(repoPath, '.qa', 'ledger.json'),
+      serializeLedger([
+        { criterion: 'BIL-014', status: 'active', source: [['https:', '//example.test/pr/1'].join('')], proof: 'command', text: 'the invoice totals add up', checks: ['suite:smoke'] },
+      ]),
+      'utf8',
+    )
+    await writeFile(
+      join(repoPath, '.qa', 'profile.yml'),
+      `target:\n  url: ${healthUrl}\n  health: { http: /health, timeout: 1s }\nstubs: []\nvisual:\n  widths: [390]\n  themes: [light]\n`,
+      'utf8',
+    )
+    await writeFile(join(repoPath, '.qa', 'QA.md'), '# QA\n')
+    await writeFile(join(repoPath, '.qa', 'config.yml'), `target:\n  url: ${healthUrl}\n  health: { http: /health, timeout: 1s }\nsuites:\n  - name: smoke\n    command: "true"\n    kind: command\n`)
+
+    const response = await client.send({
+      jsonrpc: '2.0',
+      id: 9,
+      method: 'tools/call',
+      params: { name: 'run_criteria', arguments: { criteria: ['BIL-014'], repoPath, base: 'abc', head: 'def' } },
+    })
+    expect(response.error).toBeUndefined()
+    const output = JSON.parse((response.result as { content: Array<{ text: string }> }).content[0].text)
+    expect(output.result.verdict).toBe('passed')
+    expect(output.result.criteria.map((criterion: { id: string }) => criterion.id)).toEqual(['BIL-014'])
+    expect(output.evidenceDir).toContain('qare-evidence')
+    expect(output.notes).toEqual([])
+  } finally {
+    await rm(repoPath, { recursive: true })
+  }
+})
+
+test('run_criteria refuses ids the ledger cannot serve, naming them as invalid params', async () => {
+  const repoPath = await mkdtemp(join(tmpdir(), 'qare-mcp-subset-'))
+  const client = new FakeClient()
+  try {
+    await mkdir(join(repoPath, '.qa'), { recursive: true })
+    await writeFile(
+      join(repoPath, '.qa', 'ledger.json'),
+      serializeLedger([
+        { criterion: 'BIL-014', status: 'retired', source: [['https:', '//example.test/pr/1'].join('')], proof: 'command' },
+      ]),
+      'utf8',
+    )
+    const response = await client.send({
+      jsonrpc: '2.0',
+      id: 10,
+      method: 'tools/call',
+      params: { name: 'run_criteria', arguments: { criteria: ['BIL-014', 'BIL-099'], repoPath, base: 'abc', head: 'def' } },
+    })
+    const error = response.error as { code: number; message: string }
+    expect(error.code).toBe(-32602)
+    expect(error.message).toMatch(/BIL-014 is retired/)
+    expect(error.message).toMatch(/BIL-099 is not in the ledger/)
+  } finally {
+    await rm(repoPath, { recursive: true })
+  }
 })
