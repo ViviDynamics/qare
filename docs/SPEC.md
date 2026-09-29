@@ -757,6 +757,31 @@ something unusual starts from the base and adds only that. Paths, the entry
 point and the user are a stable contract, so a derived image keeps working
 across QARE releases.
 
+The shipped flavours are `core` (the base) and `web` (built from the core,
+adding the browser engine, its browsers and a virtual display). A profile
+names the flavour its checks need, and the run refuses a name the family does
+not ship before anything boots: the family is the pipeline's, and a name
+outside it can only be a misspelling or a wish the family has not grown yet.
+Absent means the base is enough, which a profile of command and mail checks
+is.
+
+Every image pins the versions it ships and stamps them where a run reads them
+into its evidence, so a containerised run names the image ref and digest that
+produced it, the flavour it ran as, and the qare, nare and driver versions
+inside, rather than asking the registry. The base image holds a size budget
+the pipeline enforces, because the budget is what keeps the base the smallest
+thing that runs QARE; and no derived image reinstalls anything the base
+already ships, which CI checks by comparing the bytes of the base's files
+between a base image and a derived one.
+
+The pipeline runs on the family: plan and judge run qare in the core image,
+execute runs the flavour the profile targets, and a release publishes the
+images for amd64 and arm64 to the registry. A pull of the image is what a run
+of the pipeline is, so no job builds qare from source to plan, execute or
+judge; and until a release publishes the images, those pulls fail naming
+exactly that, because a quiet fallback to a source build is the failure mode
+the family exists to remove.
+
 ### On a host
 
 The host install is the same package the image ships: `@qare/cli` at a pinned
@@ -784,7 +809,9 @@ step keeps the inherit contract, because the image controls that environment.
 Either way the result and its evidence are the same shape, and the result
 records where the run executed: `environment.execution` is `native` or
 `containerised`, with the qare version, the node version and the nare contract
-it ran with.
+it ran with. A containerised run adds the image that produced it: the ref and
+digest the runner that pulled the image passed, the flavour the image sets,
+the driver versions it ships, and the pinned versions the image stamps (#88).
 
 ### Tools QARE did not ship
 

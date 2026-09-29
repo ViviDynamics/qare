@@ -162,10 +162,20 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
     ...criteria.map(criterion => `| ${cell(criterion.id)} | ${criterion.outcome}${criterion.cached === true ? ' (cached)' : ''} | ${cell(reasonCell(criterion))} |`),
   ]
   const job = result.job === undefined ? '' : ` (job ${posted ? codeSpan(result.job.id) : result.job.id})`
+  const imageLines = (image: NonNullable<typeof result.environment>['image']): string[] =>
+    image === undefined
+      ? []
+      : [
+          `Produced by image ${codeSpan(image.ref)} at digest ${codeSpan(image.digest)}${image.flavour === undefined ? '' : ` (flavour ${image.flavour})`}.`,
+          ...(image.drivers === undefined
+            ? []
+            : [`Drivers it ships: ${Object.entries(image.drivers).map(([name, version]) => `${name} ${version}`).join(', ')}.`]),
+        ]
   const environment = result.environment === undefined
     ? []
     : [
         `Executed ${result.environment.execution === 'native' ? 'natively on a host' : 'in a container'} with qare ${result.environment.versions.qare}, node ${result.environment.versions.node}, nare contract ${result.environment.versions.nareContract}.`,
+        ...(result.environment.image === undefined ? [] : imageLines(result.environment.image)),
         '',
       ]
   const lines = [

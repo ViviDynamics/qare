@@ -32,3 +32,37 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test
+
+  # The image family (#88): CI builds the flavours it can, holds the core
+  # image to its size budget, and checks that a derived image reinstalls
+  # nothing the base already ships. Publication is the release workflow's
+  # job: CI builds and measures, it does not push.
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+        # The core image: the workspace builds inside it, so the build needs
+        # the whole tree, not a workspace already built on the runner.
+      - name: Build the core image
+        run: docker build -f images/core/Dockerfile -t qare-core:ci .
+      - name: Hold the core image to its size budget
+        run: |
+          set -euo pipefail
+          budget="$(cat images/core/size-budget)"
+          size="$(docker image inspect -f '{{.Size}}' qare-core:ci)"
+          if [ "$size" -gt "$budget" ]; then
+            echo "the core image is $size bytes, over its budget of $budget (images/core/size-budget): the base image is the smallest thing that runs qare, so a change that grows it past the budget must shrink it again or argue a new budget in the PR (#88)" >&2
+            exit 1
+          fi
+          echo "core image $size bytes, under budget $budget" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build the web flavour from it
+        run: docker build -f images/web/Dockerfile --build-arg QARE_IMAGE=qare-core:ci -t qare-web:ci .
+      - name: Check the derived images reinstall nothing
+        run: sh images/check-derived.sh qare-core:ci qare-web:ci

@@ -128,6 +128,12 @@ export interface QaProfile {
   stubs: ProfileStub[]
   visual: ProfileVisual
   suites: ProfileSuite[]
+  /**
+   * The image flavour the profile's checks need (#88): the published image
+   * the pipeline's execute step runs them in. Absent means the base image is
+   * enough, which a profile of command and mail checks is.
+   */
+  flavour?: ImageFlavour
   /** Where the harness reads the mail a check waits for (#67). */
   mail?: ProfileMail
   /** The host's MCP servers the planner may look through (#93). */
@@ -323,6 +329,7 @@ export function validateProfileConfig(config: unknown): QaProfile {
     stubs: parseStubs(config.stubs),
     visual: parseVisual(config.visual),
     suites: parseSuites(config.suites),
+    ...(config.flavour === undefined ? {} : { flavour: parseFlavour(config.flavour) }),
     ...(config.mail === undefined ? {} : { mail: parseMail(config.mail) }),
     ...(config.mcp === undefined ? {} : { mcp: parseMcp(config.mcp) }),
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
@@ -347,11 +354,28 @@ function validateTargetConfig(config: Record<string, unknown>): QaProfile {
     stubs: [],
     visual: config.visual === undefined ? { widths: [], themes: [] } : parseVisual(config.visual),
     suites: config.suites === undefined ? [] : parseSuites(config.suites),
+    ...(config.flavour === undefined ? {} : { flavour: parseFlavour(config.flavour) }),
     ...(config.mail === undefined ? {} : { mail: parseMail(config.mail) }),
     ...(config.mcp === undefined ? {} : { mcp: parseMcp(config.mcp) }),
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
     ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
   }
+}
+
+/**
+ * The image flavours the published family ships (#88). A profile names the
+ * flavour its checks need, and the run refuses an unknown one before anything
+ * boots: the family is the pipeline's, and a name outside it can only be a
+ * misspelling or a wish the family has not grown yet.
+ */
+export const IMAGE_FLAVOURS = ['core', 'web'] as const
+
+export type ImageFlavour = (typeof IMAGE_FLAVOURS)[number]
+
+function parseFlavour(value: unknown): ImageFlavour {
+  if (typeof value !== 'string' || !(IMAGE_FLAVOURS as readonly string[]).includes(value))
+    fail('flavour', `flavour must be one of ${IMAGE_FLAVOURS.join(', ')}, not ${JSON.stringify(value)}`)
+  return value as ImageFlavour
 }
 
 function httpUrl(value: string, field: string, label: string): URL {

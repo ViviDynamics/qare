@@ -3,7 +3,12 @@
 # fixtures. The health check may be a path on the target. Every host a
 # flow's browser reaches must be the target's own or listed in hosts;
 # anything else refuses the run.
+#
+# The flow checks need the browser driver family, so the run executes in the
+# published web image (#88): the profile names its flavour, and the
+# pipeline's execute step pulls the image the flavour names.
 target:
   url: https://en.wikipedia.org
   health: { http: /wiki/Main_Page, timeout: 30s }
   hosts: ["*.wikipedia.org", "*.wikimedia.org", "wikipedia.org", "wikimedia.org"]
+flavour: web

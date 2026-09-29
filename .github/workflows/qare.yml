@@ -14,12 +14,19 @@ name: QARE
 #   - requeue: holds the GitHub token only    (posts /qa on refused PRs)
 # No secret values are written here; only names, resolved at runtime.
 #
-# What runs what: collect, plan and judge hold secrets, so they build and run
-# qare from the base commit, a revision the pull request cannot change, and
-# no secret-holding job installs or runs the pull request's tree. The pull
-# request contributes data only: its body, the linked issues, the diff, its
-# .qa/ profile read as YAML, and the artifacts execute uploaded. execute runs
-# the pull request's own qare, and holds no secrets.
+# What runs what: plan, execute and judge run qare inside the published image
+# family (#88), pulled for the revision's own version so a run of the pipeline
+# is a pull of the image, not a build of the tree. collect and requeue hold
+# secrets or write to GitHub only, so they build and run qare from the base
+# commit or the pushed revision, a revision the pull request cannot change,
+# and no secret-holding job installs or runs the pull request's tree. The
+# pull request contributes data only: its body, the linked issues, the diff,
+# its .qa/ profile read as YAML, and the artifacts execute uploaded. execute
+# runs the flavour its profile targets (core by default, web for browser
+# checks), and holds no secrets. Until a release publishes the images, the
+# image pull fails with a message naming exactly that (#88): the pipeline
+# stays red rather than quietly building qare from source, because a source
+# build is the failure mode this family exists to remove.
 #
 # Criteria come from the issue the pull request promises to close (#98). A
 # change that promises none, or closes only issues that state none, has
@@ -156,26 +163,26 @@ jobs:
       needs.collect.outputs.criteria == 'present' &&
       github.event.pull_request.head.repo.full_name == github.repository
     steps:
-      # The base revision's qare: the pull request contributes data only, and
-      # this job holds the model key.
+      # The base revision: the pull request contributes data only, and this
+      # job holds the model key. The tree supplies the version and the QA
+      # inputs; the image is the published core for that version (#88), so
+      # nothing here builds qare from source.
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.sha }}
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build
-      - name: Install the pinned nare
+      - name: Pull the core image
+        id: image
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet --user "$NARE_WHEEL"
-          "$HOME/.local/bin/nare" --version
-        env:
-          NARE_WHEEL: https://github.com/ViviDynamics/nare/releases/download/2026.9.10/nare-2026.9.10-py3-none-any.whl
+          version="$(jq -r .version package.json)"
+          ref="ghcr.io/vividynamics/qare-core:$version"
+          if ! docker pull "$ref"; then
+            echo "no published qare-core image for version $version ($ref): the image family publishes when a release is tagged, so tag a release and the images job in .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
       - name: Download the QA inputs
         uses: actions/download-artifact@v4
         with:
@@ -184,8 +191,7 @@ jobs:
       - name: Plan the QA run
         shell: bash
         env:
-          # nare's openai rail: the planner key is scoped to a model that
-          # answers inside the proxy's edge timeout (see nare#27).
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
           OPENAI_API_KEY: ${{ secrets.QARE_PLANNER_KEY }}
           NARE_PROVIDER: openai
           NARE_BASE_URL: https://llm.vividynamics.com/v1
@@ -203,9 +209,12 @@ jobs:
             flow_actions=(--flow-actions "$kinds")
             echo "planning with the change's flow action kinds: $kinds" >> "$GITHUB_STEP_SUMMARY"
           fi
-          if ! node packages/cli/dist/index.js plan \
+          if ! docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            -e OPENAI_API_KEY -e NARE_PROVIDER -e NARE_BASE_URL -e NARE_MODEL \
+            -v "$PWD:$PWD" -w "$PWD" \
+            "$IMAGE_REF" qare plan \
             --criteria criteria.json --diff change-planner.diff --out plan.json \
-            --nare "$HOME/.local/bin/nare" --profile .qa "${flow_actions[@]}" 2>plan.err; then
+            --nare /usr/local/bin/nare --profile .qa "${flow_actions[@]}" 2>plan.err; then
             # The planner's copy of the diff — scrubbed of the values the
             # change adds, with the test suite left out — is what the planner
             # always reads, whatever fits the argument budget (nare#29). Any
@@ -243,17 +252,34 @@ jobs:
     steps:
       # actions/checkout checks out the PR merge ref on pull_request events
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build
-      # Flow checks need a browser (#121). The version tracks playwright-core
-      # in packages/core/package.json: the runner drives that chromium.
-      - name: Install the flow browser
-        run: npx --yes playwright@1.63.0 install --with-deps chromium
+      # The flavour the profile targets (#88): the profile names it, and
+      # execute pulls that image, not the runner's own stack. Absent means
+      # the base image is enough, which a profile of command and mail
+      # checks is.
+      - name: Read the profile's flavour
+        id: flavour
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f .qa/config.yml ]; then
+            echo "flavour=core" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          flavour="$(awk -F'[: ]+' '$1=="flavour"{print $2; exit}' .qa/config.yml)"
+          echo "flavour=${flavour:-core}" >> "$GITHUB_OUTPUT"
+      - name: Pull the flavour image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -r .version package.json)"
+          ref="ghcr.io/vividynamics/qare-${{ steps.flavour.outputs.flavour }}:$version"
+          if ! docker pull "$ref"; then
+            echo "no published qare-${{ steps.flavour.outputs.flavour }} image for version $version ($ref): the image family publishes when a release is tagged, so tag a release and the images job in .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
       - name: Download plan.json
         uses: actions/download-artifact@v4
         with:
@@ -262,15 +288,32 @@ jobs:
       - name: Run the plan
         shell: bash
         env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -uo pipefail
           # The run's own facts come from here rather than from the plan: a
-          # plan is the same wherever it runs (#105).
+          # plan is the same wherever it runs (#105). The run executes inside
+          # the flavour image, so the runner's own record names the image ref
+          # and digest that produced the evidence (#88): the ref and digest
+          # travel in the environment, the flavour and driver versions travel
+          # in the image. The docker CLI and socket are mounted for the stub
+          # containers the plan boots (execute holds no secrets), and the
+          # workspace maps to itself, so the compose paths the runner names
+          # line up with the daemon's.
           code=0
-          node packages/cli/dist/index.js run --plan plan.json \
+          docker run --rm \
+            -u "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e QARE_IMAGE_REF="$IMAGE_REF" \
+            -e QARE_IMAGE_DIGEST="$IMAGE_DIGEST" \
+            -v "$PWD:$PWD" -w "$PWD" \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /usr/bin/docker:/usr/bin/docker:ro \
+            "$IMAGE_REF" qare run --plan plan.json \
             --id "pr-${PR_NUMBER}" \
             --repo "$PWD" \
             --base "$BASE_SHA" \
@@ -321,13 +364,17 @@ jobs:
         id: redact
         if: always()
         shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
         run: |
           set -euo pipefail
           if [ ! -d evidence ]; then
             echo "no evidence directory: nothing to redact or upload"
             exit 0
           fi
-          node packages/cli/dist/index.js redact --evidence evidence --profile .qa
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD:$PWD" -w "$PWD" \
+            "$IMAGE_REF" qare redact --evidence evidence --profile .qa
       - name: Upload evidence (raw results + result.json)
         id: evidence
         if: always() && steps.redact.outcome == 'success'
@@ -378,13 +425,19 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.base.sha }}
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build
+      - name: Pull the core image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -r .version package.json)"
+          ref="ghcr.io/vividynamics/qare-core:$version"
+          if ! docker pull "$ref"; then
+            echo "no published qare-core image for version $version ($ref): the image family publishes when a release is tagged, so tag a release and the images job in .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
       - name: Download the QA inputs
         uses: actions/download-artifact@v4
         with:
@@ -419,19 +472,10 @@ jobs:
         with:
           name: qa-profile
           path: profile
-      - name: Install the pinned nare
-        if: steps.executed.outputs.verdict != 'refused'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pip install --quiet --user "$NARE_WHEEL"
-          "$HOME/.local/bin/nare" --version
-        env:
-          # The same pin as the plan job; a test holds the two together.
-          NARE_WHEEL: https://github.com/ViviDynamics/nare/releases/download/2026.9.10/nare-2026.9.10-py3-none-any.whl
       - name: Judge the result
         shell: bash
         env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
           # The planner's key and model: the verifier's prompt is planning
           # size, and the model QARE_MODEL_KEY is scoped to does not answer
           # one inside the proxy's edge timeout (nare#27).
@@ -449,20 +493,28 @@ jobs:
           if [ -n "$kinds" ]; then
             flow_actions=(--flow-actions "$kinds")
           fi
-          node packages/cli/dist/index.js judge \
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            -e OPENAI_API_KEY -e NARE_PROVIDER -e NARE_BASE_URL -e NARE_MODEL \
+            -v "$PWD:$PWD" -w "$PWD" \
+            "$IMAGE_REF" qare judge \
             --result evidence/result.json --outDir . \
             --plan plan.json --diff change-planner.diff \
-            --nare "$HOME/.local/bin/nare" --profile profile "${flow_actions[@]}"
+            --nare /usr/local/bin/nare --profile profile "${flow_actions[@]}"
       - name: File stub issues (refused runs only)
         if: github.event_name == 'pull_request'
         shell: bash
         env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ ! -f judged-result.json ]; then
             echo "judged-result.json missing: judge did not produce an artifact, no stub issues to file"
           elif jq -e '.verdict == "refused"' judged-result.json > /dev/null; then
-            node packages/action/dist/index.js stub-issues --result judged-result.json --pr "${{ github.event.pull_request.number }}"
+            docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              -e GITHUB_TOKEN \
+              -v "$PWD:$PWD" -w "$PWD" \
+              --entrypoint node \
+              "$IMAGE_REF" /opt/qare/lib/packages/action/dist/index.js stub-issues --result judged-result.json --pr "${{ github.event.pull_request.number }}"
           else
             echo "verdict $(jq -r '.verdict' judged-result.json): not refused, no stub issues to file"
           fi
@@ -476,13 +528,19 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVIDENCE_URL: ${{ needs.execute.outputs.evidence-url }}
         run: |
           set -euo pipefail
-          node packages/action/dist/index.js post-evidence --result judged-result.json \
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            -e GITHUB_TOKEN \
+            -v "$PWD:$PWD" -w "$PWD" \
+            --entrypoint node \
+            "$IMAGE_REF" /opt/qare/lib/packages/action/dist/index.js post-evidence \
+            --result judged-result.json \
             --pr "$PR_NUMBER" --sha "$HEAD_SHA" --artifact-url "$EVIDENCE_URL" \
             --evidence evidence
       - name: Upload judge artifacts (comment.md, checkrun.json, judged-result.json)
