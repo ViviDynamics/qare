@@ -82,13 +82,15 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
           `(${[...new Set(skipped.map((check) => check.kind))].join(', ')})`,
       )
     const kinds = [...new Set(skipped.map((check) => check.kind))].join(', ')
+    const isolated = criterion.isolated === undefined ? {} : { isolated: criterion.isolated }
     if (checks.length > 0)
       return skipped.length === 0
-        ? { id: criterion.id, text: criterion.text, checks }
+        ? { id: criterion.id, text: criterion.text, checks, ...isolated }
         : {
             id: criterion.id,
             text: criterion.text,
             checks,
+            ...isolated,
             skipped: `${skipped.length} of its planned checks did not run (${kinds}), which the runner does not execute yet`,
           }
     return {

@@ -594,6 +594,42 @@ What was not selected is reported with the reason, and only that: a criterion
 that was not selected appears as not run, never as passed, and one that is
 superseded or retired is reported as such rather than run.
 
+### Sharding
+
+A run shards its criteria across workers (`qare run --workers <n>`, a whole
+number of criteria at least one, one by default), and sharding changes only
+how long the run takes, never what a verdict means (#48). The criteria that
+share no state with their neighbours are dealt round-robin over the workers
+in plan order and run side by side against the one booted app, which boots
+once for the whole run and is reused by every criterion that can reuse it.
+The rest stay sequential, in the plan order the job gave them, one after
+another.
+
+Two criteria are sequential whether or not the author says anything. A
+criterion that publishes, consumes or reads mail — one that carries a mail
+check, or references an artefact a mail check published as
+`{{mail.<name>.link}}` or `{{mail.<name>.code}}` — keeps plan order, because
+a run that reordered those hand-offs could return different verdicts than a
+serial run does. And a criterion that mutates shared state of the app runs
+against an app instance of its own instead of the shared one: its own compose
+project, its own host port, its own volumes, torn down with the criterion,
+recorded in evidence as `isolation-<criterion id>.json` beside the run's own
+isolation record.
+
+Mutating shared state is declared, in one of two ways: a criterion carries
+`isolated: true`, or a profile suite does, and every criterion the ledger
+verifies by that suite runs on its own app. A run against a target has no
+app to boot, so there an isolated declaration cannot conjure one: the
+criterion is checked against the declared target like its neighbours are.
+Whatever a criterion leaves behind stays invisible to the criteria that run
+beside it; anything else a check depends on must be declared one of those
+two ways, or the author is depending on serial order the sharding does not
+promise.
+
+Results come back in plan order whatever the workers did, so a sharded run's
+result reads exactly as a serial run's does, and a one-worker run is the
+serial run.
+
 ## GitHub identity
 
 QARE posts comments, checks and pull requests, so it needs an identity. Both

@@ -89,6 +89,13 @@ export interface PlannedCriterion {
   text: string
   checks: PlanCheck[]
   /**
+   * True when the checks mutate shared state of the app, so the criterion
+   * runs against an app instance of its own instead of the run's shared one
+   * (#48). The plan carries the declaration so a sharded run keeps every
+   * criterion's verdict what a serial run would have decided.
+   */
+  isolated?: boolean
+  /**
    * The app this criterion is checked against, named after the plan's
    * `profiles`. A plan that names its profiles must name one on every
    * criterion, or nothing runs (#55); a plan that names no profiles
@@ -281,11 +288,14 @@ function parseCriterion(value: unknown, index: number, extraFlowActions: readonl
   if (!Array.isArray(value.checks)) fail(`${base}.checks`, 'checks must be an array')
   if (value.checks.length === 0)
     fail(`${base}.checks`, `criterion "${id}" maps to zero checks; carry at least one check or mark the criterion unplannable`)
+  if (value.isolated !== undefined && typeof value.isolated !== 'boolean')
+    fail(`${base}.isolated`, 'isolated must be a boolean')
 
   return {
     id,
     text,
     checks: value.checks.map((check, checkIndex) => parseCheck(check, `${base}.checks[${checkIndex}]`, extraFlowActions)),
+    ...(value.isolated === undefined ? {} : { isolated: value.isolated as boolean }),
     ...(profile === undefined ? {} : { profile }),
   }
 }

@@ -121,7 +121,7 @@ export async function main(
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) [--workers <n>] | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -1810,7 +1810,12 @@ async function runCommand(
     // like every other path the run carries. Off by default: an uncached run
     // re-runs every check.
     const cacheFlag = flag(argv, '--cache')
-    const { result } = await runJob(job, cacheFlag === undefined ? boot : { ...boot, cacheDir: resolve(cacheFlag) })
+    // A run shards its independent criteria across the workers it is given
+    // (#48); one worker is the serial run, which is the default.
+    const workersFlag = flag(argv, '--workers')
+    const workers = parseWorkers(workersFlag)
+    const opts = cacheFlag === undefined ? boot : { ...boot, cacheDir: resolve(cacheFlag) }
+    const { result } = await runJob(job, workers === undefined ? opts : { ...opts, workers })
     const code = exitCodeFor(result.verdict)
     out.write(`verdict ${result.verdict}; evidence ${job.evidenceDir}\n`)
     return code
@@ -1818,6 +1823,19 @@ async function runCommand(
     err.write(`${formatError(error)}\n`)
     return 4
   }
+}
+
+/**
+ * The worker count a run shards its independent criteria across (#48). An
+ * integer of at least one: zero workers is nothing running, and a fraction is
+ * nothing the scheduler can deal out.
+ */
+function parseWorkers(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined
+  const count = Number(value)
+  if (!Number.isInteger(count) || count < 1)
+    throw new Error(`qare run --workers takes an integer of at least 1, and ${JSON.stringify(value)} is not one`)
+  return count
 }
 
 /**

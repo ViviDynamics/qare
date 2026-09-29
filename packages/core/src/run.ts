@@ -20,6 +20,7 @@ import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCa
 import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
+import { shardCriteria, type LanePlan } from './shards.js'
 import { mintRunValues, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 60000
@@ -99,6 +100,12 @@ export async function runJob(
     flowDriver?: FlowDriverCapabilities
     /** Where the run executes; detected from the process when not pinned (issue #91). */
     execution?: ExecutionKind
+    /**
+     * How many workers the run shards its independent criteria across (#48).
+     * One is the serial run: plan order against the one booted app, which is
+     * what every run did before sharding existed.
+     */
+    workers?: number
   } = {},
 ): Promise<{ result: RunResult; isolation?: RunIsolation; isolations?: Array<{ name: string; isolation: RunIsolation }> }> {
   // Where this run executes is evidence like the verdict is: recorded in
@@ -223,7 +230,6 @@ export async function runJob(
       return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
     }
 
-    const criteria: CriterionResult[] = []
     const mail = {
       inbox: profile.mail?.inbox,
       readMail: opts.readMail ?? (profile.mail?.inbox === undefined ? undefined : httpMailbox(profile.mail.inbox)),
@@ -237,7 +243,11 @@ export async function runJob(
     const totp =
       login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
     const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target, totp, mcp: profile.mcp }
-    for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow, execution, cache))
+    const criteria = await runCriteriaAcrossLanes(
+      job.criteria,
+      shardCriteria(job.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
+      { job, profile, rules, values, mail, artefacts, flow, execution, cache, opts },
+    )
     await writeCacheHits(job.evidenceDir, cache?.hits ?? [])
     // The judge is the verdict decision. Base execution and egress interception
     // of a booted stack land with the orchestrator; a target run records what its
@@ -434,6 +444,7 @@ async function runProfileGroup(
     readMail?: ReadMail
     flowSession?: FlowSessionFactory
     flowDriver?: FlowDriverCapabilities
+    workers?: number
   },
   cleanups: Array<() => void>,
   execution: ExecutionKind = detectExecution(),
@@ -509,7 +520,6 @@ async function runProfileGroup(
         ...(isolation === undefined ? {} : { isolation }),
       }
     }
-    const criteria: CriterionResult[] = []
     const mail = {
       inbox: profile.mail?.inbox,
       readMail: opts.readMail ?? (profile.mail?.inbox === undefined ? undefined : httpMailbox(profile.mail.inbox)),
@@ -523,7 +533,11 @@ async function runProfileGroup(
     // The masks are the union of every app's, built before any app ran, so
     // one app's screenshots cannot publish another app's secret region (#55).
     const flow = { session: opts.flowSession, masks, suites: profile.suites, target, totp, mcp: profile.mcp }
-    for (const criterion of group.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow, execution, cache))
+    const criteria = await runCriteriaAcrossLanes(
+      group.criteria,
+      shardCriteria(group.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
+      { job, profile, rules, values, mail, artefacts, flow, execution, cache, opts },
+    )
     const egressRefused = target !== undefined && target.undeclared.length > 0
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
     return { criteria, verdict, values, ...(isolation === undefined ? {} : { isolation }), egressRefused, ...(cache === undefined ? {} : { cacheHits: cache.hits }) }
@@ -534,6 +548,138 @@ async function runProfileGroup(
     // only the one in flight (#55).
     if (cancelCleanup !== undefined) cleanups.push(cancelCleanup)
   }
+}
+
+/**
+ * The suite names a profile declares isolated (#48): a suite whose command
+ * mutates shared state of the app, so a criterion the ledger verifies by it
+ * runs against an app of its own instead of the run's shared one.
+ */
+function isolatedSuitesOf(profile: QaProfile): Set<string> {
+  return new Set(profile.suites.filter((suite) => suite.isolated === true).map((suite) => suite.name))
+}
+
+/**
+ * Everything the lane executor needs to run one criterion: the pieces a run
+ * builds once (the job, the shared booted profile, the rules, the run's
+ * values, the mail, the run's artefact ledger, the flow context, the
+ * detected execution, the run's cache) plus the boot options a shard boots
+ * its own app with (#48).
+ */
+interface LaneContext {
+  job: Job
+  profile: QaProfile
+  rules: readonly RedactionRule[]
+  values: RunValues
+  mail: { inbox?: string; readMail?: ReadMail }
+  artefacts: Artefacts
+  flow: { session?: FlowSessionFactory; masks: string[]; suites: ProfileSuite[]; target?: FlowTargetContext; totp?: FlowTotpConfig; mcp?: ProfileMcpServer[] }
+  execution: ExecutionKind
+  cache: RunCacheContext | undefined
+  opts: BootOpts & { ledgerFeed?: { dir: string }; readMail?: ReadMail; flowSession?: FlowSessionFactory; flowDriver?: FlowDriverCapabilities; workers?: number }
+}
+
+/**
+ * Run one criterion against an app instance of its own (#48). The criterion
+ * boots the app under an isolation minted for it — its own compose project,
+ * its own host port, its own volumes — so whatever its checks mutate is
+ * gone, with the app, when the criterion is done, and no other criterion
+ * sharing the run's app can see it. The isolation is recorded in evidence
+ * next to the run's, named for the criterion, so a leftover stack is still
+ * named for reap (#53). A run against a target has no app to boot, so the
+ * criterion runs against the declared target like its neighbours do.
+ */
+async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): Promise<CriterionResult> {
+  const { job, profile, opts } = ctx
+  if (profile.app === undefined)
+    return runCriterion(criterion, job, ctx.rules, ctx.values, ctx.mail, ctx.artefacts, ctx.flow, ctx.execution, ctx.cache)
+  let shardIsolation: RunIsolation
+  try {
+    shardIsolation = await isolateRun()
+  } catch (error) {
+    return { id: criterion.id, outcome: 'unverified', reason: `the criterion's own app did not start: ${(error as Error).message}` }
+  }
+  await mkdir(job.evidenceDir, { recursive: true })
+  // Evidence is published: this names the compose project a leftover stack
+  // runs under, which is what an orchestrator needs to reap it (#53).
+  await writeFile(
+    join(job.evidenceDir, `isolation-${criterion.id}.json`),
+    `${JSON.stringify(
+      { run_id: shardIsolation.runId, project: shardIsolation.project, started_at: shardIsolation.startedAt, ...(shardIsolation.port === undefined ? {} : { port: shardIsolation.port }) },
+      null,
+      2,
+    )}\n`,
+  )
+  // The shard keeps the run's values except the identity it now owns: its
+  // own run id (the compose project and the mail address name the criterion's
+  // app, not the run's), and the host port its app is published on, so a
+  // check that names `{{run.app_port}}` names the app this criterion booted.
+  const shardValues: RunValues = {
+    ...ctx.values,
+    id: shardIsolation.runId,
+    mail_address: `qare-${shardIsolation.runId}@localhost`,
+    ...(shardIsolation.port === undefined ? {} : { app_port: String(shardIsolation.port) }),
+  }
+  const bootedShard = {
+    ...profile,
+    app: { ...profile.app, health: { ...profile.app.health, http: isolatedHealthUrl(substituteValues(profile.app.health.http, shardValues), shardIsolation.port) } },
+  }
+  const cancelCleanup = installCancelCleanup(bootedShard, { ...opts, isolation: shardIsolation })
+  try {
+    const boot = await bootApp(bootedShard, { ...opts, isolation: shardIsolation })
+    if (boot.kind === 'blocked') return { id: criterion.id, outcome: 'unverified', reason: boot.reason ?? 'boot did not come up' }
+    // The criterion's artefact ledger starts empty: what its flow checks
+    // publish or spend belongs to this app alone, never the run's (#69).
+    return await runCriterion(criterion, job, ctx.rules, shardValues, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache)
+  } finally {
+    // The criterion's app is torn down with the criterion: a sharded run
+    // leaves no stack of its own holding a port or a volume the next
+    // criterion or run could collide with (#48). The run's own app stays
+    // with the run, exactly as an unsharded one does.
+    await stopApp(bootedShard, { ...opts, isolation: shardIsolation })
+    cancelCleanup()
+  }
+}
+
+/**
+ * Run a job's criteria across the lanes its sharding plan names (#48): the
+ * independent ones across the workers against the one booted app, the rest
+ * one after another in plan order, booting their own app where the job or a
+ * suite declares one. Results come back in plan order whatever the workers
+ * did, so a sharded run's result.json reads exactly as a serial run's does.
+ */
+async function runCriteriaAcrossLanes(criteria: JobCriterion[], lanes: LanePlan, ctx: LaneContext): Promise<CriterionResult[]> {
+  const results: CriterionResult[] = new Array(criteria.length)
+  const criterionAt = (index: number): JobCriterion => {
+    const criterion = criteria[index]
+    if (criterion === undefined) throw new Error('sharding: the plan named an index that names no criterion')
+    return criterion
+  }
+  await Promise.all([
+    ...lanes.shared.map((slice) =>
+      (async () => {
+        for (const index of slice) {
+          const criterion = criterionAt(index)
+          // A criterion the workers run beside others shares nothing with
+          // them: its artefact ledger starts empty, so its flow checks
+          // cannot spend or publish what another criterion's do (#69).
+          results[index] = await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache)
+        }
+      })(),
+    ),
+    (async () => {
+      for (const { index, ownBoot } of lanes.sequential) {
+        const criterion = criterionAt(index)
+        // The sequential criteria share the run's artefact ledger, in plan
+        // order: a mail message's link published by one criterion is what
+        // the next one consumes, exactly as a serial run hands it over.
+        results[index] = ownBoot
+          ? await runOwnBootCriterion(criterion, ctx)
+          : await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, ctx.artefacts, ctx.flow, ctx.execution, ctx.cache)
+      }
+    })(),
+  ])
+  return results
 }
 
 /** Refuse the whole run without booting: every criterion is reported unverified, naming the gap. */
