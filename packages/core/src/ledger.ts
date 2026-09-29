@@ -15,6 +15,8 @@ export interface LedgerEntry {
   source: string[]
   proof: string
   note?: string
+  /** The criteria this entry replaced, when it came in over one (#40). */
+  supersedes?: string[]
 }
 
 function fail(field: string, message: string): never {
@@ -54,7 +56,7 @@ function sourceLinks(value: unknown, field: string): string[] {
 
 function parseEntry(entry: unknown, field: string): LedgerEntry {
   if (!isRecord(entry)) fail(field, 'ledger entry must be a JSON object')
-  const allowed = new Set(['criterion', 'status', 'source', 'proof', 'note'])
+  const allowed = new Set(['criterion', 'status', 'source', 'proof', 'note', 'supersedes'])
   for (const key of Object.keys(entry)) {
     if (!allowed.has(key)) fail(`${field}.${key}`, 'unknown field in ledger entry')
   }
@@ -81,6 +83,18 @@ function parseEntry(entry: unknown, field: string): LedgerEntry {
     if (/[\r\n]/.test(note)) fail(`${field}.note`, 'note must not contain newlines')
     parsed.note = note
   }
+  if (entry.supersedes !== undefined) {
+    if (!Array.isArray(entry.supersedes)) fail(`${field}.supersedes`, 'supersedes must be an array of criterion ids')
+    const supersedes = entry.supersedes.map((id, index) =>
+      validateCriterionId(
+        nonEmptyString(id, `${field}.supersedes[${index}]`, 'criterion id'),
+        `${field}.supersedes[${index}]`,
+      ),
+    )
+    if (new Set(supersedes).size !== supersedes.length)
+      fail(`${field}.supersedes`, 'supersedes must not repeat a criterion id')
+    parsed.supersedes = supersedes
+  }
   return parsed
 }
 
@@ -89,7 +103,7 @@ function canonicalEntries(entries: LedgerEntry[]): Record<string, unknown>[] {
     .sort((a, b) => (a.criterion < b.criterion ? -1 : a.criterion > b.criterion ? 1 : 0))
     .map((entry) => {
       const sorted: Record<string, unknown> = {}
-      for (const key of ['criterion', 'status', 'source', 'proof', 'note'].sort()) {
+      for (const key of ['criterion', 'status', 'source', 'proof', 'note', 'supersedes'].sort()) {
         if (entry[key as keyof LedgerEntry] !== undefined) sorted[key] = entry[key as keyof LedgerEntry]
       }
       return sorted

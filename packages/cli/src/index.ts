@@ -36,6 +36,8 @@ import {
   mcpRecordsFile,
   criteriaFromIssue,
   criteriaFromIssues,
+  detectContradictions,
+  executedFromResult,
   IssueCriteriaError,
   linkedIssues,
   planRun,
@@ -57,6 +59,7 @@ import type {
   BootOpts,
   FlowDriverCapabilities,
   IngestOutcome,
+  IntroducedCriterion,
   Job,
   JobProfileRef,
   LedgerEntry,
@@ -100,7 +103,7 @@ export async function main(
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status> [--ledger <dir>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict> [--ledger <dir>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -1078,13 +1081,16 @@ export async function runLedgerCommand(argv: string[], out: Writer, err: Writer)
     const [sub, ...subArgs] = rest
     const dir = resolve(ledgerSpec ?? '.qa')
     if (sub === undefined)
-      throw new Error('qare ledger requires a subcommand; usage: qare ledger <list|show|diff|status> [--ledger <dir>]')
+      throw new Error(
+        'qare ledger requires a subcommand; usage: qare ledger <list|show|diff|status|contradict> [--ledger <dir>]',
+      )
     if (sub === 'list') return await ledgerList(dir, out)
     if (sub === 'show') return await ledgerShow(dir, subArgs[0], out)
     if (sub === 'diff') return await ledgerDiff(dir, subArgs, out)
     if (sub === 'status') return await ledgerStatus(dir, out, err)
+    if (sub === 'contradict') return await ledgerContradict(subArgs, dir, out)
     throw new Error(
-      `unknown ledger subcommand ${JSON.stringify(sub)}; usage: qare ledger <list|show|diff|status> [--ledger <dir>]`,
+      `unknown ledger subcommand ${JSON.stringify(sub)}; usage: qare ledger <list|show|diff|status|contradict> [--ledger <dir>]`,
     )
   } catch (error) {
     err.write(`${formatError(error)}\n`)
@@ -1165,6 +1171,78 @@ async function ledgerStatus(dir: string, out: Writer, err: Writer): Promise<numb
   )
   out.write('integrity: ok\n')
   return 0
+}
+
+/**
+ * `qare ledger contradict`: read the evidence a judged run produced, detect
+ * the active ledger rules the change contradicts (#40), and classify each one
+ * with executed evidence first and the model second. The ledger is never
+ * written here: what comes out is a proposal a review applies, which is what
+ * makes a supersede a proposal.
+ */
+async function ledgerContradict(argv: string[], ledgerDir: string, out: Writer): Promise<number> {
+  const resultPath = flag(argv, '--result')
+  const criteriaPath = flag(argv, '--criteria')
+  if (resultPath === undefined) throw new Error('qare ledger contradict requires --result <judged-result.json>')
+  if (criteriaPath === undefined) throw new Error('qare ledger contradict requires --criteria <criteria.json>')
+  const diffPath = flag(argv, '--diff')
+  const nare = flag(argv, '--nare')
+  const outPath = flag(argv, '--out')
+  const runIdFlag = flag(argv, '--run-id')
+
+  const result: unknown = JSON.parse(await readFile(resolve(resultPath), 'utf8'))
+  const introduced = parseIntroducedCriteria(JSON.parse(await readFile(resolve(criteriaPath), 'utf8')))
+  const ledger = await new FileLedgerStore(ledgerDir).load()
+  const diff = diffPath === undefined ? undefined : await readFile(resolve(diffPath), 'utf8')
+  const report = await detectContradictions({
+    runId: runIdFlag ?? jobIdOf(result) ?? 'unknown',
+    executed: executedFromResult(result),
+    introduced,
+    ledger,
+    ...(nare === undefined ? {} : { classifier: new NareAgentRunner({ binary: nare }) }),
+    ...(diff === undefined ? {} : { diff }),
+  })
+
+  for (const contradiction of report.contradictions) {
+    const replacement =
+      contradiction.replacement === undefined ? '' : ` → ${contradiction.replacement}`
+    out.write(
+      `${contradiction.classification}  ${contradiction.criterion}${replacement}  (${contradiction.basis})\n`,
+    )
+  }
+  if (report.contradictions.length === 0) out.write('no contradictions detected\n')
+  if (outPath !== undefined) {
+    const target = resolve(outPath)
+    await mkdir(dirname(target), { recursive: true })
+    await writeFile(target, `${JSON.stringify(report, null, 2)}\n`, 'utf8')
+    out.write(`proposal: ${target}\n`)
+  }
+  return 0
+}
+
+function parseIntroducedCriteria(input: unknown): IntroducedCriterion[] {
+  if (!Array.isArray(input)) throw new Error('contradiction: the criteria file must be a JSON array of {id, text}')
+  const criteria: IntroducedCriterion[] = []
+  for (const [index, entry] of input.entries()) {
+    const field = `contradiction: criteria[${index}]`
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry))
+      throw new Error(`${field} must be a JSON object`)
+    const record = entry as Record<string, unknown>
+    if (typeof record.id !== 'string' || record.id.trim() === '')
+      throw new Error(`${field}.id must be a criterion id`)
+    if (typeof record.text !== 'string' || record.text.trim() === '')
+      throw new Error(`${field}.text must be the criterion's wording`)
+    criteria.push({ id: record.id, text: record.text })
+  }
+  return criteria
+}
+
+function jobIdOf(result: unknown): string | undefined {
+  if (typeof result !== 'object' || result === null) return undefined
+  const job = (result as { job?: unknown }).job
+  if (typeof job !== 'object' || job === null) return undefined
+  const id = (job as { id?: unknown }).id
+  return typeof id === 'string' && id.trim() !== '' ? id : undefined
 }
 
 

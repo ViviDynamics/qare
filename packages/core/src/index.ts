@@ -251,6 +251,20 @@ export type {
 export { applyLedgerProposal } from './ledger-apply.js'
 export { integrityOf } from './ledger.js'
 export {
+  CONTRADICTION_SCHEMA_VERSION,
+  ContradictionClassifierError,
+  detectContradictions,
+  executedFromResult,
+} from './ledger-contradict.js'
+export type {
+  Contradiction,
+  ContradictionChange,
+  ContradictionInput,
+  ContradictionReport,
+  ExecutedCriterion,
+  IntroducedCriterion,
+} from './ledger-contradict.js'
+export {
   hasIngestComment,
   ingestCommentMarker,
   ingestCriteria,
