@@ -164,6 +164,18 @@ export {
   stableStringify,
 } from './cache.js'
 export type { CacheKeyParts, CachedCriterion, CachedFile, CheckCache } from './cache.js'
+export {
+  QUARANTINE_FILE,
+  QUARANTINE_SCHEMA_VERSION,
+  addQuarantineRecord,
+  checkFingerprint,
+  openQuarantine,
+  quarantineCheckName,
+  quarantinedRecord,
+  readQuarantine,
+  saveQuarantine,
+} from './quarantine.js'
+export type { QuarantineContext, QuarantineRecord } from './quarantine.js'
 export { runVisualCheck, type VisualRevision, type VisualCheckOpts, type VisualScreenshot, type VisualDiff, type VisualCheckResult } from './visual.js'
 export { runFlowCheck, runSuiteCheck } from './flow.js'
 export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult, FlowTotpConfig, FlowDriverCapabilities } from './flow.js'

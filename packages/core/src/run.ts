@@ -22,6 +22,16 @@ import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, redactValu
 import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
 import { mintRunValues, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
+import {
+  addQuarantineRecord,
+  checkFingerprint,
+  openQuarantine,
+  quarantineCheckName,
+  quarantinedRecord,
+  saveQuarantine,
+  type QuarantineContext,
+  type QuarantineRecord,
+} from './quarantine.js'
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 60000
 const NO_CHECKS_REASON = 'no checks were given for this criterion, so nothing ran'
@@ -32,6 +42,83 @@ const NO_CHECKS_REASON = 'no checks were given for this criterion, so nothing ra
  */
 function hasUsablePort(port: number | undefined): boolean {
   return port !== undefined && Number.isInteger(port) && port >= 1 && port <= 65535
+}
+
+/**
+ * How a run handles a check that cannot decide (#50): `attempts` bounds how
+ * many times a failing check repeats before it is judged, and `quarantine`
+ * is the store the run consults before anything runs and persists unstable
+ * checks into. One attempt, the default, is today's behavior: every check
+ * is judged on what it did the first time.
+ */
+interface FlakePolicy {
+  attempts: number
+  quarantine?: QuarantineContext
+}
+
+function flakeAttemptsOf(attempts: number | undefined): number {
+  if (attempts === undefined) return 1
+  if (!Number.isInteger(attempts) || attempts < 1)
+    throw new Error(`a flaky check repeats a whole number of times, one or more, not ${JSON.stringify(attempts)}`)
+  return attempts
+}
+
+async function flakePolicyOf(opts: { flakeAttempts?: number; quarantineDir?: string }): Promise<FlakePolicy> {
+  return {
+    attempts: flakeAttemptsOf(opts.flakeAttempts),
+    ...(opts.quarantineDir === undefined ? {} : { quarantine: await openQuarantine(opts.quarantineDir) }),
+  }
+}
+
+/**
+ * Write the store the run quarantined checks into, after every criterion has
+ * run. A store that could not be read stays as it is: the run has already
+ * said so on its own error stream, and no check is quarantined by a store the
+ * run cannot read.
+ */
+async function persistQuarantine(policy: FlakePolicy): Promise<void> {
+  if (policy.quarantine === undefined) return
+  if (policy.quarantine.unreadable !== undefined) {
+    console.error(`quarantine skipped: the store at ${policy.quarantine.dir} could not be read (${policy.quarantine.unreadable}), so this run quarantined nothing`)
+    return
+  }
+  await saveQuarantine(policy.quarantine)
+}
+
+/** What one attempt of a check decided, evidence already written. */
+interface CheckAttempt {
+  status: 'passed' | 'failed' | 'unverified'
+  reason?: string
+}
+
+/** How a check's attempts fold together: unstable means the run quarantines it. */
+type AttemptFold =
+  | { kind: 'passed' }
+  | { kind: 'failed' }
+  | { kind: 'unverified'; reason?: string }
+  | { kind: 'unstable'; attempts: number }
+
+/**
+ * Run a check up to `attempts` times while it keeps failing, then judge it
+ * once from what its attempts did (#50). A check that fails and then passes
+ * is unstable: it did not decide, and a check that did not decide is what
+ * quarantine is for. A check that fails every attempt is a failure, and a
+ * check that passes its first attempt is proven and never runs again. An
+ * unverified attempt decides nothing, so it is never retried: the reason
+ * says what the harness could not do, and the criterion carries it.
+ */
+async function settleCheck(run: (attempt: number) => Promise<CheckAttempt>, attempts: number): Promise<AttemptFold> {
+  let last = await run(0)
+  let attemptsRun = 1
+  let sawFailure = false
+  while (last.status === 'failed' && attemptsRun < attempts) {
+    sawFailure = true
+    last = await run(attemptsRun)
+    attemptsRun += 1
+  }
+  if (last.status === 'passed') return sawFailure ? { kind: 'unstable', attempts: attemptsRun } : { kind: 'passed' }
+  if (last.status === 'failed') return { kind: 'failed' }
+  return { kind: 'unverified', ...(last.reason === undefined ? {} : { reason: last.reason }) }
 }
 
 /**
@@ -106,6 +193,10 @@ export async function runJob(
      * what every run did before sharding existed.
      */
     workers?: number
+    /** How many times a failing check repeats before it is judged (#50). */
+    flakeAttempts?: number
+    /** Where the run's quarantine store lives; the ledger directory in the pipeline (#50). */
+    quarantineDir?: string
   } = {},
 ): Promise<{ result: RunResult; isolation?: RunIsolation; isolations?: Array<{ name: string; isolation: RunIsolation }> }> {
   // Where this run executes is evidence like the verdict is: recorded in
@@ -197,6 +288,9 @@ export async function runJob(
   // the run reaches is looked up and recorded. A run without a cache dir
   // executes every check for real.
   const cache = await openRunCache(job, job.criteria, profile, opts.cacheDir)
+  // The flake policy (#50) is settled before anything runs, so the store is
+  // read once and every criterion consults the same one.
+  const policy = await flakePolicyOf(opts)
   if (isolation !== undefined) {
     await mkdir(job.evidenceDir, { recursive: true })
     // Evidence is published: this names the compose project a leftover stack
@@ -246,8 +340,9 @@ export async function runJob(
     const criteria = await runCriteriaAcrossLanes(
       job.criteria,
       shardCriteria(job.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
-      { job, profile, rules, values, mail, artefacts, flow, execution, cache, opts },
+      { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy },
     )
+    await persistQuarantine(policy)
     await writeCacheHits(job.evidenceDir, cache?.hits ?? [])
     // The judge is the verdict decision. Base execution and egress interception
     // of a booted stack land with the orchestrator; a target run records what its
@@ -293,6 +388,10 @@ async function runSeveralProfiles(
     readMail?: ReadMail
     flowSession?: FlowSessionFactory
     flowDriver?: FlowDriverCapabilities
+    /** How many times a failing check repeats before it is judged (#50). */
+    flakeAttempts?: number
+    /** Where the run's quarantine store lives; the ledger directory in the pipeline (#50). */
+    quarantineDir?: string
   },
   execution: ExecutionKind = detectExecution(),
 ): Promise<{ result: RunResult; isolation?: RunIsolation; isolations?: Array<{ name: string; isolation: RunIsolation }> }> {
@@ -395,6 +494,9 @@ async function runSeveralProfiles(
   const recorded: Array<{ name: string; values: RunValues }> = []
   const isolations: Array<{ name: string; isolation: RunIsolation }> = []
   const cacheHits: RunCacheContext['hits'] = []
+  // One flake policy for the whole run (#50): every app consults and
+  // persists into the same quarantine store.
+  const policy = await flakePolicyOf(opts)
   let egressRefused = false
   // Every started group's cancellation disposer is collected here and released
   // only when the whole run is over, so a SIGINT at any point of the run tears
@@ -405,7 +507,7 @@ async function runSeveralProfiles(
       const outcome: ProfileGroupOutcome =
         entry.refusal !== undefined
           ? { criteria: entry.group.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified' as const, reason: entry.refusal! })), verdict: 'refused' }
-          : await runProfileGroup(job, entry.group, entry.profile!, rules, masks, opts, cleanups, execution)
+          : await runProfileGroup(job, entry.group, entry.profile!, rules, masks, opts, cleanups, execution, policy)
       criteria.push(...outcome.criteria)
       profiles.push({ name: entry.group.name, verdict: outcome.verdict, criteria: outcome.criteria.map((criterion) => criterion.id), profile: entry.group.profile })
       if (outcome.values !== undefined) recorded.push({ name: entry.group.name, values: outcome.values })
@@ -416,6 +518,7 @@ async function runSeveralProfiles(
   } finally {
     for (const cleanup of cleanups) cleanup()
   }
+  await persistQuarantine(policy)
   // The minted values of each app are written through the same redaction sweep
   // as everything else the run publishes, with every app's rules applied: the
   // evidence says which app ran under which project, and nothing else (#68).
@@ -445,9 +548,14 @@ async function runProfileGroup(
     flowSession?: FlowSessionFactory
     flowDriver?: FlowDriverCapabilities
     workers?: number
+    /** How many times a failing check repeats before it is judged (#50). */
+    flakeAttempts?: number
+    /** Where the run's quarantine store lives; the ledger directory in the pipeline (#50). */
+    quarantineDir?: string
   },
   cleanups: Array<() => void>,
   execution: ExecutionKind = detectExecution(),
+  policy: FlakePolicy = { attempts: 1 },
 ): Promise<ProfileGroupOutcome> {
   const unverifiedAll = (reason: string): CriterionResult[] =>
     group.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified' as const, reason }))
@@ -536,7 +644,7 @@ async function runProfileGroup(
     const criteria = await runCriteriaAcrossLanes(
       group.criteria,
       shardCriteria(group.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
-      { job, profile, rules, values, mail, artefacts, flow, execution, cache, opts },
+      { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy },
     )
     const egressRefused = target !== undefined && target.undeclared.length > 0
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
@@ -576,6 +684,8 @@ interface LaneContext {
   flow: { session?: FlowSessionFactory; masks: string[]; suites: ProfileSuite[]; target?: FlowTargetContext; totp?: FlowTotpConfig; mcp?: ProfileMcpServer[] }
   execution: ExecutionKind
   cache: RunCacheContext | undefined
+  /** The run's flake policy (#50): every criterion in every lane consults the same one. */
+  policy: FlakePolicy
   opts: BootOpts & { ledgerFeed?: { dir: string }; readMail?: ReadMail; flowSession?: FlowSessionFactory; flowDriver?: FlowDriverCapabilities; workers?: number }
 }
 
@@ -592,7 +702,7 @@ interface LaneContext {
 async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): Promise<CriterionResult> {
   const { job, profile, opts } = ctx
   if (profile.app === undefined)
-    return runCriterion(criterion, job, ctx.rules, ctx.values, ctx.mail, ctx.artefacts, ctx.flow, ctx.execution, ctx.cache)
+    return runCriterion(criterion, job, ctx.rules, ctx.values, ctx.mail, ctx.artefacts, ctx.flow, ctx.execution, ctx.cache, ctx.policy)
   let shardIsolation: RunIsolation
   try {
     shardIsolation = await isolateRun()
@@ -630,7 +740,7 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
     if (boot.kind === 'blocked') return { id: criterion.id, outcome: 'unverified', reason: boot.reason ?? 'boot did not come up' }
     // The criterion's artefact ledger starts empty: what its flow checks
     // publish or spend belongs to this app alone, never the run's (#69).
-    return await runCriterion(criterion, job, ctx.rules, shardValues, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache)
+    return await runCriterion(criterion, job, ctx.rules, shardValues, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy)
   } finally {
     // The criterion's app is torn down with the criterion: a sharded run
     // leaves no stack of its own holding a port or a volume the next
@@ -663,7 +773,7 @@ async function runCriteriaAcrossLanes(criteria: JobCriterion[], lanes: LanePlan,
           // A criterion the workers run beside others shares nothing with
           // them: its artefact ledger starts empty, so its flow checks
           // cannot spend or publish what another criterion's do (#69).
-          results[index] = await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache)
+          results[index] = await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy)
         }
       })(),
     ),
@@ -675,7 +785,7 @@ async function runCriteriaAcrossLanes(criteria: JobCriterion[], lanes: LanePlan,
         // the next one consumes, exactly as a serial run hands it over.
         results[index] = ownBoot
           ? await runOwnBootCriterion(criterion, ctx)
-          : await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, ctx.artefacts, ctx.flow, ctx.execution, ctx.cache)
+          : await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, ctx.artefacts, ctx.flow, ctx.execution, ctx.cache, ctx.policy)
       }
     })(),
   ])
@@ -1036,6 +1146,7 @@ async function runCriterion(
   flow: { session?: FlowSessionFactory; masks: string[]; suites: ProfileSuite[]; target?: FlowTargetContext; totp?: FlowTotpConfig; mcp?: ProfileMcpServer[] },
   execution: ExecutionKind,
   cache: RunCacheContext | undefined,
+  policy: FlakePolicy,
 ): Promise<CriterionResult> {
   const checks = criterion.checks ?? []
   if (checks.length === 0)
@@ -1044,6 +1155,28 @@ async function runCriterion(
       outcome: 'unverified',
       reason: criterion.unrunnable ?? NO_CHECKS_REASON,
     }
+
+  // A criterion one of whose checks is quarantined never runs (#50): a
+  // quarantined check cannot decide, so the criterion reports unverified
+  // with the record the store carries, and no check of it runs at all. The
+  // cache from an earlier run is not replayed either: whatever it once
+  // published, the quarantined check decides this run, and quarantine
+  // never turns a criterion green.
+  const held = checks
+    .map((check, index) => ({ index, record: quarantinedRecord(policy.quarantine, checkFingerprint(criterion.id, check)) }))
+    .filter((hit): hit is { index: number; record: QuarantineRecord } => hit.record !== undefined)
+  if (held.length > 0) {
+    const evidence: string[] = []
+    let reason: string | undefined
+    for (const { index, record } of held) {
+      const checkDir = join('checks', criterion.id, String(index))
+      await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
+      await writeFile(join(job.evidenceDir, checkDir, 'quarantined.json'), `${JSON.stringify(record, null, 2)}\n`)
+      evidence.push(`${checkDir}/quarantined.json`)
+      if (reason === undefined) reason = `quarantined (${record.quarantinedAt}): ${record.reason}`
+    }
+    return { id: criterion.id, outcome: 'unverified', reason: reason ?? 'quarantined', evidence }
+  }
 
   // A criterion whose inputs have not moved replays the result the earlier
   // run published, whatever that result was (#47): the cache never re-judges
@@ -1063,50 +1196,77 @@ async function runCriterion(
   // one-time code — are secrets like any other: they join the profile's
   // redaction rules for every piece of evidence written after them (#64).
   const sweepRules = [...rules]
+  // Per-attempt evidence directories (#50): the first attempt writes the
+  // plain directory, and each repeat writes its own, so the evidence shows
+  // every attempt a check was given and never overwrites one with another.
+  const dirFor = (index: number, attempt: number): string =>
+    attempt === 0 ? join('checks', criterion.id, String(index)) : join('checks', criterion.id, `${index}-attempt${attempt + 1}`)
   for (const [index, check] of checks.entries()) {
     const substituted = substituteCheck(check, values)
-    const checkDir = join('checks', criterion.id, String(index))
+    // A check whose attempts failed and then passed is unstable (#50): the run
+    // records it in the quarantine store with a reason and a date, and this
+    // criterion reports unverified. Quarantining never turns a criterion green.
+    const quarantinedReason = (fold: { kind: 'unstable'; attempts: number }): string => {
+      const record: QuarantineRecord = {
+        check: redactText(quarantineCheckName(check, criterion.id, index), sweepRules),
+        fingerprint: checkFingerprint(criterion.id, check),
+        criterion: criterion.id,
+        reason: `unstable: the check failed and passed across ${fold.attempts} attempts of this run`,
+        quarantinedAt: new Date().toISOString(),
+      }
+      if (policy.quarantine !== undefined) addQuarantineRecord(policy.quarantine, record)
+      return `quarantined (${record.quarantinedAt}): ${record.reason}`
+    }
+    const foldCriterion = (fold: AttemptFold): void => {
+      if (fold.kind === 'failed') failed = true
+      else if (fold.kind === 'unstable') {
+        if (unverifiedReason === undefined) unverifiedReason = quarantinedReason(fold)
+      } else if (fold.kind === 'unverified' && unverifiedReason === undefined) unverifiedReason = fold.reason
+    }
     if (substituted.kind === 'mail') {
-      const outcome = await runMailCheck(
-        substituted,
-        mail.inbox,
-        mail.readMail,
-        substituted.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
-      )
-      if (outcome.status === 'unverified') {
-        if (unverifiedReason === undefined) unverifiedReason = outcome.reason
-        continue
-      }
-      await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
-      // Redacted value by value, before the JSON is built: a text pass over the
-      // serialized form can eat a closing quote and publish half the record.
-      const messageEvidence = mailEvidence(outcome.message, outcome.waitMs, outcome.polls)
-      // A mail check that reads a one-time code publishes it for later checks
-      // as {{mail.<name>.code}} (#64). A message with no code in it is
-      // unverified, named: the check cannot vouch for a code it never saw.
-      let code: string | undefined
-      if (substituted.code !== undefined) {
-        code = extractCode(outcome.message.body, substituted.code.pattern)
-        if (code === undefined) {
-          if (unverifiedReason === undefined)
-            unverifiedReason = `the message read by mail check ${substituted.name ?? substituted.address} carries no one-time code${
-              substituted.code.pattern === undefined ? '' : ` matching ${JSON.stringify(substituted.code.pattern)}`
-            }`
-          continue
+      const fold = await settleCheck(async (attempt) => {
+        const checkDir = dirFor(index, attempt)
+        const outcome = await runMailCheck(
+          substituted,
+          mail.inbox,
+          mail.readMail,
+          substituted.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
+        )
+        if (outcome.status === 'unverified') return { status: 'unverified', reason: outcome.reason }
+        await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
+        // Redacted value by value, before the JSON is built: a text pass over the
+        // serialized form can eat a closing quote and publish half the record.
+        const messageEvidence = mailEvidence(outcome.message, outcome.waitMs, outcome.polls)
+        // A mail check that reads a one-time code publishes it for later checks
+        // as {{mail.<name>.code}} (#64). A message with no code in it is
+        // unverified, named: the check cannot vouch for a code it never saw.
+        let code: string | undefined
+        if (substituted.code !== undefined) {
+          code = extractCode(outcome.message.body, substituted.code.pattern)
+          if (code === undefined) {
+            return {
+              status: 'unverified' as const,
+              reason: `the message read by mail check ${substituted.name ?? substituted.address} carries no one-time code${
+                substituted.code.pattern === undefined ? '' : ` matching ${JSON.stringify(substituted.code.pattern)}`
+              }`,
+            }
+          }
         }
-      }
-      // The values this check publishes — the message's link, the extracted
-      // code — are swept from the message evidence and from every check that
-      // follows in this criterion, not just here (#64).
-      const published = [...(messageEvidence.links[0] === undefined ? [] : [messageEvidence.links[0]]), ...(code === undefined ? [] : [code])]
-      if (published.length > 0) sweepRules.push(...valueRules(published))
-      const text = JSON.stringify(redactValue(messageEvidence, sweepRules), null, 2)
-      await writeFile(join(job.evidenceDir, checkDir, 'message.json'), `${text}\n`)
-      evidence.push(`${checkDir}/message.json`)
-      // The artefact a later `{{mail.<name>.link}}` reference reads is the first
-      // link of the message this check waited for (#69).
-      if (substituted.name !== undefined)
-        artefacts.publish(substituted.name, { link: messageEvidence.links[0], ...(code === undefined ? {} : { code }) }, substituted.singleUse === true)
+        // The values this check publishes — the message's link, the extracted
+        // code — are swept from the message evidence and from every check that
+        // follows in this criterion, not just here (#64).
+        const published = [...(messageEvidence.links[0] === undefined ? [] : [messageEvidence.links[0]]), ...(code === undefined ? [] : [code])]
+        if (published.length > 0) sweepRules.push(...valueRules(published))
+        const text = JSON.stringify(redactValue(messageEvidence, sweepRules), null, 2)
+        await writeFile(join(job.evidenceDir, checkDir, 'message.json'), `${text}\n`)
+        evidence.push(`${checkDir}/message.json`)
+        // The artefact a later `{{mail.<name>.link}}` reference reads is the first
+        // link of the message this check waited for (#69).
+        if (substituted.name !== undefined)
+          artefacts.publish(substituted.name, { link: messageEvidence.links[0], ...(code === undefined ? {} : { code }) }, substituted.singleUse === true)
+        return { status: 'passed' as const }
+      }, policy.attempts)
+      foldCriterion(fold)
       continue
     }
     if (substituted.kind === 'flow') {
@@ -1120,54 +1280,64 @@ async function runCriterion(
       }
       // The flow types what it read from mail: those values join the sweep.
       if (resolvedActions.values.length > 0) sweepRules.push(...valueRules(resolvedActions.values))
-      const outcome = await runFlowCheckJob(
-        { ...substituted, actions: resolvedActions.actions },
-        flow.suites,
-        flow.session,
-        flow.target,
-        flow.totp,
-        resolvedActions.values,
-        resolvedActions.codes,
-        values,
-        job.repoPath,
-        job.evidenceDir,
-        checkDir,
-        sweepRules,
-        flow.masks,
-        execution,
-        flow.mcp,
-      )
-      evidence.push(...outcome.evidence)
-      // A repair is recorded with the criterion and check it happened in (#83),
-      // so the comment can name it. Its free text is swept by the run's own
-      // dynamic rules first — mail values and generated codes included —
-      // because the result redaction later on only knows the profile's rules.
-      if (outcome.repairs !== undefined)
-        criterionRepairs.push(
-          ...outcome.repairs.map((repair) => ({
-            ...repair,
-            check: redactText(substituted.name ?? `${criterion.id} check ${index}`, sweepRules),
-            reference: redactText(repair.reference, sweepRules),
-            ...(repair.repaired === undefined ? {} : { repaired: redactText(repair.repaired, sweepRules) }),
-            ...(repair.refusedReason === undefined ? {} : { refusedReason: redactText(repair.refusedReason, sweepRules) }),
-          })),
+      const fold = await settleCheck(async (attempt) => {
+        const outcome = await runFlowCheckJob(
+          { ...substituted, actions: resolvedActions.actions },
+          flow.suites,
+          flow.session,
+          flow.target,
+          flow.totp,
+          resolvedActions.values,
+          resolvedActions.codes,
+          values,
+          job.repoPath,
+          job.evidenceDir,
+          dirFor(index, attempt),
+          sweepRules,
+          flow.masks,
+          execution,
+          flow.mcp,
         )
-      if (outcome.status === 'failed') failed = true
-      else if (outcome.status === 'unverified' && unverifiedReason === undefined)
+        evidence.push(...outcome.evidence)
+        // A repair is recorded with the criterion and check it happened in (#83),
+        // so the comment can name it. Its free text is swept by the run's own
+        // dynamic rules first — mail values and generated codes included —
+        // because the result redaction later on only knows the profile's rules.
+        if (outcome.repairs !== undefined)
+          criterionRepairs.push(
+            ...outcome.repairs.map((repair) => ({
+              ...repair,
+              check: redactText(substituted.name ?? `${criterion.id} check ${index}`, sweepRules),
+              reference: redactText(repair.reference, sweepRules),
+              ...(repair.repaired === undefined ? {} : { repaired: redactText(repair.repaired, sweepRules) }),
+              ...(repair.refusedReason === undefined ? {} : { refusedReason: redactText(repair.refusedReason, sweepRules) }),
+            })),
+          )
+        if (outcome.status === 'failed') return { status: 'failed' as const }
         // The flow's reason quotes what the action saw, and the flow types
         // what it read from mail: the dynamic sweep covers model- and
         // evidence-facing text alike, result.json included (#64).
-        unverifiedReason = outcome.reason === undefined ? undefined : redactText(outcome.reason, sweepRules)
+        return {
+          status: outcome.status,
+          reason: outcome.reason === undefined ? undefined : redactText(outcome.reason, sweepRules),
+        }
+      }, policy.attempts)
+      foldCriterion(fold)
       continue
     }
     if (substituted.kind === 'tool') {
       // A tool check talks to the host's MCP server, never to a model (#94):
       // the call, the result and the matcher verdicts are redacted evidence.
-      const outcome = await runToolCheckJob(substituted, flow.mcp, job.evidenceDir, checkDir, sweepRules)
-      evidence.push(...outcome.evidence)
-      if (outcome.status === 'failed') failed = true
-      else if (outcome.status === 'unverified' && unverifiedReason === undefined)
-        unverifiedReason = outcome.reason === undefined ? undefined : redactText(outcome.reason, sweepRules)
+      const fold = await settleCheck(async (attempt) => {
+        const outcome = await runToolCheckJob(substituted, flow.mcp, job.evidenceDir, dirFor(index, attempt), sweepRules)
+        evidence.push(...outcome.evidence)
+        if (outcome.status === 'failed') return { status: 'failed' as const }
+        return {
+          status: outcome.status,
+          reason: outcome.reason === undefined ? undefined : redactText(outcome.reason, sweepRules),
+        }
+      }, policy.attempts)
+      foldCriterion(fold)
       continue
     }
     // Run-time artefact resolution happens last, immediately before the check
@@ -1198,33 +1368,36 @@ async function runCriterion(
     // A command that echoes what it consumed writes it to stdout: the value is
     // a secret like any other, so the check's evidence is swept with it (#64).
     if (resolved.consumed.length > 0) sweepRules.push(...valueRules(resolved.consumed.map((consumed) => consumed.artefact)))
-    const outcome = await runCommandCheck(resolved.check, cwd, timeoutMs, execution)
-    await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
-    await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), sweepRules))
-    await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), redactText(truncationNote(outcome, 'stderr'), sweepRules))
-    evidence.push(`${checkDir}/stdout.txt`, `${checkDir}/stderr.txt`)
-    // The command, its outcome and the exit code it closed with are evidence
-    // like the streams are (#152): a check that passes silently (test -f,
-    // grep -q) writes no output, and a verifier reading only empty streams
-    // cannot tell that the harness ran and captured anything at all.
-    const record = { command: resolved.check.run, outcome: outcome.status, ...(outcome.code === undefined ? {} : { exit_code: outcome.code }) }
-    await writeFile(join(job.evidenceDir, checkDir, 'command.json'), `${JSON.stringify(redactValue(record, sweepRules), null, 2)}\n`)
-    evidence.push(`${checkDir}/command.json`)
-    if (resolved.consumed.length > 0) {
-      const consumption = {
-        artefacts: resolved.consumed.map((consumedArtefact) => ({ source: consumedArtefact.source, artefact: consumedArtefact.artefact })),
-        consumed_by: { criterion: criterion.id, check: index },
-        response: { status: outcome.status, evidence: [`${checkDir}/stdout.txt`, `${checkDir}/stderr.txt`] },
+    const fold = await settleCheck(async (attempt) => {
+      const checkDir = dirFor(index, attempt)
+      const outcome = await runCommandCheck(resolved.check, cwd, timeoutMs, execution)
+      await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
+      await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), sweepRules))
+      await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), redactText(truncationNote(outcome, 'stderr'), sweepRules))
+      evidence.push(`${checkDir}/stdout.txt`, `${checkDir}/stderr.txt`)
+      // The command, its outcome and the exit code it closed with are evidence
+      // like the streams are (#152): a check that passes silently (test -f,
+      // grep -q) writes no output, and a verifier reading only empty streams
+      // cannot tell that the harness ran and captured anything at all.
+      const record = { command: resolved.check.run, outcome: outcome.status, ...(outcome.code === undefined ? {} : { exit_code: outcome.code }) }
+      await writeFile(join(job.evidenceDir, checkDir, 'command.json'), `${JSON.stringify(redactValue(record, sweepRules), null, 2)}\n`)
+      evidence.push(`${checkDir}/command.json`)
+      if (resolved.consumed.length > 0) {
+        const consumption = {
+          artefacts: resolved.consumed.map((consumedArtefact) => ({ source: consumedArtefact.source, artefact: consumedArtefact.artefact })),
+          consumed_by: { criterion: criterion.id, check: index },
+          response: { status: outcome.status, evidence: [`${checkDir}/stdout.txt`, `${checkDir}/stderr.txt`] },
+        }
+        await writeFile(
+          join(job.evidenceDir, checkDir, 'consumed.json'),
+          `${JSON.stringify(redactValue(consumption, sweepRules), null, 2)}\n`,
+        )
+        evidence.push(`${checkDir}/consumed.json`)
       }
-      await writeFile(
-        join(job.evidenceDir, checkDir, 'consumed.json'),
-        `${JSON.stringify(redactValue(consumption, sweepRules), null, 2)}\n`,
-      )
-      evidence.push(`${checkDir}/consumed.json`)
-    }
-    if (outcome.status === 'failed') failed = true
-    else if (outcome.status === 'unverified' && unverifiedReason === undefined)
-      unverifiedReason = outcome.reason
+      if (outcome.status === 'failed') return { status: 'failed' as const }
+      return { status: outcome.status, reason: outcome.reason }
+    }, policy.attempts)
+    foldCriterion(fold)
   }
 
   let composed: CriterionResult

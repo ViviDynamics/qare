@@ -50,7 +50,7 @@ function failedReason(criterion: CriterionResult): string {
   return ''
 }
 
-type UnverifiedCause = 'waived' | 'verifier' | 'environment'
+type UnverifiedCause = 'waived' | 'quarantine' | 'verifier' | 'environment'
 
 // judge names the cause at the start of the reason: a human waiver, or the
 // verifier being unable to check what the checks proved. Anything else is the
@@ -58,6 +58,7 @@ type UnverifiedCause = 'waived' | 'verifier' | 'environment'
 function unverifiedCause(criterion: CriterionResult): UnverifiedCause {
   const reason = 'reason' in criterion && typeof criterion.reason === 'string' ? criterion.reason : ''
   if (reason.startsWith('waived by ')) return 'waived'
+  if (reason.startsWith('quarantined (')) return 'quarantine'
   if (reason.startsWith('verifier ')) return 'verifier'
   return 'environment'
 }
@@ -66,6 +67,7 @@ function reasonCell(criterion: CriterionResult): string {
   if (criterion.outcome === 'unverified') {
     const cause = unverifiedCause(criterion)
     if (cause === 'waived') return `waived (human): ${criterion.reason}`
+    if (cause === 'quarantine') return `quarantined (flake): ${criterion.reason}`
     if (cause === 'verifier') return `not independently checked: ${criterion.reason}`
     return `could not verify (environment): ${criterion.reason}`
   }
@@ -224,6 +226,11 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
   }
   const unverified = result.criteria.filter(criterion => criterion.outcome === 'unverified')
   const causes = new Set(unverified.map(unverifiedCause))
+  if (causes.has('quarantine'))
+    lines.push(
+      '',
+      'Quarantined checks failed and passed across the attempts this run gave them, so they decided nothing: their criteria are unverified, and the checks are skipped, with the reason and date they were quarantined, until someone removes them from the quarantine.',
+    )
   if (causes.has('waived'))
     lines.push(
       '',

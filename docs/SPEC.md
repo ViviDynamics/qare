@@ -556,6 +556,20 @@ ledger, a pull request, or GitHub at all:
   cache entry that cannot be read back is a miss, never a claim: the cache can
   cost a re-run, but it cannot invent a result. The boot is not cached, only
   the criteria are, so a cached run still pays for the app it brings up.
+- **Any of the above, against a flake.** A run that says how many times a
+  failing check repeats (`qare run --flake-attempts <n>`) judges the check
+  from its attempts together: a check that fails every attempt is a failure,
+  and a check that passes its first attempt is proven and never repeated. A
+  check that fails and then passes is unstable, so it did not decide, and
+  the run quarantines it, into the store the caller names
+  (`qare run --quarantine <dir>`), with the reason and the date: the
+  criterion it belongs to reports unverified, never proven, because
+  quarantining can never turn a criterion green. The next run reads the
+  same store, so a quarantined check is skipped entirely, its criterion
+  still reports unverified naming the record, and `qare ledger status`
+  prints the quarantine: which checks are held, why, and since when. A
+  store that cannot be read is a miss, never a claim: the checks run for
+  real, and nothing is quarantined or written over it.
 
 Selection, caching, sharding and budgets are what make the large case possible;
 they never change what a verdict means.
