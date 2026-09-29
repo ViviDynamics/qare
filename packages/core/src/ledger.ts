@@ -17,6 +17,14 @@ export interface LedgerEntry {
   note?: string
   /** The criteria this entry replaced, when it came in over one (#40). */
   supersedes?: string[]
+  /** The criterion in plain words, as the ledger's own sketch carries it. */
+  text?: string
+  /**
+   * The checks the criterion is verified by, each a reference selection maps:
+   * `suite:<name>` for the screens a suite drives, or a repository path the
+   * check exercises with an optional `:fragment` after it.
+   */
+  checks?: string[]
 }
 
 function fail(field: string, message: string): never {
@@ -56,7 +64,7 @@ function sourceLinks(value: unknown, field: string): string[] {
 
 function parseEntry(entry: unknown, field: string): LedgerEntry {
   if (!isRecord(entry)) fail(field, 'ledger entry must be a JSON object')
-  const allowed = new Set(['criterion', 'status', 'source', 'proof', 'note', 'supersedes'])
+  const allowed = new Set(['criterion', 'status', 'source', 'proof', 'note', 'supersedes', 'text', 'checks'])
   for (const key of Object.keys(entry)) {
     if (!allowed.has(key)) fail(`${field}.${key}`, 'unknown field in ledger entry')
   }
@@ -95,6 +103,19 @@ function parseEntry(entry: unknown, field: string): LedgerEntry {
       fail(`${field}.supersedes`, 'supersedes must not repeat a criterion id')
     parsed.supersedes = supersedes
   }
+  if (entry.text !== undefined) {
+    const text = nonEmptyString(entry.text, `${field}.text`, 'criterion text')
+    if (/[\r\n]/.test(text)) fail(`${field}.text`, 'criterion text must not contain newlines')
+    parsed.text = text
+  }
+  if (entry.checks !== undefined) {
+    if (!Array.isArray(entry.checks)) fail(`${field}.checks`, 'checks must be an array of check references')
+    parsed.checks = entry.checks.map((check, index) => {
+      const reference = nonEmptyString(check, `${field}.checks[${index}]`, 'check reference')
+      if (/[\r\n]/.test(reference)) fail(`${field}.checks[${index}]`, 'check reference must not contain newlines')
+      return reference
+    })
+  }
   return parsed
 }
 
@@ -103,7 +124,7 @@ function canonicalEntries(entries: LedgerEntry[]): Record<string, unknown>[] {
     .sort((a, b) => (a.criterion < b.criterion ? -1 : a.criterion > b.criterion ? 1 : 0))
     .map((entry) => {
       const sorted: Record<string, unknown> = {}
-      for (const key of ['criterion', 'status', 'source', 'proof', 'note', 'supersedes'].sort()) {
+      for (const key of ['criterion', 'status', 'source', 'proof', 'note', 'supersedes', 'text', 'checks'].sort()) {
         if (entry[key as keyof LedgerEntry] !== undefined) sorted[key] = entry[key as keyof LedgerEntry]
       }
       return sorted

@@ -271,6 +271,21 @@ export {
   renderUncheckableComment,
 } from './ledger-ingest.js'
 export type { IngestSource, IngestOutcome, IngestDuplicate, UncheckableCriterion } from './ledger-ingest.js'
+export {
+  checkTarget,
+  selectCriteria,
+  DEFAULT_SMOKE_SUITE,
+  DEFAULT_SELECTION_BUDGET_MS,
+} from './selection.js'
+export type {
+  CheckTarget,
+  SelectedCriterion,
+  UnselectedCriterion,
+  SelectionReport,
+  SelectionOptions,
+  SelectedReason,
+  UnselectedReason,
+} from './selection.js'
 export { readinessInventory, buildReadinessReport, normalizeOrigin, parseComposeServices, READINESS_MAX_FILES } from './readiness.js'
 export type {
   ReadinessInventory,
