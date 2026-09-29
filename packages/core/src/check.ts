@@ -10,7 +10,7 @@ import { startMcpToolServer, startRegisteredMcpSources, mcpRecordsFile, type Mcp
 import { PLAN_SCHEMA_VERSION, type Plan } from './plan.js'
 import { NO_DIFF, planRun } from './plan-step.js'
 import { ProfileMissingError, loadProfile, type QaProfile } from './profile.js'
-import { redactText, redactionRules } from './redact.js'
+import { redactText, redactionRules, valueRules } from './redact.js'
 import type { RunResult } from './result.js'
 import { runJob, type FlowSessionFactory } from './run.js'
 import { NareAgentRunner, type AgentRunner } from './runner.js'
@@ -198,8 +198,14 @@ async function planOrReport(
     if (registered.length > 0 && records.length > 0) {
       // The records are evidence, so they leave through the same redaction
       // the rest of the evidence sweeps: a tool argument or result that
-      // carried a secret is redacted before the file is published.
-      await writeFile(join(evidenceDir, 'mcp-calls.jsonl'), mcpRecordsFile(records, redactionRules(profile.redact)))
+      // carried a secret is redacted before the file is published. The
+      // seeded login values sweep alongside the profile's own rules, exactly
+      // as the run path sweeps them (#64).
+      const login = profile.app?.login
+      await writeFile(
+        join(evidenceDir, 'mcp-calls.jsonl'),
+        mcpRecordsFile(records, [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value])]),
+      )
     }
   }
   return plan

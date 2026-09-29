@@ -547,10 +547,23 @@ function parseMcp(value: unknown): ProfileMcpServer[] {
     if (entry.url !== undefined) {
       url = nonEmptyString(entry.url, `${base}.url`, 'url')
       httpUrl(url, base, 'url')
+      const parsed = new URL(url)
+      if (parsed.username !== '' || parsed.password !== '')
+        fail(
+          base,
+          `url ${JSON.stringify(url)} carries userinfo, which the server is never reached with: put the secret in the credential store and name it, or serve the MCP endpoint without basic auth`,
+        )
     }
     const tools = stringArray(entry.tools, `${base}.tools`, 'tools')
     if (tools.length === 0)
       fail(`${base}.tools`, 'a server must allow at least one tool: an empty allowlist registers nothing')
+    for (const tool of tools) {
+      if (tool.includes(',') || /[\x00-\x1f\x7f]/.test(tool))
+        fail(
+          `${base}.tools`,
+          `tool name ${JSON.stringify(tool)} must not carry the channel's comma delimiter or a control character: the allowlist reaches the model session comma-separated`,
+        )
+    }
     const steps: McpStep[] = stringArray(entry.steps, `${base}.steps`, 'steps').map((step, stepIndex) => {
       if (!MCP_STEPS.includes(step as McpStep))
         fail(`${base}.steps[${stepIndex}]`, `unknown step ${JSON.stringify(step)} (expected "plan", "execute")`)

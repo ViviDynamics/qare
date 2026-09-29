@@ -3,11 +3,14 @@
 // bound by writing the URL to a file. It also logs every method it receives
 // to a third file, so a test can see the handshake's shape. Test files never
 // import network clients, so this fixture is spawned instead and the test
-// talks to it through the client functions the source exports.
+// talks to it through the client functions the source exports. An optional
+// fourth argument sets a mode for the review's hazard tests: 'hold-all'
+// answers no POST at all, and 'hold-notifications' accepts a notification
+// POST and never answers it.
 import { writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 
-const [portFile, toolsJson, methodsFile] = process.argv.slice(2)
+const [portFile, toolsJson, methodsFile, mode] = process.argv.slice(2)
 const tools = JSON.parse(toolsJson ?? '[]')
 const seen = []
 
@@ -29,7 +32,9 @@ const server = createServer((incoming, response) => {
       seen.push(message.method)
       await writeFile(methodsFile, seen.join('\n'), 'utf8').catch(() => {})
     }
+    if (mode === 'hold-all') return
     const id = typeof message.id === 'number' ? message.id : undefined
+    if (id === undefined && mode === 'hold-notifications') return
     if (id === undefined) {
       // A notification: answered, but with no JSON-RPC response.
       response.statusCode = 202

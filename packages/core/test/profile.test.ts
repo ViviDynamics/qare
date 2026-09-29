@@ -348,3 +348,23 @@ test('a server that needs a credential is refused in the step that runs pull req
   // The same server in the plan step alone is fine: the planner holds no secret.
   expect(() => validateProfileConfig({ target: MCP_HEALTH, mcp: [{ ...MCP_COMMAND_SERVER, credential: 'rig-token' }] })).not.toThrow()
 })
+
+test('a url that carries userinfo is refused: the server is never reached with it (#167 review)', () => {
+  const run = () =>
+    validateProfileConfig({
+      target: MCP_HEALTH,
+      mcp: [{ name: 'rig', url: ['http:', '//ops:secret@127.0.0.1:1/mcp'].join(''), tools: ['x'], steps: ['plan'] }],
+    })
+  expect(run).toThrow(ProfileValidationError)
+  expect(run).toThrow(/carries userinfo/)
+})
+
+test('a tool name carrying the channel delimiter is refused (#167 review)', () => {
+  const run = () =>
+    validateProfileConfig({
+      target: MCP_HEALTH,
+      mcp: [{ ...MCP_COMMAND_SERVER, tools: ['read,raw'] }],
+    })
+  expect(run).toThrow(ProfileValidationError)
+  expect(run).toThrow(/comma delimiter or a control character/)
+})

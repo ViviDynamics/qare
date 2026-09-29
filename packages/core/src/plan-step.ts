@@ -213,6 +213,10 @@ function mcpChannel(mcp: NonNullable<PlanInputs['mcp']>): AgentToolChannel {
     for (const tool of server.tools) {
       if (typeof tool?.name !== 'string' || tool.name.trim() === '')
         throw new PlanStepError(`host MCP server ${JSON.stringify(server.name)} carries a tool with no name, so it cannot be addressed`)
+      if (tool.name.includes(',') || /[\x00-\x1f\x7f]/.test(tool.name))
+        throw new PlanStepError(
+          `host MCP server ${JSON.stringify(server.name)} publishes tool ${JSON.stringify(tool.name)}, whose name carries the channel's comma delimiter or a control character: the allowlist reaches the model session comma-separated`,
+        )
       allowlist.push(channelToolName(server.name, tool.name))
     }
   }
@@ -223,7 +227,13 @@ function mcpPrompt(endpoint: string, servers: { name: string; tools: { name: str
   const described = servers.map((server) => {
     const tools = server.tools.map((tool) => {
       const name = channelToolName(server.name, tool.name)
-      return typeof tool.description === 'string' ? `${name} (${tool.description})` : name
+      if (typeof tool.description !== 'string') return name
+      // A host-supplied description is data, not prompt text: JSON encoding
+      // keeps its newlines from reading as harness structure, and the cap
+      // keeps a chatty server from eating the planner's input budget
+      // (#167 review).
+      const capped = tool.description.length > 2000 ? `${tool.description.slice(0, 2000)}...` : tool.description
+      return `${name} (${JSON.stringify(capped)})`
     })
     return `${server.name}: ${tools.join(', ')}`
   })

@@ -39,6 +39,7 @@ async function fakeMcpServer(
     call?: (name: string, args: unknown) => unknown
     concurrent?: boolean
     flood?: boolean
+    chatty?: boolean
   } = {},
 ): Promise<ProfileMcpServer> {
   const dir = await mkdtemp(join(tmpdir(), 'qare-mcp-'))
@@ -51,6 +52,8 @@ async function fakeMcpServer(
     `const call = ${options.call === undefined ? 'null' : options.call.toString()}`,
     `const concurrent = ${options.concurrent === true ? 'true' : 'false'}`,
     `const flood = ${options.flood === true ? 'true' : 'false'}`,
+    `const chatty = ${options.chatty === true ? 'true' : 'false'}`,
+    "if (chatty) process.stderr.write('e'.repeat(200 * 1024))",
     "rl.on('line', (line) => {",
     "  if (line.trim() === '') return",
     "  const msg = JSON.parse(line)",
@@ -138,8 +141,10 @@ test('a result past the cap is refused named, not buffered whole', async () => {
   const source = await connectMcpServer(spec, { record: (record) => records.push(record) })
   try {
     // One call, and the server does not survive it: the line is cut off and
-    // the server killed, so the record carries the reason and nothing else.
+    // the server killed, so the record carries the reason and nothing else —
+    // and one call is one record, even for a cap (#167 review).
     await expect(source.call('power_on', undefined)).rejects.toThrow('past the 4 MiB cap')
+    expect(records).toHaveLength(1)
     expect(records[0]?.error).toContain('4 MiB cap')
   } finally {
     await source.close()
@@ -352,6 +357,57 @@ test('the HTTP handshake sends its initialized notification, and the profile URL
     } finally {
       await source.close()
     }
+  } finally {
+    fixture.kill()
+  }
+})
+
+test('a stdio server that logs past the pipe cannot block the handshake (#167 review)', async () => {
+  const spec = await fakeMcpServer({ chatty: true })
+  const source = await connectMcpServer(spec, { handshakeTimeoutMs: 2000 })
+  try {
+    expect(await source.call('power_on', undefined)).toContain('power: on')
+  } finally {
+    await source.close()
+  }
+})
+
+test('a server that accepts the notification POST and never answers it cannot hold the handshake (#167 review)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-mcp-http-'))
+  const portFile = join(dir, 'port.txt')
+  const fixture = spawn(process.execPath, [
+    HTTP_MCP_FIXTURE,
+    portFile,
+    JSON.stringify([{ name: 'power_on' }]),
+    join(dir, 'methods.txt'),
+    'hold-notifications',
+  ])
+  try {
+    const source = await connectMcpServer(
+      { name: 'httpd', url: await waitForPortFile(portFile), tools: ['power_on'], steps: ['plan'] },
+      { handshakeTimeoutMs: 2000 },
+    )
+    try {
+      expect(source.tools.map((tool) => tool.name)).toEqual(['power_on'])
+    } finally {
+      await source.close()
+    }
+  } finally {
+    fixture.kill()
+  }
+})
+
+test('a server that answers no POST at all is unreachable within the handshake timeout (#167 review)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-mcp-http-'))
+  const portFile = join(dir, 'port.txt')
+  const fixture = spawn(process.execPath, [HTTP_MCP_FIXTURE, portFile, '[]', join(dir, 'methods.txt'), 'hold-all'])
+  try {
+    await expect(
+      connectMcpServer(
+        { name: 'httpd', url: await waitForPortFile(portFile), tools: ['power_on'], steps: ['plan'] },
+        { handshakeTimeoutMs: 200 },
+      ),
+    ).rejects.toThrow('is unreachable')
   } finally {
     fixture.kill()
   }

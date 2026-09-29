@@ -134,7 +134,7 @@ export async function connectMcpServer(spec: ProfileMcpServer, options: ConnectO
       },
       handshakeTimeoutMs,
     )
-    await wire.notify({ jsonrpc: '2.0', method: 'notifications/initialized' })
+    await wire.notify({ jsonrpc: '2.0', method: 'notifications/initialized' }, handshakeTimeoutMs)
     listed = await wire.request({ jsonrpc: '2.0', method: 'tools/list' }, handshakeTimeoutMs)
   } catch (error) {
     await wire.close().catch(() => {})
@@ -184,7 +184,8 @@ async function callMcpTool(
     )
     const text = mcpResultText(answer)
     if (Buffer.byteLength(text) > MAX_RESULT_BYTES) {
-      record?.({ server, tool, arguments: args, error: 'the result is past the 4 MiB cap' })
+      // The throw is recorded once, by the catch below: recording here too
+      // would write a second entry for the same call (#167 review).
       throw new McpError(`tool ${JSON.stringify(tool)} returned a result past the 4 MiB cap`)
     }
     record?.({ server, tool, arguments: args, result: text })
@@ -229,7 +230,7 @@ function mcpResultText(answer: unknown): string {
 
 interface McpWire {
   request(payload: JsonRpcPayload, timeoutMs: number): Promise<unknown>
-  notify(payload: JsonRpcPayload): Promise<void>
+  notify(payload: JsonRpcPayload, timeoutMs: number): Promise<void>
   close(): Promise<void>
 }
 
@@ -272,6 +273,9 @@ function stdioWire(spec: ProfileMcpServer): McpWire {
           .catch((error: Error) => reject(error))
       })
     },
+    // A notification over stdio has no answer by construction: the line is
+    // written and the handshake moves on. The timeout parameter is accepted
+    // for the shared wire shape and does not apply here (#167 review).
     async notify(payload) {
       const stream = await started()
       stream.write(`${JSON.stringify(payload)}\n`)
@@ -285,7 +289,10 @@ function stdioWire(spec: ProfileMcpServer): McpWire {
         reject(new McpError('the command names no executable'))
         return
       }
-      const spawned = spawn(executable, command.slice(1), { stdio: ['pipe', 'pipe', 'pipe'] })
+      // The child's stderr is ignored: nothing reads it, and a server that
+      // logs enough to fill the pipe would block before answering the
+      // handshake and look unreachable (#167 review).
+      const spawned = spawn(executable, command.slice(1), { stdio: ['pipe', 'pipe', 'ignore'] })
       child = spawned
       stdin = spawned.stdin!
       spawned.on('error', (error) => {
@@ -413,11 +420,24 @@ async function httpWire(spec: ProfileMcpServer): Promise<McpWire> {
         outgoing.end(body)
       })
     },
-    // A notification is sent, never awaited the way a request is: the POST
-    // is written, and whatever the server answers, the handshake goes on.
-    notify(payload) {
+    // A notification has no answer, so it is bounded, not awaited: the POST
+    // is written and the handshake moves on, but an endpoint that accepts the
+    // POST and never answers cannot hold the run hostage past the handshake
+    // timeout (#167 review).
+    notify(payload, timeoutMs) {
       return new Promise((resolve) => {
         const body = JSON.stringify(payload)
+        let settled = false
+        const finish = () => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve()
+        }
+        const timer = setTimeout(() => {
+          outgoing.destroy()
+          finish()
+        }, timeoutMs)
         const outgoing = transport.request(
           {
             hostname: target.hostname,
@@ -426,9 +446,12 @@ async function httpWire(spec: ProfileMcpServer): Promise<McpWire> {
             method: 'POST',
             headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
           },
-          () => resolve(),
+          (incoming) => {
+            incoming.resume()
+            finish()
+          },
         )
-        outgoing.on('error', () => resolve())
+        outgoing.on('error', () => finish())
         outgoing.end(body)
       })
     },
