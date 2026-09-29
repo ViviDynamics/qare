@@ -1,0 +1,52 @@
+name: Sweep
+
+# The scheduled sweep (#49): on a schedule, classify the whole criteria
+# ledger and keep the one standing status issue current, filing a finding per
+# problem when the ledger or its configuration cannot be read.
+#
+# There is no pull request in this picture: the checkout is main, so the
+# secret-hygiene map (constitution rule 7) holds trivially. The
+# classification step holds no secrets at all; the publish step holds the
+# GitHub token and runs nothing but code from main.
+#
+# A sweep failure is a finding, not a broken build: the classification step
+# exits clean even when the ledger is unreadable, and the publish step files
+# or updates one issue per problem, mentioning the person whose change last
+# touched the ledger.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 04:17 UTC, daily: after the qa-assets pushes the pull request pipeline
+    # makes, before the working day reaches UTC.
+    - cron: '17 4 * * *'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: qare-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: sweep (GitHub token only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Classify the ledger
+        run: node packages/cli/dist/index.js sweep --ledger .qa --out sweep-payload.json
+      - name: Publish the standing report and file findings
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node packages/action/dist/index.js sweep-report --from sweep-payload.json \
+            --repository "${{ github.repository }}"

@@ -355,3 +355,24 @@ export { detectExecution, runEnvironment } from './environment.js'
 export type { ExecutionKind, RunEnvironment } from './environment.js'
 export { runDoctor } from './doctor.js'
 export type { DoctorFinding, DoctorProbes, DoctorReport } from './doctor.js'
+export {
+  SWEEP_STATUS_KEY,
+  SWEEP_STATUS_MARKER,
+  DEFAULT_STALE_AFTER,
+  areasOf,
+  classifySweep,
+  findingDraft,
+  loadSweepConfigText,
+  parseSweepConfig,
+  readSweepConfig,
+  loadHeldResult,
+  renderFindingMarkdown,
+  renderStatusMarkdown,
+  statusDraft,
+  statusReportMarker,
+  sweepConfigFor,
+  sweepFindingMarker,
+  sweepLedger,
+} from './sweep.js'
+export type { SweepAreaConfig, SweepBucket, SweepClassification, SweepConfig, SweepFinding, SweepPayload, SweepReport } from './sweep.js'
+export { SweepConfigValidationError, SweepLedgerError } from './sweep.js'

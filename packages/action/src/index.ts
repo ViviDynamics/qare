@@ -10,7 +10,7 @@ import { requeueUnblocked, stubKeysFromDiffText } from './requeue.js'
 import { GitHubEvidencePoster, postEvidence } from './post-evidence.js'
 import { deliverIngest, IngestDeliveryError } from './ingest-deliver.js'
 import { loadQuestions, postQuestions } from './post-questions.js'
-
+import { parseSweepPayload, publishSweep } from './sweep-report.js'
 export interface Writer {
   write(chunk: string): void
 }
@@ -29,13 +29,14 @@ export async function main(argv: string[], out: Writer = process.stdout, err: Wr
     if (command === 'post-evidence') return await postEvidenceCommand(rest, out)
     if (command === 'ingest-deliver') return await ingestDeliverCommand(rest, out)
     if (command === 'post-questions') return await postQuestionsCommand(rest, out)
+    if (command === 'sweep-report') return await sweepReportCommand(rest, out)
   } catch (error) {
     err.write(error instanceof Error ? `${error.name}: ${error.message}\n` : `${String(error)}\n`)
     return 1
   }
   entry(out)
   if (command !== undefined) {
-    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence", "ingest-deliver" and "post-questions"\n`)
+    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence", "ingest-deliver", "post-questions" and "sweep-report"\n`)
     return 1
   }
   return 0
@@ -219,6 +220,31 @@ interface Flags {
   string(name: string): string | undefined
   number(name: string): number | undefined
   list(name: string): string[] | undefined
+}
+
+function sweepReportCommand(argv: string[], out: Writer): Promise<number> {
+  const flags = parseFlags(argv)
+  return runSweepReport({
+    from: flags.string('from'),
+    repository: flags.string('repository'),
+    apiRoot: flags.string('api-root'),
+    tokenEnv: flags.string('token-env'),
+  }).then((published) => {
+    out.write(`status issue #${published.status}\n`)
+    for (const [fingerprint, issue] of published.findings)
+      out.write(`finding ${fingerprint} filed as #${issue}\n`)
+    return 0
+  })
+}
+
+async function runSweepReport(
+  opts: { from: string | undefined; repository?: string | undefined; apiRoot?: string | undefined; tokenEnv?: string | undefined },
+): Promise<{ status: number; findings: Array<[string, number]> }> {
+  if (opts.from === undefined || opts.from === '')
+    throw new GitHubClientError('qare-action sweep-report needs --from <path to sweep payload>')
+  const payload = parseSweepPayload(JSON.parse(await readFile(opts.from, 'utf8')))
+  const client = new GitHubClient({ repository: opts.repository, apiRoot: opts.apiRoot, tokenEnv: opts.tokenEnv })
+  return await publishSweep(client, payload)
 }
 
 function parseFlags(argv: string[]): Flags {

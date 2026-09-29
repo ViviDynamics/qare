@@ -64,6 +64,7 @@ import {
   serializeLedgerDocument,
   renderCriteriaMarkdown,
   renderHistoryMarkdown,
+  sweepLedger,
   touchedPathsFromDiff,
   VERSION,
   WRITING_CRITERIA_GUIDE,
@@ -88,6 +89,7 @@ import type {
   RunContext,
   RunResult,
   RunVerdict,
+  SweepPayload,
 } from '@qare/core'
 
 export interface Writer {
@@ -119,9 +121,10 @@ export async function main(
   if (argv[0] === 'profiles') return profilesCommand(argv.slice(1), out, err)
   if (argv[0] === 'doctor') return doctorCommand(argv.slice(1), out, err)
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
+  if (argv[0] === 'sweep') return sweepCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) [--workers <n>] | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) [--workers <n>] | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare sweep [--ledger <dir>] [--json] [--out <file>] | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -1365,6 +1368,60 @@ async function ledgerPublish(argv: string[], ledgerDir: string, out: Writer): Pr
  * answered and whose entry has since been promoted to active is no longer
  * quarantined; the ledger, not the stale report, says where it stands.
  */
+/**
+ * `qare sweep`: classify the whole ledger and report it (#49). This is the
+ * standing picture of what is proven, stale, unverified, quarantined and
+ * refused, written for the scheduled job to publish as the one standing
+ * status issue. A sweep that cannot read the ledger or its configuration
+ * reports that as a finding and still exits clean: a scheduled sweep has no
+ * pull request to break, so its problems are filed where a person reads
+ * them, through #154's flow, one issue per problem.
+ */
+async function sweepCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
+  try {
+    const ledgerFlag = argv.indexOf('--ledger')
+    const ledgerSpec = ledgerFlag === -1 ? undefined : argv[ledgerFlag + 1]
+    if (ledgerFlag !== -1 && ledgerSpec === undefined)
+      throw new Error('qare sweep requires a directory value after --ledger')
+    const rest = ledgerFlag === -1 ? argv : [...argv.slice(0, ledgerFlag), ...argv.slice(ledgerFlag + 2)]
+    const dir = resolve(ledgerSpec ?? '.qa')
+    const json = rest.includes('--json')
+    const outFlag = flag(rest, '--out')
+    const payload: SweepPayload = await sweepLedger(dir, new Date())
+    if (json) {
+      out.write(`${JSON.stringify(payload, null, 2)}\n`)
+    } else {
+      const counts = payload.classification
+      out.write(
+        `proven: ${counts.proven.length} stale: ${counts.stale.length} unverified: ${counts.unverified.length} quarantined: ${counts.quarantined.length} refused: ${counts.refused.length}\n`,
+      )
+      for (const line of sweepBucketLines(counts)) out.write(`${line}\n`)
+      for (const finding of payload.findings) out.write(`finding: ${finding.fingerprint} ${finding.reason}\n`)
+    }
+    if (outFlag !== undefined) await writeFile(resolve(outFlag), `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+    return 0
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 1
+  }
+}
+
+function sweepBucketLines(counts: SweepPayload['classification']): string[] {
+  const lines: string[] = []
+  const buckets: Array<[string, string[]]> = [
+    ['proven', counts.proven],
+    ['stale', counts.stale],
+    ['unverified', counts.unverified],
+    ['quarantined', counts.quarantined],
+    ['refused', counts.refused],
+  ]
+  for (const [name, criteria] of buckets) {
+    if (criteria.length === 0) continue
+    lines.push(`${name}: ${criteria.join(', ')}`)
+  }
+  return lines
+}
+
 async function heldCriteriaIn(ledgerDir: string, entries: LedgerEntry[]): Promise<string[]> {
   let held: unknown
   try {
