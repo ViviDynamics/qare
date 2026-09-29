@@ -159,7 +159,7 @@ function unknownKind(action: FlowAction): string | undefined {
   return KNOWN_KINDS.includes(String(kind)) ? undefined : String(kind)
 }
 
-function describeElement(element: FlowElement): string {
+export function describeElement(element: FlowElement): string {
   return 'testId' in element ? `testId=${element.testId}` : `role=${element.role} name=${element.name}`
 }
 

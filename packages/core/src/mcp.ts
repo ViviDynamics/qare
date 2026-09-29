@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createServer, request, type IncomingMessage, type ServerResponse } from 'node:http'
 import { redactValue, type RedactionRule } from './redact.js'
-import type { FlowDriverCapabilities, FlowPage } from './flow.js'
+import { describeElement, type FlowDriverCapabilities, type FlowElement, type FlowPage } from './flow.js'
 import type { ToolAssertion } from './plan.js'
 import type { ProfileMcpServer, ProfileMcpToolMap, McpStep } from './profile.js'
 import type { SnapshotNode } from './snapshot.js'
@@ -833,95 +833,106 @@ export async function connectMcpDriver(
 ): Promise<McpDriverSession> {
   const driver = entry.driver ?? {}
   const source = await connectMcpServer(entry, { callTimeoutMs: opts.callTimeoutMs })
-  const declared = source.tools
-  for (const [intent, map] of Object.entries(driver)) {
-    const tool = declared.find((one) => one.name === map.tool)
-    if (tool === undefined)
-      throw refusal(`the server exposes no tool named ${JSON.stringify(map.tool)}, which the ${intent} mapping drives`)
-    const elementArg = elementSlotArgument(map)
-    if (elementArg !== undefined) {
-      const properties = (tool.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties
-      if (properties !== undefined) {
-        if (!(elementArg in properties))
-          throw refusal(
-            `the tool ${JSON.stringify(map.tool)} declares no argument named ${JSON.stringify(elementArg)}, which the ${intent} mapping binds the element reference to`,
-          )
-        const type = (properties[elementArg] as { type?: unknown } | undefined)?.type
-        if (type === 'number' || type === 'integer')
-          throw refusal(
-            `the tool ${JSON.stringify(map.tool)} only acts on coordinates: its ${JSON.stringify(elementArg)} argument is a ${String(type)}, ` +
-              'and a driver resolves semantic references, not coordinates; a tool that can only act on coordinates cannot be a driver',
-          )
+  try {
+    const declared = source.tools
+    for (const [intent, map] of Object.entries(driver)) {
+      const tool = declared.find((one) => one.name === map.tool)
+      if (tool === undefined)
+        throw refusal(`the server exposes no tool named ${JSON.stringify(map.tool)}, which the ${intent} mapping drives`)
+      const elementArg = elementSlotArgument(map)
+      if (elementArg !== undefined) {
+        const properties = (tool.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties
+        if (properties !== undefined) {
+          if (!(elementArg in properties))
+            throw refusal(
+              `the tool ${JSON.stringify(map.tool)} declares no argument named ${JSON.stringify(elementArg)}, which the ${intent} mapping binds the element reference to`,
+            )
+          const type = (properties[elementArg] as { type?: unknown } | undefined)?.type
+          if (type === 'number' || type === 'integer')
+            throw refusal(
+              `the tool ${JSON.stringify(map.tool)} only acts on coordinates: its ${JSON.stringify(elementArg)} argument is a ${String(type)}, ` +
+                'and a driver resolves semantic references, not coordinates; a tool that can only act on coordinates cannot be a driver',
+            )
+        }
       }
     }
-  }
-  const calls: McpDriverCall[] = []
-  const runTool = async (intent: string, map: ProfileMcpToolMap, payload: Record<string, unknown>): Promise<McpToolResult> => {
-    const args: Record<string, unknown> = {}
-    for (const [argName, slot] of Object.entries(map.args ?? {})) {
-      const value = payload[slot]
-      if (value === undefined) throw refusal(`the ${intent} mapping binds ${JSON.stringify(argName)} to the ${slot} slot, but the action carries no ${slot}`)
-      args[argName] = value
+    const calls: McpDriverCall[] = []
+    const runTool = async (intent: string, map: ProfileMcpToolMap, payload: Record<string, unknown>): Promise<McpToolResult> => {
+      const args: Record<string, unknown> = {}
+      for (const [argName, slot] of Object.entries(map.args ?? {})) {
+        const value = payload[slot]
+        if (value === undefined) throw refusal(`the ${intent} mapping binds ${JSON.stringify(argName)} to the ${slot} slot, but the action carries no ${slot}`)
+        // An element slot carries the element's semantic reference, as text
+        // the tool's schema can hold: references stay semantic on the wire
+        // too (#94).
+        args[argName] = slot === 'element' ? describeElement(value as FlowElement) : value
+      }
+      const result = await source.callResult(map.tool, args)
+      calls.push({
+        intent,
+        tool: map.tool,
+        args,
+        outcome: result.isError ? 'error' : 'ok',
+        result: { text: result.text, ...(result.structured === undefined ? {} : { structured: result.structured }) },
+      })
+      // Every call and result is recorded as it happened, so a flow that stops
+      // halfway still leaves the calls it made as evidence (#94).
+      if (opts.record !== undefined) await opts.record(calls.map((call) => (opts.redact === undefined ? call : opts.redact(call))) as McpDriverCall[])
+      return result
     }
-    const result = await source.callResult(map.tool, args)
-    calls.push({
-      intent,
-      tool: map.tool,
-      args,
-      outcome: result.isError ? 'error' : 'ok',
-      result: { text: result.text, ...(result.structured === undefined ? {} : { structured: result.structured }) },
-    })
-    // Every call and result is recorded as it happened, so a flow that stops
-    // halfway still leaves the calls it made as evidence (#94).
-    if (opts.record !== undefined) await opts.record(calls.map((call) => (opts.redact === undefined ? call : opts.redact(call))) as McpDriverCall[])
-    return result
-  }
-  const orThrow = (intent: string, result: McpToolResult): McpToolResult => {
-    if (result.isError) throw new Error(`the ${intent} tool reported an error: ${result.text}`)
-    return result
-  }
-  const page: FlowPage = {
-    open: async (url) => {
-      orThrow('open', await runTool('open', requiredDriver(driver, 'open'), { url }))
-    },
-    click: async (element) => {
-      orThrow('click', await runTool('click', requiredDriver(driver, 'click'), { element }))
-    },
-    type: async (element, value) => {
-      orThrow('type', await runTool('type', requiredDriver(driver, 'type'), { element, value }))
-    },
-    choose: async (element, value) => {
-      orThrow('choose', await runTool('choose', requiredDriver(driver, 'choose'), { element, value }))
-    },
-    waitFor: async (element) => {
-      orThrow('waitFor', await runTool('waitFor', requiredDriver(driver, 'waitFor'), { element }))
-    },
-    assertText: async (text) => {
-      orThrow('assertText', await runTool('assertText', requiredDriver(driver, 'assertText'), { text }))
-    },
-    assertElement: async (element) => {
-      orThrow('assertElement', await runTool('assertElement', requiredDriver(driver, 'assertElement'), { element }))
-    },
-    screenshot: async (path) => {
-      const result = orThrow('capture', await runTool('capture', requiredDriver(driver, 'capture'), {}))
-      const png = result.images?.[0]
-      if (png === undefined) throw new Error(`the capture tool returned no image content${result.text === '' ? '' : `: ${result.text}`}`)
-      const { writeFile } = await import('node:fs/promises')
-      await writeFile(path, Buffer.from(png, 'base64'))
-    },
-  }
-  if (driver.snapshot !== undefined) {
-    page.snapshot = async (): Promise<SnapshotNode> => {
-      const result = orThrow('snapshot', await runTool('snapshot', requiredDriver(driver, 'snapshot'), {}))
-      return asSnapshot(result.structured ?? jsonOrText(result.text))
+    const orThrow = (intent: string, result: McpToolResult): McpToolResult => {
+      if (result.isError) throw new Error(`the ${intent} tool reported an error: ${result.text}`)
+      return result
     }
-  }
-  return {
-    capabilities: mcpDriverCapabilities([entry])!,
-    page,
-    dispose: async () => {
-      await source.close()
-    },
+    const page: FlowPage = {
+      open: async (url) => {
+        orThrow('open', await runTool('open', requiredDriver(driver, 'open'), { url }))
+      },
+      click: async (element) => {
+        orThrow('click', await runTool('click', requiredDriver(driver, 'click'), { element }))
+      },
+      type: async (element, value) => {
+        orThrow('type', await runTool('type', requiredDriver(driver, 'type'), { element, value }))
+      },
+      choose: async (element, value) => {
+        orThrow('choose', await runTool('choose', requiredDriver(driver, 'choose'), { element, value }))
+      },
+      waitFor: async (element) => {
+        orThrow('waitFor', await runTool('waitFor', requiredDriver(driver, 'waitFor'), { element }))
+      },
+      assertText: async (text) => {
+        orThrow('assertText', await runTool('assertText', requiredDriver(driver, 'assertText'), { text }))
+      },
+      assertElement: async (element) => {
+        orThrow('assertElement', await runTool('assertElement', requiredDriver(driver, 'assertElement'), { element }))
+      },
+      screenshot: async (path) => {
+        const result = orThrow('capture', await runTool('capture', requiredDriver(driver, 'capture'), {}))
+        const png = result.images?.[0]
+        if (png === undefined) throw new Error(`the capture tool returned no image content${result.text === '' ? '' : `: ${result.text}`}`)
+        const { writeFile } = await import('node:fs/promises')
+        await writeFile(path, Buffer.from(png, 'base64'))
+      },
+    }
+    if (driver.snapshot !== undefined) {
+      page.snapshot = async (): Promise<SnapshotNode> => {
+        const result = orThrow('snapshot', await runTool('snapshot', requiredDriver(driver, 'snapshot'), {}))
+        return asSnapshot(result.structured ?? jsonOrText(result.text))
+      }
+    }
+    return {
+      capabilities: mcpDriverCapabilities([entry])!,
+      page,
+      dispose: async () => {
+        await source.close()
+      },
+    }
+  } catch (error) {
+    // The refusal is the caller's report, not a session to hand back, so the
+    // connection behind it is closed here: a command-backed server's process
+    // does not outlive the refusal it named.
+    await source.close()
+    throw error
   }
 }
 

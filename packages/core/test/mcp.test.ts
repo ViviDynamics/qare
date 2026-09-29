@@ -555,6 +555,9 @@ test('a flow check drives the mapped tools and records redacted calls as evidenc
       'waitFor:wait_ref',
       'assertText:expect_text',
     ])
+    // An element slot carries the element's semantic reference, as text the
+    // tool's schema can hold.
+    expect(calls[1].args.ref).toBe('role=spinbutton name=quantity')
     expect(JSON.stringify(calls)).not.toContain(SECRET)
   } finally {
     await server.close()
@@ -662,6 +665,41 @@ test('a tool check naming a tool the profile does not register refuses the run',
     expect(result.verdict).toBe('refused')
     expect(result.criteria[0]?.reason).toMatch(/page_text/)
     expect(result.criteria[0]?.reason).toMatch(/execute step/)
+  } finally {
+    await server.close()
+  }
+})
+
+test('a group whose driver mapping does not bind the flow actions refuses before anything runs', async () => {
+  const server = await startSampleServer()
+  try {
+    const job = await makeDriverJob(
+      [
+        {
+          name: 'sample',
+          url: server.url,
+          tools: ['navigate', 'click_ref'],
+          steps: ['plan', 'execute'],
+          driver: {
+            open: { tool: 'navigate', args: { url: 'url' } },
+            click: { tool: 'click_ref', args: { ref: 'element' } },
+          },
+        },
+      ],
+      [
+        {
+          id: 'c1',
+          text: 'x',
+          checks: [
+            { kind: 'flow', name: 'f', actions: [{ action: 'open', url: '/a' }, { action: 'type', element: { role: 'spinbutton', name: 'quantity' }, value: '2' }] },
+          ],
+        },
+      ],
+    )
+    const { result } = await runJob(job, HEALTHY_DRIVER_BOOT)
+    expect(result.verdict).toBe('refused')
+    expect(result.criteria[0]?.reason).toMatch(/flow action "type" is not one of the actions the sample driver declares/)
+    await expect(readFile(join(job.evidenceDir, 'checks', 'c1', '0', 'tool-calls.json'), 'utf8')).rejects.toThrow()
   } finally {
     await server.close()
   }

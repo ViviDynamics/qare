@@ -43,7 +43,7 @@ function hasUsablePort(port: number | undefined): boolean {
 export type FlowSessionFactory = (opts: { masks: string[] }) => Promise<{
   capabilities?: FlowDriverCapabilities
   page: FlowPage
-  trace: FlowTrace
+  trace?: FlowTrace
   dispose: () => Promise<void>
   outbound?: () => EgressAttempt[]
 }>
@@ -285,7 +285,31 @@ async function runSeveralProfiles(
   const planned: Array<{ group: JobProfileGroup; profile?: QaProfile; refusal?: string }> = []
   for (const group of groups) {
     try {
-      planned.push({ group, profile: await resolveProfileRef(job.repoPath, group.profile) })
+      const profile = await resolveProfileRef(job.repoPath, group.profile)
+      // The driver mapping is preflighted before anything runs (#94): an
+      // action the mapping does not bind refuses this app's group here,
+      // wherever the plan came from, so no group runs while a later one's
+      // profile is about to refuse its own flows.
+      const driver = mcpDriverCapabilities(profile.mcp)
+      if (driver !== undefined) {
+        const unmapped = [
+          ...new Set(
+            (group.criteria ?? []).flatMap((criterion) =>
+              (criterion.checks ?? []).flatMap((check) =>
+                check.kind === 'flow' ? (check.actions ?? []).filter((action) => !driver.actions.includes(action.action)) : [],
+              ),
+            ),
+          ),
+        ]
+        if (unmapped.length > 0) {
+          planned.push({
+            group,
+            refusal: `this profile maps an MCP driver that does not bind ${unmapped.join(', ')}, so the flow cannot run: a plan names only the intents the mapping binds`,
+          })
+          continue
+        }
+      }
+      planned.push({ group, profile })
     } catch (error) {
       if (!(error instanceof ProfileMissingError)) throw error
       // Absent is refusal — for this app alone, so the other apps still run (#107).
@@ -1219,10 +1243,8 @@ function makeMcpFlowSession(mcp: ProfileMcpServer, dir: string, rules: readonly 
     return {
       capabilities: session.capabilities,
       page: session.page,
-      trace: {
-        start: async () => 'no-trace',
-        stop: async () => undefined,
-      },
+      // No trace: the call log is the trace, so the session names no file the
+      // run would otherwise record and never write.
       dispose: session.dispose,
     }
   }
