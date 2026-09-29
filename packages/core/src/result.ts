@@ -14,6 +14,8 @@ export interface ProvenCriterionResult {
   evidence: string[]
   /** Locator repairs recorded while checking this criterion (#83). */
   repairs?: RunRepairRecord[]
+  /** The result came from the run's cache, because nothing the check reads had moved (#47). */
+  cached?: true
 }
 
 export interface FailedCriterionResult {
@@ -24,6 +26,8 @@ export interface FailedCriterionResult {
   reason?: string
   /** Locator repairs recorded while checking this criterion (#83). */
   repairs?: RunRepairRecord[]
+  /** The result came from the run's cache, because nothing the check reads had moved (#47). */
+  cached?: true
 }
 
 export interface UnverifiedCriterionResult {
@@ -33,6 +37,8 @@ export interface UnverifiedCriterionResult {
   evidence?: string[]
   /** Locator repairs recorded while checking this criterion (#83). */
   repairs?: RunRepairRecord[]
+  /** The result came from the run's cache, because nothing the check reads had moved (#47). */
+  cached?: true
 }
 
 export type CriterionResult = ProvenCriterionResult | FailedCriterionResult | UnverifiedCriterionResult
@@ -275,26 +281,39 @@ function parseCriterionResult(value: unknown, index: number): CriterionResult {
   const repairs = value.repairs === undefined ? undefined : parseRepairs(value.repairs, `${base}.repairs`)
   const withRepairs = <T>(record: T): T => (repairs === undefined ? record : { ...record, repairs })
 
+  // A cached marker is written only as true: a result either is replayed from
+  // the run's cache or it is not, so any other value is a malformed record.
+  if (value.cached !== undefined && value.cached !== true)
+    fail(`${base}.cached`, 'cached must be true when present')
+  const cached = value.cached === undefined ? undefined : ({ cached: true } as const)
+  const withCached = <T>(record: T): T => (cached === undefined ? record : { ...record, ...cached })
+
   switch (outcome as CriterionOutcome) {
     case 'proven':
-      return withRepairs({
-        id,
-        outcome: 'proven',
-        evidence: requiredEvidence(value.evidence, `${base}.evidence`, id, 'proven'),
-      })
+      return withCached(
+        withRepairs({
+          id,
+          outcome: 'proven',
+          evidence: requiredEvidence(value.evidence, `${base}.evidence`, id, 'proven'),
+        }),
+      )
     case 'failed': {
       const evidence = requiredEvidence(value.evidence, `${base}.evidence`, id, 'failed')
-      return withRepairs(
-        value.reason === undefined
-          ? { id, outcome: 'failed', evidence }
-          : { id, outcome: 'failed', evidence, reason: nonEmptyString(value.reason, `${base}.reason`, 'reason') },
+      return withCached(
+        withRepairs(
+          value.reason === undefined
+            ? { id, outcome: 'failed', evidence }
+            : { id, outcome: 'failed', evidence, reason: nonEmptyString(value.reason, `${base}.reason`, 'reason') },
+        ),
       )
     }
     case 'unverified': {
       const reason = nonEmptyString(value.reason, `${base}.reason`, 'reason')
       const evidence = value.evidence === undefined ? undefined : relativePathArray(value.evidence, `${base}.evidence`, 'evidence')
-      return withRepairs(
-        evidence === undefined ? { id, outcome: 'unverified', reason } : { id, outcome: 'unverified', reason, evidence },
+      return withCached(
+        withRepairs(
+          evidence === undefined ? { id, outcome: 'unverified', reason } : { id, outcome: 'unverified', reason, evidence },
+        ),
       )
     }
   }

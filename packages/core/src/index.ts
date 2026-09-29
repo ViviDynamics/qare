@@ -152,6 +152,16 @@ export { reapProjects } from './reap.js'
 export type { ReapOutcome, ReapOpts } from './reap.js'
 export { installCancelCleanup, runJob } from './run.js'
 export type { FlowSessionFactory } from './run.js'
+export {
+  collectCriterionFiles,
+  criterionCacheKey,
+  FileCheckCache,
+  planFingerprint,
+  profileFingerprint,
+  resolveRefSha,
+  stableStringify,
+} from './cache.js'
+export type { CacheKeyParts, CachedCriterion, CachedFile, CheckCache } from './cache.js'
 export { runVisualCheck, type VisualRevision, type VisualCheckOpts, type VisualScreenshot, type VisualDiff, type VisualCheckResult } from './visual.js'
 export { runFlowCheck, runSuiteCheck } from './flow.js'
 export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult, FlowTotpConfig, FlowDriverCapabilities } from './flow.js'

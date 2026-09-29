@@ -41,6 +41,12 @@ export interface BootOpts {
    * call that never settles (#53).
    */
   downTimeoutMs?: number
+  /**
+   * Where the run's check cache lives (#47). Off by default: a run without
+   * one executes every check for real. The runner reads and writes it; the
+   * boot only carries it, because every run-level option rides in here.
+   */
+  cacheDir?: string
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 500

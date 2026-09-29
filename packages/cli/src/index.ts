@@ -1592,7 +1592,11 @@ async function runCommand(
     } else {
       job = jobSpec === '-' ? loadJobFromText(await readStdin(stdin)) : await loadJobFromFile(jobSpec as string)
     }
-    const { result } = await runJob(job, boot)
+    // A run caches when the caller names a directory for it (#47), resolved
+    // like every other path the run carries. Off by default: an uncached run
+    // re-runs every check.
+    const cacheFlag = flag(argv, '--cache')
+    const { result } = await runJob(job, cacheFlag === undefined ? boot : { ...boot, cacheDir: resolve(cacheFlag) })
     const code = exitCodeFor(result.verdict)
     out.write(`verdict ${result.verdict}; evidence ${job.evidenceDir}\n`)
     return code

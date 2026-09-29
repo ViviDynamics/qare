@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { lstat, mkdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { shellCharacter } from './duration.js'
+import { collectCriterionFiles, criterionCacheKey, FileCheckCache, planFingerprint, profileFingerprint, resolveRefSha } from './cache.js'
 import { Artefacts, type ArtefactField } from './artefacts.js'
 import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
 import { bootApp, CANCEL_DOWN_TIMEOUT_MS, killActiveCompose, stopApp, type BootOpts } from './boot.js'
@@ -184,6 +185,11 @@ export async function runJob(
     if (!(error instanceof JobValidationError)) throw error
     return refuseRun(job, opts, rules, error.message, targetNote, isolation, execution)
   }
+  // The run's check cache (#47): opened after the plan validates, so a refused
+  // run writes nothing cached, and before the checks run, so every criterion
+  // the run reaches is looked up and recorded. A run without a cache dir
+  // executes every check for real.
+  const cache = await openRunCache(job, job.criteria, profile, opts.cacheDir)
   if (isolation !== undefined) {
     await mkdir(job.evidenceDir, { recursive: true })
     // Evidence is published: this names the compose project a leftover stack
@@ -231,7 +237,8 @@ export async function runJob(
     const totp =
       login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
     const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target, totp, mcp: profile.mcp }
-    for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow, execution))
+    for (const criterion of job.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow, execution, cache))
+    await writeCacheHits(job.evidenceDir, cache?.hits ?? [])
     // The judge is the verdict decision. Base execution and egress interception
     // of a booted stack land with the orchestrator; a target run records what its
     // browser reached, and a host the profile does not declare refuses the run.
@@ -265,6 +272,8 @@ interface ProfileGroupOutcome {
   values?: RunValues
   isolation?: RunIsolation
   egressRefused?: boolean
+  /** The criteria this group served from the run's cache (#47). */
+  cacheHits?: RunCacheContext['hits']
 }
 
 async function runSeveralProfiles(
@@ -375,6 +384,7 @@ async function runSeveralProfiles(
   const profiles: Array<{ name: string; verdict: RunVerdict; criteria: string[]; profile: JobProfileRef }> = []
   const recorded: Array<{ name: string; values: RunValues }> = []
   const isolations: Array<{ name: string; isolation: RunIsolation }> = []
+  const cacheHits: RunCacheContext['hits'] = []
   let egressRefused = false
   // Every started group's cancellation disposer is collected here and released
   // only when the whole run is over, so a SIGINT at any point of the run tears
@@ -391,6 +401,7 @@ async function runSeveralProfiles(
       if (outcome.values !== undefined) recorded.push({ name: entry.group.name, values: outcome.values })
       if (outcome.isolation !== undefined) isolations.push({ name: entry.group.name, isolation: outcome.isolation })
       if (outcome.egressRefused === true) egressRefused = true
+      if (outcome.cacheHits !== undefined) cacheHits.push(...outcome.cacheHits)
     }
   } finally {
     for (const cleanup of cleanups) cleanup()
@@ -406,6 +417,7 @@ async function runSeveralProfiles(
     )
   }
   const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
+  await writeCacheHits(job.evidenceDir, cacheHits)
   const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, profiles }, rules, undefined, execution)
   await feedIfOptedIn(opts, job, finished.result)
   return { result: finished.result, ...(isolations.length > 0 ? { isolations } : {}) }
@@ -478,6 +490,9 @@ async function runProfileGroup(
     // every app's, built before any app ran (#55).
     return { criteria: unverifiedAll(error.message), verdict: 'refused', values, ...(isolation === undefined ? {} : { isolation }) }
   }
+  // This app's cache (#47): per group, as the isolation and the artefact
+  // ledger are, so one app's cached results are never served to another's.
+  const cache = await openRunCache(job, group.criteria, profile, opts.cacheDir)
   const login = profile.app?.login
   const bootedProfile =
     isolation === undefined || profile.app === undefined
@@ -508,10 +523,10 @@ async function runProfileGroup(
     // The masks are the union of every app's, built before any app ran, so
     // one app's screenshots cannot publish another app's secret region (#55).
     const flow = { session: opts.flowSession, masks, suites: profile.suites, target, totp, mcp: profile.mcp }
-    for (const criterion of group.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow, execution))
+    for (const criterion of group.criteria) criteria.push(await runCriterion(criterion, job, rules, values, mail, artefacts, flow, execution, cache))
     const egressRefused = target !== undefined && target.undeclared.length > 0
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
-    return { criteria, verdict, values, ...(isolation === undefined ? {} : { isolation }), egressRefused }
+    return { criteria, verdict, values, ...(isolation === undefined ? {} : { isolation }), egressRefused, ...(cache === undefined ? {} : { cacheHits: cache.hits }) }
   } finally {
     // The disposer stays installed until the whole several-app run ends, not
     // just this group: the earlier apps' stacks are still up while a later
@@ -798,6 +813,73 @@ async function finishRun(
   return { result: full }
 }
 
+/**
+ * The run's check cache (#47). A criterion whose inputs have not moved — the
+ * same checks as authored, the same plan, the same profile, the same base and
+ * head revisions — replays the result the earlier run published instead of
+ * re-running the checks, so a second run spends its time on what moved.
+ */
+interface RunCacheContext {
+  cache: FileCheckCache
+  baseSha: string
+  headSha: string
+  planHash: string
+  profileHash: string
+  hits: Array<{ criterion: string; key: string }>
+}
+
+/**
+ * Open the run's cache, or leave the run uncached. The key speaks in
+ * revisions, not in refs, so the job's refs are resolved once here; a run
+ * that cannot name what it checked out executes uncached rather than risking
+ * a false hit, and says so on stderr where the driver can read it.
+ */
+async function openRunCache(job: Job, criteria: JobCriterion[], profile: QaProfile, cacheDir: string | undefined): Promise<RunCacheContext | undefined> {
+  if (cacheDir === undefined) return undefined
+  const [baseSha, headSha] = await Promise.all([resolveRefSha(job.repoPath, job.baseRef), resolveRefSha(job.repoPath, job.headRef)])
+  if (baseSha === undefined || headSha === undefined) {
+    console.error(`caching skipped: ${job.repoPath} at ${JSON.stringify(baseSha === undefined ? job.baseRef : job.headRef)} could not be resolved to a revision, so the run executes uncached`)
+    return undefined
+  }
+  return {
+    cache: new FileCheckCache(cacheDir),
+    baseSha,
+    headSha,
+    planHash: planFingerprint(criteria),
+    profileHash: profileFingerprint(profile),
+    hits: [],
+  }
+}
+
+/**
+ * The cache key of one criterion over the run's parts (#47).
+ */
+function cacheKeyFor(criterion: JobCriterion, checks: JobCheck[], cache: RunCacheContext): string {
+  return criterionCacheKey({
+    criterionId: criterion.id,
+    checks,
+    baseSha: cache.baseSha,
+    headSha: cache.headSha,
+    planHash: cache.planHash,
+    profileHash: cache.profileHash,
+  })
+}
+
+/**
+ * Write the run's cache summary: every criterion that was served from the
+ * cache, named by criterion and by key, so a reader can tell a replayed
+ * criterion from a re-run one without diffing result.json. The hits of every
+ * group of a several-app run are merged into this one summary.
+ */
+async function writeCacheHits(evidenceDir: string, hits: RunCacheContext['hits']): Promise<void> {
+  if (hits.length === 0) return
+  await mkdir(evidenceDir, { recursive: true })
+  await writeFile(
+    join(evidenceDir, 'cache.json'),
+    `${JSON.stringify({ version: 1, hits }, null, 2)}\n`,
+  )
+}
+
 async function runCriterion(
   criterion: JobCriterion,
   job: Job,
@@ -807,6 +889,7 @@ async function runCriterion(
   artefacts: Artefacts,
   flow: { session?: FlowSessionFactory; masks: string[]; suites: ProfileSuite[]; target?: FlowTargetContext; totp?: FlowTotpConfig; mcp?: ProfileMcpServer[] },
   execution: ExecutionKind,
+  cache: RunCacheContext | undefined,
 ): Promise<CriterionResult> {
   const checks = criterion.checks ?? []
   if (checks.length === 0)
@@ -815,6 +898,14 @@ async function runCriterion(
       outcome: 'unverified',
       reason: criterion.unrunnable ?? NO_CHECKS_REASON,
     }
+
+  // A criterion whose inputs have not moved replays the result the earlier
+  // run published, whatever that result was (#47): the cache never re-judges
+  // a stored outcome, it serves it back with the marker attached.
+  if (cache !== undefined) {
+    const replayed = await replayCriterion(criterion, checks, job, cache)
+    if (replayed !== undefined) return replayed
+  }
 
   const evidence: string[] = []
   // The repairs the flow checks proposed (#83), carried onto the criterion
@@ -990,25 +1081,75 @@ async function runCriterion(
       unverifiedReason = outcome.reason
   }
 
-  if (failed)
-    return { id: criterion.id, outcome: 'failed', evidence, ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }) }
-  if (unverifiedReason !== undefined)
-    return {
+  let composed: CriterionResult
+  if (failed) {
+    composed = {
+      id: criterion.id,
+      outcome: 'failed',
+      evidence,
+      ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }),
+    }
+  } else if (unverifiedReason !== undefined) {
+    composed = {
       id: criterion.id,
       outcome: 'unverified',
       reason: unverifiedReason,
       ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }),
     }
-  // Everything that ran passed, but the plan asked for more than ran.
-  if (criterion.skipped !== undefined)
-    return {
+  } else if (criterion.skipped !== undefined) {
+    // Everything that ran passed, but the plan asked for more than ran.
+    composed = {
       id: criterion.id,
       outcome: 'unverified',
       reason: criterion.skipped,
       evidence,
       ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }),
     }
-  return { id: criterion.id, outcome: 'proven', evidence, ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }) }
+  } else {
+    composed = { id: criterion.id, outcome: 'proven', evidence, ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }) }
+  }
+  // What ran this time is what the cache stores (#47): the criterion's
+  // published result and every evidence file it wrote, under a key over the
+  // checks as authored and the revisions they ran against. A partial run —
+  // a check that never decided — still composes one of these outcomes, and
+  // the cache stores that too: the composition already folded it in.
+  if (cache !== undefined) {
+    await cache.cache.put(cacheKeyFor(criterion, checks, cache), {
+      version: 1,
+      criterion: criterion.id,
+      result: composed as unknown as Record<string, unknown>,
+      files: await collectCriterionFiles(job.evidenceDir, criterion.id),
+    })
+  }
+  return composed
+}
+
+/**
+ * Serve one criterion from the run's cache (#47). The key is over the checks
+ * as the plan authored them — not as the run substituted them, so a minted
+ * run value can never collide two runs — plus the plan and profile hashes and
+ * both revisions the run resolved to. A hit writes the stored evidence files
+ * back into this run's evidence directory, so the published evidence is what
+ * the original run published, and the result is the stored one with the cache
+ * marker attached. A miss returns undefined and the checks run for real.
+ */
+async function replayCriterion(
+  criterion: JobCriterion,
+  checks: JobCheck[],
+  job: Job,
+  cache: RunCacheContext,
+): Promise<CriterionResult | undefined> {
+  const key = cacheKeyFor(criterion, checks, cache)
+  const entry = await cache.cache.get(key)
+  if (entry === undefined || entry.criterion !== criterion.id) return undefined
+  for (const file of entry.files) {
+    const target = join(job.evidenceDir, file.path)
+    await mkdir(dirname(target), { recursive: true })
+    await writeFile(target, file.content, file.encoding)
+  }
+  cache.hits.push({ criterion: criterion.id, key })
+  const stored = entry.result as unknown as CriterionResult
+  return { ...stored, id: criterion.id, cached: true }
 }
 
 /**
