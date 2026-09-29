@@ -1255,7 +1255,7 @@ function jobIdOf(result: unknown): string | undefined {
  * nothing. Runs no check and no model, so the orchestrator can see what a
  * run would cover before it asks for one.
  */
-const SELECT_FLAGS = ['--ledger', '--diff', '--paths', '--budget', '--smoke', '--out'] as const
+const SELECT_FLAGS: readonly string[] = ['--ledger', '--diff', '--paths', '--budget', '--smoke', '--out']
 
 /**
  * Every select flag takes a value, so the values are consumed positionally:
@@ -1267,8 +1267,9 @@ function selectFlagsOf(argv: string[]): Record<string, string> {
   let at = 0
   while (at < argv.length) {
     const arg = argv[at]
+    if (arg === undefined) break
     if (!arg.startsWith('--')) throw new Error(`qare select takes flags, not ${JSON.stringify(arg)}`)
-    if (!(SELECT_FLAGS as string[]).includes(arg)) throw new Error(`qare select does not take ${arg}`)
+    if (!SELECT_FLAGS.includes(arg)) throw new Error(`qare select does not take ${arg}`)
     const value = argv[at + 1]
     if (value === undefined || value.startsWith('--')) throw new Error(`qare select ${arg} needs a value`)
     options[arg] = value
