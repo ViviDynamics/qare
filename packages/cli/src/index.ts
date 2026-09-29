@@ -1311,7 +1311,7 @@ async function selectCommand(argv: string[], out: Writer, err: Writer): Promise<
     for (const item of report.notSelected)
       out.write(`- ${item.criterion}\t${item.reason}${item.detail === undefined ? '' : ` ${item.detail}`}\t${item.text ?? ''}\n`)
     if (report.selected.length === 0) out.write('no criteria selected, so a run of this selection checks nothing\n')
-    const outSpec = flag(argv, '--out')
+    const outSpec = options['--out']
     if (outSpec !== undefined) {
       const target = resolve(outSpec)
       await mkdir(dirname(target), { recursive: true })
