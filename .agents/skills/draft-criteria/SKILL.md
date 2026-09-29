@@ -47,10 +47,28 @@ run that proves nothing, so the draft is validated mechanically, never by eye.
    and `text` for the plain-words sentence. Write the draft as a JSON array to
    a file; do not touch the ledger.
 3. Validate the draft through the ledger's own loader, so the entries pass
-   validation with no hand editing:
+   validation with no hand editing. Build first if `packages/core/dist` is
+   missing, then write the serializer below to a scratch path and run the
+   pipeline against it:
+   ```js
+   // <scratch>/serialize.mjs: draft entries to the ledger's export form
+   import { readFile, writeFile, mkdir } from 'node:fs/promises'
+   import { join } from 'node:path'
+   import { pathToFileURL } from 'node:url'
+   const [entriesPath, outDir] = process.argv.slice(2)
+   const core = await import(
+     pathToFileURL(join(process.cwd(), 'packages', 'core', 'dist', 'index.js')).href
+   )
+   const entries = JSON.parse(await readFile(entriesPath, 'utf8'))
+   const text = core.serializeLedgerDocument(entries, [])
+   core.parseLedgerDocument(JSON.parse(text))
+   await mkdir(outDir, { recursive: true })
+   await writeFile(join(outDir, 'ledger.json'), text)
+   console.log(`serialized ${entries.length} entries into ${outDir}`)
+   ```
    ```bash
    pnpm build 2>/dev/null || true   # only if packages/core/dist is missing
-   node .claude/skills/draft-criteria/scripts/validate.mjs <draft.json> <export-dir>
+   node <scratch>/serialize.mjs <draft.json> <export-dir>
    node packages/cli/dist/index.js ledger import --from <export-dir> \
      --ledger <scratch-dir> --by "$(git config user.name)" \
      --why "validate criteria draft" --publish <scratch-dir>/CRITERIA.md
@@ -59,6 +77,10 @@ run that proves nothing, so the draft is validated mechanically, never by eye.
    `imported N entries ... history intact` means the strict loader took the
    draft. If it refuses anything, the draft is wrong: fix the draft and run it
    again. Never widen the loader to fit the draft.
+   The serializer stays a scratch file on purpose: this repo wires skills so
+   every skill that carries a `scripts/` directory carries the full reviewed
+   script set identical to ci-safety's, and this skill needs no shared
+   scripts, so it ships none.
 4. Present the draft with the source of each criterion and the read-back from
    `qare ledger list`, and stop. The draft is a proposal: it arrives as a
    reviewable change, never as a silent edit to anyone's ledger.
