@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
-import { FileLedgerStore, LEDGER_FILE, criterionIdFor, questionIdFor, type LedgerEntry } from '@qare/core'
+import { FileLedgerStore, LEDGER_FILE, appendChange, criterionIdFor, questionIdFor, type LedgerEntry } from '@qare/core'
 import { main, runLedgerCommand } from '../src/index.js'
 import type { Writer } from '../src/index.js'
 
@@ -210,7 +210,7 @@ test('main rejects an unknown ledger subcommand with exit 1', async () => {
   expect(code).toBe(1)
   expect(linesOf(out.chunks)).toEqual([])
   expect(linesOf(errs.chunks)).toEqual([
-    'Error: unknown ledger subcommand "explode"; usage: qare ledger <list|show|diff|status|contradict|resolve|decide> [--ledger <dir>]',
+    'Error: unknown ledger subcommand "explode"; usage: qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish> [--ledger <dir>]',
   ])
 })
 
@@ -511,4 +511,70 @@ test('ledger decide rejects an answer whose question id does not name the confli
   expect(linesOf(errs.chunks)).toEqual(
     expect.arrayContaining([expect.stringContaining('does not name this conflict')]),
   )
+})
+
+test('ledger export writes the whole ledger as plain files', async () => {
+  const dir = await ledgerDir([FLOW_LOGIN, EXPORT_CSV])
+  const exportDir = join(await mkdtemp(join(tmpdir(), 'qare-export-')), 'exported')
+  const out = capture()
+  const code = await runLedgerCommand(['export', '--out', exportDir, '--ledger', dir], out.writer, capture().writer)
+  expect(code).toBe(0)
+  const document = JSON.parse(await readFile(join(exportDir, 'ledger.json'), 'utf8'))
+  expect(document.entries).toEqual([FLOW_LOGIN, EXPORT_CSV])
+  const criteria = await readFile(join(exportDir, 'CRITERIA.md'), 'utf8')
+  expect(criteria).toContain('# Criteria')
+  expect(criteria).toContain('flow-login')
+  const history = await readFile(join(exportDir, 'HISTORY.md'), 'utf8')
+  expect(history).toContain('# Ledger history')
+  expect(linesOf(out.chunks)).toEqual([expect.stringContaining('exported 2 entries and 0 change records')])
+})
+
+test('an exported ledger imports back with no loss, history intact', async () => {
+  const source = await ledgerDir([FLOW_LOGIN])
+  const changes = appendChange([], {
+    kind: 'ingest',
+    actor: 'jason',
+    timestamp: '2026-09-29T00:00:00Z',
+    reason: 'seeded the ledger',
+    criteria: ['flow-login'],
+  })
+  await new FileLedgerStore(source).saveDocument([FLOW_LOGIN], changes)
+  const exportDir = join(await mkdtemp(join(tmpdir(), 'qare-export-')), 'exported')
+  await runLedgerCommand(['export', '--out', exportDir, '--ledger', source], capture().writer, capture().writer)
+  const target = join(await mkdtemp(join(tmpdir(), 'qare-import-')), '.qa')
+  const out = capture()
+  const code = await runLedgerCommand(
+    ['import', '--from', exportDir, '--ledger', target],
+    out.writer,
+    capture().writer,
+  )
+  expect(code).toBe(0)
+  const document = await new FileLedgerStore(target).loadDocument()
+  expect(document.entries).toEqual([FLOW_LOGIN])
+  expect(document.changes).toEqual(changes)
+  expect(linesOf(out.chunks)).toEqual([
+    'imported 1 entries and 1 change records: history intact',
+    expect.stringContaining('published view refreshed'),
+  ])
+})
+
+test('ledger publish writes the current state and names held criteria', async () => {
+  const dir = await ledgerDir([FLOW_LOGIN, EXPORT_CSV])
+  await writeFile(
+    join(dir, 'held-result.json'),
+    JSON.stringify({
+      criteria: [
+        { id: 'flow-login', outcome: 'unverified', reason: 'held for an open question (q-1) — conflict' },
+        { id: 'flow-login', outcome: 'passed', reason: '' },
+      ],
+    }),
+  )
+  const view = join(await mkdtemp(join(tmpdir(), 'qare-publish-')), 'CRITERIA.md')
+  const out = capture()
+  const code = await runLedgerCommand(['publish', '--out', view, '--ledger', dir], out.writer, capture().writer)
+  expect(code).toBe(0)
+  const text = await readFile(view, 'utf8')
+  expect(text).toContain('## Quarantined')
+  expect(text).toContain(': flow-login.')
+  expect(linesOf(out.chunks)).toEqual(['published 2 criteria to ' + view])
 })

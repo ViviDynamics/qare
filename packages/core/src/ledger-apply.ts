@@ -1,4 +1,4 @@
-import { integrityOf } from './ledger.js'
+import { appendChange, integrityOf, type LedgerChange } from './ledger.js'
 import type { LedgerEntry } from './ledger.js'
 import { buildLedgerProposal } from './ledger-proposal.js'
 import type { LedgerProposal, VerificationRecord } from './ledger-proposal.js'
@@ -7,7 +7,8 @@ export function applyLedgerProposal(
   proposal: LedgerProposal,
   record: VerificationRecord,
   current: LedgerEntry[],
-): { next: LedgerEntry[] } {
+  changes: LedgerChange[] = [],
+): { next: LedgerEntry[]; changes: LedgerChange[] } {
   const fingerprint = integrityOf(current)
   if (proposal.baseFingerprint !== fingerprint)
     throw new Error(
@@ -46,5 +47,15 @@ export function applyLedgerProposal(
   const next = current.map((entry) =>
     promoted.has(entry.criterion) ? { ...entry, status: 'active' as const } : entry,
   )
-  return { next }
+  if (promoted.size === 0) return { next, changes: [...changes] }
+  // A promotion is a verification: the run proved the criterion, and the
+  // history records when it was last proven and by what run (#58).
+  const recorded = appendChange(changes, {
+    kind: 'verify',
+    actor: record.runId,
+    timestamp: record.timestamp,
+    reason: `run ${record.runId}: pass on ${promoted.size} criterion(s) promotes proposed → active`,
+    criteria: [...promoted],
+  })
+  return { next, changes: recorded }
 }

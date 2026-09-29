@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, test } from 'vitest'
@@ -9,9 +9,12 @@ import {
   LEDGER_SCHEMA_VERSION,
   LEDGER_STATUSES,
   LEDGER_FILE,
+  appendChange,
   integrityOf,
+  parseLedgerDocument,
   parseLedgerEntries,
   serializeLedger,
+  serializeLedgerDocument,
   type LedgerEntry,
 } from '../src/ledger.js'
 
@@ -235,17 +238,26 @@ describe('BranchLedgerStore', () => {
         if (args[0] === 'hash-object') return { stdout: 'beef\n' }
         if (args[0] === 'mktree') return { stdout: 'cafe\n' }
         if (args[0] === 'rev-parse' && args[1] === '--verify') return { stdout: '1111\n' }
+        if (args[0] === 'show') return { stdout: serializeLedger([entry()]) }
         if (args[0] === 'commit-tree') return { stdout: '2222\n' }
         return { stdout: '' }
       },
     })
     await store.save([entry()])
-    expect(commands.map((args) => args[0])).toEqual(['hash-object', 'mktree', 'rev-parse', 'commit-tree', 'update-ref'])
-    expect(inputs[1]).toBe(`100644 blob beef\t${LEDGER_FILE}`)
-    expect(inputs[0]).toBe(serializeLedger([entry()]))
-    expect(commands[2]).toEqual(['rev-parse', '--verify', 'refs/heads/qare-ledger'])
-    expect(commands[3]).toEqual(['commit-tree', 'cafe', '-p', '1111', '-m', 'criteria ledger update'])
-    expect(commands[4]).toEqual(['update-ref', 'refs/heads/qare-ledger', '2222'])
+    expect(commands.map((args) => args[0])).toEqual([
+      'rev-parse',
+      'show',
+      'hash-object',
+      'mktree',
+      'rev-parse',
+      'commit-tree',
+      'update-ref',
+    ])
+    expect(inputs[2]).toBe(serializeLedger([entry()]))
+    expect(inputs[3]).toBe(`100644 blob beef\t${LEDGER_FILE}`)
+    expect(commands[4]).toEqual(['rev-parse', '--verify', 'refs/heads/qare-ledger'])
+    expect(commands[5]).toEqual(['commit-tree', 'cafe', '-p', '1111', '-m', 'criteria ledger update'])
+    expect(commands[6]).toEqual(['update-ref', 'refs/heads/qare-ledger', '2222'])
   })
 })
 
@@ -280,5 +292,84 @@ describe('criterion text and checks', () => {
     expect(() => withOverrides({ checks: [''] })).toThrow(/check reference must be a non-empty string/)
     expect(() => withOverrides({ checks: ['a\nb'] })).toThrow(/check reference must not contain newlines/)
     expect(() => withOverrides({ check: ['app/main.rb'] })).toThrow(/unknown field in ledger entry/)
+  })
+})
+
+describe('ledger change records', () => {
+  function record(seq: number, kind = 'ingest'): Parameters<typeof appendChange>[1] {
+    return {
+      kind,
+      actor: `actor-${seq}`,
+      timestamp: `2026-09-2${seq}T00:00:00Z`,
+      reason: `reason ${seq}`,
+      criteria: ['flow-login'],
+    }
+  }
+
+  test('appendChange chains each record to the previous digest', () => {
+    const changes = appendChange(appendChange([], record(1)), record(2, 'verify'))
+    expect(changes.map((change) => change.seq)).toEqual([1, 2])
+    expect(changes[0].digest).not.toBe(changes[1].digest)
+  })
+
+  test('a document with history round-trips through parse and serialize', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qare-ledger-history-'))
+    const store = new FileLedgerStore(dir)
+    const changes = appendChange(appendChange([], record(1)), record(2, 'verify'))
+    await store.saveDocument([entry({ criterion: 'flow-login' })], changes)
+    const document = await store.loadDocument()
+    expect(document.entries).toEqual([entry({ criterion: 'flow-login' })])
+    expect(document.changes).toEqual(changes)
+    expect(await new FileLedgerStore(dir).loadDocument()).toEqual(document)
+    expect(JSON.parse(await readFile(join(dir, LEDGER_FILE), 'utf8')).changes).toEqual(changes)
+    await rm(dir, { recursive: true })
+  })
+
+  test('save preserves the history an earlier save wrote', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qare-ledger-history-'))
+    const store = new FileLedgerStore(dir)
+    const changes = appendChange([], record(1))
+    await store.save([entry({ criterion: 'flow-login', status: 'proposed' })], changes)
+    await store.save([entry({ criterion: 'flow-login' })])
+    expect((await store.loadDocument()).changes).toEqual(changes)
+    await rm(dir, { recursive: true })
+  })
+
+  test('a no-history save serializes exactly like the entries-only form', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qare-ledger-history-'))
+    const store = new FileLedgerStore(dir)
+    await store.saveDocument([entry({ criterion: 'flow-login' })], [])
+    const text = await readFile(join(dir, LEDGER_FILE), 'utf8')
+    expect(text).toBe(serializeLedger([entry({ criterion: 'flow-login' })]))
+    await rm(dir, { recursive: true })
+  })
+
+  test('editing a recorded reason breaks the chain', () => {
+    const changes = appendChange([], record(1))
+    const serialized = JSON.parse(serializeLedgerDocument([entry()], changes))
+    const tampered = { ...serialized, changes: [{ ...changes[0], reason: 'rewritten after the fact' }] }
+    expect(() => parseLedgerDocument(tampered)).toThrow(/history has been rewritten/)
+  })
+
+  test('dropping a record breaks the chain', () => {
+    const changes = appendChange(appendChange([], record(1)), record(2, 'verify'))
+    const serialized = JSON.parse(serializeLedgerDocument([entry()], changes))
+    expect(() => parseLedgerDocument({ ...serialized, changes: [changes[1]] })).toThrow(
+      /history must be sequential/,
+    )
+  })
+
+  test('reordering records breaks the chain', () => {
+    const changes = appendChange(appendChange([], record(1)), record(2, 'verify'))
+    const serialized = JSON.parse(serializeLedgerDocument([entry()], changes))
+    expect(() => parseLedgerDocument({ ...serialized, changes: [changes[1], changes[0]] })).toThrow(
+      /history must be sequential/,
+    )
+  })
+
+  test('a ledger without change records still loads, with an empty history', () => {
+    const document = parseLedgerDocument(JSON.parse(serializeLedger([entry()])))
+    expect(document.entries).toEqual([entry()])
+    expect(document.changes).toEqual([])
   })
 })
