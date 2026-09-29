@@ -6,6 +6,8 @@ import { pathToFileURL } from 'node:url'
 import { dirname, join, relative, resolve } from 'node:path'
 import {
   FileLedgerStore,
+  resolveCriteriaSubset,
+  criteriaSubsetPlan,
   buildReadinessReport,
   ingestCommentMarker,
   ingestCriteria,
@@ -71,6 +73,7 @@ import type {
   McpSource,
   McpToolServer,
   ReplayDifference,
+  RunContext,
   RunVerdict,
 } from '@qare/core'
 
@@ -105,7 +108,7 @@ export async function main(
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> | --criteria <ids>) --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> [--ledger <dir>] | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -1337,9 +1340,10 @@ async function runCommand(
     const jobFlag = argv.indexOf('--job')
     const jobSpec = jobFlag === -1 ? undefined : argv[jobFlag + 1]
     const planSpec = flag(argv, '--plan')
-    if (jobSpec === undefined && planSpec === undefined)
+    const criteriaSpec = flag(argv, '--criteria')
+    if (jobSpec === undefined && planSpec === undefined && criteriaSpec === undefined)
       throw new Error(
-        'qare run requires --job <path|-> (pass "-" for stdin), or --plan <path> with the run context',
+        'qare run requires --job <path|-> (pass "-" for stdin), --plan <path>, or --criteria <ids>, with the run context',
       )
     let job: Job
     if (planSpec !== undefined) {
@@ -1362,17 +1366,32 @@ async function runCommand(
         )
       if (singleProfile === undefined && plan.profiles === undefined)
         throw new Error('qare run --plan also requires --profile')
-      const built = jobFromPlan(plan, {
-        id: flag(argv, '--id') as string,
-        repoPath: resolve(flag(argv, '--repo') as string),
-        baseRef: flag(argv, '--base') as string,
-        headRef: flag(argv, '--head') as string,
-        ...(singleProfile === undefined ? {} : { profile: { path: resolve(singleProfile) } }),
-        evidenceDir: resolve(flag(argv, '--evidence') as string),
-        ...(flag(argv, '--post') === undefined ? {} : { post: flag(argv, '--post') as string }),
-      })
+      const built = jobFromPlan(plan, runContextFrom(argv, singleProfile))
       // On stderr, not swallowed: a criterion nothing can check still has to
       // be visible to whoever reads the run.
+      for (const note of built.notes) err.write(`${note}\n`)
+      job = built.job
+    } else if (criteriaSpec !== undefined) {
+      // A named subset (#46): the orchestrator hands over the criterion ids
+      // one card is responsible for, the ledger says what they are, and the
+      // run asks for exactly those. Unknown, retired and superseded ids fail
+      // loudly (all-or-nothing) rather than being skipped.
+      const ids = criteriaSpec.split(',').map((id) => id.trim())
+      const empty = ids.find((id) => id === '')
+      if (empty !== undefined)
+        throw new Error('qare run --criteria takes comma-separated criterion ids, and one of them is empty')
+      const missing = ['--id', '--repo', '--base', '--head', '--evidence', '--profile'].filter(
+        (name) => flag(argv, name) === undefined,
+      )
+      if (missing.length > 0)
+        throw new Error(`qare run --criteria also requires ${missing.join(', ')}`)
+      const repoPath = resolve(flag(argv, '--repo') as string)
+      // The ledger lives in the repository the run checks, unless the caller
+      // points at one elsewhere, as qare's own ledger commands do.
+      const ledgerDir = resolve(flag(argv, '--ledger') ?? join(repoPath, '.qa'))
+      const entries = await new FileLedgerStore(ledgerDir).load()
+      const resolved = resolveCriteriaSubset(entries, ids)
+      const built = jobFromPlan(criteriaSubsetPlan(resolved), runContextFrom(argv, flag(argv, '--profile')))
       for (const note of built.notes) err.write(`${note}\n`)
       job = built.job
     } else {
@@ -1385,6 +1404,22 @@ async function runCommand(
   } catch (error) {
     err.write(`${formatError(error)}\n`)
     return 4
+  }
+}
+
+/**
+ * The facts about this run that a plan does not carry, whether the plan was
+ * handed in (--plan) or built from the ledger's own criteria (--criteria).
+ */
+function runContextFrom(argv: string[], singleProfile: string | undefined): RunContext {
+  return {
+    id: flag(argv, '--id') as string,
+    repoPath: resolve(flag(argv, '--repo') as string),
+    baseRef: flag(argv, '--base') as string,
+    headRef: flag(argv, '--head') as string,
+    ...(singleProfile === undefined ? {} : { profile: { path: resolve(singleProfile) } }),
+    evidenceDir: resolve(flag(argv, '--evidence') as string),
+    ...(flag(argv, '--post') === undefined ? {} : { post: flag(argv, '--post') as string }),
   }
 }
 

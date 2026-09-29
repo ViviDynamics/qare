@@ -1,13 +1,19 @@
+import { randomUUID } from 'node:crypto'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import {
   CheckInputError,
+  CriteriaSubsetError,
+  FileLedgerStore,
   VERSION,
   checkCriteria,
+  criteriaSubsetPlan,
   defaultCheckEvidenceDir,
+  jobFromPlan,
   nareRunners,
   loadResult,
   parseJob,
+  resolveCriteriaSubset,
   runJob,
 } from '@qare/core'
 import type { AgentRunner, BootOpts } from '@qare/core'
@@ -36,6 +42,31 @@ const TOOLS = [
         runner: { type: 'string', enum: ['nare', 'none'], description: 'none judges from the evidence alone, without the verifier' },
       },
       required: ['criteria'],
+    },
+  },
+  {
+    name: 'run_criteria',
+    description:
+      'Run a named subset of the ledger criteria by id, for one card an orchestrator is responsible for: the ledger resolves each id (unknown, retired and superseded ids are refused, all-or-nothing), the suites the criteria name run, and the result records exactly the named subset. Returns the judged result, the evidence directory, and notes on anything nothing can run for.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        criteria: {
+          type: 'array',
+          minItems: 1,
+          items: { type: 'string', minLength: 1, pattern: '\\S' },
+          description: 'the ledger criterion ids to run, each named once',
+        },
+        base: { type: 'string', description: 'the ref the run checks against' },
+        head: { type: 'string', description: 'the ref the run checks' },
+        repoPath: { type: 'string', description: 'where command checks run (default: the server working directory)' },
+        id: { type: 'string', description: 'the run id (default: generated)' },
+        // Named paths resolve from the server's working directory, as the CLI's do from its own.
+        profile: { type: 'string', description: 'the .qa/ profile directory (default: .qa under repoPath)' },
+        ledger: { type: 'string', description: 'the ledger directory (default: .qa under repoPath)' },
+        evidenceDir: { type: 'string', description: 'where evidence is written (default: qare-evidence under repoPath)' },
+      },
+      required: ['criteria', 'base', 'head'],
     },
   },
   {
@@ -146,6 +177,43 @@ async function dispatchTool(
     })
     // Notes say what the plan could not run; dropping them here would hide it.
     return { evidenceDir, result: judged, notes }
+  }
+  if (name === 'run_criteria') {
+    // The ids and the run context are checked here; the ledger's own
+    // all-or-nothing rule — unknown, retired and superseded ids are refused,
+    // naming every offender — is CriteriaSubsetError, answered as invalid
+    // params below, because asking for a criterion the ledger cannot serve
+    // is the caller's mistake.
+    if (!Array.isArray(record.criteria) || !record.criteria.every((entry) => typeof entry === 'string'))
+      throw new McpProtocolError(-32602, 'criteria must be an array of ledger criterion ids, one id each')
+    const base = optionalString(record, 'base')
+    if (base === undefined) throw new McpProtocolError(-32602, 'base is required: the ref the run checks against')
+    const head = optionalString(record, 'head')
+    if (head === undefined) throw new McpProtocolError(-32602, 'head is required: the ref the run checks')
+    const repoPath = resolve(optionalString(record, 'repoPath') ?? '.')
+    const profile = optionalString(record, 'profile')
+    const ledger = optionalString(record, 'ledger')
+    const entries = await new FileLedgerStore(resolve(ledger ?? join(repoPath, '.qa'))).load()
+    let resolved
+    try {
+      resolved = resolveCriteriaSubset(entries, record.criteria as string[])
+    } catch (error) {
+      if (error instanceof CriteriaSubsetError) throw new McpProtocolError(-32602, `criteria: ${error.message}`)
+      throw error
+    }
+    const named = optionalString(record, 'evidenceDir')
+    const evidenceDir = resolve(named ?? defaultCheckEvidenceDir(repoPath))
+    const built = jobFromPlan(criteriaSubsetPlan(resolved), {
+      id: optionalString(record, 'id') ?? `criteria-${randomUUID().slice(0, 8)}`,
+      repoPath,
+      baseRef: base,
+      headRef: head,
+      profile: { path: resolve(profile ?? join(repoPath, '.qa')) },
+      evidenceDir,
+    })
+    // Notes say what the run could not execute for; dropping them here would hide it.
+    const { result } = await runJob(built.job, deps.boot ?? {})
+    return { evidenceDir: built.job.evidenceDir, result, notes: built.notes }
   }
   if (name === 'submit_job') {
     const job = parseJob(record.job)
