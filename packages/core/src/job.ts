@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { parse as parseYaml } from 'yaml'
 import { isUnsafeProfileName, type QaProfile } from './profile.js'
-import { PlanValidationError, parseFlowActions, type FlowActionStep } from './plan.js'
+import { PlanValidationError, parseFlowActions, parseToolAssertions, parseToolArgs, type FlowActionStep, type ToolAssertion } from './plan.js'
 import { DEFAULT_PROFILE_NAME } from './monorepo.js'
 
 export type JobProfileRef = { path: string } | { inline: QaProfile }
@@ -36,7 +36,17 @@ export interface JobFlowCheck {
   timeoutMs?: number
 }
 
-export type JobCheck = JobCommandCheck | JobMailCheck | JobFlowCheck
+/** Calls a host tool directly and asserts on its result with explicit matchers (#94). */
+export interface JobToolCheck {
+  kind: 'tool'
+  name?: string
+  tool: string
+  args?: Record<string, string>
+  assert: ToolAssertion[]
+  timeoutMs?: number
+}
+
+export type JobCheck = JobCommandCheck | JobMailCheck | JobFlowCheck | JobToolCheck
 
 export interface JobCriterion {
   id: string
@@ -330,8 +340,9 @@ function parseCheck(value: unknown, base: string): JobCheck {
   if (!isRecord(value)) fail(base, 'check must be a YAML object with kind and run')
   if (value.kind === 'mail') return parseMailCheck(value, base)
   if (value.kind === 'flow') return parseFlowCheck(value, base)
+  if (value.kind === 'tool') return parseToolCheck(value, base)
   if (value.kind !== 'command')
-    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(value.kind)} (job checks are command, mail or flow checks, expected "command", "mail" or "flow")`)
+    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(value.kind)} (job checks are command, mail, flow or tool checks, expected "command", "mail", "flow" or "tool")`)
   const run = nonEmptyString(value.run, `${base}.run`, 'run command')
   const cwd = value.cwd === undefined ? undefined : nonEmptyString(value.cwd, `${base}.cwd`, 'working directory')
   const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
@@ -342,6 +353,36 @@ function parseCheck(value: unknown, base: string): JobCheck {
     ...(cwd !== undefined ? { cwd } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(env !== undefined ? { env } : {}),
+  }
+}
+
+function parseToolCheck(value: Record<string, unknown>, base: string): JobToolCheck {
+  const name = value.name === undefined ? undefined : nonEmptyString(value.name, `${base}.name`, 'name')
+  const tool = nonEmptyString(value.tool, `${base}.tool`, 'tool name')
+  const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
+  let args: Record<string, string> | undefined
+  try {
+    args = parseToolArgs(value.args, `${base}.args`)
+  } catch (error) {
+    if (error instanceof PlanValidationError) throw new JobValidationError(error.field, error.message)
+    throw error
+  }
+  let assert
+  try {
+    assert = parseToolAssertions(value.assert, `${base}.assert`)
+  } catch (error) {
+    // The shared assertion parser names its errors with the plan loader's
+    // type; a job load throws the job loader's type, carrying the same text.
+    if (error instanceof PlanValidationError) throw new JobValidationError(error.field, error.message)
+    throw error
+  }
+  return {
+    kind: 'tool',
+    ...(name !== undefined ? { name } : {}),
+    tool,
+    ...(args === undefined ? {} : { args }),
+    assert,
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   }
 }
 

@@ -53,8 +53,10 @@ export type {
   ProfileSuite,
   ProfileSuiteKind,
   ProfileMcpServer,
+  ProfileMcpToolMap,
   McpStep,
 } from './profile.js'
+export { MCP_DRIVER_INTENTS } from './profile.js'
 export {
   DEFAULT_PROFILE_NAME,
   discoverProfiles,
@@ -109,13 +111,26 @@ export {
   McpUnreachable,
   callChannelTool,
   channelToolName,
+  connectMcpDriver,
   connectMcpServer,
+  mcpDriverCapabilities,
+  mcpDriverServer,
   mcpRecordsFile,
   splitMcpCommand,
   startMcpToolServer,
   startRegisteredMcpSources,
 } from './mcp.js'
-export type { McpCallRecord, McpRecorder, McpSource, McpTool, McpToolServer, ConnectOptions } from './mcp.js'
+export type {
+  McpCallRecord,
+  McpDriverCall,
+  McpDriverSession,
+  McpRecorder,
+  McpSource,
+  McpTool,
+  McpToolResult,
+  McpToolServer,
+  ConnectOptions,
+} from './mcp.js'
 export { IssueCriteriaError, criteriaFromIssue, criteriaFromIssues, criterionIdFor } from './issue-criteria.js'
 export type { IssueCriteriaProblem } from './issue-criteria.js'
 export { linkedIssues } from './linked-issues.js'

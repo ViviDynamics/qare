@@ -8,7 +8,7 @@ import { DEFAULT_PROFILE_NAME } from './monorepo.js'
 
 export const PLAN_SCHEMA_VERSION = '1'
 
-export type CheckKind = 'command' | 'flow' | 'visual' | 'mail'
+export type CheckKind = 'command' | 'flow' | 'visual' | 'mail' | 'tool'
 
 export type FlowActionStep = FlowAction
 
@@ -55,7 +55,34 @@ export interface MailCheck {
   inferred?: boolean
 }
 
-export type PlanCheck = CommandCheck | FlowCheck | VisualCheck | MailCheck
+/**
+ * One explicit assertion on a tool's result (#94). Nothing on a tool result is
+ * judged by a model: a matcher is named in the plan, and code decides.
+ */
+export interface ToolAssertion {
+  /** A dot path into the tool's structured result; absent matches the free text itself. */
+  path?: string
+  equals?: unknown
+  contains?: string
+  matches?: string
+  exists?: boolean
+}
+
+/**
+ * A check against a system that is not a user interface at all (#94): call a
+ * host tool and assert on its result with explicit matchers only.
+ */
+export interface ToolCheck {
+  kind: 'tool'
+  name: string
+  tool: string
+  args?: Record<string, string>
+  assert: ToolAssertion[]
+  timeoutMs?: number
+  inferred?: boolean
+}
+
+export type PlanCheck = CommandCheck | FlowCheck | VisualCheck | MailCheck | ToolCheck
 
 export interface PlannedCriterion {
   id: string
@@ -101,7 +128,7 @@ export interface Plan {
   profiles?: PlanProfileRef[]
 }
 
-const CHECK_KINDS: CheckKind[] = ['command', 'flow', 'visual', 'mail']
+const CHECK_KINDS: CheckKind[] = ['command', 'flow', 'visual', 'mail', 'tool']
 
 export class PlanValidationError extends Error {
   readonly field: string
@@ -268,7 +295,7 @@ function parseCheck(value: unknown, base: string, extraFlowActions: readonly str
 
   const kind = value.kind
   if (typeof kind !== 'string' || !CHECK_KINDS.includes(kind as CheckKind))
-    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(kind)} (expected "command", "flow", "visual" or "mail")`)
+    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(kind)} (expected "command", "flow", "visual", "mail" or "tool")`)
   const name = nonEmptyString(value.name, `${base}.name`, 'name')
   const inferred = parseInferred(value.inferred, `${base}.inferred`)
 
@@ -327,7 +354,64 @@ function parseCheck(value: unknown, base: string, extraFlowActions: readonly str
         inferred,
       )
     }
+    case 'tool': {
+      const tool = nonEmptyString(value.tool, `${base}.tool`, 'tool name')
+      const args = parseToolArgs(value.args, `${base}.args`)
+      const assert = parseToolAssertions(value.assert, `${base}.assert`)
+      const timeoutMs = value.timeoutMs === undefined ? undefined : parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
+      return finish(
+        {
+          kind: 'tool',
+          name,
+          tool,
+          ...(args === undefined ? {} : { args }),
+          assert,
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        },
+        inferred,
+      )
+    }
   }
+}
+
+/**
+ * A tool check's arguments and its matchers carry user-authored strings, so
+ * both are shallow records of strings: anything else is refused where the
+ * plan loads, never interpreted downstream (#94).
+ */
+export function parseToolArgs(value: unknown, base: string): Record<string, string> | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) fail(base, 'args must be an object of string values')
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, nonEmptyString(entry, `${base}.${key}`, 'argument value')]))
+}
+
+export function parseToolAssertions(value: unknown, base: string): ToolAssertion[] {
+  if (!Array.isArray(value) || value.length === 0)
+    fail(base, 'a tool check asserts nothing unless the plan names explicit matchers on the result; nothing is judged by a model')
+  return value.map((entry, index) => {
+    const assertionBase = `${base}[${index}]`
+    if (!isRecord(entry)) fail(assertionBase, 'an assertion must be an object with a path and a matcher')
+    const path = entry.path === undefined ? undefined : nonEmptyString(entry.path, `${assertionBase}.path`, 'result path')
+    const matchers = ['equals', 'contains', 'matches', 'exists'].filter((matcher) => entry[matcher] !== undefined)
+    if (matchers.length === 0)
+      fail(assertionBase, 'an assertion names a matcher: equals, contains, matches or exists; a result is never handed to a model to judge')
+    if (matchers.length > 1) fail(assertionBase, `an assertion carries one matcher, not several (${matchers.join(', ')})`)
+    const matcher = matchers[0] ?? fail(assertionBase, 'an assertion names a matcher: equals, contains, matches or exists; a result is never handed to a model to judge')
+    const matched = entry[matcher]
+    if (matcher === 'contains' || matcher === 'matches') {
+      if (typeof matched !== 'string' || matched === '') fail(`${assertionBase}.${matcher}`, `${assertionBase}.${matcher} must be a non-empty string`)
+    }
+    if (matcher === 'exists' && typeof matched !== 'boolean')
+      fail(`${assertionBase}.exists`, `${assertionBase}.exists must be a boolean`)
+    if (matcher === 'matches') {
+      try {
+        new RegExp(matched as string)
+      } catch (error) {
+        fail(`${assertionBase}.matches`, `${assertionBase}.matches is not a valid pattern (${error instanceof Error ? error.message : String(error)})`)
+      }
+    }
+    return { ...(path === undefined ? {} : { path }), [matcher]: entry[matcher] } as ToolAssertion
+  })
 }
 
 /**

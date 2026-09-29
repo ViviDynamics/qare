@@ -26,6 +26,7 @@ import {
   BUILTIN_REDACTION_RULES,
   BROWSER_FLOW_DRIVER,
   loadProfile,
+  mcpDriverCapabilities,
   redactEvidenceDir,
   redactText,
   redactionRules,
@@ -686,10 +687,13 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
     const runner = new NareAgentRunner(binary === undefined ? {} : { binary })
     // The browser driver is what a plan can assume; the change's own kinds
     // extend it, so a plan may name them even though the browser lacks them.
+    // A profile that maps an MCP driver plans against that mapping instead:
+    // it is the driver's capability declaration (#94).
     const driver: FlowDriverCapabilities =
-      flowActions.length === 0
+      mcpDriverCapabilities(profile?.mcp) ??
+      (flowActions.length === 0
         ? BROWSER_FLOW_DRIVER
-        : { ...BROWSER_FLOW_DRIVER, actions: [...BROWSER_FLOW_DRIVER.actions, ...flowActions] }
+        : { ...BROWSER_FLOW_DRIVER, actions: [...BROWSER_FLOW_DRIVER.actions, ...flowActions] })
     await mkdir(dirname(outPath), { recursive: true })
     let plan: Plan
     // The profile's registered MCP servers the plan step may look through (#93):
@@ -1188,10 +1192,12 @@ async function runCommand(
       )
       if (missing.length > 0)
         throw new Error(`qare run --plan also requires ${missing.join(', ')}`)
-      const plan = loadPlan(await readFile(resolve(planSpec), 'utf8'), [], BROWSER_FLOW_DRIVER)
+      // The plan loads against the driver the profile maps (#94): a plan
+      // naming only mapped intents is refused before anything runs.
+      const singleProfile = flag(argv, '--profile')
+      const plan = loadPlan(await readFile(resolve(planSpec), 'utf8'), [], await driverForPlan(singleProfile))
       // A plan that names its profiles carries them (repo-relative), so the
       // single-profile flag has nothing to attach to (#55).
-      const singleProfile = flag(argv, '--profile')
       if (singleProfile !== undefined && plan.profiles !== undefined)
         throw new Error(
           'this plan already names the profiles it is planned against; qare run --plan takes no --profile',
@@ -1222,6 +1228,24 @@ async function runCommand(
     err.write(`${formatError(error)}\n`)
     return 4
   }
+}
+
+/**
+ * The driver a run --plan validates against: the profile's MCP mapping when
+ * it maps one (#94), the browser otherwise. A profile that is simply absent
+ * changes nothing here — the plan's own diagnostics are the first thing the
+ * caller sees, and the run still refuses on the profile when it starts.
+ */
+async function driverForPlan(profilePath: string | undefined): Promise<FlowDriverCapabilities> {
+  if (profilePath === undefined) return BROWSER_FLOW_DRIVER
+  let profile: QaProfile
+  try {
+    profile = await loadProfile(resolve(profilePath))
+  } catch (error) {
+    if (!(error instanceof ProfileMissingError)) throw error
+    return BROWSER_FLOW_DRIVER
+  }
+  return mcpDriverCapabilities(profile.mcp) ?? BROWSER_FLOW_DRIVER
 }
 
 export function exitCodeFor(verdict: RunVerdict): number {

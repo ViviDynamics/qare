@@ -1,7 +1,10 @@
 import { spawn } from 'node:child_process'
 import { createServer, request, type IncomingMessage, type ServerResponse } from 'node:http'
 import { redactValue, type RedactionRule } from './redact.js'
-import type { ProfileMcpServer, McpStep } from './profile.js'
+import { describeElement, type FlowDriverCapabilities, type FlowElement, type FlowPage } from './flow.js'
+import type { ToolAssertion } from './plan.js'
+import type { ProfileMcpServer, ProfileMcpToolMap, McpStep } from './profile.js'
+import type { SnapshotNode } from './snapshot.js'
 
 /**
  * The host's registered MCP servers (#93). A profile registers them with how
@@ -15,6 +18,19 @@ import type { ProfileMcpServer, McpStep } from './profile.js'
 export interface McpTool {
   name: string
   description?: string
+  inputSchema?: unknown
+}
+
+/**
+ * A tool call the way a tool check judges it (#94): the text content joined,
+ * any image content pieces (base64), and the structured content the server
+ * answered with, plus whether the server itself marked the call errored.
+ */
+export interface McpToolResult {
+  text: string
+  images?: string[]
+  structured?: unknown
+  isError: boolean
 }
 
 /**
@@ -72,6 +88,12 @@ export interface McpSource {
   tools: readonly McpTool[]
   /** Call one tool with the given arguments, and record the round trip. */
   call(tool: string, args: unknown): Promise<string>
+  /**
+   * Call one tool and return the result the way a tool check judges it
+   * (#94): an answer the server marks errored comes back as data, not a
+   * thrown error, so the plan's matchers decide what it means.
+   */
+  callResult(tool: string, args: unknown): Promise<McpToolResult>
   /** Stop the server (or the connection to it) and release what it holds. */
   close(): Promise<void>
 }
@@ -146,6 +168,7 @@ export async function connectMcpServer(spec: ProfileMcpServer, options: ConnectO
     name: spec.name,
     tools: mcpTools(listed, spec),
     call: (tool, args) => callMcpTool(wire, spec.name, tool, args, callTimeoutMs, options.record),
+    callResult: (tool, args) => callMcpResult(wire, spec.name, tool, args, callTimeoutMs, options.record),
     close: () => wire.close(),
   }
 }
@@ -161,7 +184,14 @@ function mcpTools(answer: unknown, spec: ProfileMcpServer): McpTool[] {
     const name = (tool as { name?: unknown }).name
     if (typeof name !== 'string' || !allowed.has(name)) return []
     const description = (tool as { description?: unknown }).description
-    return [{ name, ...(typeof description === 'string' ? { description } : {}) }]
+    const inputSchema = (tool as { inputSchema?: unknown }).inputSchema
+    return [
+      {
+        name,
+        ...(typeof description === 'string' ? { description } : {}),
+        ...(inputSchema !== undefined && inputSchema !== null && typeof inputSchema === 'object' ? { inputSchema } : {}),
+      },
+    ]
   })
 }
 
@@ -195,6 +225,64 @@ async function callMcpTool(
     record?.({ server, tool, arguments: args, error: message })
     throw new McpError(`host mcp server ${JSON.stringify(server)} failed tool ${JSON.stringify(tool)}: ${message}`)
   }
+}
+
+/**
+ * A tools/call answer the way a tool check judges it (#94): the text and
+ * image content pieces, the structured content the server answered with,
+ * and whether the server marked the call errored. Unlike `call`, an answer
+ * the server marks errored is data here, not a thrown error: the plan's
+ * matchers decide what the result means, and the assertion outcomes are the
+ * evidence. Transport failures and results past the cap still throw.
+ */
+async function callMcpResult(
+  wire: McpWire,
+  server: string,
+  tool: string,
+  args: unknown,
+  callTimeoutMs: number,
+  record: McpRecorder | undefined,
+): Promise<McpToolResult> {
+  let answer: unknown
+  try {
+    answer = await wire.request(
+      {
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: tool, ...(args === undefined ? {} : { arguments: args }) },
+      },
+      callTimeoutMs,
+    )
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    record?.({ server, tool, arguments: args, error: message })
+    throw new McpError(`host mcp server ${JSON.stringify(server)} failed tool ${JSON.stringify(tool)}: ${message}`)
+  }
+  const shaped = answer === null || typeof answer !== 'object' ? {} : (answer as Record<string, unknown>)
+  const pieces = Array.isArray(shaped.content) ? shaped.content : []
+  const textPieces: string[] = []
+  const images: string[] = []
+  for (const piece of pieces) {
+    if (piece === null || typeof piece !== 'object') continue
+    const one = piece as { type?: unknown; text?: unknown; data?: unknown }
+    if (one.type === 'image' && typeof one.data === 'string') images.push(one.data)
+    else if (typeof one.text === 'string') textPieces.push(one.text)
+  }
+  const structured = shaped.structuredContent
+  const text = textPieces.join('\n')
+  const result: McpToolResult = {
+    isError: shaped.isError === true,
+    ...(text === '' && images.length === 0 && structured !== undefined ? { text: JSON.stringify(structured) } : { text }),
+    ...(images.length > 0 ? { images } : {}),
+    ...(structured !== undefined && structured !== null && typeof structured === 'object' ? { structured } : {}),
+  }
+  if (Buffer.byteLength(result.text) > MAX_RESULT_BYTES) {
+    // The throw is recorded once, by the catch below: recording here too
+    // would write a second entry for the same call (#167 review).
+    throw new McpError(`tool ${JSON.stringify(tool)} returned a result past the 4 MiB cap`)
+  }
+  record?.({ server, tool, arguments: args, result: result.text })
+  return result
 }
 
 /**
@@ -688,4 +776,279 @@ export async function startRegisteredMcpSources(
     }
   }
   return { sources, failures }
+}
+
+/**
+ * The mapping is the driver's capability declaration (#94): the intents it
+ * maps are the actions the driver declares, so a plan asking for an unmapped
+ * intent is rejected at plan time, where nothing has run yet. The entry that
+ * carries the mapping is the profile's driver.
+ */
+export function mcpDriverServer(mcp: ProfileMcpServer[] | undefined): ProfileMcpServer | undefined {
+  return mcp?.find((entry) => entry.driver !== undefined)
+}
+
+export function mcpDriverCapabilities(mcp: ProfileMcpServer[] | undefined): FlowDriverCapabilities | undefined {
+  const entry = mcpDriverServer(mcp)
+  const driver = entry?.driver
+  if (driver === undefined) return undefined
+  return {
+    name: entry!.name,
+    actions: Object.keys(driver).filter((intent) => intent !== 'snapshot'),
+    evidence: ['action-log', ...(driver.capture === undefined ? [] : ['screenshot']), ...(driver.snapshot === undefined ? [] : ['snapshot'])],
+  }
+}
+
+export interface McpDriverCall {
+  intent: string
+  tool: string
+  args: Record<string, unknown>
+  outcome: 'ok' | 'error'
+  result: { text: string; structured?: unknown }
+}
+
+export interface McpDriverSession {
+  capabilities: FlowDriverCapabilities
+  page: FlowPage
+  dispose: () => Promise<void>
+}
+
+/**
+ * A driver session over the host's tools. Before any call, the mapping is
+ * held against what the server actually declares: a mapped tool the server
+ * does not expose, and a tool that can only act on coordinates, are both
+ * refused here, with the reason named (#94). The refusal throws, so the flow
+ * that would have used the driver reports unverified instead of half-running.
+ */
+export async function connectMcpDriver(
+  entry: ProfileMcpServer,
+  opts: {
+    /** How long one tool call may run; the check's deadline bounds the driver. */
+    callTimeoutMs?: number
+    /** Applied to the call record before it is written: tool arguments carry user-authored strings (#94). */
+    redact?: (value: unknown) => unknown
+    /** Receives the calls made so far, after each one, for the run to persist as evidence. */
+    record?: (calls: McpDriverCall[]) => Promise<void>
+  } = {},
+): Promise<McpDriverSession> {
+  const driver = entry.driver ?? {}
+  const source = await connectMcpServer(entry, { callTimeoutMs: opts.callTimeoutMs })
+  try {
+    const declared = source.tools
+    for (const [intent, map] of Object.entries(driver)) {
+      const tool = declared.find((one) => one.name === map.tool)
+      if (tool === undefined)
+        throw refusal(`the server exposes no tool named ${JSON.stringify(map.tool)}, which the ${intent} mapping drives`)
+      const elementArg = elementSlotArgument(map)
+      if (elementArg !== undefined) {
+        const properties = (tool.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties
+        if (properties !== undefined) {
+          if (!(elementArg in properties))
+            throw refusal(
+              `the tool ${JSON.stringify(map.tool)} declares no argument named ${JSON.stringify(elementArg)}, which the ${intent} mapping binds the element reference to`,
+            )
+          const type = (properties[elementArg] as { type?: unknown } | undefined)?.type
+          if (type === 'number' || type === 'integer')
+            throw refusal(
+              `the tool ${JSON.stringify(map.tool)} only acts on coordinates: its ${JSON.stringify(elementArg)} argument is a ${String(type)}, ` +
+                'and a driver resolves semantic references, not coordinates; a tool that can only act on coordinates cannot be a driver',
+            )
+        }
+      }
+    }
+    const calls: McpDriverCall[] = []
+    const runTool = async (intent: string, map: ProfileMcpToolMap, payload: Record<string, unknown>): Promise<McpToolResult> => {
+      const args: Record<string, unknown> = {}
+      for (const [argName, slot] of Object.entries(map.args ?? {})) {
+        const value = payload[slot]
+        if (value === undefined) throw refusal(`the ${intent} mapping binds ${JSON.stringify(argName)} to the ${slot} slot, but the action carries no ${slot}`)
+        // An element slot carries the element's semantic reference, as text
+        // the tool's schema can hold: references stay semantic on the wire
+        // too (#94).
+        args[argName] = slot === 'element' ? describeElement(value as FlowElement) : value
+      }
+      const result = await source.callResult(map.tool, args)
+      calls.push({
+        intent,
+        tool: map.tool,
+        args,
+        outcome: result.isError ? 'error' : 'ok',
+        result: { text: result.text, ...(result.structured === undefined ? {} : { structured: result.structured }) },
+      })
+      // Every call and result is recorded as it happened, so a flow that stops
+      // halfway still leaves the calls it made as evidence (#94).
+      if (opts.record !== undefined) await opts.record(calls.map((call) => (opts.redact === undefined ? call : opts.redact(call))) as McpDriverCall[])
+      return result
+    }
+    const orThrow = (intent: string, result: McpToolResult): McpToolResult => {
+      if (result.isError) throw new Error(`the ${intent} tool reported an error: ${result.text}`)
+      return result
+    }
+    const page: FlowPage = {
+      open: async (url) => {
+        orThrow('open', await runTool('open', requiredDriver(driver, 'open'), { url }))
+      },
+      click: async (element) => {
+        orThrow('click', await runTool('click', requiredDriver(driver, 'click'), { element }))
+      },
+      type: async (element, value) => {
+        orThrow('type', await runTool('type', requiredDriver(driver, 'type'), { element, value }))
+      },
+      choose: async (element, value) => {
+        orThrow('choose', await runTool('choose', requiredDriver(driver, 'choose'), { element, value }))
+      },
+      waitFor: async (element) => {
+        orThrow('waitFor', await runTool('waitFor', requiredDriver(driver, 'waitFor'), { element }))
+      },
+      assertText: async (text) => {
+        orThrow('assertText', await runTool('assertText', requiredDriver(driver, 'assertText'), { text }))
+      },
+      assertElement: async (element) => {
+        orThrow('assertElement', await runTool('assertElement', requiredDriver(driver, 'assertElement'), { element }))
+      },
+      screenshot: async (path) => {
+        const result = orThrow('capture', await runTool('capture', requiredDriver(driver, 'capture'), {}))
+        const png = result.images?.[0]
+        if (png === undefined) throw new Error(`the capture tool returned no image content${result.text === '' ? '' : `: ${result.text}`}`)
+        const { writeFile } = await import('node:fs/promises')
+        await writeFile(path, Buffer.from(png, 'base64'))
+      },
+    }
+    if (driver.snapshot !== undefined) {
+      page.snapshot = async (): Promise<SnapshotNode> => {
+        const result = orThrow('snapshot', await runTool('snapshot', requiredDriver(driver, 'snapshot'), {}))
+        return asSnapshot(result.structured ?? jsonOrText(result.text))
+      }
+    }
+    return {
+      capabilities: mcpDriverCapabilities([entry])!,
+      page,
+      dispose: async () => {
+        await source.close()
+      },
+    }
+  } catch (error) {
+    // The refusal is the caller's report, not a session to hand back, so the
+    // connection behind it is closed here: a command-backed server's process
+    // does not outlive the refusal it named.
+    await source.close()
+    throw error
+  }
+}
+
+function refusal(reason: string): McpError {
+  return new McpError(reason)
+}
+
+function requiredDriver(driver: Record<string, ProfileMcpToolMap>, intent: string): ProfileMcpToolMap {
+  const map = driver[intent]
+  if (map === undefined) throw refusal(`the ${intent} mapping is not in the profile's driver mapping`)
+  return map
+}
+
+/**
+ * Judge a tool result the plan's way: only on the matchers it named, against
+ * the structured result for paths and the free text otherwise (#94). Nothing
+ * here hands a result to a model; every matcher is decided in code, and a
+ * failure comes back as the reason the check did not pass.
+ */
+export function evaluateToolAssertions(asserts: readonly ToolAssertion[], result: McpToolResult): string[] {
+  return asserts.flatMap((assertion, index) => {
+    if (judgeToolAssertion(assertion, result)) return []
+    const at = assertion.path === undefined ? '' : ` at ${JSON.stringify(assertion.path)}`
+    const matcher =
+      assertion.contains !== undefined
+        ? `contains ${JSON.stringify(assertion.contains)}`
+        : assertion.matches !== undefined
+          ? `matches ${JSON.stringify(assertion.matches)}`
+          : assertion.exists !== undefined
+            ? `exists ${String(assertion.exists)}`
+            : `equals ${JSON.stringify(assertion.equals)}`
+    return [`assertion ${index}${at} ${matcher} did not hold on the tool's result`]
+  })
+}
+
+function judgeToolAssertion(assertion: ToolAssertion, result: McpToolResult): boolean {
+  if (assertion.path === undefined) {
+    if (assertion.equals !== undefined) return typeof assertion.equals === 'string' && result.text === assertion.equals
+    if (assertion.contains !== undefined) return result.text.includes(assertion.contains)
+    if (assertion.matches !== undefined) {
+      try {
+        return new RegExp(assertion.matches).test(result.text)
+      } catch {
+        return false
+      }
+    }
+    return assertion.exists === true ? result.text !== '' : assertion.exists === false && result.text === ''
+  }
+  const resolved = resolvePath(result.structured, assertion.path)
+  if (!resolved.ok) return assertion.exists === false
+  const value = resolved.value
+  if (assertion.exists !== undefined) return assertion.exists
+  if (assertion.equals !== undefined) return deepEqual(value, assertion.equals)
+  if (assertion.contains !== undefined)
+    return typeof value === 'string' ? value.includes(assertion.contains) : Array.isArray(value) && value.some((entry) => deepEqual(entry, assertion.contains))
+  if (assertion.matches !== undefined) {
+    if (typeof value !== 'string') return false
+    try {
+      return new RegExp(assertion.matches).test(value)
+    } catch {
+      return false
+    }
+  }
+  return false
+}
+
+function resolvePath(value: unknown, path: string): { ok: true; value: unknown } | { ok: false } {
+  let current = value
+  for (const segment of path.split('.')) {
+    if (current === undefined || current === null || typeof current !== 'object') return { ok: false }
+    const shaped = current as Record<string, unknown>
+    if (!(segment in shaped)) return { ok: false }
+    current = shaped[segment]
+  }
+  return { ok: true, value: current }
+}
+
+function deepEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true
+  if (typeof left !== 'object' || typeof right !== 'object' || left === null || right === null) return false
+  if (Array.isArray(left) !== Array.isArray(right)) return false
+  const leftKeys = Object.keys(left)
+  const rightKeys = Object.keys(right)
+  if (leftKeys.length !== rightKeys.length) return false
+  return leftKeys.every((key) => deepEqual((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]))
+}
+
+function elementSlotArgument(map: ProfileMcpToolMap): string | undefined {
+  return Object.entries(map.args ?? {}).find(([, slot]) => slot === 'element')?.[0]
+}
+
+function jsonOrText(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return text
+  }
+}
+
+/**
+ * The snapshot tool answers in the normalised schema (#82), or the driver has
+ * no snapshot seam: a tree that is not the schema is a failed snapshot, never
+ * a guess at one.
+ */
+function asSnapshot(value: unknown): SnapshotNode {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('the snapshot tool returned no accessibility snapshot')
+  const shaped = value as { role?: unknown; name?: unknown; path?: unknown; states?: unknown; children?: unknown }
+  if (typeof shaped.role !== 'string' || typeof shaped.path !== 'string')
+    throw new Error('the snapshot tool returned a tree that is not the normalised accessibility snapshot')
+  return {
+    role: shaped.role,
+    ...(typeof shaped.name === 'string' ? { name: shaped.name } : {}),
+    ...(shaped.states !== undefined && shaped.states !== null && typeof shaped.states === 'object' && !Array.isArray(shaped.states)
+      ? { states: shaped.states as Record<string, boolean | number | string> }
+      : { states: {} }),
+    path: shaped.path,
+    ...(Array.isArray(shaped.children) ? { children: shaped.children.map(asSnapshot) } : { children: [] }),
+  }
 }
