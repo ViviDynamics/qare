@@ -133,6 +133,25 @@ test('the ledger the run reads is the repository one, unless --ledger points els
   expect(code).toBe(0)
 })
 
+test('qare run takes exactly one of --job, --plan or --criteria', async () => {
+  const dir = await subsetRepo([{ criterion: 'BIL-014' }])
+  const err = capture()
+
+  const code = await main(
+    [
+      'run', '--job', 'x', '--criteria', 'BIL-014',
+      '--id', 'card-1', '--repo', dir, '--base', 'abc', '--head', 'def',
+      '--evidence', join(dir, 'evidence'), '--profile', join(dir, '.qa'),
+    ],
+    capture().writer,
+    err.writer,
+    BOOT,
+  )
+
+  expect(code).toBe(4)
+  expect(err.lines.join('')).toMatch(/takes one of --job, --plan or --criteria/)
+})
+
 test('qare run --criteria demands the same run context a plan does', async () => {
   await subsetRepo([])
   const err = capture()

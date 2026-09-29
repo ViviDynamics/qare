@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import { resolveCriteriaSubset, criteriaSubsetPlan, CriteriaSubsetError } from '../src/subset.js'
 import { PLAN_SCHEMA_VERSION } from '../src/plan.js'
 import type { LedgerEntry } from '../src/ledger.js'
+import { parseLedgerEntries, serializeLedger } from '../src/ledger.js'
 
 // Split on purpose: a repo-wide guard forbids a literal URL in a test file,
 // so no test can quietly reach the network.
@@ -36,13 +37,17 @@ describe('resolveCriteriaSubset', () => {
     ])
   })
 
-  test('the newest statement about a criterion is the one that resolves', () => {
-    const entries = [
-      entry({ criterion: 'BIL-014', text: 'old words' }),
-      entry({ criterion: 'BIL-014', text: 'new words', checks: ['suite:smoke'] }),
-    ]
-    expect(resolveCriteriaSubset(entries, ['BIL-014'])).toEqual([
-      { id: 'BIL-014', text: 'new words', suites: ['smoke'] },
+  test('the statement a criterion resolves from is its only one', () => {
+    // parseLedgerEntries refuses a ledger that states a criterion twice, so
+    // the resolver looks each id up against single statements; feed it the
+    // way the run does, through the parsed document.
+    const document = parseLedgerEntries(
+      JSON.parse(
+        serializeLedger([entry({ criterion: 'BIL-014', text: 'the one statement', checks: ['suite:smoke'] })]),
+      ),
+    )
+    expect(resolveCriteriaSubset(document, ['BIL-014'])).toEqual([
+      { id: 'BIL-014', text: 'the one statement', suites: ['smoke'] },
     ])
   })
 

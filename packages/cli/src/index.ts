@@ -108,7 +108,7 @@ export async function main(
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> | --criteria <ids>) --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> [--ledger <dir>] | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -1345,6 +1345,9 @@ async function runCommand(
       throw new Error(
         'qare run requires --job <path|-> (pass "-" for stdin), --plan <path>, or --criteria <ids>, with the run context',
       )
+    const sources = [jobSpec, planSpec, criteriaSpec].filter((spec) => spec !== undefined)
+    if (sources.length > 1)
+      throw new Error('qare run takes one of --job, --plan or --criteria; pass exactly one')
     let job: Job
     if (planSpec !== undefined) {
       // A plan is the same wherever it runs; these are the facts about this
