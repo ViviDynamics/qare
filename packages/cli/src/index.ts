@@ -1273,11 +1273,22 @@ async function ledgerImport(argv: string[], ledgerDir: string, out: Writer): Pro
 }
 
 /**
+ * A count read the way a person writes it: one entry, two entries.
+ */
+function counted(n: number, singular: string, plural: string): string {
+  return n === 1 ? `1 ${singular}` : `${n} ${plural}`
+}
+
+/**
  * `qare ledger migrate`: move a ledger between the two backends (#59). The
  * document travels whole, entries and hash-chained history, so ids and
  * history arrive exactly as they left. `--dry-run` reports what would move
  * and writes nothing, and a migration onto a backend that already holds a
- * ledger is refused unless `--force` names the replacement.
+ * ledger is refused unless `--force` names the replacement. A source that
+ * holds nothing is refused too, because a typo in the flags would otherwise
+ * look like a migration of nothing, and the write onto the destination is
+ * checked against the state the migration observed, so a ledger that moved
+ * under the run is never clobbered.
  */
 async function ledgerMigrate(argv: string[], ledgerDir: string, out: Writer): Promise<number> {
   const to = flag(argv, '--to')
@@ -1298,9 +1309,18 @@ async function ledgerMigrate(argv: string[], ledgerDir: string, out: Writer): Pr
       ? { backend: `branch (${branch} in ${repo})`, store: new BranchLedgerStore(repo, branch) }
       : { backend: `files (${files})`, store: new FileLedgerStore(ledgerDir) }
   const document = await source.store.loadDocument()
+  if (document.entries.length === 0 && document.changes.length === 0)
+    throw new Error(
+      `ledger migrate: the ${source.backend} holds no ledger (0 entries and 0 change records); check the --ledger, --repo and --branch flags`,
+    )
+  const destinationHead = await destination.store.head()
   const settled = await destination.store.loadDocument()
   const occupied = settled.entries.length > 0 || settled.changes.length > 0
-  const what = `${document.entries.length} entries and ${document.changes.length} change records`
+  const what = `${counted(document.entries.length, 'entry', 'entries')} and ${counted(
+    document.changes.length,
+    'change record',
+    'change records',
+  )}`
   if (dryRun) {
     out.write(`migrate: ${what} would move from ${source.backend} to ${destination.backend}\n`)
     if (occupied && !force)
@@ -1309,9 +1329,13 @@ async function ledgerMigrate(argv: string[], ledgerDir: string, out: Writer): Pr
   }
   if (occupied && !force)
     throw new Error(
-      `ledger migrate: the ${destination.backend} backend already holds a ledger (${settled.entries.length} entries, ${settled.changes.length} change records); pass --force to replace it`,
+      `ledger migrate: the ${destination.backend} backend already holds a ledger (${counted(
+        settled.entries.length,
+        'entry',
+        'entries',
+      )}, ${counted(settled.changes.length, 'change record', 'change records')}); pass --force to replace it`,
     )
-  await destination.store.save(document.entries, document.changes)
+  await destination.store.saveDocumentIfUnchanged(document.entries, document.changes, destinationHead)
   out.write(`migrate: ${what} moved from ${source.backend} to ${destination.backend}\n`)
   return 0
 }

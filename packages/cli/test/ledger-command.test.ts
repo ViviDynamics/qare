@@ -681,7 +681,7 @@ test('ledger migrate --to branch moves the document whole: ids unchanged, histor
   expect(migrated.entries).toEqual(original.entries)
   expect(migrated.changes).toEqual(original.changes)
   expect(linesOf(out.chunks)).toEqual([
-    `migrate: 2 entries and 1 change records moved from files (${dir}) to branch (qare-ledger in ${repo})`,
+    `migrate: 2 entries and 1 change record moved from files (${dir}) to branch (qare-ledger in ${repo})`,
   ])
 })
 
@@ -720,7 +720,7 @@ test('ledger migrate --dry-run reports what would move and writes nothing', asyn
   )
   expect(code).toBe(0)
   expect(linesOf(out.chunks)).toEqual([
-    'migrate: 2 entries and 1 change records would move from files (' +
+    'migrate: 2 entries and 1 change record would move from files (' +
       dir +
       ') to branch (qare-ledger in ' +
       repo +
@@ -742,7 +742,7 @@ test('a migration onto a non-empty destination is refused without --force', asyn
   )
   expect(code).toBe(1)
   expect(linesOf(errs.chunks)).toEqual([
-    expect.stringContaining('already holds a ledger (1 entries, 0 change records); pass --force to replace it'),
+    expect.stringContaining('already holds a ledger (1 entry, 0 change records); pass --force to replace it'),
   ])
   const target = await ledgerDir([PAYOUT_NOTICE])
   const fileErrs = capture()
@@ -753,7 +753,7 @@ test('a migration onto a non-empty destination is refused without --force', asyn
   )
   expect(fileCode).toBe(1)
   expect(linesOf(fileErrs.chunks)).toEqual([
-    expect.stringContaining('already holds a ledger (1 entries, 0 change records); pass --force to replace it'),
+    expect.stringContaining('already holds a ledger (1 entry, 0 change records); pass --force to replace it'),
   ])
 })
 
@@ -771,6 +771,36 @@ test('ledger migrate --force replaces a non-empty destination', async () => {
   const migrated = await new BranchLedgerStore(repo, 'qare-ledger').loadDocument()
   expect(migrated.entries).toEqual([FLOW_LOGIN])
   expect(migrated.changes).toEqual([])
+})
+
+test('a migration from a backend that holds no ledger is refused instead of moving nothing', async () => {
+  const repo = await gitRepo()
+  const empty = await mkdtemp(join(tmpdir(), 'qare-ledger-'))
+  const errs = capture()
+  const branchCode = await runLedgerCommand(
+    ['migrate', '--to', 'branch', '--ledger', empty, '--repo', repo],
+    capture().writer,
+    errs.writer,
+  )
+  expect(branchCode).toBe(1)
+  expect(linesOf(errs.chunks)).toEqual([
+    expect.stringContaining(
+      `holds no ledger (0 entries and 0 change records); check the --ledger, --repo and --branch flags`,
+    ),
+  ])
+  expect(execSync('git for-each-ref refs/heads', { cwd: repo }).toString()).toBe('')
+  const target = join(await mkdtemp(join(tmpdir(), 'qare-ledger-')), '.qa')
+  const fileErrs = capture()
+  const filesCode = await runLedgerCommand(
+    ['migrate', '--to', 'files', '--ledger', target, '--repo', repo],
+    capture().writer,
+    fileErrs.writer,
+  )
+  expect(filesCode).toBe(1)
+  expect(linesOf(fileErrs.chunks)).toEqual([
+    expect.stringContaining('holds no ledger (0 entries and 0 change records)'),
+  ])
+  await expect(readFile(join(target, LEDGER_FILE), 'utf8')).rejects.toThrow()
 })
 
 test('ledger migrate requires --to naming a backend', async () => {
