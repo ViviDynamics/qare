@@ -199,11 +199,14 @@ export async function runJob(
     quarantineDir?: string
   } = {},
 ): Promise<{ result: RunResult; isolation?: RunIsolation; isolations?: Array<{ name: string; isolation: RunIsolation }> }> {
+  // The run's wall clock (#51): when it started, so the metrics record can
+  // say what a run cost in time as well as in model tokens.
+  const startedAt = new Date().toISOString()
   // Where this run executes is evidence like the verdict is: recorded in
   // result.json with the version set, so a host run and an image run are
   // readable side by side (issue #91).
   const execution = opts.execution ?? detectExecution()
-  if ('profiles' in job) return runSeveralProfiles(job, opts, execution)
+  if ('profiles' in job) return runSeveralProfiles(job, opts, execution, startedAt)
   let profile: QaProfile
   try {
     profile = await resolveProfileRef(job.repoPath, job.profile)
@@ -321,7 +324,7 @@ export async function runJob(
         outcome: 'unverified',
         reason: boot.reason ?? 'boot did not come up',
       }))
-      const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria, ...targetNote }, rules, values, execution)
+      const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria, startedAt, ...targetNote }, rules, values, execution)
       await feedIfOptedIn(opts, job, finished.result)
       return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
     }
@@ -351,7 +354,7 @@ export async function runJob(
     // browser reached, and a host the profile does not declare refuses the run.
     const egressVerdict = target !== undefined && target.undeclared.length > 0 ? 'refused' : 'allowed'
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict })
-    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, ...targetNote }, rules, values, execution)
+    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, startedAt, ...targetNote }, rules, values, execution)
     await feedIfOptedIn(opts, job, finished.result)
     return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
   } finally {
@@ -396,6 +399,7 @@ async function runSeveralProfiles(
     quarantineDir?: string
   },
   execution: ExecutionKind = detectExecution(),
+  startedAt: string = new Date().toISOString(),
 ): Promise<{ result: RunResult; isolation?: RunIsolation; isolations?: Array<{ name: string; isolation: RunIsolation }> }> {
   const groups = job.profiles
   // Every profile is resolved before any other refusal is decided, and before
@@ -461,6 +465,7 @@ async function runSeveralProfiles(
         schemaVersion: RESULT_SCHEMA_VERSION,
         verdict: 'refused',
         criteria,
+        startedAt,
         profiles: groups.map((group) => ({
           name: group.name,
           verdict: 'refused' as const,
@@ -533,7 +538,7 @@ async function runSeveralProfiles(
   }
   const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
   await writeCacheHits(job.evidenceDir, cacheHits)
-  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, profiles }, rules, undefined, execution)
+  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, startedAt, profiles }, rules, undefined, execution)
   await feedIfOptedIn(opts, job, finished.result)
   return { result: finished.result, ...(isolations.length > 0 ? { isolations } : {}) }
 }
@@ -809,7 +814,7 @@ async function refuseRun(
     outcome: 'unverified',
     reason,
   }))
-  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria, ...targetNote }, rules, undefined, execution)
+  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria, startedAt: new Date().toISOString(), ...targetNote }, rules, undefined, execution)
   await feedIfOptedIn(opts, job, finished.result)
   return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
 }
@@ -1056,8 +1061,10 @@ async function finishRun(
   // The run records where and with which versions it executed (issue #91):
   // the same fact the evidence comment states, written before redaction so
   // the version set is part of the published result itself.
+  // The wall clock (#51) rides the result: the caller names when the run
+  // started, and the result names when it was written.
   const full: RunResult = redactResult(
-    { ...result, job: { id: job.id }, environment: runEnvironment(execution) },
+    { ...result, job: { id: job.id }, environment: runEnvironment(execution), finishedAt: new Date().toISOString() },
     rules,
   )
   await mkdir(job.evidenceDir, { recursive: true })

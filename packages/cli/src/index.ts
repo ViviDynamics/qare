@@ -69,6 +69,12 @@ import {
   touchedPathsFromDiff,
   VERSION,
   WRITING_CRITERIA_GUIDE,
+  appendRunMetrics,
+  appendMetricsNote,
+  metricsSummaryLines,
+  METRICS_SCHEMA_VERSION,
+  readMetricsStore,
+  summarizeMetrics,
 } from '@qare/core'
 import type {
   BootOpts,
@@ -79,6 +85,7 @@ import type {
   JobProfileRef,
   LedgerEntry,
   LedgerResolution,
+  MetricsNoteKind,
   Plan,
   QaProfile,
   RedactionRule,
@@ -123,9 +130,10 @@ export async function main(
   if (argv[0] === 'doctor') return doctorCommand(argv.slice(1), out, err)
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   if (argv[0] === 'sweep') return sweepCommand(argv.slice(1), out, err)
+  if (argv[0] === 'metrics') return metricsCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) [--workers <n>] | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare sweep [--ledger <dir>] [--json] [--out <file>] | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) [--workers <n>] | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare sweep [--ledger <dir>] [--json] [--out <file>] | qare metrics <record|note> | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -1212,6 +1220,22 @@ async function ledgerStatus(dir: string, out: Writer, err: Writer): Promise<numb
     for (const record of quarantine.records)
       out.write(`quarantined check ${record.check} of criterion ${record.criterion} at ${record.quarantinedAt}: ${record.reason}\n`)
   }
+  // What the runs amount to over time (#51), from the metrics store beside
+  // the ledger. A repository that has recorded no runs says so by its
+  // absence; a store that cannot be read is named, not fatal, because
+  // metrics describe runs and do not gate the ledger.
+  let metrics
+  try {
+    metrics = await readMetricsStore(join(dir, 'metrics'))
+  } catch {
+    metrics = undefined
+  }
+  if (metrics !== undefined && (metrics.runs.length > 0 || metrics.notes.length > 0)) {
+    for (const line of metricsSummaryLines(summarizeMetrics(metrics))) out.write(`metrics: ${line}\n`)
+    if (metrics.malformed > 0) out.write(`metrics: ${metrics.malformed} store line(s) were not valid JSON and were skipped\n`)
+  } else {
+    out.write('metrics: none\n')
+  }
   return 0
 }
 
@@ -1414,6 +1438,107 @@ async function sweepCommand(argv: string[], out: Writer, err: Writer): Promise<n
   } catch (error) {
     err.write(`${formatError(error)}\n`)
     return 1
+  }
+}
+
+/**
+ * `qare metrics` (#51): record what one run cost and decided, and note what
+ * the runs cannot see. The data lives in the repository — one JSON line per
+ * record in the metrics store beside the ledger — so the numbers can be read
+ * for the whole pilot, not only in this run's logs.
+ */
+async function metricsCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
+  try {
+    if (argv[0] === 'record') return await metricsRecord(argv.slice(1), out)
+    if (argv[0] === 'note') return await metricsNote(argv.slice(1), out)
+    throw new Error('qare metrics requires a subcommand: record (what one run cost and decided) or note (a human note)')
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 1
+  }
+}
+
+/**
+ * `qare metrics record`: join one result's wall clock and verdict with the
+ * plan's and the verifier's model spend into one line of the metrics store.
+ * The judge command has already stamped the verifier's spend on the judged
+ * result; this reads both sides back and stores what the run amounted to.
+ */
+async function metricsRecord(argv: string[], out: Writer): Promise<number> {
+  const resultFlag = argv.indexOf('--result')
+  const resultSpec = resultFlag === -1 ? undefined : argv[resultFlag + 1]
+  if (resultSpec === undefined) throw new Error('qare metrics record requires --result <path> (the judged-result.json the judge wrote)')
+  const storeFlag = argv.indexOf('--store')
+  const storeSpec = storeFlag === -1 ? undefined : argv[storeFlag + 1]
+  if (storeFlag !== -1 && storeSpec === undefined) throw new Error('qare metrics record requires a directory after --store')
+  const store = storeSpec === undefined ? undefined : resolve(storeSpec)
+  const outFlag = flag(argv, '--out')
+
+  const loaded = loadResult(await readFile(resolve(resultSpec), 'utf8'))
+  if (loaded.startedAt === undefined || loaded.finishedAt === undefined)
+    throw new Error('the result has no startedAt/finishedAt timestamps; record metrics from a run made with the version that writes them')
+  const planFlag = flag(argv, '--plan')
+  const plan = planFlag === undefined ? undefined : loadPlan(await readFile(resolve(planFlag), 'utf8'))
+  const context = contextOf(argv)
+  const counts: Record<string, number> = {}
+  for (const criterion of loaded.criteria) counts[criterion.outcome] = (counts[criterion.outcome] ?? 0) + 1
+  const record = {
+    schemaVersion: METRICS_SCHEMA_VERSION,
+    runId: loaded.job?.id ?? '',
+    startedAt: loaded.startedAt,
+    finishedAt: loaded.finishedAt,
+    wallMs: Math.max(0, Date.parse(loaded.finishedAt) - Date.parse(loaded.startedAt)),
+    verdict: loaded.verdict,
+    criteria: {
+      selected: loaded.criteria.map((criterion) => ({ id: criterion.id, outcome: criterion.outcome })),
+      counts,
+    },
+    model: {
+      ...(plan?.usage === undefined ? {} : { plan: plan.usage }),
+      ...(loaded.judgeUsage === undefined ? {} : { judge: loaded.judgeUsage }),
+    },
+    ...(Object.keys(context).length === 0 ? {} : { context }),
+  }
+  if (outFlag !== undefined) await writeFile(resolve(outFlag), `${JSON.stringify(record, null, 2)}\n`, 'utf8')
+  if (store !== undefined) await appendRunMetrics(store, record)
+  out.write(`recorded run ${record.runId} (${record.verdict}, ${record.wallMs} ms)\n`)
+  return 0
+}
+
+/**
+ * `qare metrics note`: one human line the runs cannot see — a defect that
+ * escaped to production, a block that was wrong, or the minutes a person
+ * spent on QA that QARE did not.
+ */
+async function metricsNote(argv: string[], out: Writer): Promise<number> {
+  const kind = flag(argv, '--kind')
+  if (kind === undefined) throw new Error('qare metrics note requires --kind <escape|false-block|qa-minutes>')
+  const store = flag(argv, '--store')
+  if (store === undefined) throw new Error('qare metrics note requires --store <dir> (the metrics store beside the ledger)')
+  const minutesFlag = flag(argv, '--minutes')
+  const minutes = minutesFlag === undefined ? undefined : Number(minutesFlag)
+  if (minutesFlag !== undefined && !Number.isFinite(minutes)) throw new Error('--minutes must be a number')
+  await appendMetricsNote(resolve(store), {
+    kind: kind as MetricsNoteKind,
+    text: flag(argv, '--text'),
+    minutes,
+    criterion: flag(argv, '--criterion'),
+    runId: flag(argv, '--run'),
+  })
+  out.write(`recorded a ${kind} note\n`)
+  return 0
+}
+
+/** The run's where, as the caller said it: the pull request number, the refs. */
+function contextOf(argv: string[]): { pr?: number; base?: string; head?: string } {
+  const pr = flag(argv, '--pr')
+  if (pr !== undefined && !/^\d+$/.test(pr)) throw new Error('--pr must be a pull request number')
+  const base = flag(argv, '--base')
+  const head = flag(argv, '--head')
+  return {
+    ...(pr === undefined ? {} : { pr: Number(pr) }),
+    ...(base === undefined ? {} : { base }),
+    ...(head === undefined ? {} : { head }),
   }
 }
 

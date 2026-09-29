@@ -343,3 +343,29 @@ test('a repair record without the fields the comment renders fails closed (#83)'
   refusedWithoutReason.criteria[0].repairs[0].status = 'refused'
   expect(() => loadResult(JSON.stringify(refusedWithoutReason))).toThrow(ResultValidationError)
 })
+
+test('a run carries its wall clock as a pair of ISO timestamps, both or neither (#51)', () => {
+  const base = { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [] }
+  const timed = parseResult({
+    ...base,
+    startedAt: '2026-09-29T10:00:00.000Z',
+    finishedAt: '2026-09-29T10:01:00.000Z',
+  })
+  expect(timed.startedAt).toBe('2026-09-29T10:00:00.000Z')
+  expect(timed.finishedAt).toBe('2026-09-29T10:01:00.000Z')
+  // One without the other cannot say how long the run took, so it is refused.
+  expect(() => parseResult({ ...base, startedAt: '2026-09-29T10:00:00.000Z' })).toThrow(ResultValidationError)
+  expect(() => parseResult({ ...base, finishedAt: '2026-09-29T10:01:00.000Z' })).toThrow(ResultValidationError)
+  // A timestamp that is not ISO 8601 is refused: the metrics record joins
+  // timestamps it must be able to compare.
+  expect(() => parseResult({ ...base, startedAt: 'yesterday', finishedAt: '2026-09-29T10:01:00.000Z' })).toThrow(ResultValidationError)
+  // A result written before the field existed still loads.
+  expect(parseResult(base).startedAt).toBeUndefined()
+})
+
+test('a run carries the verifier model spend the judge stamps on it (#51)', () => {
+  const base = { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [] }
+  expect(parseResult({ ...base, judgeUsage: { inputTokens: 12, outputTokens: 3 } }).judgeUsage).toEqual({ inputTokens: 12, outputTokens: 3 })
+  expect(parseResult(base).judgeUsage).toBeUndefined()
+  expect(() => parseResult({ ...base, judgeUsage: { inputTokens: 'many' } })).toThrow(ResultValidationError)
+})

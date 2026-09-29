@@ -3,6 +3,7 @@ import type { FlowDriverCapabilities } from './flow.js'
 import { EXPLORATION_TOOLS, isExplorableUrl, type ExplorationTool } from './explore.js'
 import { channelToolName } from './mcp.js'
 import { isUnsafeProfileName } from './profile.js'
+import { sumUsage, type ModelUsage } from './metrics.js'
 import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
 import { shellCharacter } from './run.js'
 
@@ -576,6 +577,7 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
   const mcp = inputs.mcp === undefined ? undefined : mcpChannel(inputs.mcp)
 
   let correction: string | undefined
+  let usage: ModelUsage | undefined
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const run = await runner.run({
       prompt: prompt(inputs, correction),
@@ -586,6 +588,10 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
       ...(exploration === undefined ? {} : { tools: exploration }),
       ...(mcp === undefined ? {} : { mcp }),
     })
+    // Every attempt's spend counts (#51): a rejected answer cost tokens the
+    // same as an accepted one, and the plan's usage says what the plan really
+    // cost, not what the lucky attempt did.
+    usage = sumUsage(usage, run.usage)
     if (run.status !== 'completed')
       throw new PlanStepError(
         `the planning run did not complete (stop reason ${run.stopReason}), so there is no plan` +
@@ -618,7 +624,7 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
         `(${inputs.runInputs.paths.join(', ')}); rewrite the command against them, or mark the criterion unplannable.`
       continue
     }
-    return plan
+    return { ...plan, ...(usage === undefined ? {} : { usage }) }
   }
 
   throw new PlanStepError(`the model could not produce a usable plan: ${correction}`)

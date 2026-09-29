@@ -100,6 +100,28 @@ export class GitHubQaAssetsPusher implements ScreenshotPusher {
     return `runs/${date}/${this.headSha}/${this.runId}/${evidencePath}`
   }
 
+  /**
+   * The run's metrics record rides the same append-only branch (#51), under a
+   * path naming the run: the numbers stay in the repository as data after the
+   * artifact expires, one JSON file per run, and the sweep joins them into
+   * one store.
+   */
+  async pushMetrics(record: unknown): Promise<string> {
+    const date = this.today()
+    const parent = await this.client.getBranchHead(this.branch)
+    const parentTree = parent === undefined ? undefined : await this.client.getCommitTree(parent)
+    const sha = await this.client.createBlob(Buffer.from(JSON.stringify(record, null, 2), 'utf8'))
+    const path = `metrics/${date}/${this.headSha}/${this.runId}.json`
+    const tree = await this.client.createTree([{ path, mode: '100644', type: 'blob', sha }], parentTree)
+    const commit = await this.client.createCommit(
+      `qa-assets: metrics for run ${this.headSha.slice(0, 12)} on ${date}`,
+      tree,
+      parent === undefined ? [] : [parent],
+    )
+    await this.client.pushBranch(this.branch, commit, parent)
+    return path
+  }
+
   private branchUrl(evidencePath: string, date: string): string {
     return `https://github.com/${this.client.repository}/raw/${this.branch}/${this.runPath(evidencePath, date)}`
   }

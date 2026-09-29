@@ -500,6 +500,33 @@ jobs:
             --result evidence/result.json --outDir . \
             --plan plan.json --diff change-planner.diff \
             --nare /usr/local/bin/nare --profile profile "${flow_actions[@]}"
+      # What the run cost and decided (#51): its wall clock, the plan's and
+      # the verifier's model spend, the criteria it selected and the verdict.
+      # Recorded whether the verdict was refused or not, because a refusal
+      # costs the pilot its attention too. The record is data the sweep reads
+      # later, not a log line, so it is written before anything that could
+      # fail after it.
+      - name: Record the run's metrics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f judged-result.json ]; then
+            echo "judged-result.json missing: judge did not produce an artifact, no metrics to record"
+            exit 0
+          fi
+          args=()
+          if [ -f plan.json ]; then
+            args+=(--plan plan.json)
+          fi
+          if [ -n "${PR_NUMBER:-}" ]; then
+            args+=(--pr "$PR_NUMBER")
+          fi
+          node packages/cli/dist/index.js metrics record \
+            --result judged-result.json "${args[@]}" \
+            --store qa-metrics --out metrics.json
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
       - name: File stub issues (refused runs only)
         if: github.event_name == 'pull_request'
         shell: bash
@@ -542,8 +569,8 @@ jobs:
             "$IMAGE_REF" /opt/qare/lib/packages/action/dist/index.js post-evidence \
             --result judged-result.json \
             --pr "$PR_NUMBER" --sha "$HEAD_SHA" --artifact-url "$EVIDENCE_URL" \
-            --evidence evidence
-      - name: Upload judge artifacts (comment.md, checkrun.json, judged-result.json)
+            --evidence evidence --metrics metrics.json
+      - name: Upload judge artifacts (comment.md, checkrun.json, judged-result.json, metrics.json)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -552,6 +579,7 @@ jobs:
             comment.md
             checkrun.json
             judged-result.json
+            metrics.json
           if-no-files-found: ignore
 
   # label: requeue (GitHub token only)

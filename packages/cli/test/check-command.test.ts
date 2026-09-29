@@ -18,6 +18,7 @@ function capture(): { text: () => string; writer: Writer } {
 
 const PLAN = {
   schemaVersion: '1',
+  usage: { inputTokens: 1, outputTokens: 1 },
   criteria: [
     {
       id: 'check-1',

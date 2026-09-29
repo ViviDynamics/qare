@@ -229,11 +229,13 @@ describe('runVerifier', () => {
   test('applies findings JSON from the runner as downgrades', async () => {
     const runner = scriptedVerifier(JSON.stringify([{ criterionId: 'c1', problem: 'evidence contradicts the claim' }]))
 
-    const result = await runVerifier(runner, verifierInputs())
+    const { verdicts, usage } = await runVerifier(runner, verifierInputs())
 
-    expect(result).toEqual([
+    expect(verdicts).toEqual([
       { criterionId: 'c1', outcome: 'failed', regression: false, reason: 'verifier: evidence contradicts the claim' },
     ])
+    // What the verifier spent is part of the answer (#51), whatever it decided.
+    expect(usage).toEqual({ inputTokens: 1, outputTokens: 1 })
   })
 
   test('puts each proven claim to the model with its text, its evidence and the diff', async () => {
@@ -275,34 +277,36 @@ describe('runVerifier', () => {
       { criterionId: 'c2', outcome: 'failed', regression: false, reason: 'failed at head' },
     ]
 
-    const result = await runVerifier(runner, verifierInputs(criteria))
+    const { verdicts, usage } = await runVerifier(runner, verifierInputs(criteria))
 
-    expect(result).toEqual(criteria)
+    expect(verdicts).toEqual(criteria)
     expect(runner.requests).toHaveLength(0)
+    // No model call, no model cost: the record says so by its absence (#51).
+    expect(usage).toBeUndefined()
   })
 
   test('tolerates a {"findings": [...]} wrapper object', async () => {
     const runner = scriptedVerifier(JSON.stringify({ findings: [{ criterionId: 'c1', problem: 'the claim is unbacked' }] }))
 
-    const result = await runVerifier(runner, verifierInputs())
+    const { verdicts } = await runVerifier(runner, verifierInputs())
 
-    expect(result).toEqual([
+    expect(verdicts).toEqual([
       { criterionId: 'c1', outcome: 'failed', regression: false, reason: 'verifier: the claim is unbacked' },
     ])
   })
 
   test('an empty findings list leaves a proven criterion proven', async () => {
-    const result = await runVerifier(scriptedVerifier(JSON.stringify({ findings: [] })), verifierInputs())
+    const { verdicts } = await runVerifier(scriptedVerifier(JSON.stringify({ findings: [] })), verifierInputs())
 
-    expect(result).toEqual([proven])
+    expect(verdicts).toEqual([proven])
   })
 
   // Fail closed: a verifier that gave no readable answer checked nothing, so a
   // pass must not stand as though it had.
   test('non-JSON output leaves the proven criterion unverified, naming why', async () => {
-    const result = await runVerifier(scriptedVerifier('I looked at it and everything seems fine'), verifierInputs())
+    const { verdicts } = await runVerifier(scriptedVerifier('I looked at it and everything seems fine'), verifierInputs())
 
-    expect(result).toEqual([
+    expect(verdicts).toEqual([
       {
         criterionId: 'c1',
         outcome: 'unverified',
@@ -315,10 +319,10 @@ describe('runVerifier', () => {
   test('malformed findings JSON leaves the proven criterion unverified', async () => {
     const runner = scriptedVerifier(JSON.stringify({ findings: [{ criterion: 'c1', why: 'no id' }] }))
 
-    const result = await runVerifier(runner, verifierInputs())
+    const { verdicts } = await runVerifier(runner, verifierInputs())
 
-    expect(result[0]?.outcome).toBe('unverified')
-    expect(result[0]?.reason).toContain('verifier did not answer')
+    expect(verdicts[0]?.outcome).toBe('unverified')
+    expect(verdicts[0]?.reason).toContain('verifier did not answer')
   })
 
   test('a run that did not complete leaves the proven criterion unverified, carrying the runner error', async () => {
@@ -332,19 +336,22 @@ describe('runVerifier', () => {
       },
     ])
 
-    const result = await runVerifier(runner, verifierInputs())
+    const { verdicts, usage } = await runVerifier(runner, verifierInputs())
 
-    expect(result[0]?.outcome).toBe('unverified')
-    expect(result[0]?.reason).toBe('verifier did not answer: the run stopped (error): HTTP 524')
+    expect(verdicts[0]?.outcome).toBe('unverified')
+    expect(verdicts[0]?.reason).toBe('verifier did not answer: the run stopped (error): HTTP 524')
+    // An inconclusive verifier still cost what it spent (#51).
+    expect(usage).toEqual({ inputTokens: 1, outputTokens: 0 })
   })
 
   test('a runner that throws leaves the proven criterion unverified, carrying the message', async () => {
     const runner = new FakeAgentRunner([])
 
-    const result = await runVerifier(runner, verifierInputs())
+    const { verdicts, usage } = await runVerifier(runner, verifierInputs())
 
-    expect(result[0]?.outcome).toBe('unverified')
-    expect(result[0]?.reason).toContain('fake runner script is exhausted')
+    expect(verdicts[0]?.outcome).toBe('unverified')
+    expect(verdicts[0]?.reason).toContain('fake runner script is exhausted')
+    expect(usage).toBeUndefined()
   })
 
   test('a verifier that approves everything cannot upgrade a failed criterion', async () => {
@@ -353,9 +360,9 @@ describe('runVerifier', () => {
       { criterionId: 'c1', outcome: 'failed', regression: true, reason: 'broke at head' },
     ]
 
-    const result = await runVerifier(runner, verifierInputs(criteria))
+    const { verdicts } = await runVerifier(runner, verifierInputs(criteria))
 
-    expect(result).toEqual(criteria)
+    expect(verdicts).toEqual(criteria)
   })
 })
 
@@ -525,4 +532,31 @@ test('an executed result judged again keeps its environment record', async () =>
   const { result } = await judgeExecuted(executed, { texts: {}, diff: NO_DIFF })
   expect(result.verdict).toBe('refused')
   expect(result.environment?.execution).toBe('native')
+})
+
+test('the wall clock of the run and the spend of the verifier ride the judged result (#51)', async () => {
+  const executed: RunResult = {
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'passed',
+    criteria: [{ id: 'c1', outcome: 'proven', evidence: ['checks/c1/0/stdout.txt'] }],
+    startedAt: '2026-09-29T10:00:00.000Z',
+    finishedAt: '2026-09-29T10:01:00.000Z',
+  }
+  const { result, judgeUsage } = await judgeExecuted(executed, {
+    texts: { c1: 'Totals convert to the viewer currency.' },
+    diff: NO_DIFF,
+    verifier: scriptedVerifier(JSON.stringify({ findings: [] })),
+  })
+  expect(result.startedAt).toBe('2026-09-29T10:00:00.000Z')
+  expect(result.finishedAt).toBe('2026-09-29T10:01:00.000Z')
+  expect(result.judgeUsage).toEqual({ inputTokens: 1, outputTokens: 1 })
+  expect(judgeUsage).toEqual({ inputTokens: 1, outputTokens: 1 })
+})
+
+test('a result without timestamps judges to one without them: an old artifact still loads and judges the same', async () => {
+  const executed: RunResult = { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [] }
+  const { result } = await judgeExecuted(executed, { texts: {}, diff: NO_DIFF })
+  expect(result.startedAt).toBeUndefined()
+  expect(result.finishedAt).toBeUndefined()
+  expect(result.judgeUsage).toBeUndefined()
 })

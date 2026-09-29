@@ -20,6 +20,7 @@ const CRITERIA = [
 
 const PLAN = {
   schemaVersion: '1',
+  usage: { inputTokens: 1, outputTokens: 1 },
   criteria: [
     { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'login', command: 'npm test -- login' }] },
     { id: 'c2', text: CRITERIA[1].text, unplannable: 'no visual baseline yet' },

@@ -136,6 +136,20 @@ async function postEvidenceCommand(argv: string[], out: Writer): Promise<number>
   const evidenceDir = flags.string('evidence') || undefined
   const push =
     evidenceDir === undefined ? undefined : new GitHubQaAssetsPusher(client, headSha, { branch: flags.string('branch') })
+  // The run's metrics record (#51) rides to the qa-assets branch when its file
+  // is named, whether or not there were screenshots to push. It is data the
+  // pilot reads later, so a store it could not reach is named and left
+  // behind, never fatal: metrics describe runs, they do not gate them.
+  const metricsPath = flags.string('metrics') || undefined
+  if (metricsPath !== undefined) {
+    try {
+      const record: unknown = JSON.parse(await readFile(metricsPath, 'utf8'))
+      await new GitHubQaAssetsPusher(client, headSha, { branch: flags.string('branch') }).pushMetrics(record)
+      out.write(`pushed the run's metrics record to ${flags.string('branch') ?? 'qa-assets'}\n`)
+    } catch (error) {
+      out.write(`metrics record not pushed (${error instanceof Error ? error.message : String(error)}); the verdict does not depend on it\n`)
+    }
+  }
   // The conflicts the pull request itself introduces are asked in this very
   // comment, where its author is already notified (#41). The questions file
   // is optional: a run with nothing open renders exactly as it did before.
