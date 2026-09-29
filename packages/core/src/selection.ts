@@ -8,9 +8,9 @@ import { DEFAULT_CHECK_TIMEOUT_MS } from './run.js'
  * A reference is either `suite:<name>`, naming a suite whose checks drive
  * screens, or a repository-relative path with an optional `:fragment` after
  * it (a line number, a test name), which names the code the check exercises.
- * A reference that parses to neither, such as a bare `suite:` with no name,
- * is unusable and contributes nothing: the mapping misses quietly rather
- * than inventing a target.
+ * A reference that names nothing — a bare `suite:`, or a path no git diff
+ * could carry (`./x`, `a//b`, an absolute path) — is unusable and contributes
+ * nothing: the mapping misses quietly rather than inventing a target.
  */
 export type CheckTarget = { kind: 'suite'; suite: string } | { kind: 'path'; path: string }
 
@@ -21,8 +21,22 @@ export function checkTarget(check: string): CheckTarget | undefined {
   }
   const at = check.indexOf(':')
   const path = at === -1 ? check : check.slice(0, at)
-  if (path === '') return undefined
+  if (!canonicalPath(path)) return undefined
   return { kind: 'path', path }
+}
+
+/**
+ * A check reference names a repository path only when a git diff path could
+ * carry it: relative, slash-separated (never a backslash), no empty, `.` or
+ * `..` segment. Anything else can never match a touched path, so the
+ * reference is unusable rather than a dead target that would read as
+ * "unaffected".
+ */
+function canonicalPath(path: string): boolean {
+  if (path.includes('\\')) return false
+  const segments = path.split('/')
+  if (segments.includes('') || segments.includes('.') || segments.includes('..')) return false
+  return !/[\x00-\x1f\x7f]/.test(path)
 }
 
 /**
@@ -32,7 +46,7 @@ export function checkTarget(check: string): CheckTarget | undefined {
  */
 export const DEFAULT_SMOKE_SUITE = 'smoke'
 
-/** The estimated cost of one check when nothing better is declared. */
+/** The selection budget when the caller does not name one. */
 export const DEFAULT_SELECTION_BUDGET_MS = 900000
 
 export type SelectedReason = 'impact' | 'smoke' | 'unmapped'
@@ -73,8 +87,8 @@ export interface SelectionOptions {
 /**
  * Two paths overlap when either sits at a segment boundary inside the other:
  * a check that names `apps/billing` is affected by a change to
- * `apps/admin-ui`, never by one to `apps/admin/src`, and the reverse holds,
- * so a check under a directory a change deletes is selected too.
+ * `apps/billing/spec`, and the reverse holds, but never by a change to
+ * `apps/admin-ui`, which shares no segment, nor by `apps/billing2`.
  */
 function overlaps(touched: string, path: string): boolean {
   return pathUnderArea(touched, path) || pathUnderArea(path, touched)

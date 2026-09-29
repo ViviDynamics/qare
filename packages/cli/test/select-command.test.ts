@@ -119,6 +119,34 @@ test('selection takes a diff file when the paths are not known by hand', async (
   expect(linesOf(out.chunks)[1]).toBe('+ BIL-014\timpact\tA host paid more than the annual threshold gets a 1099 in January.')
 })
 
+test('a budget beyond the safe integer range is an invocation error, not an unbounded one', async () => {
+  const errs = capture()
+  const code = await main(['select', '--paths', 'x', '--budget', '1'.repeat(30)], capture().writer, errs.writer)
+  expect(code).toBe(4)
+  expect(errs.chunks.join('')).toMatch(/positive whole number of milliseconds/)
+})
+
+test('a flag value that is itself a flag is an invocation error, not a misread path', async () => {
+  const errs = capture()
+  const code = await main(['select', '--paths', '--budget', '100'], capture().writer, errs.writer)
+  expect(code).toBe(4)
+  expect(errs.chunks.join('')).toMatch(/--paths needs a value/)
+})
+
+test('positional arguments are invocation errors', async () => {
+  const errs = capture()
+  const code = await main(['select', 'here'], capture().writer, errs.writer)
+  expect(code).toBe(4)
+  expect(errs.chunks.join('')).toMatch(/takes flags, not "here"/)
+})
+
+test('an empty parsed --paths list is an invocation error, not a report that nothing is affected', async () => {
+  const errs = capture()
+  const code = await main(['select', '--paths', ','], capture().writer, errs.writer)
+  expect(code).toBe(4)
+  expect(errs.chunks.join('')).toMatch(/--paths takes a comma-separated list/)
+})
+
 test('the invocation is wrong when the selection has nothing to work from', async () => {
   const errs = capture()
   const code = await main(['select'], capture().writer, errs.writer)

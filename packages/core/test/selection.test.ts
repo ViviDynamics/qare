@@ -16,6 +16,14 @@ function entry(overrides: Partial<LedgerEntry> & { criterion: string }): LedgerE
 }
 
 describe('check references', () => {
+  test('a reference no git diff path could carry is unusable', () => {
+    expect(checkTarget('./app/main.rb')).toBeUndefined()
+    expect(checkTarget('app//main.rb')).toBeUndefined()
+    expect(checkTarget('/abs/app/main.rb')).toBeUndefined()
+    expect(checkTarget('app/../app/main.rb')).toBeUndefined()
+    expect(checkTarget('app\\main.rb')).toBeUndefined()
+  })
+
   test('a suite reference names its suite', () => {
     expect(checkTarget('suite:smoke')).toEqual({ kind: 'suite', suite: 'smoke' })
     expect(checkTarget('suite:billing-flows')).toEqual({ kind: 'suite', suite: 'billing-flows' })
@@ -102,6 +110,14 @@ describe('selectCriteria', () => {
       touched: ['billing/spec/payout_tax_spec.rb'],
     })
     expect(report.selected.map((criterion) => criterion.criterion)).toEqual(['BIL-031'])
+    expect(report.selected[0]?.reason).toBe('unmapped')
+  })
+
+  test('a reference that cannot carry a git path maps the criterion to nothing, not to unaffected', () => {
+    const report = selectCriteria([entry({ criterion: 'BIL-032', checks: ['./billing/spec/payout_tax_spec.rb'] })], {
+      touched: ['billing/spec/payout_tax_spec.rb'],
+    })
+    expect(report.selected.map((criterion) => criterion.criterion)).toEqual(['BIL-032'])
     expect(report.selected[0]?.reason).toBe('unmapped')
   })
 

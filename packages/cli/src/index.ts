@@ -1255,28 +1255,53 @@ function jobIdOf(result: unknown): string | undefined {
  * nothing. Runs no check and no model, so the orchestrator can see what a
  * run would cover before it asks for one.
  */
+const SELECT_FLAGS = ['--ledger', '--diff', '--paths', '--budget', '--smoke', '--out'] as const
+
+/**
+ * Every select flag takes a value, so the values are consumed positionally:
+ * a missing value, a stray positional argument, and an unknown flag are all
+ * invocation errors rather than a quietly misread selection.
+ */
+function selectFlagsOf(argv: string[]): Record<string, string> {
+  const options: Record<string, string> = {}
+  let at = 0
+  while (at < argv.length) {
+    const arg = argv[at]
+    if (!arg.startsWith('--')) throw new Error(`qare select takes flags, not ${JSON.stringify(arg)}`)
+    if (!(SELECT_FLAGS as string[]).includes(arg)) throw new Error(`qare select does not take ${arg}`)
+    const value = argv[at + 1]
+    if (value === undefined || value.startsWith('--')) throw new Error(`qare select ${arg} needs a value`)
+    options[arg] = value
+    at += 2
+  }
+  return options
+}
+
 async function selectCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
   try {
-    for (const arg of argv.filter((entry) => entry.startsWith('-')))
-      if (arg !== '--ledger' && arg !== '--diff' && arg !== '--paths' && arg !== '--budget' && arg !== '--smoke' && arg !== '--out')
-        throw new Error(`qare select does not take ${arg}`)
-    const diffSpec = flag(argv, '--diff')
-    const pathsSpec = flag(argv, '--paths')
+    const options = selectFlagsOf(argv)
+    const diffSpec = options['--diff']
+    const pathsSpec = options['--paths']
     if (diffSpec === undefined && pathsSpec === undefined)
       throw new Error('qare select requires --diff <path> or --paths a,b: selection picks the criteria a change could affect')
     if (diffSpec !== undefined && pathsSpec !== undefined)
       throw new Error('qare select takes --diff or --paths, not both: one change selects criteria one way')
+    const budgetSpec = options['--budget']
+    if (
+      budgetSpec !== undefined &&
+      (!/^\d+$/.test(budgetSpec) || !Number.isSafeInteger(Number(budgetSpec)) || Number(budgetSpec) <= 0)
+    )
+      throw new Error(`--budget takes a positive whole number of milliseconds, not ${JSON.stringify(budgetSpec)}`)
     const touched =
       diffSpec !== undefined
         ? touchedPathsFromDiff(await readFile(resolve(diffSpec), 'utf8'))
         : (pathsSpec ?? '').split(',').filter((entry) => entry !== '')
-    const budgetSpec = flag(argv, '--budget')
-    if (budgetSpec !== undefined && (!/^\d+$/.test(budgetSpec) || Number(budgetSpec) <= 0))
-      throw new Error(`--budget takes a positive whole number of milliseconds, not ${JSON.stringify(budgetSpec)}`)
-    const report = selectCriteria(await new FileLedgerStore(resolve(flag(argv, '--ledger') ?? '.qa')).load(), {
+    if (pathsSpec !== undefined && touched.length === 0)
+      throw new Error(`--paths takes a comma-separated list of repository paths, not ${JSON.stringify(pathsSpec)}`)
+    const report = selectCriteria(await new FileLedgerStore(resolve(options['--ledger'] ?? '.qa')).load(), {
       touched,
       ...(budgetSpec === undefined ? {} : { budgetMs: Number(budgetSpec) }),
-      ...(flag(argv, '--smoke') === undefined ? {} : { smokeSuite: flag(argv, '--smoke') }),
+      ...(options['--smoke'] === undefined ? {} : { smokeSuite: options['--smoke'] }),
     })
     out.write(
       `selected ${report.selected.length} of ${report.selected.length + report.notSelected.length} criteria; estimated ${report.estimatedMs} ms of a ${report.budgetMs} ms budget; ${report.touched.length} touched paths\n`,
