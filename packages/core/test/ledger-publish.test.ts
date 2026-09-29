@@ -88,7 +88,7 @@ describe('renderCriteriaMarkdown', () => {
     const text = renderCriteriaMarkdown(document, ['held-a'])
     expect(text).toContain('# Criteria')
     expect(text).toContain('Current criteria: 4 total, 1 active.')
-    expect(text).toContain('## Verified criteria')
+    expect(text).toContain('## Active criteria')
     expect(text).toContain('| active-a () | command | 2026-09-21T00:00:01Z |')
     expect(text).toContain('## Unverified')
     expect(text).toContain(': proposed-a.')

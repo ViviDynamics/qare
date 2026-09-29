@@ -531,30 +531,74 @@ test('ledger export writes the whole ledger as plain files', async () => {
 
 test('an exported ledger imports back with no loss, history intact', async () => {
   const source = await ledgerDir([FLOW_LOGIN])
-  const changes = appendChange([], {
+  const exported = appendChange([], {
     kind: 'ingest',
     actor: 'jason',
     timestamp: '2026-09-29T00:00:00Z',
     reason: 'seeded the ledger',
     criteria: ['flow-login'],
   })
-  await new FileLedgerStore(source).saveDocument([FLOW_LOGIN], changes)
+  await new FileLedgerStore(source).saveDocument([FLOW_LOGIN], exported)
   const exportDir = join(await mkdtemp(join(tmpdir(), 'qare-export-')), 'exported')
   await runLedgerCommand(['export', '--out', exportDir, '--ledger', source], capture().writer, capture().writer)
   const target = join(await mkdtemp(join(tmpdir(), 'qare-import-')), '.qa')
   const out = capture()
   const code = await runLedgerCommand(
-    ['import', '--from', exportDir, '--ledger', target],
+    ['import', '--from', exportDir, '--ledger', target, '--by', 'jason', '--why', 'restored from export'],
     out.writer,
     capture().writer,
   )
   expect(code).toBe(0)
   const document = await new FileLedgerStore(target).loadDocument()
   expect(document.entries).toEqual([FLOW_LOGIN])
-  expect(document.changes).toEqual(changes)
+  expect(document.changes).toEqual([
+    ...exported,
+    {
+      seq: 2,
+      kind: 'import',
+      actor: 'jason',
+      timestamp: document.changes[1].timestamp,
+      reason: 'restored from export',
+      criteria: [],
+      digest: document.changes[1].digest,
+    },
+  ])
   expect(linesOf(out.chunks)).toEqual([
-    'imported 1 entries and 1 change records: history intact',
+    'imported 1 entries with 2 change records: history intact',
     expect.stringContaining('published view refreshed'),
+  ])
+})
+
+test('an import that would rewrite the target history is refused', async () => {
+  const target = join(await mkdtemp(join(tmpdir(), 'qare-import-')), '.qa')
+  const divergent = appendChange([], {
+    kind: 'ingest',
+    actor: 'jason',
+    timestamp: '2026-09-29T00:00:00Z',
+    reason: 'seeded this ledger',
+    criteria: ['flow-login'],
+  })
+  await new FileLedgerStore(target).saveDocument([FLOW_LOGIN], divergent)
+  const elsewhere = join(await mkdtemp(join(tmpdir(), 'qare-ledger-')), '.qa')
+  const other = appendChange([], {
+    kind: 'ingest',
+    actor: 'someone else',
+    timestamp: '2026-09-29T02:00:00Z',
+    reason: 'seeded elsewhere',
+    criteria: ['flow-login'],
+  })
+  await new FileLedgerStore(elsewhere).saveDocument([FLOW_LOGIN], other)
+  const exportDir = join(await mkdtemp(join(tmpdir(), 'qare-export-')), 'exported')
+  await runLedgerCommand(['export', '--out', exportDir, '--ledger', elsewhere], capture().writer, capture().writer)
+  const errs = capture()
+  const code = await runLedgerCommand(
+    ['import', '--from', exportDir, '--ledger', target, '--by', 'jason', '--why', 'downgrade'],
+    capture().writer,
+    errs.writer,
+  )
+  expect(code).toBe(1)
+  expect(linesOf(errs.chunks)).toEqual([
+    expect.stringContaining('does not carry the ledger history forward'),
   ])
 })
 
@@ -564,8 +608,8 @@ test('ledger publish writes the current state and names held criteria', async ()
     join(dir, 'held-result.json'),
     JSON.stringify({
       criteria: [
-        { id: 'flow-login', outcome: 'unverified', reason: 'held for an open question (q-1) — conflict' },
-        { id: 'flow-login', outcome: 'passed', reason: '' },
+        { id: 'ledger-export-csv', outcome: 'unverified', reason: 'held for an open question (q-1) — conflict' },
+        { id: 'flow-login', outcome: 'unverified', reason: 'no proof carried' },
       ],
     }),
   )
@@ -575,6 +619,19 @@ test('ledger publish writes the current state and names held criteria', async ()
   expect(code).toBe(0)
   const text = await readFile(view, 'utf8')
   expect(text).toContain('## Quarantined')
-  expect(text).toContain(': flow-login.')
+  expect(text).toContain(': ledger-export-csv.')
   expect(linesOf(out.chunks)).toEqual(['published 2 criteria to ' + view])
+})
+
+test('a held criterion whose question is answered and entry promoted is no longer quarantined', async () => {
+  const dir = await ledgerDir([FLOW_LOGIN])
+  await writeFile(
+    join(dir, 'held-result.json'),
+    JSON.stringify({
+      criteria: [{ id: 'flow-login', outcome: 'unverified', reason: 'held for an open question (q-1) — conflict' }],
+    }),
+  )
+  const view = join(await mkdtemp(join(tmpdir(), 'qare-publish-')), 'CRITERIA.md')
+  await runLedgerCommand(['publish', '--out', view, '--ledger', dir], capture().writer, capture().writer)
+  expect(await readFile(view, 'utf8')).not.toContain('## Quarantined')
 })

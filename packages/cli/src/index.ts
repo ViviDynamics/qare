@@ -1210,7 +1210,7 @@ async function ledgerExport(argv: string[], ledgerDir: string, out: Writer): Pro
   const outFlag = flag(argv, '--out') ?? 'ledger-export'
   const target = resolve(outFlag)
   const document = await new FileLedgerStore(ledgerDir).loadDocument()
-  const quarantined = await heldCriteriaIn(ledgerDir)
+  const quarantined = await heldCriteriaIn(ledgerDir, document.entries)
   await mkdir(target, { recursive: true })
   await writeFile(join(target, LEDGER_FILE), serializeLedgerDocument(document.entries, document.changes), 'utf8')
   await writeFile(join(target, 'CRITERIA.md'), renderCriteriaMarkdown(document, quarantined), 'utf8')
@@ -1224,21 +1224,47 @@ async function ledgerExport(argv: string[], ledgerDir: string, out: Writer): Pro
 /**
  * `qare ledger import`: read an exported ledger through the strict loader —
  * the chain must verify — and save it whole, so an exported ledger imports
- * back with no loss (#58). The published view is refreshed, because the
- * published state follows the ledger whenever it changes.
+ * back with no loss (#58). The import itself is a recorded change: it names
+ * who imported, when, and why, and the target's own history must be carried
+ * forward intact by what is imported, or the import is refused. The
+ * published view is refreshed, because the published state follows the
+ * ledger whenever it changes.
  */
 async function ledgerImport(argv: string[], ledgerDir: string, out: Writer): Promise<number> {
   const from = flag(argv, '--from')
   if (from === undefined) throw new Error('qare ledger import requires --from <export dir>')
-  const document = parseLedgerDocument(
+  const by = flag(argv, '--by')
+  if (by === undefined) throw new Error('qare ledger import requires --by <who made this change>')
+  const why = flag(argv, '--why')
+  if (why === undefined) throw new Error('qare ledger import requires --why <reason>')
+  const at = flag(argv, '--at') ?? new Date().toISOString()
+  const store = new FileLedgerStore(ledgerDir)
+  const imported = parseLedgerDocument(
     JSON.parse(await readFile(join(resolve(from), LEDGER_FILE), 'utf8')),
   )
-  await new FileLedgerStore(ledgerDir).saveDocument(document.entries, document.changes)
+  const current = await store.loadDocument()
+  if (
+    current.changes.length > 0 &&
+    JSON.stringify(imported.changes.slice(0, current.changes.length)) !== JSON.stringify(current.changes)
+  )
+    throw new Error(
+      'ledger import: the imported history does not carry the ledger history forward; importing it would rewrite what is recorded',
+    )
+  const changes = appendChange(imported.changes, {
+    kind: 'import',
+    actor: by,
+    timestamp: at,
+    reason: why,
+    criteria: [],
+  })
+  await store.saveDocument(imported.entries, changes)
   const publishFlag = flag(argv, '--publish') ?? 'CRITERIA.md'
-  const quarantined = await heldCriteriaIn(ledgerDir)
-  await writeFile(resolve(publishFlag), renderCriteriaMarkdown(document, quarantined), 'utf8')
+  await writeFile(resolve(publishFlag), renderCriteriaMarkdown(
+    { entries: imported.entries, changes },
+    await heldCriteriaIn(ledgerDir, imported.entries),
+  ), 'utf8')
   out.write(
-    `imported ${document.entries.length} entries and ${document.changes.length} change records: history intact\n`,
+    `imported ${imported.entries.length} entries with ${changes.length} change records: history intact\n`,
   )
   out.write(`published view refreshed: ${resolve(publishFlag)}\n`)
   return 0
@@ -1253,7 +1279,7 @@ async function ledgerImport(argv: string[], ledgerDir: string, out: Writer): Pro
 async function ledgerPublish(argv: string[], ledgerDir: string, out: Writer): Promise<number> {
   const outFlag = flag(argv, '--out') ?? 'CRITERIA.md'
   const document = await new FileLedgerStore(ledgerDir).loadDocument()
-  const quarantined = await heldCriteriaIn(ledgerDir)
+  const quarantined = await heldCriteriaIn(ledgerDir, document.entries)
   await writeFile(resolve(outFlag), renderCriteriaMarkdown(document, quarantined), 'utf8')
   out.write(`published ${document.entries.length} criteria to ${resolve(outFlag)}\n`)
   return 0
@@ -1261,31 +1287,43 @@ async function ledgerPublish(argv: string[], ledgerDir: string, out: Writer): Pr
 
 /**
  * The criteria a held result names as quarantined, when resolve wrote one
- * into the ledger directory (`--hold-out <dir>/held-result.json`). Its
- * absence is an ordinary no: an open question is only knowable from the
- * report the resolution wrote.
+ * into the ledger directory (`--hold-out <dir>/held-result.json`). A missing
+ * file is an ordinary no: an open question is only knowable from the report
+ * the resolution wrote. Anything else — an unreadable or malformed report —
+ * fails the command, because publishing a guessed-at quarantine state is
+ * worse than publishing none. A held criterion whose question has been
+ * answered and whose entry has since been promoted to active is no longer
+ * quarantined; the ledger, not the stale report, says where it stands.
  */
-async function heldCriteriaIn(ledgerDir: string): Promise<string[]> {
+async function heldCriteriaIn(ledgerDir: string, entries: LedgerEntry[]): Promise<string[]> {
   let held: unknown
   try {
     held = JSON.parse(await readFile(join(ledgerDir, 'held-result.json'), 'utf8'))
-  } catch {
-    return []
+  } catch (error) {
+    if (
+      typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
+    )
+      return []
+    throw new Error(`ledger publish: held-result.json is unreadable: ${formatError(error)}`)
   }
   const criteria = (held as { criteria?: unknown }).criteria
-  if (!Array.isArray(criteria)) return []
-  return criteria
-    .filter(
-      (criterion): criterion is { id: string; outcome: string; reason?: string } =>
-        typeof criterion === 'object' && criterion !== null,
-    )
-    .filter(
-      (criterion) =>
-        criterion.outcome === 'unverified' &&
-        typeof criterion.reason === 'string' &&
-        criterion.reason.startsWith('held for an open question'),
-    )
+  if (!Array.isArray(criteria))
+    throw new Error('ledger publish: held-result.json must carry a "criteria" array')
+  const heldIds = criteria
+    .filter((criterion): criterion is { id: string; outcome: string; reason: string } =>
+      typeof criterion === 'object' &&
+      criterion !== null &&
+      typeof (criterion as Record<string, unknown>).id === 'string' &&
+      typeof (criterion as Record<string, unknown>).outcome === 'string' &&
+      typeof (criterion as Record<string, unknown>).reason === 'string')
+    .filter((criterion) => criterion.outcome === 'unverified' && criterion.reason.startsWith('held for an open question'))
     .map((criterion) => criterion.id)
+  const stillHeld = new Set(heldIds)
+  const kept: string[] = []
+  for (const entry of entries) {
+    if (stillHeld.has(entry.criterion) && entry.status === 'proposed') kept.push(entry.criterion)
+  }
+  return kept
 }
 
 /**

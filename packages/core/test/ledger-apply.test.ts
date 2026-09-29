@@ -53,6 +53,37 @@ describe('applyLedgerProposal', () => {
     expect(next).toEqual(current)
   })
 
+  test('a passing run that promotes nothing still records what it re-proved', () => {
+    const current = [ledgerEntry({ status: 'active' }), ledgerEntry({ criterion: 'flow-login', status: 'active' })]
+    const rec = record({
+      criteria: [
+        { criterionId: 'spec-up-200', outcome: 'pass' },
+        { criterionId: 'flow-login', outcome: 'pass' },
+      ],
+    })
+    const { proposal } = verifiedProposal(current, rec)
+    const { changes } = applyLedgerProposal(proposal, rec, current)
+    const verify = changes[changes.length - 1]
+    expect(verify.kind).toBe('verify')
+    expect(verify.criteria).toEqual(['spec-up-200', 'flow-login'])
+    expect(verify.reason).toBe('run run-42: pass on 2 criterion(s), already active')
+  })
+
+  test('a promotion records the promoted and the re-proven criteria in one verify', () => {
+    const current = [ledgerEntry({ status: 'active' }), ledgerEntry({ criterion: 'flow-login', status: 'proposed' })]
+    const rec = record({
+      criteria: [
+        { criterionId: 'spec-up-200', outcome: 'pass' },
+        { criterionId: 'flow-login', outcome: 'pass' },
+      ],
+    })
+    const { proposal } = verifiedProposal(current, rec)
+    const { changes } = applyLedgerProposal(proposal, rec, current)
+    const verify = changes[changes.length - 1]
+    expect(verify.criteria).toEqual(['flow-login', 'spec-up-200'])
+    expect(verify.reason).toBe('run run-42: pass on 1 criterion(s) promotes proposed → active')
+  })
+
   test('stale base fingerprint is rejected', () => {
     const current = [ledgerEntry()]
     const proposal = buildLedgerProposal(record(), current, integrityOf(current))

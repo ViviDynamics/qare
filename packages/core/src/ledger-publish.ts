@@ -49,6 +49,12 @@ function byCriterion(a: LedgerEntry, b: LedgerEntry): number {
   return a.criterion < b.criterion ? -1 : a.criterion > b.criterion ? 1 : 0
 }
 
+/** A table cell must not carry the delimiter itself, so a pipe in a ledger
+ * field is escaped the way markdown spells a literal pipe. */
+function cell(value: string): string {
+  return value.replaceAll('|', '\\|')
+}
+
 function names(criteria: string[]): string {
   return criteria.length === 0 ? criteria.join(', ') : criteria.join('`, `')
 }
@@ -74,12 +80,12 @@ export function renderCriteriaMarkdown(
     '',
   ]
   if (active.length > 0) {
-    lines.push('## Verified criteria', '')
+    lines.push('## Active criteria', '')
     lines.push('| Criterion | Proof | Verified at |')
     lines.push('| --- | --- | --- |')
     for (const entry of active) {
       lines.push(
-        `| ${entry.criterion} (${entry.note ?? entry.text ?? ''}) | ${entry.proof} | ${verifiedAt.get(entry.criterion) ?? 'never'} |`,
+        `| ${cell(`${entry.criterion} (${entry.note ?? entry.text ?? ''})`)} | ${cell(entry.proof)} | ${cell(verifiedAt.get(entry.criterion) ?? 'never')} |`,
       )
     }
     lines.push('')

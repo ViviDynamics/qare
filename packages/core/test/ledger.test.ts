@@ -325,13 +325,18 @@ describe('ledger change records', () => {
     await rm(dir, { recursive: true })
   })
 
-  test('save preserves the history an earlier save wrote', async () => {
+  test('a save that changes entries once history exists must name its change', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'qare-ledger-history-'))
     const store = new FileLedgerStore(dir)
     const changes = appendChange([], record(1))
     await store.save([entry({ criterion: 'flow-login', status: 'proposed' })], changes)
-    await store.save([entry({ criterion: 'flow-login' })])
-    expect((await store.loadDocument()).changes).toEqual(changes)
+    await expect(store.save([entry({ criterion: 'flow-login' })])).rejects.toThrow(
+      /entries changed without a change record/,
+    )
+    // The same write with the change recorded goes through, history chained.
+    const withVerify = appendChange(changes, record(2, 'verify'))
+    await store.save([entry({ criterion: 'flow-login' })], withVerify)
+    expect((await store.loadDocument()).changes).toEqual(withVerify)
     await rm(dir, { recursive: true })
   })
 

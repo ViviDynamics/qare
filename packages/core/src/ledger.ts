@@ -289,7 +289,13 @@ export function parseLedgerDocument(input: unknown): LedgerDocument {
   return { entries, changes }
 }
 
-/** The chain is validated record by record: a rewritten history cannot load. */
+/** The chain is validated record by record: a rewritten history cannot load.
+ *
+ * An edit, a drop or a reorder of the records a document still carries is
+ * detected here. Deleting the last records cannot be detected from the
+ * document alone, because the document is the only thing carrying them; an
+ * external copy of the chain's head, such as the published history file, is
+ * what a rollback is checked against. */
 function parseChanges(value: unknown): LedgerChange[] {
   if (!Array.isArray(value)) fail('document.changes', 'changes must be a JSON array')
   let previous = ''
@@ -389,8 +395,17 @@ export class FileLedgerStore implements LedgerStore {
   async save(entries: LedgerEntry[], changes?: LedgerChange[]): Promise<void> {
     // A write that omits the history must not silently drop it: history is
     // never rewritten, so the changes already recorded are carried through.
+    // And once history exists, entries cannot change without a record of who
+    // made the change: a mutation a record does not name is refused.
     if (changes === undefined) {
       const current = await this.loadDocument()
+      if (
+        current.changes.length > 0 &&
+        integrityOf(current.entries) !== integrityOf(entries)
+      )
+        throw new Error(
+          'ledger: entries changed without a change record; append the record that names who made this change, when, and why',
+        )
       changes = current.changes
     }
     await this.saveDocument(entries, changes)
@@ -463,10 +478,22 @@ export class BranchLedgerStore implements LedgerStore {
   }
 
   async save(entries: LedgerEntry[], changes?: LedgerChange[]): Promise<void> {
-    if (changes === undefined) changes = (await this.loadDocument()).changes
-    const blob = (
-      await this.run(['hash-object', '-w', '--stdin'], serializeLedgerDocument(entries, changes))
-    ).stdout.trim()
+    if (changes === undefined) {
+      const current = await this.loadDocument()
+      if (
+        current.changes.length > 0 &&
+        integrityOf(current.entries) !== integrityOf(entries)
+      )
+        throw new Error(
+          'ledger: entries changed without a change record; append the record that names who made this change, when, and why',
+        )
+      changes = current.changes
+    }
+    // The same strict loader a run reads with judges the document before any
+    // of it is written out, so invalid entries or a broken chain never commit.
+    const text = serializeLedgerDocument(entries, changes)
+    parseLedgerDocument(JSON.parse(text))
+    const blob = (await this.run(['hash-object', '-w', '--stdin'], text)).stdout.trim()
     const tree = (await this.run(['mktree'], `100644 blob ${blob}\t${LEDGER_FILE}`)).stdout.trim()
     let parent: string | undefined
     try {

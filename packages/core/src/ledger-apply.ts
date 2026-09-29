@@ -47,15 +47,32 @@ export function applyLedgerProposal(
   const next = current.map((entry) =>
     promoted.has(entry.criterion) ? { ...entry, status: 'active' as const } : entry,
   )
-  if (promoted.size === 0) return { next, changes: [...changes] }
-  // A promotion is a verification: the run proved the criterion, and the
-  // history records when it was last proven and by what run (#58).
+  // Every criterion the run proved, promoted or already active, is recorded:
+  // the ledger always knows when each statement was last proven, so a stale
+  // criterion becomes current again the moment a later run passes it (#58).
+  const proven = proposal.body.changes
+    .map((change) => change.criterion)
+    .concat(
+      record.criteria
+        .filter((criterion) => criterion.outcome === 'pass' && !promoted.has(criterion.criterionId))
+        .map((criterion) => criterion.criterionId)
+        .filter((id) => next.find((entry) => entry.criterion === id)?.status === 'active'),
+    )
+  if (proven.length === 0) return { next, changes: [...changes] }
+  const promotedCount = promoted.size
+  const reproven = proven.length - promotedCount
+  const reason =
+    promotedCount > 0
+      ? `run ${record.runId}: pass on ${promotedCount} criterion(s) promotes proposed → active`
+      : `run ${record.runId}: pass on ${reproven} criterion(s), already active`
+  // A promotion is a verification: the history records when each criterion
+  // was last proven and by what run.
   const recorded = appendChange(changes, {
     kind: 'verify',
     actor: record.runId,
     timestamp: record.timestamp,
-    reason: `run ${record.runId}: pass on ${promoted.size} criterion(s) promotes proposed → active`,
-    criteria: [...promoted],
+    reason,
+    criteria: proven,
   })
   return { next, changes: recorded }
 }
