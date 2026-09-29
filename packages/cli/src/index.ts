@@ -22,6 +22,7 @@ import {
   nareRunners,
   loadPlan,
   loadResult,
+  parseLedgerEntries,
   renderUncheckableComment,
   NareAgentRunner,
   ProfileMissingError,
@@ -40,21 +41,25 @@ import {
   criteriaFromIssues,
   detectContradictions,
   executedFromResult,
+  holdForQuestions,
   IssueCriteriaError,
   linkedIssues,
   planRun,
   PlanStepError,
   PLAN_SCHEMA_VERSION,
+  questionIdFor,
   renderCheckRun,
   renderComment,
   readinessInventory,
   replayRun,
+  resolveContradictions,
   reapProjects,
   runDoctor,
   runJob,
   discoverProfiles,
   selectCriteria,
   selectProfiles,
+  serializeLedger,
   touchedPathsFromDiff,
   VERSION,
 } from '@qare/core'
@@ -66,14 +71,17 @@ import type {
   Job,
   JobProfileRef,
   LedgerEntry,
+  LedgerResolution,
   Plan,
   QaProfile,
   RedactionRule,
   McpCallRecord,
   McpSource,
   McpToolServer,
+  ResolutionSource,
   ReplayDifference,
   RunContext,
+  RunResult,
   RunVerdict,
 } from '@qare/core'
 
@@ -108,7 +116,7 @@ export async function main(
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -1087,15 +1095,17 @@ export async function runLedgerCommand(argv: string[], out: Writer, err: Writer)
     const dir = resolve(ledgerSpec ?? '.qa')
     if (sub === undefined)
       throw new Error(
-        'qare ledger requires a subcommand; usage: qare ledger <list|show|diff|status|contradict> [--ledger <dir>]',
+        'qare ledger requires a subcommand; usage: qare ledger <list|show|diff|status|contradict|resolve|decide> [--ledger <dir>]',
       )
     if (sub === 'list') return await ledgerList(dir, out)
     if (sub === 'show') return await ledgerShow(dir, subArgs[0], out)
     if (sub === 'diff') return await ledgerDiff(dir, subArgs, out)
     if (sub === 'status') return await ledgerStatus(dir, out, err)
     if (sub === 'contradict') return await ledgerContradict(subArgs, dir, out)
+    if (sub === 'resolve') return await ledgerResolve(subArgs, dir, out)
+    if (sub === 'decide') return await ledgerDecide(subArgs, dir, out)
     throw new Error(
-      `unknown ledger subcommand ${JSON.stringify(sub)}; usage: qare ledger <list|show|diff|status|contradict> [--ledger <dir>]`,
+      `unknown ledger subcommand ${JSON.stringify(sub)}; usage: qare ledger <list|show|diff|status|contradict|resolve|decide> [--ledger <dir>]`,
     )
   } catch (error) {
     err.write(`${formatError(error)}\n`)
@@ -1240,6 +1250,184 @@ function parseIntroducedCriteria(input: unknown): IntroducedCriterion[] {
     criteria.push({ id: record.id, text: record.text })
   }
   return criteria
+}
+
+/**
+ * Where a question may go, from `--place`: a pull request's conflicts ride
+ * that PR's evidence comment; a conflict in the criteria themselves goes to
+ * the linked issue, mentioning its author; a sweep's conflict goes to the
+ * finding's issue, mentioning the person the finding blames (#41).
+ */
+function resolutionSourceOf(argv: string[]): ResolutionSource {
+  const place = flag(argv, '--place') ?? 'pull-request'
+  if (place === 'pull-request') return { kind: 'pull-request' }
+  if (place === 'issue') {
+    const issue = flag(argv, '--issue')
+    const author = flag(argv, '--author')
+    if (issue === undefined || !/^\d+$/.test(issue))
+      throw new Error('qare ledger resolve: --place issue requires --issue <issue number>')
+    if (author === undefined || author.trim() === '')
+      throw new Error('qare ledger resolve: --place issue requires --author <login>, the issue author the question mentions')
+    return { kind: 'criteria-issue', issue: Number(issue), author }
+  }
+  if (place === 'sweep') {
+    const finding = flag(argv, '--finding')
+    if (finding === undefined || !/^\d+$/.test(finding))
+      throw new Error('qare ledger resolve: --place sweep requires --finding <issue number of the finding>')
+    const blame = flag(argv, '--blame')
+    return { kind: 'sweep', finding: Number(finding), ...(blame === undefined ? {} : { blame }) }
+  }
+  throw new Error(`qare ledger resolve: unknown --place ${JSON.stringify(place)} (expected "pull-request", "issue" or "sweep")`)
+}
+
+/**
+ * `qare ledger resolve`: run the resolution order over the conflicts the
+ * change introduces (#41) — executed evidence settles first, the ledger's own
+ * recorded answers settle second, and what is still open becomes one question
+ * per conflict, in one place, with QARE's recommendation attached. The
+ * affected criteria are held `unverified` in the held result this writes, so
+ * an open question blocks its own criteria and nothing else. The ledger is
+ * never written here.
+ */
+async function ledgerResolve(argv: string[], ledgerDir: string, out: Writer): Promise<number> {
+  const resultPath = flag(argv, '--result')
+  const criteriaPath = flag(argv, '--criteria')
+  if (resultPath === undefined) throw new Error('qare ledger resolve requires --result <judged-result.json>')
+  if (criteriaPath === undefined) throw new Error('qare ledger resolve requires --criteria <criteria.json>')
+  const outPath = flag(argv, '--out')
+  const holdOut = flag(argv, '--hold-out')
+
+  const resultText = await readFile(resolve(resultPath), 'utf8')
+  const introduced = parseIntroducedCriteria(JSON.parse(await readFile(resolve(criteriaPath), 'utf8')))
+  const ledger = await new FileLedgerStore(ledgerDir).load()
+  const parsed: unknown = JSON.parse(resultText)
+  const diffPath = flag(argv, '--diff')
+  const nare = flag(argv, '--nare')
+  const contradictionReport = await detectContradictions({
+    runId: flag(argv, '--run-id') ?? jobIdOf(parsed) ?? 'unknown',
+    executed: executedFromResult(parsed),
+    introduced,
+    ledger,
+    ...(nare === undefined ? {} : { classifier: new NareAgentRunner({ binary: nare }) }),
+    ...(diffPath === undefined ? {} : { diff: await readFile(resolve(diffPath), 'utf8') }),
+  })
+  const resolution = resolveContradictions(contradictionReport.contradictions, ledger, resolutionSourceOf(argv))
+  const judged: RunResult = loadResult(resultText)
+  const held = holdForQuestions(judged, resolution.questions)
+  const heldCriteria = [
+    ...new Set(resolution.questions.flatMap((question) => (question.replacement === undefined ? [question.criterion] : [question.criterion, question.replacement]))),
+  ].filter((id) => {
+    const criterion = held.criteria.find((entry) => entry.id === id)
+    return criterion !== undefined && criterion.outcome === 'unverified' && criterion.reason?.includes('held for an open question')
+  })
+
+  for (const settled of resolution.settled) {
+    const pair = settled.replacement === undefined ? '' : ` → ${settled.replacement}`
+    out.write(`settled  ${settled.classification}  ${settled.criterion}${pair}  (${settled.basis})\n`)
+  }
+  for (const question of resolution.questions) {
+    const pair = question.replacement === undefined ? '' : ` → ${question.replacement}`
+    out.write(`question  ${question.id}  ${question.criterion}${pair}  recommends ${question.recommendation}\n`)
+  }
+  if (resolution.questions.length === 0) out.write('no questions: every conflict is settled\n')
+  if (heldCriteria.length > 0) out.write(`held: ${heldCriteria.join(', ')}\n`)
+  out.write(`verdict with open questions held: ${held.verdict}\n`)
+  if (outPath !== undefined) {
+    const target = resolve(outPath)
+    await mkdir(dirname(target), { recursive: true })
+    await writeFile(
+      target,
+      `${JSON.stringify({ schemaVersion: '1', settled: resolution.settled, questions: resolution.questions, held: { criteria: heldCriteria, verdict: held.verdict } }, null, 2)}\n`,
+      'utf8',
+    )
+    out.write(`report: ${target}\n`)
+  }
+  if (holdOut !== undefined) {
+    const target = resolve(holdOut)
+    await mkdir(dirname(target), { recursive: true })
+    await writeFile(target, `${JSON.stringify(held, null, 2)}\n`, 'utf8')
+    out.write(`held result: ${target}\n`)
+  }
+  return 0
+}
+
+/**
+ * `qare ledger decide`: record the answer to a conflict question with who
+ * decided and why (#41). The answer lands as a proposal, never as a silent
+ * edit: an answer of `supersede` folds the replacement in over the old rule,
+ * and an answer of `regression` records why the failure stands. The ledger
+ * file is never written here; what comes out is a ledger a review applies.
+ */
+async function ledgerDecide(argv: string[], ledgerDir: string, out: Writer): Promise<number> {
+  const criterion = flag(argv, '--criterion')
+  const replacement = flag(argv, '--replacement')
+  const classification = flag(argv, '--classification')
+  const by = flag(argv, '--by')
+  const why = flag(argv, '--why')
+  const questionFlag = flag(argv, '--question')
+  const at = flag(argv, '--at') ?? new Date().toISOString().slice(0, 10)
+  const outPath = flag(argv, '--out')
+  if (criterion === undefined || criterion.trim() === '')
+    throw new Error('qare ledger decide requires --criterion <criterion id>, the rule the question is about')
+  const answer = classification === 'supersede' || classification === 'regression' ? classification : undefined
+  if (answer === undefined)
+    throw new Error('qare ledger decide requires --classification <supersede|regression>')
+  if (answer === 'supersede' && (replacement === undefined || replacement.trim() === ''))
+    throw new Error('qare ledger decide: an answer of supersede requires --replacement <criterion id>')
+  if (by === undefined || by.trim() === '') throw new Error('qare ledger decide requires --by <login>, who decided')
+  if (why === undefined || why.trim() === '') throw new Error('qare ledger decide requires --why <reason>')
+  if (/[\r\n]/.test(why)) throw new Error('qare ledger decide: --why must not contain newlines')
+  if (/[\r\n]/.test(by)) throw new Error('qare ledger decide: --by must not contain newlines')
+
+  const question = questionIdFor(criterion, replacement)
+  if (questionFlag !== undefined && questionFlag !== question)
+    throw new Error(`qare ledger decide: --question ${JSON.stringify(questionFlag)} does not name this conflict; its id is ${question}`)
+
+  const ledger = await new FileLedgerStore(ledgerDir).load()
+  const oldEntry = ledger.find((entry) => entry.criterion === criterion)
+  if (oldEntry === undefined) throw new Error(`ledger: decide: no entry for criterion ${JSON.stringify(criterion)}`)
+  if (oldEntry.status !== 'active')
+    throw new Error(`ledger: decide: criterion ${JSON.stringify(criterion)} is ${oldEntry.status}, not active; nothing to decide`)
+  const resolved: LedgerResolution = { question, classification: answer, by, why, at }
+  let folded: LedgerEntry[]
+  if (answer === 'supersede') {
+    if (replacement !== undefined) {
+      const existing = ledger.find((entry) => entry.criterion === replacement)
+      if (existing !== undefined && existing.status !== 'proposed' && existing.status !== 'active')
+        throw new Error(`ledger: decide: replacement ${JSON.stringify(replacement)} is ${existing.status}; a replacement must be proposed or active`)
+    }
+    folded = ledger.map((entry) => {
+      if (entry.criterion === replacement) {
+        // A replacement already admitted stays at its own status; one that is
+        // not in the ledger is proposed by this fold.
+        const status = entry.status
+        return { ...entry, status, supersedes: [...new Set([...(entry.supersedes ?? []), criterion])], resolution: resolved }
+      }
+      if (entry.criterion === criterion) return { ...entry, status: 'superseded' as const }
+      return entry
+    })
+    if (replacement !== undefined && !ledger.some((entry) => entry.criterion === replacement)) {
+      const text = flag(argv, '--text')
+      if (text === undefined || text.trim() === '')
+        throw new Error('qare ledger decide: the replacement is not in the ledger yet; --text <wording> states the criterion it proposes')
+      folded.push({ criterion: replacement, status: 'proposed', source: [`question:${question}`], proof: 'review', note: text, supersedes: [criterion], resolution: resolved })
+    }
+  } else {
+    folded = ledger.map((entry) => (entry.criterion === criterion ? { ...entry, resolution: resolved } : entry))
+  }
+  // The fold is only as good as the ledger it proposes: the same strict
+  // loader a run reads with judges the proposal before it is written out.
+  const entries = parseLedgerEntries(JSON.parse(serializeLedger(folded)))
+  const text = serializeLedger(entries)
+  if (outPath === undefined) out.write(text)
+  else {
+    const target = resolve(outPath)
+    await mkdir(dirname(target), { recursive: true })
+    await writeFile(target, text, 'utf8')
+    out.write(`proposal: ${target}\n`)
+    out.write(`fingerprint: ${integrityOf(entries)}\n`)
+  }
+  return 0
 }
 
 function jobIdOf(result: unknown): string | undefined {

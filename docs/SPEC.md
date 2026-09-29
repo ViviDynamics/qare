@@ -413,9 +413,21 @@ Lifecycle:
   applies; nothing supersedes anything on its own.
 - **Ask, rarely.** When evidence cannot settle whether a conflict is intended,
   QARE asks one question in one place, with its own recommendation attached.
-  Only the affected criteria are held as `unverified`; the rest of the run
-  reports normally, and an unanswered question never blocks a whole pull
-  request.
+  The resolution order is fixed: executed evidence settles first, the ledger's
+  own recorded answers settle second, and a question is asked last. The
+  question goes where the person who can answer it will see it: a conflict a
+  pull request introduces is asked in that PR's evidence comment, which already
+  notifies its author; a conflict in the criteria themselves is asked on the
+  linked issue, mentioning its author, with the PR comment linking there; a
+  conflict a sweep finds is asked on the finding's issue, mentioning the person
+  the finding blames. Each question carries an id derived from the pair of
+  criteria it is about, never from the run, and the id is written into the
+  comment as a marker, so a question already asked is never asked again
+  anywhere else. An answer is recorded in the ledger with who decided and why,
+  and the next conflict over the same pair settles from that record without a
+  word from the model. Only the affected criteria are held as `unverified`
+  while a question is open; the rest of the run reports normally, and an
+  unanswered question never blocks a whole pull request.
 - **Retire.** Criteria for removed features are retired with a reason and stay
   in history.
 

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
-import { FileLedgerStore, LEDGER_FILE, criterionIdFor, type LedgerEntry } from '@qare/core'
+import { FileLedgerStore, LEDGER_FILE, criterionIdFor, questionIdFor, type LedgerEntry } from '@qare/core'
 import { main, runLedgerCommand } from '../src/index.js'
 import type { Writer } from '../src/index.js'
 
@@ -210,7 +210,7 @@ test('main rejects an unknown ledger subcommand with exit 1', async () => {
   expect(code).toBe(1)
   expect(linesOf(out.chunks)).toEqual([])
   expect(linesOf(errs.chunks)).toEqual([
-    'Error: unknown ledger subcommand "explode"; usage: qare ledger <list|show|diff|status|contradict> [--ledger <dir>]',
+    'Error: unknown ledger subcommand "explode"; usage: qare ledger <list|show|diff|status|contradict|resolve|decide> [--ledger <dir>]',
   ])
 })
 
@@ -316,4 +316,199 @@ test('ledger contradict names its required arguments on stderr', async () => {
   expect(code).toBe(1)
   expect(linesOf(out.chunks)).toEqual([])
   expect(linesOf(errs.chunks)).toEqual(['Error: qare ledger contradict requires --result <judged-result.json>'])
+})
+
+const HELD_WORDS = 'the payouts page shows the 1099 notice for a host paid past the annual threshold'
+
+async function resolveInputs(work: string, verdict: 'failed' | 'passed'): Promise<{ resultPath: string; criteriaPath: string }> {
+  const resultPath = join(work, 'result.json')
+  const criteriaPath = join(work, 'criteria.json')
+  await writeFile(
+    resultPath,
+    `${JSON.stringify({
+      schemaVersion: '1',
+      verdict,
+      criteria: [{ id: criterionIdFor(HELD_WORDS), outcome: 'failed', evidence: ['evidence/a.txt'] }],
+    })}\n`,
+    'utf8',
+  )
+  await writeFile(criteriaPath, `${JSON.stringify([{ id: NEW_ID, text: NEW_WORDS }])}\n`, 'utf8')
+  return { resultPath, criteriaPath }
+}
+
+test('ledger resolve asks no question when the evidence settles the conflict, and holds nothing', async () => {
+  const dir = await ledgerDir([
+    { criterion: criterionIdFor(HELD_WORDS), status: 'active', source: [PR_12], proof: 'command', note: HELD_WORDS },
+  ])
+  const work = await mkdtemp(join(tmpdir(), 'qare-resolve-'))
+  const { resultPath, criteriaPath } = await resolveInputs(work, 'failed')
+  const out = capture()
+  const errs = capture()
+  const code = await runLedgerCommand(
+    ['resolve', '--result', resultPath, '--criteria', criteriaPath, '--ledger', dir],
+    out.writer,
+    errs.writer,
+  )
+  expect(code).toBe(0)
+  expect(linesOf(out.chunks)).toEqual([
+    `settled  regression  ${criterionIdFor(HELD_WORDS)}  (executed-evidence)`,
+    'no questions: every conflict is settled',
+    `verdict with open questions held: failed`,
+  ])
+  expect(errs.chunks).toEqual([])
+})
+
+test('ledger resolve asks one question over an unproven replacement and holds only the affected criteria', async () => {
+  const dir = await ledgerDir([
+    { criterion: criterionIdFor(HELD_WORDS), status: 'active', source: [PR_12], proof: 'command', note: HELD_WORDS },
+  ])
+  const work = await mkdtemp(join(tmpdir(), 'qare-resolve-'))
+  const { resultPath, criteriaPath } = await resolveInputs(work, 'failed')
+  const nare = await fakeNare({
+    pairs: [{ criterion: criterionIdFor(HELD_WORDS), replacement: NEW_ID, intendsReplacement: true, reason: 'the diff rewords the notice' }],
+  })
+  const out = capture()
+  const errs = capture()
+  const reportPath = join(work, 'resolution.json')
+  const heldPath = join(work, 'held-result.json')
+  const code = await runLedgerCommand(
+    [
+      'resolve',
+      '--result', resultPath,
+      '--criteria', criteriaPath,
+      '--ledger', dir,
+      '--nare', nare,
+      '--out', reportPath,
+      '--hold-out', heldPath,
+    ],
+    out.writer,
+    errs.writer,
+  )
+  expect(code).toBe(0)
+  const questionId = questionIdFor(criterionIdFor(HELD_WORDS), NEW_ID)
+  expect(linesOf(out.chunks)).toEqual([
+    `question  ${questionId}  ${criterionIdFor(HELD_WORDS)} → ${NEW_ID}  recommends supersede`,
+    'held: ' + criterionIdFor(HELD_WORDS),
+    'verdict with open questions held: blocked',
+    'report: ' + reportPath,
+    'held result: ' + heldPath,
+  ])
+  expect(errs.chunks).toEqual([])
+
+  const held = JSON.parse(await readFile(heldPath, 'utf8'))
+  expect(held.verdict).toBe('blocked')
+  expect(held.criteria[0].outcome).toBe('unverified')
+  expect(held.criteria[0].reason).toContain('held for an open question')
+})
+
+test('ledger resolve refuses a criteria-issue question without the issue and its author', async () => {
+  const dir = await ledgerDir([FLOW_LOGIN])
+  const work = await mkdtemp(join(tmpdir(), 'qare-resolve-'))
+  const { resultPath, criteriaPath } = await resolveInputs(work, 'passed')
+  const out = capture()
+  const errs = capture()
+  const code = await runLedgerCommand(
+    ['resolve', '--result', resultPath, '--criteria', criteriaPath, '--ledger', dir, '--place', 'issue'],
+    out.writer,
+    errs.writer,
+  )
+  expect(code).toBe(1)
+  expect(linesOf(errs.chunks)).toEqual([
+    'Error: qare ledger resolve: --place issue requires --issue <issue number>',
+  ])
+})
+
+test('ledger decide folds a supersede answer into a proposal and never writes the ledger file', async () => {
+  const dir = await ledgerDir([
+    { criterion: criterionIdFor(HELD_WORDS), status: 'active', source: [PR_12], proof: 'command', note: HELD_WORDS },
+  ])
+  const work = await mkdtemp(join(tmpdir(), 'qare-decide-'))
+  const proposalPath = join(work, 'proposed-ledger.json')
+  const out = capture()
+  const errs = capture()
+  const code = await runLedgerCommand(
+    [
+      'decide',
+      '--criterion', criterionIdFor(HELD_WORDS),
+      '--replacement', NEW_ID,
+      '--text', NEW_WORDS,
+      '--classification', 'supersede',
+      '--by', 'jason',
+      '--why', 'the email-only payout is the intended behaviour',
+      '--at', '2026-09-29',
+      '--ledger', dir,
+      '--out', proposalPath,
+    ],
+    out.writer,
+    errs.writer,
+  )
+  expect(code).toBe(0)
+  expect(errs.chunks).toEqual([])
+  const proposal = JSON.parse(await readFile(proposalPath, 'utf8'))
+  const byCriterion = new Map(proposal.entries.map((entry: LedgerEntry) => [entry.criterion, entry]))
+  expect(byCriterion.get(criterionIdFor(HELD_WORDS)).status).toBe('superseded')
+  const replacement = byCriterion.get(NEW_ID)
+  expect(replacement.status).toBe('proposed')
+  expect(replacement.supersedes).toEqual([criterionIdFor(HELD_WORDS)])
+  expect(replacement.resolution).toMatchObject({
+    classification: 'supersede',
+    by: 'jason',
+    why: 'the email-only payout is the intended behaviour',
+    at: '2026-09-29',
+  })
+  // The ledger file itself is untouched: the proposal waits for review.
+  const untouched = await new FileLedgerStore(dir).load()
+  expect(untouched.find((entry) => entry.criterion === criterionIdFor(HELD_WORDS))?.status).toBe('active')
+})
+
+test('ledger decide records a regression answer on the rule that failed, changing no status', async () => {
+  const dir = await ledgerDir([
+    { criterion: criterionIdFor(HELD_WORDS), status: 'active', source: [PR_12], proof: 'command', note: HELD_WORDS },
+  ])
+  const work = await mkdtemp(join(tmpdir(), 'qare-decide-'))
+  const proposalPath = join(work, 'proposed-ledger.json')
+  const out = capture()
+  const errs = capture()
+  const code = await runLedgerCommand(
+    [
+      'decide',
+      '--criterion', criterionIdFor(HELD_WORDS),
+      '--classification', 'regression',
+      '--by', 'jason',
+      '--why', 'a bug in the diff, not a plan',
+      '--at', '2026-09-29',
+      '--ledger', dir,
+      '--out', proposalPath,
+    ],
+    out.writer,
+    errs.writer,
+  )
+  expect(code).toBe(0)
+  const proposal = JSON.parse(await readFile(proposalPath, 'utf8'))
+  expect(proposal.entries).toHaveLength(1)
+  expect(proposal.entries[0].status).toBe('active')
+  expect(proposal.entries[0].resolution).toMatchObject({ classification: 'regression', by: 'jason' })
+})
+
+test('ledger decide rejects an answer whose question id does not name the conflict', async () => {
+  const dir = await ledgerDir([FLOW_LOGIN])
+  const out = capture()
+  const errs = capture()
+  const code = await runLedgerCommand(
+    [
+      'decide',
+      '--criterion', 'flow-login',
+      '--classification', 'regression',
+      '--by', 'jason',
+      '--why', 'no',
+      '--question', 'q-0000000000000000',
+      '--ledger', dir,
+    ],
+    out.writer,
+    errs.writer,
+  )
+  expect(code).toBe(1)
+  expect(linesOf(errs.chunks)).toEqual(
+    expect.arrayContaining([expect.stringContaining('does not name this conflict')]),
+  )
 })

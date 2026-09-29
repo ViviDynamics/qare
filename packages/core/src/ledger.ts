@@ -9,6 +9,23 @@ export const LEDGER_FILE = 'ledger.json'
 export const LEDGER_STATUSES = ['proposed', 'active', 'superseded', 'retired'] as const
 export type LedgerStatus = (typeof LEDGER_STATUSES)[number]
 
+/** A conflict's classification, as #40 named it and as an answer may record it. */
+export type ResolutionClassification = 'supersede' | 'regression'
+
+/**
+ * An answer to a conflict question, recorded in the ledger with who decided
+ * and why (#41). `question` is the content-addressed question id the answer
+ * settles, so the resolution order can find it again: the next conflict over
+ * the same pair settles from this history and asks nothing.
+ */
+export interface LedgerResolution {
+  question: string
+  classification: ResolutionClassification
+  by: string
+  why: string
+  at: string
+}
+
 export interface LedgerEntry {
   criterion: string
   status: LedgerStatus
@@ -25,6 +42,8 @@ export interface LedgerEntry {
    * check exercises with an optional `:fragment` after it.
    */
   checks?: string[]
+  /** The answer to a conflict question this entry carries (#41). */
+  resolution?: LedgerResolution
 }
 
 function fail(field: string, message: string): never {
@@ -64,7 +83,7 @@ function sourceLinks(value: unknown, field: string): string[] {
 
 function parseEntry(entry: unknown, field: string): LedgerEntry {
   if (!isRecord(entry)) fail(field, 'ledger entry must be a JSON object')
-  const allowed = new Set(['criterion', 'status', 'source', 'proof', 'note', 'supersedes', 'text', 'checks'])
+  const allowed = new Set(['criterion', 'status', 'source', 'proof', 'note', 'supersedes', 'text', 'checks', 'resolution'])
   for (const key of Object.keys(entry)) {
     if (!allowed.has(key)) fail(`${field}.${key}`, 'unknown field in ledger entry')
   }
@@ -116,7 +135,33 @@ function parseEntry(entry: unknown, field: string): LedgerEntry {
       return reference
     })
   }
+  if (entry.resolution !== undefined) {
+    parsed.resolution = parseResolution(entry.resolution, `${field}.resolution`)
+  }
   return parsed
+}
+
+const QUESTION_ID_PATTERN = /^q-[0-9a-f]{16}$/
+
+function parseResolution(value: unknown, field: string): LedgerResolution {
+  if (!isRecord(value)) fail(field, 'resolution must be a JSON object')
+  const allowed = new Set(['question', 'classification', 'by', 'why', 'at'])
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) fail(`${field}.${key}`, 'unknown field in ledger resolution')
+  }
+  const question = nonEmptyString(value.question, `${field}.question`, 'question id')
+  if (!QUESTION_ID_PATTERN.test(question))
+    fail(`${field}.question`, `question id ${JSON.stringify(question)} must match q- followed by 16 hex characters`)
+  const classification = value.classification
+  if (classification !== 'supersede' && classification !== 'regression')
+    fail(`${field}.classification`, `unknown classification ${JSON.stringify(classification)} (expected "supersede" or "regression")`)
+  const by = nonEmptyString(value.by, `${field}.by`, 'decider')
+  if (/[\r\n]/.test(by)) fail(`${field}.by`, 'decider must not contain newlines')
+  const why = nonEmptyString(value.why, `${field}.why`, 'why')
+  if (/[\r\n]/.test(why)) fail(`${field}.why`, 'why must not contain newlines')
+  const at = nonEmptyString(value.at, `${field}.at`, 'decided at')
+  if (/[\r\n]/.test(at)) fail(`${field}.at`, 'decided at must not contain newlines')
+  return { question, classification, by, why, at }
 }
 
 function canonicalEntries(entries: LedgerEntry[]): Record<string, unknown>[] {
@@ -124,7 +169,7 @@ function canonicalEntries(entries: LedgerEntry[]): Record<string, unknown>[] {
     .sort((a, b) => (a.criterion < b.criterion ? -1 : a.criterion > b.criterion ? 1 : 0))
     .map((entry) => {
       const sorted: Record<string, unknown> = {}
-      for (const key of ['criterion', 'status', 'source', 'proof', 'note', 'supersedes', 'text', 'checks'].sort()) {
+      for (const key of ['criterion', 'status', 'source', 'proof', 'note', 'supersedes', 'text', 'checks', 'resolution'].sort()) {
         if (entry[key as keyof LedgerEntry] !== undefined) sorted[key] = entry[key as keyof LedgerEntry]
       }
       return sorted

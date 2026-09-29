@@ -9,6 +9,7 @@ import { fileRefusalStubs, GitHubStubIssuePoster } from './stub-issues.js'
 import { requeueUnblocked, stubKeysFromDiffText } from './requeue.js'
 import { GitHubEvidencePoster, postEvidence } from './post-evidence.js'
 import { deliverIngest, IngestDeliveryError } from './ingest-deliver.js'
+import { loadQuestions, postQuestions } from './post-questions.js'
 
 export interface Writer {
   write(chunk: string): void
@@ -27,13 +28,14 @@ export async function main(argv: string[], out: Writer = process.stdout, err: Wr
     if (command === 'requeue') return await requeueCommand(rest, out)
     if (command === 'post-evidence') return await postEvidenceCommand(rest, out)
     if (command === 'ingest-deliver') return await ingestDeliverCommand(rest, out)
+    if (command === 'post-questions') return await postQuestionsCommand(rest, out)
   } catch (error) {
     err.write(error instanceof Error ? `${error.name}: ${error.message}\n` : `${String(error)}\n`)
     return 1
   }
   entry(out)
   if (command !== undefined) {
-    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence" and "ingest-deliver"\n`)
+    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence", "ingest-deliver" and "post-questions"\n`)
     return 1
   }
   return 0
@@ -133,12 +135,47 @@ async function postEvidenceCommand(argv: string[], out: Writer): Promise<number>
   const evidenceDir = flags.string('evidence') || undefined
   const push =
     evidenceDir === undefined ? undefined : new GitHubQaAssetsPusher(client, headSha, { branch: flags.string('branch') })
+  // The conflicts the pull request itself introduces are asked in this very
+  // comment, where its author is already notified (#41). The questions file
+  // is optional: a run with nothing open renders exactly as it did before.
+  const questionsPath = flags.string('questions') || undefined
+  const questions = questionsPath === undefined ? [] : loadQuestions(await readFile(questionsPath, 'utf8'))
+  const riding = questions.filter((question) => question.source.kind === 'pull-request')
   await postEvidence(new GitHubEvidencePoster(client, pr, headSha, author), result, {
     artifactUrl,
     push,
     evidenceDir,
+    questions: riding,
   })
   out.write(`posted verdict ${result.verdict} on pull request #${pr} at ${headSha.slice(0, 12)}\n`)
+  if (riding.length > 0) out.write(`asked ${riding.length} question(s) in the evidence comment\n`)
+  return 0
+}
+
+/**
+ * `qare-action post-questions`: ask the questions a resolution report holds
+ * in their places (#41) — on the linked issue mentioning its author, on a
+ * sweep finding's issue mentioning the person the finding blames — each once,
+ * by marker. Questions a pull request introduces ride the evidence comment
+ * and are only counted here.
+ */
+async function postQuestionsCommand(argv: string[], out: Writer): Promise<number> {
+  const flags = parseFlags(argv)
+  const questionsPath = flags.string('questions')
+  if (questionsPath === undefined || questionsPath === '')
+    throw new GitHubClientError('qare-action post-questions needs --questions <path to resolution.json>')
+  const questions = loadQuestions(await readFile(questionsPath, 'utf8'))
+  const client = new GitHubClient({
+    repository: flags.string('repository'),
+    apiRoot: flags.string('api-root'),
+    tokenEnv: flags.string('token-env'),
+  })
+  const author = flags.string('author') || undefined
+  const posting = await postQuestions(client, questions, author)
+  for (const { issue } of posting.posted) out.write(`asked once on #${issue}\n`)
+  for (const { issue } of posting.skipped) out.write(`#${issue} already carries the question; left alone\n`)
+  if (posting.riding.length > 0)
+    out.write(`${posting.riding.length} question(s) ride the pull request's evidence comment\n`)
   return 0
 }
 

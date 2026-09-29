@@ -232,6 +232,8 @@ export type {
   LedgerEntry,
   LedgerStatus,
   LedgerStore,
+  LedgerResolution,
+  ResolutionClassification,
   GitRun,
   GitRunResult,
 } from './ledger.js'
@@ -264,6 +266,21 @@ export type {
   ExecutedCriterion,
   IntroducedCriterion,
 } from './ledger-contradict.js'
+export {
+  affectedBy,
+  holdForQuestions,
+  questionIdFor,
+  questionMarker,
+  QUESTION_MARKER_PREFIX,
+  renderQuestion,
+  resolveContradictions,
+} from './ledger-resolve.js'
+export type {
+  ResolutionQuestion,
+  ResolutionReport,
+  ResolutionSource,
+  SettledConflict,
+} from './ledger-resolve.js'
 export {
   hasIngestComment,
   ingestCommentMarker,

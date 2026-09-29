@@ -1,5 +1,5 @@
-import { redactResult, renderCheckRun, renderComment } from '@qare/core'
-import type { CheckRunPayload, EvidencePoster, RunResult } from '@qare/core'
+import { redactResult, renderCheckRun, renderComment, renderQuestion } from '@qare/core'
+import type { CheckRunPayload, EvidencePoster, ResolutionQuestion, RunResult } from '@qare/core'
 import { GitHubApiError, GitHubClientError, type GitHubClient } from './github.js'
 import type { ScreenshotPusher } from './qa-assets.js'
 
@@ -76,12 +76,29 @@ export class GitHubEvidencePoster implements EvidencePoster {
 export async function postEvidence(
   poster: EvidencePoster,
   result: RunResult,
-  opts: { artifactUrl?: string | undefined; push?: ScreenshotPusher; evidenceDir?: string } = {},
+  opts: {
+    artifactUrl?: string | undefined
+    push?: ScreenshotPusher
+    evidenceDir?: string
+    questions?: ResolutionQuestion[]
+  } = {},
 ): Promise<void> {
   const screenshots =
     opts.push === undefined || opts.evidenceDir === undefined ? undefined : await opts.push.push(result, opts.evidenceDir)
-  await poster.postComment(
-    renderComment(redactResult(result), { kind: 'artifact', url: opts.artifactUrl, screenshots }),
-  )
+  const comment =
+    renderComment(redactResult(result), { kind: 'artifact', url: opts.artifactUrl, screenshots }) +
+    renderQuestionSection(opts.questions ?? [])
+  await poster.postComment(comment)
   await poster.createCheckRun(renderCheckRun(result))
+}
+
+/**
+ * The questions a pull request's evidence comment carries: each question in
+ * its own self-contained body, marker and all, so "asked once" is found the
+ * same way a question on an issue is. Absent when there are none, so a
+ * settled conflict leaves the comment as it was.
+ */
+function renderQuestionSection(questions: ResolutionQuestion[]): string {
+  if (questions.length === 0) return ''
+  return ['', '---', '', questions.map(renderQuestion).join('\n\n---\n\n')].join('\n')
 }
