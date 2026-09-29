@@ -513,6 +513,40 @@ ledger, a pull request, or GitHub at all:
 Selection, caching, sharding and budgets are what make the large case possible;
 they never change what a verdict means.
 
+### Selection
+
+Selection reads the ledger's own mapping: an entry names the checks it is
+verified by, and each check reference names what the check touches. A reference
+is either `suite:<name>`, the screens a suite's checks drive, or a
+repository-relative path with an optional `:fragment` after it, the code the
+check exercises; the fragment, a line or a test name, is stripped for
+matching.
+
+`qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>]`
+turns a diff into a selection, runs no check and no model, and writes the same
+report as JSON to `--out`:
+
+- Criteria whose checks cover a touched path are selected, matched at a path
+  segment boundary in either direction, so a change to a directory selects a
+  check named under it, and a change to a file selects a check named for the
+  directory around it.
+- A criterion whose checks name the standing smoke suite (`suite:smoke` by
+  default, `--smoke` to rename it) runs on every selection, whatever the diff
+  touches.
+- A criterion the ledger maps to nothing a diff can be matched against runs
+  too: a check that names only suites, or an entry with no checks at all, is
+  one nobody can prove unaffected. When the mapping is unavailable, the
+  selection falls back to the smoke set plus everything unmapped, so it errs
+  toward checking more, never less.
+- Selection respects a time budget (`--budget`, a whole number of
+  milliseconds): the smoke set stands first and is never cut by it, the
+  criteria the diff points at fill what remains, and whatever does not fit is
+  reported as not selected because of the budget.
+
+What was not selected is reported with the reason, and only that: a criterion
+that was not selected appears as not run, never as passed, and one that is
+superseded or retired is reported as such rather than run.
+
 ## GitHub identity
 
 QARE posts comments, checks and pull requests, so it needs an identity. Both

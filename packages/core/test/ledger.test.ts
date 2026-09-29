@@ -210,3 +210,37 @@ describe('BranchLedgerStore', () => {
     expect(commands[4]).toEqual(['update-ref', 'refs/heads/qare-ledger', '2222'])
   })
 })
+
+describe('criterion text and checks', () => {
+  test('text and checks round-trip through the canonical form', () => {
+    const withText = entry({
+      criterion: 'BIL-014',
+      text: 'A host paid more than the annual threshold gets a 1099 in January.',
+      checks: ['billing/spec/payout_tax_spec.rb:1099_threshold', 'suite:smoke'],
+    })
+    const text = serializeLedger([withText])
+    expect(parseLedgerEntries(JSON.parse(text))).toEqual([withText])
+    // Integrity covers the new fields, so a ledger that carries them is
+    // tamper-evident the same way one that does not is.
+    expect(JSON.parse(text).integrity).toBe(integrityOf([withText]))
+  })
+
+  test('entries without text and checks still parse, and the fields stay absent', () => {
+    const parsed = parseLedgerEntries(JSON.parse(serializeLedger([entry({ criterion: 'BIL-015' })])))
+    expect(parsed[0]).not.toHaveProperty('text')
+    expect(parsed[0]).not.toHaveProperty('checks')
+  })
+
+  test('malformed text and checks fail closed', () => {
+    const withOverrides = (overrides: Record<string, unknown>) => {
+      const malformed = { ...entry({ criterion: 'BIL-014' }), ...overrides }
+      return parseLedgerEntries(doc([malformed as LedgerEntry]))
+    }
+    expect(() => withOverrides({ text: 3 })).toThrow(/criterion text must be a non-empty string/)
+    expect(() => withOverrides({ text: 'a\nb' })).toThrow(/criterion text must not contain newlines/)
+    expect(() => withOverrides({ checks: 'app/main.rb' })).toThrow(/checks must be an array of check references/)
+    expect(() => withOverrides({ checks: [''] })).toThrow(/check reference must be a non-empty string/)
+    expect(() => withOverrides({ checks: ['a\nb'] })).toThrow(/check reference must not contain newlines/)
+    expect(() => withOverrides({ check: ['app/main.rb'] })).toThrow(/unknown field in ledger entry/)
+  })
+})

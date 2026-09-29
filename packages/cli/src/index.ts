@@ -51,6 +51,7 @@ import {
   runDoctor,
   runJob,
   discoverProfiles,
+  selectCriteria,
   selectProfiles,
   touchedPathsFromDiff,
   VERSION,
@@ -97,13 +98,14 @@ export async function main(
   if (argv[0] === 'replay') return replayCommand(argv.slice(1), out, err)
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
   if (argv[0] === 'ingest') return ingestCommand(argv.slice(1), out, err)
+  if (argv[0] === 'select') return selectCommand(argv.slice(1), out, err)
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
   if (argv[0] === 'profiles') return profilesCommand(argv.slice(1), out, err)
   if (argv[0] === 'doctor') return doctorCommand(argv.slice(1), out, err)
   if (argv[0] === 'redact') return redactCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict> [--ledger <dir>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir>) | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b] [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -1245,6 +1247,84 @@ function jobIdOf(result: unknown): string | undefined {
   return typeof id === 'string' && id.trim() !== '' ? id : undefined
 }
 
+
+/**
+ * `qare select`: the criteria a change could affect, from the ledger's own
+ * mapping (#45). The diff in, a selection out: what a check's code path
+ * covers, the standing smoke suite, and everything the ledger maps to
+ * nothing. Runs no check and no model, so the orchestrator can see what a
+ * run would cover before it asks for one.
+ */
+const SELECT_FLAGS: readonly string[] = ['--ledger', '--diff', '--paths', '--budget', '--smoke', '--out']
+
+/**
+ * Every select flag takes a value, so the values are consumed positionally:
+ * a missing value, a stray positional argument, and an unknown flag are all
+ * invocation errors rather than a quietly misread selection.
+ */
+function selectFlagsOf(argv: string[]): Record<string, string> {
+  const options: Record<string, string> = {}
+  let at = 0
+  while (at < argv.length) {
+    const arg = argv[at]
+    if (arg === undefined) break
+    if (!arg.startsWith('--')) throw new Error(`qare select takes flags, not ${JSON.stringify(arg)}`)
+    if (!SELECT_FLAGS.includes(arg)) throw new Error(`qare select does not take ${arg}`)
+    const value = argv[at + 1]
+    if (value === undefined || value.startsWith('--')) throw new Error(`qare select ${arg} needs a value`)
+    options[arg] = value
+    at += 2
+  }
+  return options
+}
+
+async function selectCommand(argv: string[], out: Writer, err: Writer): Promise<number> {
+  try {
+    const options = selectFlagsOf(argv)
+    const diffSpec = options['--diff']
+    const pathsSpec = options['--paths']
+    if (diffSpec === undefined && pathsSpec === undefined)
+      throw new Error('qare select requires --diff <path> or --paths a,b: selection picks the criteria a change could affect')
+    if (diffSpec !== undefined && pathsSpec !== undefined)
+      throw new Error('qare select takes --diff or --paths, not both: one change selects criteria one way')
+    const budgetSpec = options['--budget']
+    if (
+      budgetSpec !== undefined &&
+      (!/^\d+$/.test(budgetSpec) || !Number.isSafeInteger(Number(budgetSpec)) || Number(budgetSpec) <= 0)
+    )
+      throw new Error(`--budget takes a positive whole number of milliseconds, not ${JSON.stringify(budgetSpec)}`)
+    const touched =
+      diffSpec !== undefined
+        ? touchedPathsFromDiff(await readFile(resolve(diffSpec), 'utf8'))
+        : (pathsSpec ?? '').split(',').filter((entry) => entry !== '')
+    if (pathsSpec !== undefined && touched.length === 0)
+      throw new Error(`--paths takes a comma-separated list of repository paths, not ${JSON.stringify(pathsSpec)}`)
+    const report = selectCriteria(await new FileLedgerStore(resolve(options['--ledger'] ?? '.qa')).load(), {
+      touched,
+      ...(budgetSpec === undefined ? {} : { budgetMs: Number(budgetSpec) }),
+      ...(options['--smoke'] === undefined ? {} : { smokeSuite: options['--smoke'] }),
+    })
+    out.write(
+      `selected ${report.selected.length} of ${report.selected.length + report.notSelected.length} criteria; estimated ${report.estimatedMs} ms of a ${report.budgetMs} ms budget; ${report.touched.length} touched paths\n`,
+    )
+    for (const item of report.selected)
+      out.write(`+ ${item.criterion}\t${item.reason}\t${item.text ?? ''}\n`)
+    for (const item of report.notSelected)
+      out.write(`- ${item.criterion}\t${item.reason}${item.detail === undefined ? '' : ` ${item.detail}`}\t${item.text ?? ''}\n`)
+    if (report.selected.length === 0) out.write('no criteria selected, so a run of this selection checks nothing\n')
+    const outSpec = options['--out']
+    if (outSpec !== undefined) {
+      const target = resolve(outSpec)
+      await mkdir(dirname(target), { recursive: true })
+      await writeFile(target, `${JSON.stringify(report, null, 2)}\n`, 'utf8')
+      out.write(`report ${target}\n`)
+    }
+    return 0
+  } catch (error) {
+    err.write(`${formatError(error)}\n`)
+    return 4
+  }
+}
 
 async function runCommand(
   argv: string[],
