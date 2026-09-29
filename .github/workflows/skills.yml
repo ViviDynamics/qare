@@ -1,0 +1,31 @@
+name: Skills
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  wiring:
+    name: skills wiring
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the repo is wired for its skills
+        run: |
+          cp repo.env.example repo.env
+          .agents/skills/ci-safety/scripts/check-wiring
+      - name: Check every skill carries identical scripts
+        run: |
+          for dir in .agents/skills/*/scripts; do
+            diff -r .agents/skills/ci-safety/scripts "$dir"
+          done
+      - name: Check the scripts parse
+        run: |
+          for f in .agents/skills/ci-safety/scripts/*; do
+            case "$f" in *.json) continue;; esac
+            bash -n "$f"
+          done

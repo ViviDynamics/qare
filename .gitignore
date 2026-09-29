@@ -15,9 +15,15 @@ playwright-report/
 .agents/state/
 repo.env
 
-# Exception: .claude/skills/ is the shared team workflow set — tracked on purpose.
-# (.claude/* not .claude/: git will not descend into an excluded directory to
+# Exception: .agents/skills/ is the shared team workflow set — tracked on purpose.
+# .claude/skills and .opencode/skill are symlinks to .agents/skills.
+# (.agents/* not .agents/: git will not descend into an excluded directory to
 # re-include its contents.)
+.agents/*
+!.agents/skills/
+!.agents/test-commands.md
 .claude/*
-!.claude/skills/
+!.claude/skills
+.opencode/*
+!.opencode/skill
 qare-evidence/
