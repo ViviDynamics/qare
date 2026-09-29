@@ -87,6 +87,21 @@ describe('ledger schema', () => {
     const all = LEDGER_STATUSES.map((status, index) => entry({ criterion: `criterion-${index}`, status }))
     expect(parseLedgerEntries(JSON.parse(serializeLedger(all)))).toEqual(all)
   })
+
+  test('an entry may name the criteria it superseded, and the link round-trips', () => {
+    const replacements = [entry({ criterion: 'spec-up-201', supersedes: ['spec-up-200'] })]
+    expect(parseLedgerEntries(JSON.parse(serializeLedger(replacements)))).toEqual(replacements)
+  })
+
+  test('supersedes must be criterion ids and must not repeat one', () => {
+    expect(() => parseLedgerEntries(doc([entry({ supersedes: 'spec-up-200' as never })]))).toThrow(
+      /supersedes must be an array of criterion ids/,
+    )
+    expect(() => parseLedgerEntries(doc([entry({ supersedes: ['a:b'] })]))).toThrow(/contains ":"/)
+    expect(() => parseLedgerEntries(doc([entry({ supersedes: ['same', 'same'] })]))).toThrow(
+      /supersedes must not repeat a criterion id/,
+    )
+  })
 })
 
 describe('FileLedgerStore', () => {

@@ -405,7 +405,12 @@ Lifecycle:
 - **Contradict.** A change can put a new criterion at odds with an old one, or
   make an old one fail on purpose. QARE separates the two: a criterion the diff
   intends to replace is proposed as `superseded` with the replacement linked; a
-  criterion that fails without any intent to change it is a regression.
+  criterion that fails without any intent to change it is a regression. The
+  classification reads executed evidence first, so a rule the run failed and the
+  replacement the run proved settle it without a word from the model, and the
+  classifier comes second, proposing the pairing where the evidence cannot
+  settle one. What the model proposes lands only as a proposal a review
+  applies; nothing supersedes anything on its own.
 - **Ask, rarely.** When evidence cannot settle whether a conflict is intended,
   QARE asks one question in one place, with its own recommendation attached.
   Only the affected criteria are held as `unverified`; the rest of the run
