@@ -53,7 +53,7 @@ rewrite is what ingest proposed.
 | As stated | Why it is weak | Rewritten |
 | --- | --- | --- |
 | "The article is pleasant to read" | No observable outcome: no check can show pleasant | "Searching for Ada Lovelace shows her article with the infobox" (`flow`) |
-| "Sign-in works and the dashboard loads fast" | Two behaviors in one criterion | "Sign-in with a valid password lands on the dashboard" (`flow`), and separately, a second criterion for the load behaviour |
+| "Sign-in works and the dashboard loads fast" | Two behaviors in one criterion | "Sign-in with a valid password lands on the dashboard" (`flow`), and separately, a second criterion for the load behavior |
 | "The code is good quality" | Asserts nothing a run can see | "The linter passes with no warnings on changed files" (`command`) |
 | "The report looks right" | "Right" is not a rendering claim | "The report renders the totals row within the table at 1280px" (`visual`) |
 | "The summary is exactly what the model recommends" | Only a model session could judge it, and the run executes no model | Restate around what the run produces: "the summary section lists every open finding" (`flow`) |
