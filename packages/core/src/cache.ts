@@ -76,6 +76,8 @@ export interface CachedCriterion {
   criterion: string
   result: Record<string, unknown>
   files: CachedFile[]
+  /** The flake bound the result was proven under (#50); absent in entries written before it was recorded. */
+  flakeAttempts?: number
 }
 
 export interface CachedFile {
@@ -157,6 +159,7 @@ function parseCacheEntry(text: string): CachedCriterion | undefined {
     criterion: record.criterion,
     result: record.result as Record<string, unknown>,
     files,
+    ...(typeof record.flakeAttempts === 'number' ? { flakeAttempts: record.flakeAttempts } : {}),
   }
 }
 

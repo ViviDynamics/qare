@@ -176,6 +176,53 @@ test('ledger status prints counts and integrity ok', async () => {
   expect(linesOf(out.chunks)).toEqual([
     'proposed: 1 active: 1 superseded: 0 retired: 1 total: 3',
     'integrity: ok',
+    'quarantine: none',
+  ])
+  expect(errs.chunks).toEqual([])
+})
+
+test('ledger status prints the quarantine: which checks are held, why, and since when', async () => {
+  const dir = await ledgerDir([FLOW_LOGIN])
+  await writeFile(
+    join(dir, 'quarantine.json'),
+    `${JSON.stringify({
+      schemaVersion: '1',
+      records: [
+        {
+          check: 'flip',
+          fingerprint: `sha256:${'a'.repeat(64)}`,
+          criterion: 'flow-login',
+          reason: 'unstable: the check failed and passed across 2 attempts of this run',
+          quarantinedAt: '2026-09-28T00:00:00.000Z',
+        },
+      ],
+    }, null, 2)}\n`,
+    'utf8',
+  )
+  const out = capture()
+  const errs = capture()
+  const code = await runLedgerCommand(['status', '--ledger', dir], out.writer, errs.writer)
+  expect(code).toBe(0)
+  expect(linesOf(out.chunks)).toEqual([
+    'proposed: 0 active: 1 superseded: 0 retired: 0 total: 1',
+    'integrity: ok',
+    'quarantine: 1',
+    'quarantined check flip of criterion flow-login at 2026-09-28T00:00:00.000Z: unstable: the check failed and passed across 2 attempts of this run',
+  ])
+  expect(errs.chunks).toEqual([])
+})
+
+test('ledger status on an unreadable quarantine names it instead of guessing', async () => {
+  const dir = await ledgerDir([FLOW_LOGIN])
+  await writeFile(join(dir, 'quarantine.json'), 'not json', 'utf8')
+  const out = capture()
+  const errs = capture()
+  const code = await runLedgerCommand(['status', '--ledger', dir], out.writer, errs.writer)
+  expect(code).toBe(0)
+  expect(linesOf(out.chunks)).toEqual([
+    'proposed: 0 active: 1 superseded: 0 retired: 0 total: 1',
+    'integrity: ok',
+    expect.stringMatching(/^quarantine: unreadable \(/),
   ])
   expect(errs.chunks).toEqual([])
 })

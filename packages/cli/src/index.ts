@@ -17,6 +17,7 @@ import {
   loadJobFromFile,
   loadJobFromText,
   jobFromPlan,
+  readQuarantine,
   checkCriteria,
   defaultCheckEvidenceDir,
   judgeExecuted,
@@ -1201,6 +1202,16 @@ async function ledgerStatus(dir: string, out: Writer, err: Writer): Promise<numb
     `proposed: ${counts.proposed} active: ${counts.active} superseded: ${counts.superseded} retired: ${counts.retired} total: ${entries.length}\n`,
   )
   out.write('integrity: ok\n')
+  // The quarantine (#50): what the runs wrote when a check failed and passed
+  // across attempts, and the checks a later run skips until it is cleared.
+  const quarantine = await readQuarantine(dir)
+  if (quarantine.unreadable !== undefined) out.write(`quarantine: unreadable (${quarantine.unreadable})\n`)
+  else if (quarantine.records.length === 0) out.write('quarantine: none\n')
+  else {
+    out.write(`quarantine: ${quarantine.records.length}\n`)
+    for (const record of quarantine.records)
+      out.write(`quarantined check ${record.check} of criterion ${record.criterion} at ${record.quarantinedAt}: ${record.reason}\n`)
+  }
   return 0
 }
 
@@ -1865,14 +1876,28 @@ async function runCommand(
     }
     // A run caches when the caller names a directory for it (#47), resolved
     // like every other path the run carries. Off by default: an uncached run
-    // re-runs every check.
+    // re-runs every check. A run also repeats a failing check as many times
+    // as --flake-attempts says (#50), one by default, and quarantines the
+    // unstable ones into the store --quarantine names.
     const cacheFlag = flag(argv, '--cache')
     // A run shards its independent criteria across the workers it is given
     // (#48); one worker is the serial run, which is the default.
     const workersFlag = flag(argv, '--workers')
     const workers = parseWorkers(workersFlag)
-    const opts = cacheFlag === undefined ? boot : { ...boot, cacheDir: resolve(cacheFlag) }
-    const { result } = await runJob(job, workers === undefined ? opts : { ...opts, workers })
+    const quarantineFlag = flag(argv, '--quarantine')
+    const flakeFlag = flag(argv, '--flake-attempts')
+    let flakeAttempts: number | undefined
+    if (flakeFlag !== undefined) {
+      flakeAttempts = Number(flakeFlag)
+      if (!Number.isInteger(flakeAttempts) || flakeAttempts < 1)
+        throw new Error(`--flake-attempts takes a whole number of attempts, one or more, not ${JSON.stringify(flakeFlag)}`)
+    }
+    const runOpts: BootOpts & { flakeAttempts?: number; quarantineDir?: string; workers?: number } = { ...boot }
+    if (cacheFlag !== undefined) runOpts.cacheDir = resolve(cacheFlag)
+    if (quarantineFlag !== undefined) runOpts.quarantineDir = resolve(quarantineFlag)
+    if (flakeAttempts !== undefined) runOpts.flakeAttempts = flakeAttempts
+    if (workers !== undefined) runOpts.workers = workers
+    const { result } = await runJob(job, runOpts)
     const code = exitCodeFor(result.verdict)
     out.write(`verdict ${result.verdict}; evidence ${job.evidenceDir}\n`)
     return code
