@@ -22,6 +22,7 @@ repo.env
 .agents/*
 !.agents/skills/
 !.agents/test-commands.md
+!.agents/flake-signatures.txt
 .claude/*
 !.claude/skills
 .opencode/*
