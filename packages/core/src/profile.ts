@@ -608,6 +608,11 @@ function parseMcp(value: unknown): ProfileMcpServer[] {
         `a server that needs the credential ${JSON.stringify(credential)} cannot run in the execute step: the execute step runs pull request code, which must never hold it`,
       )
     const driver = entry.driver === undefined ? undefined : parseMcpDriver(entry.driver, base, tools)
+    if (driver !== undefined && !steps.includes('execute'))
+      fail(
+        `${base}.driver`,
+        'a server that drives the flow runs its checks in the execute step, which this entry is not allowed to run in',
+     )
     return {
       name,
       ...(command !== undefined ? { command } : { url }),

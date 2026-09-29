@@ -661,7 +661,7 @@ test('a tool check naming a tool the profile does not register refuses the run',
     const { result } = await runJob(job, HEALTHY_DRIVER_BOOT)
     expect(result.verdict).toBe('refused')
     expect(result.criteria[0]?.reason).toMatch(/page_text/)
-    expect(result.criteria[0]?.reason).toMatch(/registers/)
+    expect(result.criteria[0]?.reason).toMatch(/execute step/)
   } finally {
     await server.close()
   }
@@ -716,4 +716,7 @@ test('the profile parses a driver mapping, and refuses a second one or an unallo
   expect(() =>
     validateProfileConfig({ ...DRIVER_PROFILE, mcp: [{ name: 'a', url: stubUrl, tools: ['other'], steps: ['plan', 'execute'], driver: { open: { tool: 'navigate', args: { url: 'url' } } } }] }),
   ).toThrow(/allowlist/)
+  expect(() =>
+    validateProfileConfig({ ...DRIVER_PROFILE, mcp: [{ name: 'a', url: stubUrl, tools: ['navigate'], steps: ['plan'], driver: { open: { tool: 'navigate', args: { url: 'url' } } } }] }),
+  ).toThrow(/execute step/)
 })

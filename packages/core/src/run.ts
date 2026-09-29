@@ -639,13 +639,18 @@ function validatePlanValues(criteria: JobCriterion[], profile: QaProfile, values
         // A tool check calls a tool the profile named, either in the driver
         // mapping or in the allowlist (#94): anything else would reach a host
         // tool the profile never declared, so the plan refuses here.
+        // A tool check runs in the execute step, so only the tools of
+        // servers allowed there are reachable (#94): the steps gate holds
+        // against the run, not just the planner.
         const registered = new Set(
-          (profile.mcp ?? []).flatMap((entry) => [...entry.tools, ...Object.values(entry.driver ?? {}).map((map) => map.tool)]),
+          (profile.mcp ?? [])
+            .filter((entry) => entry.steps.includes('execute'))
+            .flatMap((entry) => [...entry.tools, ...Object.values(entry.driver ?? {}).map((map) => map.tool)]),
         )
         if (!registered.has(check.tool))
           throw new JobValidationError(
             `${base}.tool`,
-            `refused: ${JSON.stringify(check.tool)} is not a tool the profile's MCP server registers; a tool check calls only a tool the profile named`,
+            `refused: ${JSON.stringify(check.tool)} is not a tool the profile's MCP servers register for the execute step; a tool check calls only a tool the profile named`,
           )
         const allow = (field: string) => (name: string): boolean => {
           if (!name.startsWith('mail.')) return false
@@ -1240,10 +1245,15 @@ async function runToolCheckJob(
   if (mcp === undefined)
     return { status: 'unverified', reason: 'the profile registers no MCP server, so a tool check has nothing to call', evidence: [] }
   // The check calls a tool on one server's allowlist: the first entry that
-  // names it. A tool two entries allowlist is reached on the first.
-  const entry = mcp.find((one) => one.tools.includes(check.tool))
+  // names it and may run in the execute step. A tool two entries allowlist is
+  // reached on the first.
+  const entry = mcp.find((one) => one.steps.includes('execute') && one.tools.includes(check.tool))
   if (entry === undefined)
-    return { status: 'unverified', reason: `no registered MCP server allowlists ${JSON.stringify(check.tool)}`, evidence: [] }
+    return {
+      status: 'unverified',
+      reason: `no MCP server that may run in the execute step allowlists ${JSON.stringify(check.tool)}`,
+      evidence: [],
+    }
   const timeoutMs = check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
   let result: McpToolResult | undefined
   let timer: NodeJS.Timeout | undefined
