@@ -177,6 +177,94 @@ describe('contradiction detection', () => {
     })
   })
 
+  test('executed evidence reaches a hand-minted entry through its own words', async () => {
+    const seen: string[] = []
+    const runner: AgentRunner = {
+      run: async (request) => {
+        seen.push(request.prompt)
+        return completed({
+          pairs: [{ criterion: 'BIL-014', replacement: NEW_ID, intendsReplacement: true, reason: 'the change retires it' }],
+        })
+      },
+    }
+    const report = await detectContradictions({
+      runId: 'run-9',
+      executed: [
+        { id: criterionIdFor(OLD_WORDS), outcome: 'failed' },
+        { id: NEW_ID, outcome: 'proven' },
+      ],
+      introduced: [{ id: NEW_ID, text: NEW_WORDS }],
+      ledger: [
+        {
+          criterion: 'BIL-014',
+          status: 'active',
+          source: [link('example.test', '/issues/9')],
+          proof: 'command',
+          note: OLD_WORDS,
+        },
+      ],
+      classifier: runner,
+    })
+    expect(seen[0]).toMatch(/"id":"BIL-014","words":/)
+    expect(seen[0]).toMatch(/"outcome":"failed"/)
+    expect(report.contradictions).toHaveLength(1)
+    expect(report.contradictions[0]).toMatchObject({
+      criterion: 'BIL-014',
+      replacement: NEW_ID,
+      classification: 'supersede',
+      basis: 'executed-evidence',
+    })
+  })
+
+  test('the model naming a replacement while denying the intent is a regression, not a supersede', async () => {
+    const report = await detectContradictions({
+      runId: 'run-9',
+      executed: [{ id: NEW_ID, outcome: 'proven' }],
+      introduced: [{ id: NEW_ID, text: NEW_WORDS }],
+      ledger: [activeEntry(OLD_ID, OLD_WORDS)],
+      classifier: classifier({
+        pairs: [{ criterion: OLD_ID, replacement: NEW_ID, intendsReplacement: false, reason: 'at odds, not replaced' }],
+      }),
+    })
+    expect(report.contradictions).toHaveLength(1)
+    expect(report.contradictions[0]).toMatchObject({
+      criterion: OLD_ID,
+      classification: 'regression',
+      basis: 'model',
+    })
+    expect(report.contradictions[0]?.replacement).toBeUndefined()
+    expect(report.changes).toHaveLength(0)
+  })
+
+  test('one replacement replacing two old rules links them both in the fold', async () => {
+    const SECOND_WORDS = 'the payouts page shows the 1099 notice before the tenth of the month'
+    const SECOND_ID = criterionIdFor(SECOND_WORDS)
+    const ledger = [
+      activeEntry(OLD_ID, OLD_WORDS),
+      activeEntry(SECOND_ID, SECOND_WORDS),
+      { criterion: NEW_ID, status: 'proposed', source: [link('example.test', '/issues/41')], proof: 'command', note: NEW_WORDS },
+    ]
+    const report = await detectContradictions({
+      runId: 'run-9',
+      executed: [
+        { id: NEW_ID, outcome: 'proven' },
+        { id: OLD_ID, outcome: 'failed' },
+        { id: SECOND_ID, outcome: 'failed' },
+      ],
+      introduced: [{ id: NEW_ID, text: NEW_WORDS }],
+      ledger,
+      classifier: classifier({
+        pairs: [
+          { criterion: OLD_ID, replacement: NEW_ID, intendsReplacement: true, reason: 'replaced' },
+          { criterion: SECOND_ID, replacement: NEW_ID, intendsReplacement: true, reason: 'replaced too' },
+        ],
+      }),
+    })
+    expect(report.changes).toHaveLength(2)
+    const folded = parseLedgerEntries(JSON.parse(report.ledgerText))
+    expect(folded.find((entry) => entry.criterion === NEW_ID)?.supersedes).toEqual([OLD_ID, SECOND_ID])
+  })
+
   test('a classifier outage is a named failure, not a quiet pass', async () => {
     await expect(
       detectContradictions({

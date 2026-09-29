@@ -123,8 +123,13 @@ function classifierPrompt(input: ContradictionInput, correction?: string): strin
     words: criterion.text,
     outcome: outcomeOf(criterion.id, input.executed),
   }))
-  const failed = active
-    .map((entry) => ({ ...entry, outcome: outcomeOf(entry.id, input.executed) }))
+  const failed = input.ledger
+    .filter((entry) => entry.status === 'active')
+    .map((entry) => ({
+      id: entry.criterion,
+      words: entry.note ?? '',
+      outcome: outcomeForEntry(entry, input.executed),
+    }))
     .filter((entry) => entry.outcome !== undefined)
   const parts = [
     'The active rules in the ledger:',
@@ -141,6 +146,24 @@ function classifierPrompt(input: ContradictionInput, correction?: string): strin
 
 function outcomeOf(id: string, executed: ExecutedCriterion[]): ExecutedCriterion['outcome'] | undefined {
   return executed.find((criterion) => criterion.id === id)?.outcome
+}
+
+/**
+ * The outcome a run recorded for a ledger entry, matched the way
+ * `entryForExecuted` matches: by the entry's id, or by its own words when the
+ * executed id was content-addressed from them. Wherever this is read, the
+ * note-derived fallback is read too, so a hand-minted entry is never mistaken
+ * for a rule the run did not execute.
+ */
+function outcomeForEntry(
+  entry: Pick<LedgerEntry, 'criterion' | 'note'>,
+  executed: ExecutedCriterion[],
+): ExecutedCriterion['outcome'] | undefined {
+  return executed.find(
+    (criterion) =>
+      criterion.id === entry.criterion ||
+      (entry.note !== undefined && criterionIdFor(entry.note) === criterion.id),
+  )?.outcome
 }
 
 interface NominatedPair {
@@ -302,7 +325,7 @@ export async function detectContradictions(input: ContradictionInput): Promise<C
   for (const [criterion, candidate] of candidates) {
     const entry = input.ledger.find((ledgerEntry) => ledgerEntry.criterion === criterion)
     if (entry === undefined) continue
-    const oldOutcome = outcomeOf(criterion, input.executed)
+    const oldOutcome = outcomeForEntry(entry, input.executed)
     const replacementOutcome =
       candidate.replacement === undefined ? undefined : outcomeOf(candidate.replacement, input.executed)
     const words = entry.note === undefined ? undefined : entry.note
@@ -350,6 +373,16 @@ export async function detectContradictions(input: ContradictionInput): Promise<C
       continue
     }
     if (candidate.replacement !== undefined && replacementOutcome === 'proven') {
+      if (!candidate.intendsReplacement) {
+        contradictions.push({
+          criterion,
+          ...(words === undefined ? {} : { criterionText: words }),
+          classification: 'regression',
+          basis: 'model',
+          reason: 'the classifier read the change as not replacing the rule, so the conflict stands as a regression',
+        })
+        continue
+      }
       contradictions.push({
         criterion,
         ...(words === undefined ? {} : { criterionText: words }),
@@ -379,11 +412,12 @@ export async function detectContradictions(input: ContradictionInput): Promise<C
     if (fold.has(entry.criterion)) return { ...entry, status: 'superseded' as const }
     return entry
   })
-  const replacements = new Map<string, string>()
+  const replacements = new Map<string, string[]>()
   for (const contradiction of contradictions) {
     if (contradiction.classification !== 'supersede') continue
     if (contradiction.replacement === undefined) continue
-    replacements.set(contradiction.replacement, contradiction.criterion)
+    const superseded = replacements.get(contradiction.replacement) ?? []
+    replacements.set(contradiction.replacement, [...superseded, contradiction.criterion])
   }
   const linked = foldedEntries(folded, replacements)
 
@@ -399,14 +433,15 @@ export async function detectContradictions(input: ContradictionInput): Promise<C
 
 function foldedEntries(
   folded: LedgerEntry[],
-  replacements: Map<string, string>,
+  replacements: Map<string, string[]>,
 ): LedgerEntry[] {
   return folded.map((entry) => {
     const superseded = replacements.get(entry.criterion)
     if (superseded === undefined) return entry
     const supersedes = entry.supersedes ?? []
-    if (supersedes.includes(superseded)) return entry
-    return { ...entry, supersedes: [...supersedes, superseded] }
+    const missing = superseded.filter((id) => !supersedes.includes(id))
+    if (missing.length === 0) return entry
+    return { ...entry, supersedes: [...supersedes, ...missing] }
   })
 }
 
