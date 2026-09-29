@@ -342,7 +342,7 @@ export async function runJob(
     const criteria = await runCriteriaAcrossLanes(
       job.criteria,
       shardCriteria(job.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
-      { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy },
+      { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy, opts },
     )
     await persistQuarantine(policy)
     await writeCacheHits(job.evidenceDir, cache?.hits ?? [])
@@ -646,7 +646,7 @@ async function runProfileGroup(
     const criteria = await runCriteriaAcrossLanes(
       group.criteria,
       shardCriteria(group.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
-      { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy },
+      { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy, opts },
     )
     const egressRefused = target !== undefined && target.undeclared.length > 0
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
