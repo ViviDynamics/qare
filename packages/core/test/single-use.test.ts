@@ -201,6 +201,26 @@ test('a second consumer of a single-use artefact is unverified naming the spent 
   await expect(evidenceText(job, join('checks', 'criterion-2', '0', 'stdout.txt'))).rejects.toBeDefined()
 })
 
+test('a failed attempt of a single-use consumer is not retried with the spent value', async () => {
+  const job = await makeJob(
+    criteria([
+      mailCheck({ singleUse: true }),
+      { kind: 'command', run: 'false', env: { ARTEFACT: '{{mail.welcome.link}}' }, timeoutMs: 30 },
+    ]),
+  )
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, readMail: reader(() => message()), flakeAttempts: 2 })
+  // The first attempt spent the single-use link and failed. The retry does not
+  // run the check again with what the first attempt consumed: the artefact
+  // contract says a retry requires a fresh message, so the criterion reports
+  // unverified naming the spent value.
+  expect(result.verdict).toBe('blocked')
+  expect(result.criteria[0]?.outcome).toBe('unverified')
+  expect(result.criteria[0]?.reason).toBe(
+    'the single-use link from mail check welcome was already consumed by criterion criterion-1; a retry requires a fresh message, and this run will not follow the same link twice',
+  )
+  await expect(evidenceText(job, join('checks', 'criterion-1', '1-attempt2', 'stdout.txt'))).rejects.toBeDefined()
+})
+
 test('a non-single-use artefact can be read by every consumer', async () => {
   const job = await makeJob(
     criteria(

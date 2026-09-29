@@ -1207,7 +1207,7 @@ async function ledgerStatus(dir: string, out: Writer, err: Writer): Promise<numb
   else {
     out.write(`quarantine: ${quarantine.records.length}\n`)
     for (const record of quarantine.records)
-      out.write(`quarantined check ${record.check} at ${record.quarantinedAt}: ${record.reason}\n`)
+      out.write(`quarantined check ${record.check} of criterion ${record.criterion} at ${record.quarantinedAt}: ${record.reason}\n`)
   }
   return 0
 }

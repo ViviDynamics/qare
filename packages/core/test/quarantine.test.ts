@@ -162,7 +162,7 @@ test('a quarantined check is skipped and its criterion reports the record', asyn
   }
 })
 
-test('a quarantine store that cannot be read is a miss and is never written over', async () => {
+test('a store that cannot be read is a miss and is never written over', async () => {
   const job = await commandJob('node flip.mjs')
   const quarantineDir = join(job.repoPath, 'quarantine')
   await mkdir(quarantineDir, { recursive: true })
@@ -179,6 +179,33 @@ test('a quarantine store that cannot be read is a miss and is never written over
   } finally {
     errors.mockRestore()
     await rm(job.repoPath, { recursive: true, force: true })
+  }
+})
+
+test('a store that parses but is not a store reads as unreadable and is never written over', async () => {
+  const stores = [
+    '[]',
+    '5',
+    '{"schemaVersion":"9","records":[]}',
+    '{"schemaVersion":"1","records":"no"}',
+    '{"schemaVersion":"1","records":[{"check":"flip"}]}',
+  ]
+  for (const store of stores) {
+    const job = await commandJob('node flip.mjs')
+    const quarantineDir = join(job.repoPath, 'quarantine')
+    await mkdir(quarantineDir, { recursive: true })
+    await writeFile(join(quarantineDir, 'quarantine.json'), store, 'utf8')
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const { result } = await runJob(job, { ...HEALTHY_BOOT, execution: 'native', flakeAttempts: 2, quarantineDir })
+      expect(result.verdict).toBe('blocked')
+      expect(result.criteria[0].outcome).toBe('unverified')
+      expect(errors.mock.calls.some((call) => String(call[0]).startsWith('quarantine skipped:'))).toBe(true)
+      expect(await readFile(join(quarantineDir, 'quarantine.json'), 'utf8')).toBe(store)
+    } finally {
+      errors.mockRestore()
+      await rm(job.repoPath, { recursive: true, force: true })
+    }
   }
 })
 

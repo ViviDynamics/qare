@@ -53,10 +53,11 @@ export function quarantineCheckName(check: JobCheck, criterionId: string, index:
 
 /**
  * Read a quarantine store from `dir`. A directory with no store yet is an
- * empty store. A store that is there but malformed is not an error and not
- * a claim: it reads as unreadable, no record is applied, and nothing the
- * caller writes may land over it, so the run quarantines nothing it cannot
- * read and the checks run for real.
+ * empty store. A store that is there but malformed, whatever the way it is
+ * malformed, is not an error and not a claim: it reads as unreadable, no
+ * record is applied, and nothing the caller writes may land over it, so the
+ * run quarantines nothing it cannot read, the checks run for real, and the
+ * store survives for whoever wrote it.
  */
 export async function readQuarantine(dir: string): Promise<QuarantineContext> {
   const context: QuarantineContext = { dir, records: [] }
@@ -82,15 +83,18 @@ export async function openQuarantine(dir: string | undefined): Promise<Quarantin
 }
 
 function recordsFrom(parsed: unknown): QuarantineRecord[] {
-  if (typeof parsed !== 'object' || parsed === null) return []
+  if (typeof parsed !== 'object' || parsed === null) throw new Error('the store is not a quarantine object')
   const document = parsed as Record<string, unknown>
   // A store a future schema wrote is not one this version reads: no record
-  // is applied, and the checks run for real.
-  if (document.schemaVersion !== QUARANTINE_SCHEMA_VERSION) return []
-  if (!Array.isArray(document.records)) return []
+  // is applied, the checks run for real, and the store is left for the
+  // version that wrote it.
+  if (document.schemaVersion !== QUARANTINE_SCHEMA_VERSION)
+    throw new Error(`the store is schema version ${JSON.stringify(document.schemaVersion)}, this runner reads ${JSON.stringify(QUARANTINE_SCHEMA_VERSION)}`)
+  if (!Array.isArray(document.records)) throw new Error('the store carries no records array')
   const records: QuarantineRecord[] = []
   for (const entry of document.records) {
-    if (typeof entry !== 'object' || entry === null) continue
+    if (typeof entry !== 'object' || entry === null)
+      throw new Error('the store carries a record that is not an object')
     const record = entry as Record<string, unknown>
     if (
       typeof record.check !== 'string' ||
@@ -104,7 +108,7 @@ function recordsFrom(parsed: unknown): QuarantineRecord[] {
       typeof record.quarantinedAt !== 'string' ||
       record.quarantinedAt === ''
     )
-      continue
+      throw new Error('the store carries a record that is not a full record')
     records.push({
       check: record.check,
       fingerprint: record.fingerprint,

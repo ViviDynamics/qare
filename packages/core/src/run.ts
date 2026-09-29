@@ -283,14 +283,16 @@ export async function runJob(
     if (!(error instanceof JobValidationError)) throw error
     return refuseRun(job, opts, rules, error.message, targetNote, isolation, execution)
   }
-  // The run's check cache (#47): opened after the plan validates, so a refused
-  // run writes nothing cached, and before the checks run, so every criterion
-  // the run reaches is looked up and recorded. A run without a cache dir
-  // executes every check for real.
-  const cache = await openRunCache(job, job.criteria, profile, opts.cacheDir)
   // The flake policy (#50) is settled before anything runs, so the store is
   // read once and every criterion consults the same one.
   const policy = await flakePolicyOf(opts)
+  // The run's check cache (#47): opened after the plan validates, so a refused
+  // run writes nothing cached, and before the checks run, so every criterion
+  // the run reaches is looked up and recorded. A run without a cache dir
+  // executes every check for real. The flake bound is part of what a stored
+  // result was proven under (#50): a failure judged under one bound is not
+  // served to a run that judged the same checks under another.
+  const cache = await openRunCache(job, job.criteria, profile, opts.cacheDir, policy.attempts)
   if (isolation !== undefined) {
     await mkdir(job.evidenceDir, { recursive: true })
     // Evidence is published: this names the compose project a leftover stack
@@ -611,7 +613,7 @@ async function runProfileGroup(
   }
   // This app's cache (#47): per group, as the isolation and the artefact
   // ledger are, so one app's cached results are never served to another's.
-  const cache = await openRunCache(job, group.criteria, profile, opts.cacheDir)
+  const cache = await openRunCache(job, group.criteria, profile, opts.cacheDir, policy.attempts)
   const login = profile.app?.login
   const bootedProfile =
     isolation === undefined || profile.app === undefined
@@ -1081,6 +1083,8 @@ interface RunCacheContext {
   headSha: string
   planHash: string
   profileHash: string
+  /** The flake bound this run judged under (#50): a result proven under one bound is not the result of another. */
+  flakeAttempts: number
   hits: Array<{ criterion: string; key: string }>
 }
 
@@ -1090,7 +1094,7 @@ interface RunCacheContext {
  * that cannot name what it checked out executes uncached rather than risking
  * a false hit, and says so on stderr where the driver can read it.
  */
-async function openRunCache(job: Job, criteria: JobCriterion[], profile: QaProfile, cacheDir: string | undefined): Promise<RunCacheContext | undefined> {
+async function openRunCache(job: Job, criteria: JobCriterion[], profile: QaProfile, cacheDir: string | undefined, flakeAttempts = 1): Promise<RunCacheContext | undefined> {
   if (cacheDir === undefined) return undefined
   const [baseSha, headSha] = await Promise.all([resolveRefSha(job.repoPath, job.baseRef), resolveRefSha(job.repoPath, job.headRef)])
   if (baseSha === undefined || headSha === undefined) {
@@ -1103,6 +1107,7 @@ async function openRunCache(job: Job, criteria: JobCriterion[], profile: QaProfi
     headSha,
     planHash: planFingerprint(criteria),
     profileHash: profileFingerprint(profile),
+    flakeAttempts,
     hits: [],
   }
 }
@@ -1192,6 +1197,10 @@ async function runCriterion(
   const criterionRepairs: RunRepairRecord[] = []
   let failed = false
   let unverifiedReason: string | undefined
+  // An unstable fold is this run's transient judgment (#50): the quarantine
+  // store decides what the next run does, so the cache must not pin the
+  // unverified outcome past the record that caused it.
+  let quarantinedHere = false
   // The values a run publishes or consumes — a mail message's link, its
   // one-time code — are secrets like any other: they join the profile's
   // redaction rules for every piece of evidence written after them (#64).
@@ -1220,6 +1229,7 @@ async function runCriterion(
     const foldCriterion = (fold: AttemptFold): void => {
       if (fold.kind === 'failed') failed = true
       else if (fold.kind === 'unstable') {
+        quarantinedHere = true
         if (unverifiedReason === undefined) unverifiedReason = quarantinedReason(fold)
       } else if (fold.kind === 'unverified' && unverifiedReason === undefined) unverifiedReason = fold.reason
     }
@@ -1271,16 +1281,17 @@ async function runCriterion(
     }
     if (substituted.kind === 'flow') {
       // A flow can read a mail check's one-time code or link the way a command
-      // does, at run time and per run (#64). An artefact that is gone skips
-      // the flow unverified, and the flow never runs.
-      const resolvedActions = resolveFlowArtefacts(substituted.actions ?? [], artefacts, criterion.id)
-      if (!resolvedActions.ok) {
-        if (unverifiedReason === undefined) unverifiedReason = resolvedActions.reason
-        continue
-      }
-      // The flow types what it read from mail: those values join the sweep.
-      if (resolvedActions.values.length > 0) sweepRules.push(...valueRules(resolvedActions.values))
+      // does, at run time and per run (#64). Resolution happens per attempt:
+      // a single-use artefact is spent by the attempt that reads it, and the
+      // artefact contract says a retry requires a fresh message, so the next
+      // attempt reports the spent artefact unverified instead of reusing what
+      // the first one consumed. An artefact that is gone skips the flow
+      // unverified, and the flow never runs.
       const fold = await settleCheck(async (attempt) => {
+        const resolvedActions = resolveFlowArtefacts(substituted.actions ?? [], artefacts, criterion.id)
+        if (!resolvedActions.ok) return { status: 'unverified' as const, reason: resolvedActions.reason }
+        // The flow types what it read from mail: those values join the sweep.
+        if (resolvedActions.values.length > 0) sweepRules.push(...valueRules(resolvedActions.values))
         const outcome = await runFlowCheckJob(
           { ...substituted, actions: resolvedActions.actions },
           flow.suites,
@@ -1340,35 +1351,34 @@ async function runCriterion(
       foldCriterion(fold)
       continue
     }
-    // Run-time artefact resolution happens last, immediately before the check
-    // executes: the artefact is observed during this run, not minted at plan
-    // time. A check whose artefact is gone is skipped unverified and never runs.
     // The shell-syntax rule judges the AUTHORED command, before artefact
     // values are substituted: a mail link like a URL with an ampersand is
     // data for the no-shell spawn, while an authored `&&` is a plan written
-    // for a shell this runner does not provide (#64). Checking here also
-    // leaves an unspent single-use artefact unspent.
+    // for a shell this runner does not provide (#64).
     const shellSyntax = unrunnableCommandReason(substituted.run)
     if (shellSyntax !== undefined) {
       if (unverifiedReason === undefined) unverifiedReason = shellSyntax
       continue
     }
-    const resolved = resolveArtefactFields(substituted, artefacts, criterion.id)
-    if (!resolved.ok) {
-      if (unverifiedReason === undefined) unverifiedReason = resolved.reason
-      continue
-    }
-    const cwd = resolveCheckCwd(resolved.check.cwd, job.repoPath)
-    if (cwd === undefined) {
-      const reason = `check cwd ${JSON.stringify(resolved.check.cwd ?? '')} escapes the repository path; refusing to run it`
-      if (unverifiedReason === undefined) unverifiedReason = reason
-      continue
-    }
-    const timeoutMs = resolved.check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
-    // A command that echoes what it consumed writes it to stdout: the value is
-    // a secret like any other, so the check's evidence is swept with it (#64).
-    if (resolved.consumed.length > 0) sweepRules.push(...valueRules(resolved.consumed.map((consumed) => consumed.artefact)))
     const fold = await settleCheck(async (attempt) => {
+      // Artefact resolution happens per attempt (#64): the artefact is
+      // observed during this run, not minted at plan time, and a single-use
+      // artefact is spent by the attempt that reads it. The artefact contract
+      // says a retry requires a fresh message, so the next attempt reports
+      // the spent artefact unverified instead of reusing what the first one
+      // consumed, and an artefact that is gone is never run.
+      const resolved = resolveArtefactFields(substituted, artefacts, criterion.id)
+      if (!resolved.ok) return { status: 'unverified' as const, reason: resolved.reason }
+      const cwd = resolveCheckCwd(resolved.check.cwd, job.repoPath)
+      if (cwd === undefined)
+        return {
+          status: 'unverified' as const,
+          reason: `check cwd ${JSON.stringify(resolved.check.cwd ?? '')} escapes the repository path; refusing to run it`,
+        }
+      const timeoutMs = resolved.check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
+      // A command that echoes what it consumed writes it to stdout: the value
+      // is a secret like any other, so the check's evidence is swept with it (#64).
+      if (resolved.consumed.length > 0) sweepRules.push(...valueRules(resolved.consumed.map((consumed) => consumed.artefact)))
       const checkDir = dirFor(index, attempt)
       const outcome = await runCommandCheck(resolved.check, cwd, timeoutMs, execution)
       await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
@@ -1429,15 +1439,20 @@ async function runCriterion(
   }
   // What ran this time is what the cache stores (#47): the criterion's
   // published result and every evidence file it wrote, under a key over the
-  // checks as authored and the revisions they ran against. A partial run —
-  // a check that never decided — still composes one of these outcomes, and
-  // the cache stores that too: the composition already folded it in.
-  if (cache !== undefined) {
+  // checks as authored and the revisions they ran against, with the flake
+  // bound the result was proven under (#50). A partial run — a check that
+  // never decided — still composes one of these outcomes, and the cache
+  // stores that too: the composition already folded it in. An unstable
+  // outcome is never stored: it is this run's transient judgment, the
+  // quarantine store already decides what the next run does, and a replay
+  // of it would outlive the record that caused it.
+  if (cache !== undefined && !quarantinedHere) {
     await cache.cache.put(cacheKeyFor(criterion, checks, cache), {
       version: 1,
       criterion: criterion.id,
       result: composed as unknown as Record<string, unknown>,
       files: await collectCriterionFiles(job.evidenceDir, criterion.id),
+      flakeAttempts: cache.flakeAttempts,
     })
   }
   return composed
@@ -1461,6 +1476,10 @@ async function replayCriterion(
   const key = cacheKeyFor(criterion, checks, cache)
   const entry = await cache.cache.get(key)
   if (entry === undefined || entry.criterion !== criterion.id) return undefined
+  // A result is only served to a run that judged under the same flake bound
+  // (#50): a failure or a pass proven with one attempts left is not the
+  // result of a run that gave the checks another, so it re-runs for real.
+  if ((entry.flakeAttempts ?? 1) !== cache.flakeAttempts) return undefined
   for (const file of entry.files) {
     const target = join(job.evidenceDir, file.path)
     await mkdir(dirname(target), { recursive: true })

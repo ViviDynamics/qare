@@ -250,6 +250,51 @@ test('a several-app run merges every cache hit into one summary', async () => {
   expect(summary.hits.map((hit: { criterion: string }) => hit.criterion)).toEqual(['criterion-1', 'criterion-2'])
 })
 
+test('a failure proven under one flake bound is not replayed to a run under another', async () => {
+  const { repo, base, head } = await gitRepo()
+  const cache = join(repo, 'cache')
+  const first = await runJob(
+    makeJob({ repo, base, head, runs: ['cp no-such-source.txt copied.txt'], evidence: 'evidence-1' }),
+    { ...BOOT, cacheDir: cache, flakeAttempts: 1 },
+  )
+  expect(first.result.verdict).toBe('failed')
+  const second = await runJob(
+    makeJob({ repo, base, head, runs: ['cp no-such-source.txt copied.txt'], evidence: 'evidence-2' }),
+    { ...BOOT, cacheDir: cache, flakeAttempts: 2 },
+  )
+  // The stored failure was proven under one attempt: this run gave the check
+  // two, and the check ran for real under its own bound instead of replaying
+  // the one-attempt judgment.
+  expect(second.result.verdict).toBe('failed')
+  expect(second.result.criteria[0]).not.toHaveProperty('cached')
+  expect(existsSync(join(repo, 'evidence-2', 'checks', 'criterion-1', '0', 'command.json'))).toBe(true)
+  expect(existsSync(join(repo, 'evidence-2', 'checks', 'criterion-1', '0-attempt2', 'command.json'))).toBe(true)
+})
+
+test('an unstable outcome is never cached: the quarantine store decides the next run', async () => {
+  const { repo, base, head } = await gitRepo()
+  const cache = join(repo, 'cache')
+  await writeFile(
+    join(repo, 'flip.mjs'),
+    [
+      "import { existsSync, writeFileSync } from 'node:fs'",
+      "if (existsSync('flipped')) process.exit(0)",
+      "writeFileSync('flipped', 'now')",
+      'process.exit(1)',
+    ].join('\n'),
+    'utf8',
+  )
+  const { result } = await runJob(
+    makeJob({ repo, base, head, runs: ['node flip.mjs'], evidence: 'evidence-1' }),
+    { ...BOOT, cacheDir: cache, flakeAttempts: 2, quarantineDir: join(repo, 'quarantine') },
+  )
+  expect(result.verdict).toBe('blocked')
+  expect(result.criteria[0].outcome).toBe('unverified')
+  // The transient judgment is not pinned into the cache: the store, not the
+  // cache, decides what the next run does with a quarantined criterion.
+  expect(existsSync(cache)).toBe(false)
+})
+
 test('resolveRefSha resolves a commit name and leaves what it cannot resolve undefined', async () => {
   const { repo, head } = await gitRepo()
   expect(await resolveRefSha(repo, 'HEAD')).toBe(head)
