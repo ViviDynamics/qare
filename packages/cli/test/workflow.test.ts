@@ -388,6 +388,13 @@ test('auto-tag pushes the tag with the workflow token alone (#188)', () => {
   expect(autoTag).toMatch(/ref: \$\{\{ github\.event\.workflow_run\.head_sha \|\| github\.sha \}\}/)
 })
 
+test('the tag step configures a committer identity for the annotated tag (#188)', () => {
+  // The runner carries no git identity, so an annotated tag fails with
+  // empty ident name unless the step sets one.
+  expect(autoTag).toMatch(/git config user\.name /)
+  expect(autoTag).toMatch(/git config user\.email "github-actions\[bot\]@users\.noreply\.github\.com"/)
+})
+
 test('release gains the dispatch trigger the automated path uses (#188)', () => {
   const release = readFileSync(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8')
   expect(release).toContain('workflow_dispatch:')

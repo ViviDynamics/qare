@@ -68,6 +68,10 @@ jobs:
         if: env.tagged == 'true'
         run: |
           set -euo pipefail
+          # An annotated tag needs a committer identity, which the runner does
+          # not carry: without one the tag fails with empty ident name.
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           sha="$(git rev-parse HEAD)"
           git tag "$version" "$sha" --message "qare $version"
           git push origin "refs/tags/$version"
