@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
@@ -49,6 +49,7 @@ test('metrics record joins the run, the plan and the verifier into one store lin
     const record = JSON.parse(await readFile(join(dir, 'metrics.json'), 'utf8'))
     expect(record).toMatchObject({
       schemaVersion: 'qare.metrics.v1',
+      recordedAt: expect.any(String),
       runId: 'pr-51-run',
       wallMs: 60_000,
       verdict: 'failed',
@@ -72,6 +73,45 @@ test('metrics record refuses a result without the timestamps the wall clock need
     const code = await main(['metrics', 'record', '--result', join(dir, 'judged-result.json')], writer, errs.writer)
     expect(code).toBe(1)
     expect(errs.lines.join('')).toContain('no startedAt/finishedAt timestamps')
+  } finally {
+    await rm(dir, { recursive: true })
+  }
+})
+
+test('metrics record stamps recordedAt once, and names the run by job id or --run (#51)', async () => {
+  const dir = await workspace()
+  try {
+    const withoutJob = { ...RESULT, job: undefined }
+    await writeFile(join(dir, 'judged-result.json'), JSON.stringify(withoutJob), 'utf8')
+    const { writer } = capture()
+    const code = await main(
+      ['metrics', 'record', '--result', join(dir, 'judged-result.json'), '--run', 'workflow-42-1', '--store', join(dir, 'qa-metrics'), '--out', join(dir, 'metrics.json')],
+      writer,
+      { write: () => {} },
+    )
+    expect(code).toBe(0)
+    const record = JSON.parse(await readFile(join(dir, 'metrics.json'), 'utf8'))
+    expect(record.runId).toBe('workflow-42-1')
+    expect(typeof record.recordedAt).toBe('string')
+    // The store line and the --out copy are the same record: one recordedAt,
+    // so a reader can join them without guessing which was written first.
+    const line = JSON.parse((await readFile(join(dir, 'qa-metrics', 'runs.jsonl'), 'utf8')).trim())
+    expect(line.recordedAt).toBe(record.recordedAt)
+    expect(line.runId).toBe('workflow-42-1')
+  } finally {
+    await rm(dir, { recursive: true })
+  }
+})
+
+test('metrics record refuses a result with no job id and no --run: a record that names no run joins nothing (#51)', async () => {
+  const dir = await workspace()
+  try {
+    const withoutJob = { ...RESULT, job: undefined }
+    await writeFile(join(dir, 'judged-result.json'), JSON.stringify(withoutJob), 'utf8')
+    const errs = capture()
+    const code = await main(['metrics', 'record', '--result', join(dir, 'judged-result.json')], capture().writer, errs.writer)
+    expect(code).toBe(1)
+    expect(errs.lines.join('')).toContain('--run')
   } finally {
     await rm(dir, { recursive: true })
   }
@@ -110,6 +150,40 @@ test('ledger status of a repository that recorded nothing says metrics: none', a
     expect(code).toBe(0)
     expect(lines.join('')).toContain('metrics: none')
   } finally {
+    await rm(dir, { recursive: true })
+  }
+})
+
+test('ledger status of a store of malformed lines alone does not mistake them for nothing (#51)', async () => {
+  const dir = await workspace()
+  try {
+    const ledger = join(dir, '.qa')
+    await new FileLedgerStore(ledger).saveDocument([], [])
+    await mkdir(join(ledger, 'metrics'), { recursive: true })
+    await writeFile(join(ledger, 'metrics', 'runs.jsonl'), 'null\n', 'utf8')
+    const { lines, writer } = capture()
+    const code = await main(['ledger', 'status', '--ledger', ledger], writer, { write: () => {} })
+    expect(code).toBe(0)
+    const out = lines.join('')
+    expect(out).not.toContain('metrics: none')
+    expect(out).toContain('metrics: 1 store line(s) were not valid and were skipped')
+  } finally {
+    await rm(dir, { recursive: true })
+  }
+})
+
+test('ledger status names a metrics store it cannot read instead of calling it none (#51)', async () => {
+  const dir = await workspace()
+  try {
+    const ledger = join(dir, '.qa')
+    await new FileLedgerStore(ledger).saveDocument([], [])
+    await mkdir(join(ledger, 'metrics', 'runs.jsonl'), { recursive: true })
+    const { lines, writer } = capture()
+    const code = await main(['ledger', 'status', '--ledger', ledger], writer, { write: () => {} })
+    expect(code).toBe(0)
+    expect(lines.join('')).toMatch(/metrics: unreadable \(/)
+  } finally {
+    await rm(join(dir, '.qa', 'metrics'), { recursive: true })
     await rm(dir, { recursive: true })
   }
 })

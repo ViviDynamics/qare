@@ -7,9 +7,11 @@ import { join } from 'node:path'
  *
  * The data lives in the repository, not only in logs: one JSON line per run
  * in `metrics/runs.jsonl` under the ledger directory, and one JSON line per
- * human note in `metrics/notes.jsonl`. A reader that finds a store missing
- * reads an empty one, and a line it cannot parse is skipped and named, never
- * fatal: metrics describe runs, they do not gate them.
+ * human note in `metrics/notes.jsonl`. A reader that finds the store missing
+ * reads an empty one; a line it cannot parse, or one that is not the shape
+ * the store promises, is skipped and named, never fatal: metrics describe
+ * runs, they do not gate them. A store file that exists but cannot be read
+ * is an error the caller names.
  */
 
 export const METRICS_SCHEMA_VERSION = 'qare.metrics.v1'
@@ -75,34 +77,76 @@ const NOTE_KINDS: MetricsNoteKind[] = ['escape', 'false-block', 'qa-minutes']
 export const RUNS_FILE = 'runs.jsonl'
 export const NOTES_FILE = 'notes.jsonl'
 
-/** Read a metrics store at `dir` (the directory itself, not its parent). A missing directory reads as empty. */
+/** Read a metrics store at `dir` (the directory itself, not its parent). A missing directory reads as empty; a present but unreadable one is an error the caller names. */
 export async function readMetricsStore(dir: string): Promise<MetricsStore> {
-  const [runs, notes] = await Promise.all([readLines<RunMetricsRecord>(join(dir, RUNS_FILE)), readLines<MetricsNote>(join(dir, NOTES_FILE))])
+  const [runs, notes] = await Promise.all([
+    readLines<RunMetricsRecord>(join(dir, RUNS_FILE), isRunRecord),
+    readLines<MetricsNote>(join(dir, NOTES_FILE), isNoteRecord),
+  ])
   return { runs: runs.values, notes: notes.values, malformed: runs.malformed + notes.malformed }
 }
 
-async function readLines<T>(file: string): Promise<{ values: T[]; malformed: number }> {
+async function readLines<T>(file: string, isShape: (value: unknown) => boolean): Promise<{ values: T[]; malformed: number }> {
   let text: string
   try {
     text = await readFile(file, 'utf8')
-  } catch {
-    return { values: [], malformed: 0 }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { values: [], malformed: 0 }
+    throw error
   }
   const values: T[] = []
   let malformed = 0
   for (const line of text.split('\n')) {
     if (line.trim() === '') continue
+    let parsed: unknown
     try {
-      values.push(JSON.parse(line) as T)
+      parsed = JSON.parse(line)
     } catch {
       malformed += 1
+      continue
     }
+    // A line that parses but is not the shape the store promises is counted
+    // and named like an unparseable one: a `null` line must not reach the
+    // summary as a run and break the report it was meant to inform.
+    if (isShape(parsed)) values.push(parsed as T)
+    else malformed += 1
   }
   return { values, malformed }
 }
 
-/** Append one run record as a line. Creates the store directory when missing. */
-export async function appendRunMetrics(dir: string, record: Omit<RunMetricsRecord, 'schemaVersion' | 'recordedAt'>, now: () => Date = defaultNow): Promise<void> {
+function isRunRecord(value: unknown): value is RunMetricsRecord {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  const criteria = record.criteria
+  return (
+    record.schemaVersion === METRICS_SCHEMA_VERSION &&
+    typeof record.runId === 'string' &&
+    typeof record.recordedAt === 'string' &&
+    typeof record.startedAt === 'string' &&
+    typeof record.finishedAt === 'string' &&
+    typeof record.wallMs === 'number' &&
+    Number.isFinite(record.wallMs) &&
+    typeof record.verdict === 'string' &&
+    typeof criteria === 'object' &&
+    criteria !== null &&
+    Array.isArray((criteria as Record<string, unknown>).selected)
+  )
+}
+
+function isNoteRecord(value: unknown): value is MetricsNote {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const note = value as Record<string, unknown>
+  return (
+    note.schemaVersion === METRICS_SCHEMA_VERSION &&
+    typeof note.recordedAt === 'string' &&
+    typeof note.kind === 'string' &&
+    NOTE_KINDS.includes(note.kind as MetricsNoteKind) &&
+    (note.minutes === undefined || (typeof note.minutes === 'number' && Number.isFinite(note.minutes)))
+  )
+}
+
+/** Append one run record as a line. Creates the store directory when missing. A record that already carries recordedAt keeps it, so a caller writing the same record to two destinations writes the same timestamp. */
+export async function appendRunMetrics(dir: string, record: Omit<RunMetricsRecord, 'schemaVersion' | 'recordedAt'> & { recordedAt?: string }, now: () => Date = defaultNow): Promise<void> {
   const full: RunMetricsRecord = { schemaVersion: METRICS_SCHEMA_VERSION, recordedAt: now().toISOString(), ...record }
   await appendLine(join(dir, RUNS_FILE), full)
 }

@@ -240,7 +240,14 @@ function parseUsage(value: unknown): ModelUsage | undefined {
   )
     fail('usage', 'usage must be a JSON object with inputTokens and outputTokens numbers')
   const usage = value as { inputTokens: number; outputTokens: number }
+  requireCountable('usage.inputTokens', usage.inputTokens)
+  requireCountable('usage.outputTokens', usage.outputTokens)
   return { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }
+}
+
+/** A token count is a count: finite, and at least zero as the schema says. */
+function requireCountable(field: string, count: number): void {
+  if (!Number.isFinite(count) || count < 0) fail(field, `${field} must be a number of at least 0, not ${JSON.stringify(count)}`)
 }
 
 function parseProfiles(value: unknown): PlanProfileRef[] {

@@ -30,6 +30,7 @@ that can settle it or to a reason it cannot be planned.
 ```json
 {
   "schemaVersion": "1",
+  "usage": { "inputTokens": 900, "outputTokens": 120 },
   "criteria": [
     { "id": "...", "text": "...", "checks": [ { "kind": "command", "name": "...", "...": "..." } ] },
     { "id": "...", "text": "...", "unplannable": "why this criterion cannot be planned" }
@@ -40,6 +41,7 @@ that can settle it or to a reason it cannot be planned.
 | Field | Where | Rules |
 | --- | --- | --- |
 | `schemaVersion` | document | required, must be `"1"` |
+| `usage` | document | optional object with `inputTokens` and `outputTokens` (numbers, at least 0): what the planning model spent planning (#51) |
 | `criteria` | document | required array; must be non-empty (an empty plan passes nothing, so it fails closed) |
 | `id` | criterion | required, non-empty string |
 | `text` | criterion | required, non-empty string |

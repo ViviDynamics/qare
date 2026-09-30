@@ -43,6 +43,12 @@ export interface FakeGithub {
   /** Tree entries by sha: path, mode and blob sha. */
   trees: Map<string, FakeTreeEntry[]>
   status: number | undefined
+  /**
+   * How many of the next git ref updates fail with 422, one per attempt: the
+   * way GitHub refuses a push onto a branch that moved under it. Set to 1 to
+   * make exactly one push attempt fail, more to exhaust a retry budget.
+   */
+  failRefPatches: number
   close(): Promise<void>
 }
 
@@ -81,7 +87,10 @@ export function startFakeGithub(): Promise<FakeGithub> {
   const pulls: FakePull[] = []
   const blobs = new Map<string, Buffer>()
   const trees = new Map<string, FakeTreeEntry[]>()
-  const state = { status: undefined as number | undefined }
+  const state = {
+    status: undefined as number | undefined,
+    failRefPatches: 0,
+  }
   let nextNumber = 100
   let nextCommentId = 5000
   let nextObject = 1
@@ -253,6 +262,10 @@ export function startFakeGithub(): Promise<FakeGithub> {
         if (request.method === 'PATCH') {
           const sha = refs.get(branch)
           if (sha === undefined) return respond(response, 404, { message: 'branch not found' })
+          if (state.failRefPatches > 0) {
+            state.failRefPatches -= 1
+            return respond(response, 422, { message: 'Update is not a fast forward' })
+          }
           refs.set(branch, (body as { sha: string }).sha)
           respond(response, 200, { ref: branch, object: { sha: (body as { sha: string }).sha, type: 'commit' } })
           return
@@ -322,6 +335,12 @@ export function startFakeGithub(): Promise<FakeGithub> {
         },
         set status(value: number | undefined) {
           state.status = value
+        },
+        get failRefPatches(): number {
+          return state.failRefPatches
+        },
+        set failRefPatches(value: number) {
+          state.failRefPatches = value
         },
         close: () =>
           new Promise((resolveClose) => {

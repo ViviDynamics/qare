@@ -416,4 +416,8 @@ test('a plan carries what the planner model spent, when the runner says so (#51)
   // spend is refused: the metrics record joins numbers it must be able to add.
   expect(parsePlan(base).usage).toBeUndefined()
   expect(() => parsePlan({ ...base, usage: { inputTokens: 9 } })).toThrow(PlanValidationError)
+  // A token count is a count: negative and non-finite numbers are refused,
+  // the schema says at least 0 (#51).
+  expect(() => parsePlan({ ...base, usage: { inputTokens: -1, outputTokens: 4 } })).toThrow(/at least 0/)
+  expect(() => parsePlan({ ...base, usage: { inputTokens: 9, outputTokens: Number.POSITIVE_INFINITY } })).toThrow(/at least 0/)
 })

@@ -97,6 +97,7 @@ import type {
   RunContext,
   RunResult,
   RunVerdict,
+  MetricsStore,
   SweepPayload,
 } from '@qare/core'
 
@@ -1222,17 +1223,20 @@ async function ledgerStatus(dir: string, out: Writer, err: Writer): Promise<numb
   }
   // What the runs amount to over time (#51), from the metrics store beside
   // the ledger. A repository that has recorded no runs says so by its
-  // absence; a store that cannot be read is named, not fatal, because
-  // metrics describe runs and do not gate the ledger.
-  let metrics
+  // absence; a store that cannot be read is named with why, and a store of
+  // malformed lines alone is not mistaken for an empty one, because metrics
+  // describe runs and do not gate the ledger.
+  let metrics: MetricsStore | undefined
+  let metricsError: unknown
   try {
     metrics = await readMetricsStore(join(dir, 'metrics'))
-  } catch {
-    metrics = undefined
+  } catch (error) {
+    metricsError = error
   }
-  if (metrics !== undefined && (metrics.runs.length > 0 || metrics.notes.length > 0)) {
+  if (metricsError !== undefined) out.write(`metrics: unreadable (${formatError(metricsError)})\n`)
+  else if (metrics !== undefined && (metrics.runs.length > 0 || metrics.notes.length > 0 || metrics.malformed > 0)) {
     for (const line of metricsSummaryLines(summarizeMetrics(metrics))) out.write(`metrics: ${line}\n`)
-    if (metrics.malformed > 0) out.write(`metrics: ${metrics.malformed} store line(s) were not valid JSON and were skipped\n`)
+    if (metrics.malformed > 0) out.write(`metrics: ${metrics.malformed} store line(s) were not valid and were skipped\n`)
   } else {
     out.write('metrics: none\n')
   }
@@ -1477,14 +1481,22 @@ async function metricsRecord(argv: string[], out: Writer): Promise<number> {
   const loaded = loadResult(await readFile(resolve(resultSpec), 'utf8'))
   if (loaded.startedAt === undefined || loaded.finishedAt === undefined)
     throw new Error('the result has no startedAt/finishedAt timestamps; record metrics from a run made with the version that writes them')
+  const runFlag = flag(argv, '--run')
   const planFlag = flag(argv, '--plan')
   const plan = planFlag === undefined ? undefined : loadPlan(await readFile(resolve(planFlag), 'utf8'))
   const context = contextOf(argv)
   const counts: Record<string, number> = {}
   for (const criterion of loaded.criteria) counts[criterion.outcome] = (counts[criterion.outcome] ?? 0) + 1
+  // A record that does not name its run cannot be joined to anything later,
+  // so a result without a job id is refused rather than recorded as '' (#51):
+  // the caller who knows the id passes --run.
+  const runId = loaded.job?.id ?? runFlag
+  if (runId === undefined || runId === '')
+    throw new Error('the result carries no job id; pass --run <id> so the record names the run it describes')
   const record = {
     schemaVersion: METRICS_SCHEMA_VERSION,
-    runId: loaded.job?.id ?? '',
+    recordedAt: new Date().toISOString(),
+    runId,
     startedAt: loaded.startedAt,
     finishedAt: loaded.finishedAt,
     wallMs: Math.max(0, Date.parse(loaded.finishedAt) - Date.parse(loaded.startedAt)),

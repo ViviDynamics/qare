@@ -122,3 +122,34 @@ test('sumUsage adds either side, and says nothing when both are absent', () => {
   expect(sumUsage(undefined, { inputTokens: 3, outputTokens: 4 })).toEqual({ inputTokens: 3, outputTokens: 4 })
   expect(sumUsage({ inputTokens: 1, outputTokens: 1 }, { inputTokens: 2, outputTokens: 2 })).toEqual({ inputTokens: 3, outputTokens: 3 })
 })
+
+test('a line that parses but is not the promised shape is skipped and named, never read as a run (#51)', async () => {
+  const dir = await metricsDir()
+  try {
+    await appendRunMetrics(dir, BASE_RECORD)
+    // A `null` line, an array line and a run-shaped object without the
+    // required fields each must count as malformed, not crash the reader:
+    // JSON.parse accepts them all.
+    const runs = await readFile(join(dir, 'runs.jsonl'), 'utf8')
+    await import('node:fs/promises').then((fs) =>
+      fs.writeFile(join(dir, 'runs.jsonl'), `${runs}null\n[1, 2]\n{"runId": "no schema version"}\n`, 'utf8'),
+    )
+    const store = await readMetricsStore(dir)
+    expect(store.runs).toHaveLength(1)
+    expect(store.malformed).toBe(3)
+  } finally {
+    await rm(dir, { recursive: true })
+  }
+})
+
+test('a store file that exists but cannot be read is an error the caller names, not an empty store (#51)', async () => {
+  const dir = await metricsDir()
+  try {
+    // A directory where runs.jsonl should be: reading it fails with EISDIR,
+    // and the reader must surface that rather than report a silent zero.
+    await import('node:fs/promises').then((fs) => fs.mkdir(join(dir, 'runs.jsonl'), { recursive: true }))
+    await expect(readMetricsStore(dir)).rejects.toThrow()
+  } finally {
+    await rm(dir, { recursive: true })
+  }
+})

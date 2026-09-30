@@ -522,9 +522,14 @@ jobs:
           if [ -n "${PR_NUMBER:-}" ]; then
             args+=(--pr "$PR_NUMBER")
           fi
-          node packages/cli/dist/index.js metrics record \
-            --result judged-result.json "${args[@]}" \
-            --store qa-metrics --out metrics.json
+          # A metrics failure is reported, never gating: the verdict is decided
+          # and the evidence posted whether or not the numbers were recorded,
+          # and the numbers are not worth a red run by themselves (#51).
+          if ! node packages/cli/dist/index.js metrics record \
+              --result judged-result.json "${args[@]}" \
+              --store qa-metrics --out metrics.json; then
+            echo "::warning::qare metrics record failed: this run's numbers are not recorded, the verdict is unaffected"
+          fi
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
       - name: File stub issues (refused runs only)

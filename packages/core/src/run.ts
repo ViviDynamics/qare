@@ -215,7 +215,7 @@ export async function runJob(
     // A repository that has not onboarded is refused, not a caller mistake
     // (#107). Every criterion is still reported, unverified, naming the gap,
     // so the evidence says what nobody checked and what onboarding needs.
-    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `this repository has no usable .qa/ profile yet, so qare will not claim to have checked it: ${error.message}`, undefined, undefined, execution)
+    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `this repository has no usable .qa/ profile yet, so qare will not claim to have checked it: ${error.message}`, undefined, undefined, execution, startedAt)
   }
   // One compose project per run (#53), minted before anything boots. A run
   // against a target boots nothing, so it needs no isolation, and a run that
@@ -226,7 +226,7 @@ export async function runJob(
     try {
       isolation = opts.isolation ?? (await isolateRun())
     } catch (error) {
-      return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `the harness could not isolate this run, so it will not boot an app: ${error instanceof Error ? error.message : String(error)}`, undefined, undefined, execution)
+      return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `the harness could not isolate this run, so it will not boot an app: ${error instanceof Error ? error.message : String(error)}`, undefined, undefined, execution, startedAt)
     }
     // A run that boots an app always publishes it on a port of its own: an
     // isolation without a usable one would fall back to the compose default
@@ -243,6 +243,7 @@ export async function runJob(
         undefined,
         undefined,
         execution,
+        startedAt,
       )
     }
     // A caller-carried isolation is only usable if it is one the harness could
@@ -258,6 +259,7 @@ export async function runJob(
         undefined,
         undefined,
         execution,
+        startedAt,
       )
     }
   }
@@ -284,7 +286,7 @@ export async function runJob(
     validatePlanValues(job.criteria, profile, values, opts.flowDriver ?? mcpDriverCapabilities(profile.mcp) ?? BROWSER_FLOW_DRIVER)
   } catch (error) {
     if (!(error instanceof JobValidationError)) throw error
-    return refuseRun(job, opts, rules, error.message, targetNote, isolation, execution)
+    return refuseRun(job, opts, rules, error.message, targetNote, isolation, execution, startedAt)
   }
   // The flake policy (#50) is settled before anything runs, so the store is
   // read once and every criterion consults the same one.
@@ -808,13 +810,17 @@ async function refuseRun(
   targetNote: Pick<RunResult, 'target'> = {},
   isolation?: RunIsolation,
   execution: ExecutionKind = detectExecution(),
+  startedAt: string = new Date().toISOString(),
 ): Promise<{ result: RunResult; isolation?: RunIsolation }> {
   const criteria: CriterionResult[] = job.criteria.map((criterion) => ({
     id: criterion.id,
     outcome: 'unverified',
     reason,
   }))
-  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria, startedAt: new Date().toISOString(), ...targetNote }, rules, undefined, execution)
+  // The wall clock starts when the run did, not when the refusal did: work
+  // done before the refusal (profile resolution, isolation) is time the run
+  // spent (#51).
+  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria, startedAt, ...targetNote }, rules, undefined, execution)
   await feedIfOptedIn(opts, job, finished.result)
   return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
 }

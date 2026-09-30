@@ -292,7 +292,7 @@ test('the sweep reads what the runs recorded beside the ledger and says it in th
     const rendered = renderStatusMarkdown(report)
     expect(rendered).toContain('Whether QARE is working')
     expect(rendered).toContain('- runs recorded: 1')
-    expect(rendered).toContain('- 1 metrics line(s) in the store were not valid JSON and were skipped')
+    expect(rendered).toContain('- 1 metrics line(s) in the store were not valid and were skipped')
 
     // A ledger with no metrics store says so by the section's absence.
     const bare = await mkdtemp(join(tmpdir(), 'qare-sweep-bare-'))
@@ -306,6 +306,43 @@ test('the sweep reads what the runs recorded beside the ledger and says it in th
       await rm(bare, { recursive: true })
     }
   } finally {
+    await rm(dir, { recursive: true })
+  }
+})
+
+test('a store of malformed lines alone is not mistaken for a repository that ran nothing (#51)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-sweep-'))
+  try {
+    const store = new FileLedgerStore(dir)
+    await store.saveDocument([entry({ criterion: 'spec-up-200' })], verifyChange('2026-09-25T00:00:00Z', ['spec-up-200']))
+    await mkdir(join(dir, 'metrics'), { recursive: true })
+    await writeFile(join(dir, 'metrics', 'runs.jsonl'), 'null\n', 'utf8')
+    const payload = await sweepLedger(dir, new Date(Date.parse('2026-09-29T00:00:00Z')))
+    // The section is present with the zero the store honestly reports, plus
+    // the line naming how much of it was unreadable: not the absence that
+    // would read as a repository that ran nothing.
+    expect(payload.metrics?.lines).toContain('runs recorded: 0')
+    expect(payload.metrics?.malformed).toBe(1)
+    const rendered = renderStatusMarkdown({ at: payload.at, classification: payload.classification, metrics: payload.metrics })
+    expect(rendered).toContain('- 1 metrics line(s) in the store were not valid and were skipped')
+  } finally {
+    await rm(dir, { recursive: true })
+  }
+})
+
+test('a metrics store that cannot be read is named in the standing report, not dropped (#51)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-sweep-'))
+  try {
+    const store = new FileLedgerStore(dir)
+    await store.saveDocument([entry({ criterion: 'spec-up-200' })], verifyChange('2026-09-25T00:00:00Z', ['spec-up-200']))
+    await mkdir(join(dir, 'metrics', 'runs.jsonl'), { recursive: true })
+    const payload = await sweepLedger(dir, new Date(Date.parse('2026-09-29T00:00:00Z')))
+    expect(payload.metrics?.unreadable).toBeDefined()
+    const rendered = renderStatusMarkdown({ at: payload.at, classification: payload.classification, metrics: payload.metrics })
+    expect(rendered).toContain('the metrics store could not be read')
+    expect(rendered).toContain('missing here, not zero')
+  } finally {
+    await rm(join(dir, 'metrics'), { recursive: true, force: true })
     await rm(dir, { recursive: true })
   }
 })

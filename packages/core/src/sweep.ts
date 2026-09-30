@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import { FileLedgerStore } from './ledger.js'
 import type { LedgerChange, LedgerDocument, LedgerEntry } from './ledger.js'
-import { metricsSummaryLines, readMetricsStore, summarizeMetrics } from './metrics.js'
+import { metricsSummaryLines, readMetricsStore, summarizeMetrics, type MetricsStore } from './metrics.js'
 
 /**
  * The standing sweep (#49): on a schedule, classify every criterion in the
@@ -308,8 +308,11 @@ export function renderStatusMarkdown(report: SweepReport): string {
   ]
   if (report.metrics !== undefined) {
     lines.push('## Whether QARE is working (#51)', '')
+    if (report.metrics.unreadable !== undefined) {
+      lines.push(`- the metrics store could not be read (${report.metrics.unreadable}), so the totals it holds are missing here, not zero`)
+    }
     for (const line of report.metrics.lines) lines.push(`- ${line}`)
-    if (report.metrics.malformed > 0) lines.push(`- ${report.metrics.malformed} metrics line(s) in the store were not valid JSON and were skipped`)
+    if (report.metrics.malformed > 0) lines.push(`- ${report.metrics.malformed} metrics line(s) in the store were not valid and were skipped`)
     lines.push('')
   }
   lines.push(...section('Proven', buckets.proven, 'verified within its area staleness threshold'))
@@ -365,15 +368,18 @@ export interface SweepPayload {
   /**
    * What the runs amount to over time (#51), read from the metrics store in
    * the ledger directory. Absent when there is no store: a repository that
-   * has recorded no runs says so by its absence, not by an empty section.
+   * has recorded no runs says so by its absence, not by an empty section. A
+   * store that is there but cannot be read is present, naming why.
    */
   metrics?: MetricsSection
 }
 
 export interface MetricsSection {
   lines: string[]
-  /** Store lines skipped because they were not valid JSON. */
+  /** Store lines skipped because they were not valid JSON of the expected shape. */
   malformed: number
+  /** Why the store's totals could not be read, when they could not be: the section names the gap instead of vanishing (#51). */
+  unreadable?: string
 }
 
 const EMPTY_CLASSIFICATION: SweepClassification = { proven: [], stale: [], unverified: [], quarantined: [], refused: [] }
@@ -412,17 +418,20 @@ export async function sweepLedger(ledgerDir: string, now: Date = new Date()): Pr
 /**
  * The metrics section of a sweep (#51): what the runs recorded in the ledger
  * directory's metrics store amount to. A store that cannot be read is not a
- * finding — metrics describe runs, they do not gate them — so any error here
- * simply leaves the section out.
+ * finding — metrics describe runs, they do not gate them — but it is named:
+ * the section carries why the totals are missing, so an unreadable store
+ * reads as a problem to fix, not as a repository that ran nothing. A store
+ * with nothing in it at all is still absent, not an empty section.
  */
 async function metricsSection(ledgerDir: string): Promise<MetricsSection | undefined> {
+  let store: MetricsStore
   try {
-    const store = await readMetricsStore(join(ledgerDir, 'metrics'))
-    if (store.runs.length === 0 && store.notes.length === 0) return undefined
-    return { lines: metricsSummaryLines(summarizeMetrics(store)), malformed: store.malformed }
-  } catch {
-    return undefined
+    store = await readMetricsStore(join(ledgerDir, 'metrics'))
+  } catch (error) {
+    return { lines: [], malformed: 0, unreadable: error instanceof Error ? error.message : String(error) }
   }
+  if (store.runs.length === 0 && store.notes.length === 0 && store.malformed === 0) return undefined
+  return { lines: metricsSummaryLines(summarizeMetrics(store)), malformed: store.malformed }
 }
 
 function failed(ledgerDir: string, now: Date, fingerprint: string, error: unknown, lastActor?: string): SweepPayload {

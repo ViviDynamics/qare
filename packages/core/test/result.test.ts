@@ -368,4 +368,8 @@ test('a run carries the verifier model spend the judge stamps on it (#51)', () =
   expect(parseResult({ ...base, judgeUsage: { inputTokens: 12, outputTokens: 3 } }).judgeUsage).toEqual({ inputTokens: 12, outputTokens: 3 })
   expect(parseResult(base).judgeUsage).toBeUndefined()
   expect(() => parseResult({ ...base, judgeUsage: { inputTokens: 'many' } })).toThrow(ResultValidationError)
+  // A token count is a count: negative and non-finite numbers are refused,
+  // the schema says at least 0 (#51).
+  expect(() => parseResult({ ...base, judgeUsage: { inputTokens: -12, outputTokens: 3 } })).toThrow(/at least 0/)
+  expect(() => parseResult({ ...base, judgeUsage: { inputTokens: Number.NaN, outputTokens: 3 } })).toThrow(/at least 0/)
 })

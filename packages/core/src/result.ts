@@ -224,7 +224,14 @@ function parseModelUsage(value: unknown, field: string): ModelUsage | undefined 
   if (value === undefined) return undefined
   if (!isRecord(value) || typeof value.inputTokens !== 'number' || typeof value.outputTokens !== 'number')
     fail(field, `${field} must be a JSON object with inputTokens and outputTokens numbers`)
+  requireCountable(`${field}.inputTokens`, value.inputTokens)
+  requireCountable(`${field}.outputTokens`, value.outputTokens)
   return { inputTokens: value.inputTokens, outputTokens: value.outputTokens }
+}
+
+/** A token count is a count: finite, and at least zero as the schema says. */
+function requireCountable(field: string, count: number): void {
+  if (!Number.isFinite(count) || count < 0) fail(field, `${field} must be a number of at least 0, not ${JSON.stringify(count)}`)
 }
 
 /**
