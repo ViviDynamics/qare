@@ -20,7 +20,7 @@ Rules that agents must follow when working on this repository.
 
 ## Workflow skills
 
-`.agents/skills/` holds the workflow skills (`.claude/skills` and `.opencode/skill` point at the same copies), adapted from the org's internal skill set at tag `2026.09.15` and tuned to qare. Never weaken a lint, type, test or CI gate to get green: the quality guard blocks it unless the PR body justifies each file under `### Quality gate changes`.
+`.agents/skills/` holds the workflow skills (`.claude/skills` and `.opencode/skill` point at the same copies), adapted from the org's internal skill set at tag `2026.09.16` and tuned to qare. Never weaken a lint, type, test or CI gate to get green: the quality guard blocks it unless the PR body justifies each file under `### Quality gate changes`.
 
 ## Code requirements
 
