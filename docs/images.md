@@ -56,13 +56,17 @@ release.
 
 ## The shipped family
 
-QARE ships two images of its own (#88), both built from this repository's
-`images/` recipes and published by the release workflow for amd64 and arm64:
+QARE ships four images of its own (#88 the base and the web flavour, #89 the
+android and desktop-linux flavours), all built from this repository's
+`images/` recipes and published by the release workflow for amd64 and arm64,
+except where a driver's hardware says otherwise:
 
 | Image | What it adds to the base |
 | --- | --- |
 | `ghcr.io/vividynamics/qare-core` | The smallest thing that runs QARE at all: the CLI, the ledger, the judge, command and mail checks, the exploration tool servers, and a pinned nare. No client driver. |
 | `ghcr.io/vividynamics/qare-web` | Built `FROM core`: the browser engine, its browsers, and a virtual display for headed runs. |
+| `ghcr.io/vividynamics/qare-android` | Built `FROM core` (amd64 only: the emulator's system image is an x86_64 build): the android sdk, an emulator, an avd, and the preboot check that names what the host must provide before anything boots. |
+| `ghcr.io/vividynamics/qare-desktop-linux` | Built `FROM core`: a virtual display, the accessibility bus, and the at-spi tree bridge as a separate process. |
 
 The core image holds a size budget (`images/core/size-budget`), and the CI
 workflow fails when a change grows the image past it: the budget is what keeps
@@ -75,10 +79,16 @@ digest, the flavour and the versions that produced it rather than asking the
 registry.
 
 No derived image reinstalls anything the base already has, and CI enforces
-that: `images/check-derived.sh` builds a base and a derived image, compares
-the bytes of the files the base ships between the two images, and fails when
-a derived image touched any of them. A derived recipe that reinstalled node,
-say, would grow every pull of the flavour and shadow the base's own pin.
+that: `images/check-derived.sh` builds the family, compares the bytes of the
+files the base ships in every derived image, and fails when a derived image
+touched any of them. A derived recipe that reinstalled node, say, would grow
+every pull of the flavour and shadow the base's own pin.
+
+The android flavour adds a second guard to the release: its preboot check
+runs from the published image on a hosted runner that has hardware
+virtualisation and must pass, and the same image must refuse before booting
+on a host that has none, naming the requirement it misses. A release that
+cannot run the family's checks is refused rather than shipped.
 
 ## Building a flavour
 

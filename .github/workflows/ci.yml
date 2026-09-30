@@ -64,5 +64,9 @@ jobs:
           echo "core image $size bytes, under budget $budget" >> "$GITHUB_STEP_SUMMARY"
       - name: Build the web flavour from it
         run: docker build -f images/web/Dockerfile --build-arg QARE_IMAGE=qare-core:ci -t qare-web:ci .
+      - name: Build the android flavour from it
+        run: docker build -f images/android/Dockerfile --build-arg QARE_IMAGE=qare-core:ci -t qare-android:ci .
+      - name: Build the desktop-linux flavour from it
+        run: docker build -f images/desktop-linux/Dockerfile --build-arg QARE_IMAGE=qare-core:ci -t qare-desktop-linux:ci .
       - name: Check the derived images reinstall nothing
-        run: sh images/check-derived.sh qare-core:ci qare-web:ci
+        run: sh images/check-derived.sh qare-core:ci qare-web:ci qare-android:ci qare-desktop-linux:ci
