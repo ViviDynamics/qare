@@ -347,3 +347,48 @@ test('the model-facing diff copies are scrubbed of the values the change adds (#
   expect(judge).toContain('--diff change-planner.diff')
   expect(judge).not.toContain('--diff change.diff')
 })
+
+// ADR: the release tag is created by the build that earns it (#188). The
+// auto-tag workflow watches CI the way nare's release workflow does, because
+// an event a workflow triggers with the workflow's own token creates no
+// workflow runs at all: the release is dispatched explicitly, never left to
+// the tag push.
+const autoTag = readFileSync(join(repoRoot, '.github', 'workflows', 'auto-tag.yml'), 'utf8')
+
+test('auto-tag runs only after CI passes on a push to main (#188)', () => {
+  expect(autoTag).toMatch(/workflow_run:\n\s+workflows: \[CI\]/)
+  for (const gate of [
+    "github.event.workflow_run.conclusion == 'success'",
+    "github.event.workflow_run.event == 'push'",
+    "github.event.workflow_run.head_branch == 'main'",
+    'github.event.workflow_run.head_repository.full_name == github.repository',
+  ])
+    expect(autoTag).toContain(gate)
+})
+
+test('auto-tag tags the version package.json carries, and nothing else (#188)', () => {
+  expect(autoTag).toContain("require('./package.json').version")
+  // Idempotent by the tag's existence: a merge that changes no version no-ops.
+  expect(autoTag).toMatch(/git ls-remote --tags origin "refs\/tags\/\$version"/)
+  expect(autoTag).toContain('tagged=true')
+  expect(autoTag).toMatch(/git tag "\$version" "\$sha"/)
+})
+
+test('auto-tag dispatches the release on the tag and verifies the run started (#188)', () => {
+  expect(autoTag).toContain('gh workflow run release.yml --ref "$version"')
+  expect(autoTag).toContain('select(.headBranch == env.version)')
+  expect(autoTag).toContain('select(.headSha == env.sha)')
+  expect(autoTag).toContain('actions: write')
+})
+
+test('auto-tag pushes the tag with the workflow token alone (#188)', () => {
+  expect(autoTag).toContain('permissions: {}')
+  expect(autoTag).toContain('contents: write')
+  expect(autoTag).not.toContain('secrets.')
+  expect(autoTag).toMatch(/ref: \$\{\{ github\.event\.workflow_run\.head_sha \|\| github\.sha \}\}/)
+})
+
+test('release gains the dispatch trigger the automated path uses (#188)', () => {
+  const release = readFileSync(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8')
+  expect(release).toContain('workflow_dispatch:')
+})

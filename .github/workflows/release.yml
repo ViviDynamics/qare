@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - '*.*.*'
+  # The auto-tag workflow dispatches the release on the tag it created (#188):
+  # an event a workflow triggers with the workflow's own token creates no
+  # workflow runs, so the release is started explicitly for the automated
+  # path, while a tag a person pushes still arrives through the trigger above.
+  workflow_dispatch:
 
 permissions:
   contents: write
