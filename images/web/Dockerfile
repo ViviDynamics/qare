@@ -21,14 +21,15 @@ LABEL org.opencontainers.image.title=$IMAGE_NAME \
 
 # The browser driver family lands under /opt/qare/drivers/web (the contract's
 # derived-image path) and touches nothing the base ships. The browsers are
-# pinned to the version playwright-core resolves, and the system packages
-# they need are installed beside them.
+# the ones the base's own playwright-core resolves, and the system packages
+# they need are installed beside them. The base ships no npm, so the install
+# runs through that playwright-core's CLI directly.
 USER root
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/qare/drivers/web/browsers
 RUN apt-get update \
  && apt-get install -y --no-install-recommends xvfb \
  && rm -rf /var/lib/apt/lists* \
- && npx --yes "playwright@$PLAYWRIGHT_VERSION" install --with-deps chromium \
+ && node /opt/qare/lib/packages/core/node_modules/playwright-core/cli.js install --with-deps chromium \
  && chown -R qare:qare /opt/qare/drivers/web
 
 # The driver family's own record, beside its browsers: what the evidence
