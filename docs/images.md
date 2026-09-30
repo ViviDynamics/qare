@@ -54,6 +54,47 @@ worked example defaults to `latest` so it builds anywhere, and pins its base
 through the same `--build-arg`: the release guard builds it against the exact
 release.
 
+## The shipped family
+
+QARE ships two images of its own (#88), both built from this repository's
+`images/` recipes and published by the release workflow for amd64 and arm64:
+
+| Image | What it adds to the base |
+| --- | --- |
+| `ghcr.io/vividynamics/qare-core` | The smallest thing that runs QARE at all: the CLI, the ledger, the judge, command and mail checks, the exploration tool servers, and a pinned nare. No client driver. |
+| `ghcr.io/vividynamics/qare-web` | Built `FROM core`: the browser engine, its browsers, and a virtual display for headed runs. |
+
+The core image holds a size budget (`images/core/size-budget`), and the CI
+workflow fails when a change grows the image past it: the budget is what keeps
+the base the smallest thing that runs QARE, not a number that drifts. Every
+image pins the versions it ships and stamps them at
+`/opt/qare/config/IMAGE.json`, and a derived flavour stamps its driver
+versions beside its drivers at `/opt/qare/drivers/<flavour>/DRIVER.json`. A
+run inside the image reads both into its evidence, so a run names the image
+digest, the flavour and the versions that produced it rather than asking the
+registry.
+
+No derived image reinstalls anything the base already has, and CI enforces
+that: `images/check-derived.sh` builds a base and a derived image, compares
+the bytes of the files the base ships between the two images, and fails when
+a derived image touched any of them. A derived recipe that reinstalled node,
+say, would grow every pull of the flavour and shadow the base's own pin.
+
+## Building a flavour
+
+A flavour declares its base through one argument, so the same recipe builds
+against any contract-conformant image:
+
+```sh
+docker build -f images/web/Dockerfile \
+  --build-arg QARE_IMAGE=ghcr.io/vividynamics/qare-core:2026.9.0 .
+```
+
+The base argument is the whole inheritance. A flavour recipe installs only
+its own driver family under `/opt/qare/drivers`, names its driver versions in
+`DRIVER.json`, sets its flavour name in the environment, and ends `USER qare`.
+Everything else — paths, entry point, user, tags — is the contract above.
+
 ## The worked example
 
 `examples/derived-image` is a derived image that adds a custom driver and a
@@ -79,8 +120,8 @@ the `qare` user with uid and gid 1000. The release publishes only after the
 guard passes, so a release that breaks the contract is refused rather than
 shipped.
 
-Until the base images publish (#88), the guard builds against a
-contract-conformant fixture stamped with the release version, so the check is
-about the example and the contract rather than the base. On any release where
-the published base exists, the same job also builds the example against it and
-runs the smoke check there.
+Every release publishes the shipped family first, then builds the worked
+example against the published core for that release and runs the smoke check
+inside it. The contract-conformant fixture stamped with the release version
+is the fallback for a release whose published base is not reachable, so the
+check stays about the example and the contract rather than the base.

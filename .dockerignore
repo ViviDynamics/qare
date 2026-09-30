@@ -1,0 +1,7 @@
+# The image builds sweep only the source: whatever the build runner has
+# installed or compiled (node_modules, dist) stays out of the context, so
+# the image's contents are decided by the recipes alone.
+.git
+.agents
+**/node_modules
+packages/*/dist

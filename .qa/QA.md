@@ -25,3 +25,6 @@ one.
 
 Boundary: the target is the live site, so the run needs the network, and a
 page that cannot be reached is reported unverified or blocked, never failed.
+The checks drive a browser, so the run executes in the published web image
+(#88): the profile names `flavour: web`, and the pipeline's execute step pulls
+the flavour the profile names.

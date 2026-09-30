@@ -368,3 +368,19 @@ test('a tool name carrying the channel delimiter is refused (#167 review)', () =
   expect(run).toThrow(ProfileValidationError)
   expect(run).toThrow(/comma delimiter or a control character/)
 })
+
+test('a profile names the image flavour its checks need, and an unknown one fails naming the field (#88)', () => {
+  const web = validateProfileConfig({ target: MCP_HEALTH, flavour: 'web' })
+  expect(web.flavour).toBe('web')
+  expect(validateProfileConfig({ target: MCP_HEALTH }).flavour).toBeUndefined()
+  expect(validateProfileConfig({ target: MCP_HEALTH, visual: { widths: [], themes: [] } }).flavour).toBeUndefined()
+
+  const refused = () => validateProfileConfig({ target: MCP_HEALTH, flavour: 'desktop' })
+  expect(refused).toThrow(ProfileValidationError)
+  try {
+    refused()
+  } catch (error) {
+    expect((error as ProfileValidationError).field).toBe('flavour')
+  }
+  expect(() => validateProfileConfig({ target: MCP_HEALTH, flavour: 3 })).toThrow(/flavour/)
+})

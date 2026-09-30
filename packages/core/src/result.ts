@@ -1,4 +1,4 @@
-import type { RunEnvironment } from './environment.js'
+import type { RunEnvironment, RunImage } from './environment.js'
 import { parseProfileRef, type JobProfileRef } from './job.js'
 import { isUnsafeProfileName } from './profile.js'
 
@@ -204,6 +204,35 @@ function parseEnvironment(value: unknown): RunEnvironment | undefined {
       nareContract: typeof value.versions.nareContract === 'number'
         ? value.versions.nareContract
         : fail('environment.versions.nareContract', 'nare contract must be a number'),
+    },
+    ...(value.image === undefined ? {} : { image: parseRunImage(value.image) }),
+  }
+}
+
+/** The image record is optional with the same backward-compatibility rule: a
+ * result written before it existed still loads, and one written with it names
+ * the image that produced the run (#88). */
+function parseRunImage(value: unknown): RunImage {
+  if (!isRecord(value)) fail('environment.image', 'environment.image must be a JSON object')
+  const drivers: Record<string, string> = {}
+  if (value.drivers !== undefined) {
+    if (!isRecord(value.drivers))
+      fail('environment.image.drivers', 'environment.image.drivers must be a JSON object of names to versions')
+    for (const [key, entry] of Object.entries(value.drivers))
+      drivers[key] = nonEmptyString(entry, 'environment.image.drivers', `driver ${key}`)
+  }
+  const versions = value.versions
+  if (!isRecord(versions)) fail('environment.image.versions', 'environment.image.versions must be a JSON object')
+  return {
+    name: nonEmptyString(value.name, 'environment.image.name', 'image name'),
+    ref: nonEmptyString(value.ref, 'environment.image.ref', 'image ref'),
+    digest: nonEmptyString(value.digest, 'environment.image.digest', 'image digest'),
+    ...(value.flavour === undefined ? {} : { flavour: nonEmptyString(value.flavour, 'environment.image.flavour', 'image flavour') }),
+    ...(Object.keys(drivers).length === 0 ? {} : { drivers }),
+    versions: {
+      qare: nonEmptyString(versions.qare, 'environment.image.versions.qare', 'qare version'),
+      nare: nonEmptyString(versions.nare, 'environment.image.versions.nare', 'nare version'),
+      node: nonEmptyString(versions.node, 'environment.image.versions.node', 'node version'),
     },
   }
 }

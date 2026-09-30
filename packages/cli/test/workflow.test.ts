@@ -77,12 +77,16 @@ test('judge runs the verifier with the criteria text, the diff and the evidence'
   expect(judge).toMatch(/name: execute-evidence\n\s+path: evidence\n/)
 })
 
-test('plan and judge install the same pinned nare', () => {
-  const pins = [section('plan'), section('judge')].map(
-    (job) => job.match(/nare-\d{4}\.\d+\.\d+-py3-none-any\.whl/)?.[0],
+test('plan and judge run the same image, whose nare is pinned in one place (#88)', () => {
+  // The pin moved into the image recipe: one NARE_WHEEL for the family, and
+  // the jobs pull the same published image for the version they run.
+  const recipe = readFileSync(join(repoRoot, 'images', 'core', 'Dockerfile'), 'utf8')
+  expect(recipe).toMatch(/NARE_WHEEL=/)
+  const refs = [section('plan'), section('judge')].map(
+    (job) => job.match(/ghcr\.io\/vividynamics\/qare-core:\$version/)?.[0],
   )
-  expect(pins[0]).toBeDefined()
-  expect(pins[1]).toBe(pins[0])
+  expect(refs[0]).toBeDefined()
+  expect(refs[1]).toBe(refs[0])
 })
 
 test('a fork pull request skips the model-key job rather than failing', () => {
@@ -141,20 +145,28 @@ test('judge depends on exactly the jobs whose artifacts it consumes', () => {
   expect(section('judge')).toContain('needs: [collect, plan, execute]')
 })
 
-test('the nare the plan job installs is pinned to a version', () => {
-  expect(workflow).toMatch(/nare-\d{4}\.\d+\.\d+-py3-none-any\.whl/)
+test('the nare the image ships is pinned to a version (#88)', () => {
+  expect(readFileSync(join(repoRoot, 'images', 'core', 'Dockerfile'), 'utf8')).toMatch(/nare-\d{4}\.\d+\.\d+-py3-none-any\.whl/)
 })
 
-test('the qare CLI invocations are the repository own build', () => {
-  expect(workflow.match(/node packages\/cli\/dist\/index\.js/g)?.length ?? 0).toBeGreaterThanOrEqual(4)
-  expect(workflow).toContain('pnpm build')
+test('the qare the pipeline runs is built from the repository own workspace (#88)', () => {
+  // The image builds the workspace itself, and every job runs the image's
+  // qare: no job builds the tree on the runner any more.
+  const recipe = readFileSync(join(repoRoot, 'images', 'core', 'Dockerfile'), 'utf8')
+  expect(recipe).toContain('pnpm install --frozen-lockfile')
+  expect(recipe).toContain('pnpm build')
+  for (const job of ['plan', 'execute', 'judge']) {
+    expect(section(job), `${job} still builds qare from source`).not.toContain('pnpm install')
+    expect(section(job), `${job} still builds qare from source`).not.toContain('pnpm build')
+  }
 })
 
 test('judge posts the evidence with the token alone, linking only to the uploaded artifact', () => {
   const judge = section('judge')
   const start = judge.indexOf('- name: Post the evidence')
   const step = judge.slice(start, judge.indexOf('- name:', start + 1))
-  expect(step).toContain('post-evidence --result judged-result.json')
+  expect(step).toContain('post-evidence')
+  expect(step).toContain('--result judged-result.json')
   expect(step).toContain('--evidence evidence')
   expect(step).toContain('secrets.GITHUB_TOKEN')
   expect(step).not.toContain('QARE_PLANNER_KEY')
@@ -209,7 +221,7 @@ test('execute redacts the evidence, and uploads it only when redaction succeeded
   expect(step).toContain('id: redact')
   // Always, so a crashed run's leftovers are redacted too.
   expect(step).toContain('if: always()')
-  expect(step).toContain('packages/cli/dist/index.js redact --evidence evidence --profile .qa')
+  expect(step).toContain('qare redact --evidence evidence --profile .qa')
   const uploadStep = execute.slice(upload, execute.indexOf('- name:', upload + 1) === -1 ? undefined : execute.indexOf('- name:', upload + 1))
   expect(uploadStep).toContain("if: always() && steps.redact.outcome == 'success'")
 })
@@ -221,18 +233,26 @@ test('judge reads the profile the run used from the artifact, as data only', () 
   expect(step).toContain('--profile profile')
 })
 
-test('secret-holding jobs build qare from the base commit, not the pull request tree', () => {
+test('secret-holding jobs run qare from the base commit, not the pull request tree', () => {
   // Rule 7: the pull request contributes data only. A job holding a secret
-  // installs and runs qare from a revision the pull request cannot change,
-  // so no install script or build of the pull request's tree runs with it.
+  // runs qare from a revision the pull request cannot change: collect builds
+  // the base commit, and plan and judge pull the published image for the
+  // base revision's version (#88), after checking that revision out.
   for (const job of ['collect', 'plan', 'judge']) {
     const jobSection = section(job)
     const checkout = jobSection.indexOf('actions/checkout@v4')
     const ref = jobSection.indexOf('ref: ${{ github.event.pull_request.base.sha }}')
-    const install = jobSection.indexOf('pnpm install')
     expect(ref, `${job} must check out the base commit`).toBeGreaterThan(checkout)
-    expect(ref, `${job} must check out the base commit before installing`).toBeLessThan(install)
   }
+  for (const job of ['plan', 'judge']) {
+    const jobSection = section(job)
+    expect(jobSection, `${job} installs nothing from a tree`).not.toContain('pnpm install')
+    const pull = jobSection.indexOf('docker pull')
+    expect(pull, `${job} must pull the image for the base revision's version`)
+      .toBeGreaterThan(jobSection.indexOf('ref: ${{ github.event.pull_request.base.sha }}'))
+  }
+  const collect = section('collect')
+  expect(collect.indexOf('pnpm install')).toBeGreaterThan(collect.indexOf('ref: ${{ github.event.pull_request.base.sha }}'))
 })
 
 test('execute is the only job that checks out the pull request tree', () => {
