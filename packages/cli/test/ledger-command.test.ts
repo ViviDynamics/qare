@@ -177,6 +177,7 @@ test('ledger status prints counts and integrity ok', async () => {
     'proposed: 1 active: 1 superseded: 0 retired: 1 total: 3',
     'integrity: ok',
     'quarantine: none',
+    'metrics: none',
   ])
   expect(errs.chunks).toEqual([])
 })
@@ -208,6 +209,7 @@ test('ledger status prints the quarantine: which checks are held, why, and since
     'integrity: ok',
     'quarantine: 1',
     'quarantined check flip of criterion flow-login at 2026-09-28T00:00:00.000Z: unstable: the check failed and passed across 2 attempts of this run',
+    'metrics: none',
   ])
   expect(errs.chunks).toEqual([])
 })
@@ -223,6 +225,7 @@ test('ledger status on an unreadable quarantine names it instead of guessing', a
     'proposed: 0 active: 1 superseded: 0 retired: 0 total: 1',
     'integrity: ok',
     expect.stringMatching(/^quarantine: unreadable \(/),
+    'metrics: none',
   ])
   expect(errs.chunks).toEqual([])
 })

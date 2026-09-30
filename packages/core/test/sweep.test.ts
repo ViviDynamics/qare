@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
@@ -264,6 +264,85 @@ test('sweepLedger blames the last ledger actor when the configuration is unreada
     expect(payload.findings[0]?.fingerprint).toBe('sweep:config-invalid')
     expect(payload.findings[0]?.actor).toBe('run-1')
   } finally {
+    await rm(dir, { recursive: true })
+  }
+})
+
+test('the sweep reads what the runs recorded beside the ledger and says it in the standing report (#51)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-sweep-'))
+  try {
+    const store = new FileLedgerStore(dir)
+    await store.saveDocument([entry({ criterion: 'spec-up-200' })], verifyChange('2026-09-25T00:00:00Z', ['spec-up-200']))
+    await mkdir(join(dir, 'metrics'), { recursive: true })
+    await writeFile(
+      join(dir, 'metrics', 'runs.jsonl'),
+      `${JSON.stringify({ schemaVersion: 'qare.metrics.v1', runId: 'j1', recordedAt: '2026-09-29T00:00:00.000Z', startedAt: '2026-09-29T00:00:00.000Z', finishedAt: '2026-09-29T00:01:00.000Z', wallMs: 60_000, verdict: 'failed', criteria: { selected: [{ id: 'c1', outcome: 'failed' }], counts: { failed: 1 } }, model: { judge: { inputTokens: 5, outputTokens: 1 } } })}\n`,
+      'utf8',
+    )
+    await writeFile(
+      join(dir, 'metrics', 'notes.jsonl'),
+      `${JSON.stringify({ schemaVersion: 'qare.metrics.v1', recordedAt: '2026-09-29T00:02:00.000Z', kind: 'escape', text: 'shipped broken' })}\nnot json at all\n`,
+      'utf8',
+    )
+    const payload = await sweepLedger(dir, new Date(Date.parse('2026-09-29T00:00:00Z')))
+    expect(payload.metrics?.lines).toEqual(expect.arrayContaining(['runs recorded: 1', 'escapes found later: 1']))
+    expect(payload.metrics?.malformed).toBe(1)
+
+    const report = { at: payload.at, classification: payload.classification, metrics: payload.metrics }
+    const rendered = renderStatusMarkdown(report)
+    expect(rendered).toContain('Whether QARE is working')
+    expect(rendered).toContain('- runs recorded: 1')
+    expect(rendered).toContain('- 1 metrics line(s) in the store were not valid and were skipped')
+
+    // A ledger with no metrics store says so by the section's absence.
+    const bare = await mkdtemp(join(tmpdir(), 'qare-sweep-bare-'))
+    try {
+      const bareStore = new FileLedgerStore(bare)
+      await bareStore.saveDocument([entry({ criterion: 'spec-up-200' })], verifyChange('2026-09-25T00:00:00Z', ['spec-up-200']))
+      const barePayload = await sweepLedger(bare, new Date(Date.parse('2026-09-29T00:00:00Z')))
+      expect(barePayload.metrics).toBeUndefined()
+      expect(renderStatusMarkdown({ at: barePayload.at, classification: barePayload.classification })).not.toContain('Whether QARE is working')
+    } finally {
+      await rm(bare, { recursive: true })
+    }
+  } finally {
+    await rm(dir, { recursive: true })
+  }
+})
+
+test('a store of malformed lines alone is not mistaken for a repository that ran nothing (#51)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-sweep-'))
+  try {
+    const store = new FileLedgerStore(dir)
+    await store.saveDocument([entry({ criterion: 'spec-up-200' })], verifyChange('2026-09-25T00:00:00Z', ['spec-up-200']))
+    await mkdir(join(dir, 'metrics'), { recursive: true })
+    await writeFile(join(dir, 'metrics', 'runs.jsonl'), 'null\n', 'utf8')
+    const payload = await sweepLedger(dir, new Date(Date.parse('2026-09-29T00:00:00Z')))
+    // The section is present with the zero the store honestly reports, plus
+    // the line naming how much of it was unreadable: not the absence that
+    // would read as a repository that ran nothing.
+    expect(payload.metrics?.lines).toContain('runs recorded: 0')
+    expect(payload.metrics?.malformed).toBe(1)
+    const rendered = renderStatusMarkdown({ at: payload.at, classification: payload.classification, metrics: payload.metrics })
+    expect(rendered).toContain('- 1 metrics line(s) in the store were not valid and were skipped')
+  } finally {
+    await rm(dir, { recursive: true })
+  }
+})
+
+test('a metrics store that cannot be read is named in the standing report, not dropped (#51)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-sweep-'))
+  try {
+    const store = new FileLedgerStore(dir)
+    await store.saveDocument([entry({ criterion: 'spec-up-200' })], verifyChange('2026-09-25T00:00:00Z', ['spec-up-200']))
+    await mkdir(join(dir, 'metrics', 'runs.jsonl'), { recursive: true })
+    const payload = await sweepLedger(dir, new Date(Date.parse('2026-09-29T00:00:00Z')))
+    expect(payload.metrics?.unreadable).toBeDefined()
+    const rendered = renderStatusMarkdown({ at: payload.at, classification: payload.classification, metrics: payload.metrics })
+    expect(rendered).toContain('the metrics store could not be read')
+    expect(rendered).toContain('missing here, not zero')
+  } finally {
+    await rm(join(dir, 'metrics'), { recursive: true, force: true })
     await rm(dir, { recursive: true })
   }
 })

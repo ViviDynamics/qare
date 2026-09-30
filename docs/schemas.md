@@ -30,6 +30,7 @@ that can settle it or to a reason it cannot be planned.
 ```json
 {
   "schemaVersion": "1",
+  "usage": { "inputTokens": 900, "outputTokens": 120 },
   "criteria": [
     { "id": "...", "text": "...", "checks": [ { "kind": "command", "name": "...", "...": "..." } ] },
     { "id": "...", "text": "...", "unplannable": "why this criterion cannot be planned" }
@@ -40,6 +41,7 @@ that can settle it or to a reason it cannot be planned.
 | Field | Where | Rules |
 | --- | --- | --- |
 | `schemaVersion` | document | required, must be `"1"` |
+| `usage` | document | optional object with `inputTokens` and `outputTokens` (numbers, at least 0): what the planning model spent planning (#51) |
 | `criteria` | document | required array; must be non-empty (an empty plan passes nothing, so it fails closed) |
 | `id` | criterion | required, non-empty string |
 | `text` | criterion | required, non-empty string |
@@ -95,6 +97,56 @@ The run's output and the machine contract other harnesses consume.
 | `waived` | document | optional non-empty array of `{ criterionId, by }` — the human waiver record a `waived` run carries |
 | `target` | document | optional; present when the run checked an app qare did not boot. `target.url` is required non-empty and `target.comparison` must be `"none"`: nothing ran at a base revision, so no regression was looked for |
 | `environment` | document | optional; when present `environment.execution` is `"native"` or `"containerised"`, and `environment.versions` carries `qare`, `node` (non-empty strings) and `nareContract` (number): where the run executed and with which versions |
+| `startedAt` / `finishedAt` | document | optional ISO 8601 timestamps (#51): when the run started and when its result was written. Written together by the run step; a result that carries one without the other is rejected |
+| `judgeUsage` | document | optional `{ inputTokens, outputTokens }` (numbers, at least 0) (#51): what the verifier model spent judging the run. Written by the judge step onto `judged-result.json`, and carried through a re-judge |
+
+## The metrics store (schemaVersion "qare.metrics.v1")
+
+What the runs amount to over time (#51), stored as data in the repository: one
+JSON line per run in `metrics/runs.jsonl`, and one per human note in
+`metrics/notes.jsonl`, both under the ledger directory. Written by
+`qare metrics record` (which joins a judged result's wall clock and verdict
+with the plan's and verifier's model spend) and `qare metrics note` (which
+records what the runs cannot see: a defect that escaped to production, a
+block that was wrong, the minutes a person spent on QA that QARE did not).
+The sweep joins every record the pipeline pushed to the `qa-assets` branch
+and reports the totals in the standing issue.
+
+A run record line:
+
+```json
+{
+  "schemaVersion": "qare.metrics.v1",
+  "runId": "...",
+  "recordedAt": "2026-09-29T00:00:00.000Z",
+  "startedAt": "2026-09-29T00:00:00.000Z",
+  "finishedAt": "2026-09-29T00:00:00.000Z",
+  "wallMs": 0,
+  "verdict": "passed",
+  "criteria": { "selected": [{ "id": "...", "outcome": "proven" }], "counts": { "proven": 1 } },
+  "model": { "plan": { "inputTokens": 0, "outputTokens": 0 }, "judge": { "inputTokens": 0, "outputTokens": 0 } },
+  "context": { "pr": 1, "base": "...", "head": "..." }
+}
+```
+
+| Field | Where | Rules |
+| --- | --- | --- |
+| `schemaVersion` | document | required, must be `"qare.metrics.v1"` |
+| `runId` | document | required non-empty: the job id the pipeline gave the run |
+| `recordedAt`, `startedAt`, `finishedAt` | document | required ISO 8601 timestamps |
+| `wallMs` | document | required non-negative number: the run's wall clock, finished minus started |
+| `verdict` | document | required, one of the run verdicts |
+| `criteria.selected` | document | required array of `{ id, outcome }`: what the run checked and how each came out |
+| `criteria.counts` | document | required object: the same outcomes, counted |
+| `model` | document | optional `{ plan?, judge? }`; each side optional `{ inputTokens, outputTokens }` numbers. Absent when a step ran without a model |
+| `context` | document | optional `{ pr?, base?, head? }`: where the run happened, when the caller says |
+
+A note line carries `schemaVersion`, `recordedAt`, a `kind` of `"escape"`,
+`"false-block"` or `"qa-minutes"`, and per kind: `text` (what the note says),
+`minutes` (a positive number, only for `"qa-minutes"`), `criterion` and
+`runId` (what the note belongs to, when it names one). A reader that finds a
+store line it cannot parse skips it and names the count, never fails: metrics
+describe runs, they do not gate them.
 
 ## Fail-closed rules shared by both loaders
 

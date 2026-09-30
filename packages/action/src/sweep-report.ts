@@ -38,7 +38,7 @@ export async function publishSweep(
   payload: SweepPayload,
 ): Promise<{ status: number; findings: Array<[string, number]> }> {
   const updater = new GitHubStatusReportUpdater(client)
-  const status = await updater.upsert(statusDraft({ at: payload.at, classification: payload.classification }))
+  const status = await updater.upsert(statusDraft({ at: payload.at, classification: payload.classification, ...(payload.metrics === undefined ? {} : { metrics: payload.metrics }) }))
   const filed: Array<[string, number]> = []
   for (const finding of payload.findings) filed.push([finding.fingerprint, await fileSweepFinding(client, finding)])
   return { status, findings: filed }
@@ -65,13 +65,25 @@ export function parseSweepPayload(input: unknown): SweepPayload {
   const classification = parseClassification(payload.classification)
   const findings = Array.isArray(payload.findings) ? payload.findings.map(parseFinding) : []
   const lastActor = payload.lastActor
+  const metrics = parseMetrics(payload.metrics)
   return {
     at,
     ledger: typeof payload.ledger === 'string' ? payload.ledger : '.qa',
     classification,
     findings,
     lastActor: typeof lastActor === 'string' ? lastActor : undefined,
+    ...(metrics === undefined ? {} : { metrics }),
   }
+}
+
+function parseMetrics(input: unknown): SweepPayload['metrics'] {
+  if (input === undefined) return undefined
+  if (typeof input !== 'object' || input === null) throw new GitHubClientError('sweep payload metrics must be a JSON object with lines and malformed')
+  const source = input as Record<string, unknown>
+  if (!Array.isArray(source.lines) || !source.lines.every((entry) => typeof entry === 'string'))
+    throw new GitHubClientError('sweep payload metrics.lines must be an array of strings')
+  if (typeof source.malformed !== 'number') throw new GitHubClientError('sweep payload metrics.malformed must be a number')
+  return { lines: source.lines as string[], malformed: source.malformed }
 }
 
 function parseClassification(input: unknown): SweepPayload['classification'] {

@@ -42,6 +42,26 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # What the runs amount to over time (#51): every run's metrics record
+      # rides to the orphan qa-assets branch as one JSON file, and the sweep
+      # joins them into the store beside the ledger, so the standing report
+      # reads the whole pilot period. A branch that is not there yet, or a
+      # record in it that cannot be read, is not a finding: metrics describe
+      # runs, they do not gate the sweep.
+      - name: Assemble the metrics store from the runs' records
+        run: |
+          set -euo pipefail
+          mkdir -p .qa/metrics
+          if ! git fetch origin qa-assets --depth 1; then
+            echo "no qa-assets branch: no run has pushed metrics yet"
+            exit 0
+          fi
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            git show "FETCH_HEAD:$file" | jq -c . >> .qa/metrics/runs.jsonl || {
+              echo "skipped $file: not valid JSON"
+            }
+          done < <(git ls-tree -r --name-only FETCH_HEAD -- metrics)
       - name: Classify the ledger
         run: node packages/cli/dist/index.js sweep --ledger .qa --out sweep-payload.json
       - name: Publish the standing report and file findings

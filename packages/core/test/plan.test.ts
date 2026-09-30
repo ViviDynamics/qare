@@ -404,3 +404,20 @@ test('a snapshot path ends on the element the reference names (#83)', () => {
     parseFlowActions([{ action: 'click', element: { role: 'button', name: 'Save', at: 'document/main/button "Save"[2]' } }], 'flow-83'),
   ).toEqual([{ action: 'click', element: { role: 'button', name: 'Save', at: 'document/main/button "Save"[2]' } }])
 })
+
+test('a plan carries what the planner model spent, when the runner says so (#51)', () => {
+  const base = {
+    schemaVersion: PLAN_SCHEMA_VERSION,
+    criteria: [{ id: 'c1', text: 'Totals convert to the viewer currency.', checks: [{ kind: 'command', name: 'look', command: 'true' }] }],
+  }
+  const planned = parsePlan({ ...base, usage: { inputTokens: 9, outputTokens: 4 } })
+  expect(planned.usage).toEqual({ inputTokens: 9, outputTokens: 4 })
+  // A plan written before the field existed still loads, and a malformed
+  // spend is refused: the metrics record joins numbers it must be able to add.
+  expect(parsePlan(base).usage).toBeUndefined()
+  expect(() => parsePlan({ ...base, usage: { inputTokens: 9 } })).toThrow(PlanValidationError)
+  // A token count is a count: negative and non-finite numbers are refused,
+  // the schema says at least 0 (#51).
+  expect(() => parsePlan({ ...base, usage: { inputTokens: -1, outputTokens: 4 } })).toThrow(/at least 0/)
+  expect(() => parsePlan({ ...base, usage: { inputTokens: 9, outputTokens: Number.POSITIVE_INFINITY } })).toThrow(/at least 0/)
+})

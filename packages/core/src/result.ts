@@ -1,5 +1,6 @@
 import type { RunEnvironment, RunImage } from './environment.js'
 import { parseProfileRef, type JobProfileRef } from './job.js'
+import type { ModelUsage } from './metrics.js'
 import { isUnsafeProfileName } from './profile.js'
 
 export const RESULT_SCHEMA_VERSION = '1'
@@ -89,6 +90,19 @@ export interface RunResult {
    * Absent when the run checked one profile.
    */
   profiles?: Array<{ name: string; verdict: RunVerdict; criteria: string[]; profile?: JobProfileRef }>
+  /**
+   * The run's wall clock (#51): when the run started and when its result was
+   * written, as ISO 8601 timestamps. Absent on results written before the
+   * fields existed, which still load and judge the same.
+   */
+  startedAt?: string
+  finishedAt?: string
+  /**
+   * What the verifier model spent judging this run (#51), when a model judged
+   * it. The planning model's spend rides the plan; the metrics record joins
+   * the two with the run's wall clock and verdict.
+   */
+  judgeUsage?: ModelUsage
 }
 
 const CRITERION_OUTCOMES: CriterionOutcome[] = ['proven', 'failed', 'unverified']
@@ -172,6 +186,8 @@ export function parseResult(input: unknown): RunResult {
   const target = parseTarget(input.target)
   const environment = parseEnvironment(input.environment)
   const profiles = parseProfiles(input.profiles)
+  const timestamps = parseTimestamps(input)
+  const judgeUsage = parseModelUsage(input.judgeUsage, 'judgeUsage')
 
   return {
     schemaVersion,
@@ -182,7 +198,40 @@ export function parseResult(input: unknown): RunResult {
     ...(target === undefined ? {} : { target }),
     ...(environment === undefined ? {} : { environment }),
     ...(profiles === undefined ? {} : { profiles }),
+    ...(timestamps === undefined ? {} : { startedAt: timestamps.startedAt, finishedAt: timestamps.finishedAt }),
+    ...(judgeUsage === undefined ? {} : { judgeUsage }),
   }
+}
+
+/**
+ * The wall clock is optional, so a result.json written before the fields
+ * existed still loads (#51). Both fields travel together: a run that carries
+ * one carries both, and a malformed pair is named, not guessed around.
+ */
+function parseTimestamps(input: Record<string, unknown>): { startedAt: string; finishedAt: string } | undefined {
+  const { startedAt, finishedAt } = input
+  if (startedAt === undefined && finishedAt === undefined) return undefined
+  if (!isIsoTimestamp(startedAt) || !isIsoTimestamp(finishedAt))
+    fail('startedAt', 'startedAt and finishedAt must both be ISO 8601 timestamps')
+  return { startedAt: startedAt as string, finishedAt: finishedAt as string }
+}
+
+function isIsoTimestamp(value: unknown): value is string {
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value)) && !isNaN(new Date(value).getTime()) && value === new Date(value).toISOString()
+}
+
+function parseModelUsage(value: unknown, field: string): ModelUsage | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value) || typeof value.inputTokens !== 'number' || typeof value.outputTokens !== 'number')
+    fail(field, `${field} must be a JSON object with inputTokens and outputTokens numbers`)
+  requireCountable(`${field}.inputTokens`, value.inputTokens)
+  requireCountable(`${field}.outputTokens`, value.outputTokens)
+  return { inputTokens: value.inputTokens, outputTokens: value.outputTokens }
+}
+
+/** A token count is a count: finite, and at least zero as the schema says. */
+function requireCountable(field: string, count: number): void {
+  if (!Number.isFinite(count) || count < 0) fail(field, `${field} must be a number of at least 0, not ${JSON.stringify(count)}`)
 }
 
 /**

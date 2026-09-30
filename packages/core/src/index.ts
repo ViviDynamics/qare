@@ -388,3 +388,15 @@ export {
 } from './sweep.js'
 export type { SweepAreaConfig, SweepBucket, SweepClassification, SweepConfig, SweepFinding, SweepPayload, SweepReport } from './sweep.js'
 export { SweepConfigValidationError, SweepLedgerError } from './sweep.js'
+export {
+  appendMetricsNote,
+  appendRunMetrics,
+  metricsSummaryLines,
+  readMetricsStore,
+  METRICS_SCHEMA_VERSION,
+  NOTES_FILE,
+  RUNS_FILE,
+  summarizeMetrics,
+  sumUsage,
+} from './metrics.js'
+export type { MetricsNote, MetricsNoteKind, MetricsStore, MetricsSummary, ModelUsage, RunMetricsRecord } from './metrics.js'

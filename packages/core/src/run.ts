@@ -199,11 +199,14 @@ export async function runJob(
     quarantineDir?: string
   } = {},
 ): Promise<{ result: RunResult; isolation?: RunIsolation; isolations?: Array<{ name: string; isolation: RunIsolation }> }> {
+  // The run's wall clock (#51): when it started, so the metrics record can
+  // say what a run cost in time as well as in model tokens.
+  const startedAt = new Date().toISOString()
   // Where this run executes is evidence like the verdict is: recorded in
   // result.json with the version set, so a host run and an image run are
   // readable side by side (issue #91).
   const execution = opts.execution ?? detectExecution()
-  if ('profiles' in job) return runSeveralProfiles(job, opts, execution)
+  if ('profiles' in job) return runSeveralProfiles(job, opts, execution, startedAt)
   let profile: QaProfile
   try {
     profile = await resolveProfileRef(job.repoPath, job.profile)
@@ -212,7 +215,7 @@ export async function runJob(
     // A repository that has not onboarded is refused, not a caller mistake
     // (#107). Every criterion is still reported, unverified, naming the gap,
     // so the evidence says what nobody checked and what onboarding needs.
-    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `this repository has no usable .qa/ profile yet, so qare will not claim to have checked it: ${error.message}`, undefined, undefined, execution)
+    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `this repository has no usable .qa/ profile yet, so qare will not claim to have checked it: ${error.message}`, undefined, undefined, execution, startedAt)
   }
   // One compose project per run (#53), minted before anything boots. A run
   // against a target boots nothing, so it needs no isolation, and a run that
@@ -223,7 +226,7 @@ export async function runJob(
     try {
       isolation = opts.isolation ?? (await isolateRun())
     } catch (error) {
-      return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `the harness could not isolate this run, so it will not boot an app: ${error instanceof Error ? error.message : String(error)}`, undefined, undefined, execution)
+      return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `the harness could not isolate this run, so it will not boot an app: ${error instanceof Error ? error.message : String(error)}`, undefined, undefined, execution, startedAt)
     }
     // A run that boots an app always publishes it on a port of its own: an
     // isolation without a usable one would fall back to the compose default
@@ -240,6 +243,7 @@ export async function runJob(
         undefined,
         undefined,
         execution,
+        startedAt,
       )
     }
     // A caller-carried isolation is only usable if it is one the harness could
@@ -255,6 +259,7 @@ export async function runJob(
         undefined,
         undefined,
         execution,
+        startedAt,
       )
     }
   }
@@ -281,7 +286,7 @@ export async function runJob(
     validatePlanValues(job.criteria, profile, values, opts.flowDriver ?? mcpDriverCapabilities(profile.mcp) ?? BROWSER_FLOW_DRIVER)
   } catch (error) {
     if (!(error instanceof JobValidationError)) throw error
-    return refuseRun(job, opts, rules, error.message, targetNote, isolation, execution)
+    return refuseRun(job, opts, rules, error.message, targetNote, isolation, execution, startedAt)
   }
   // The flake policy (#50) is settled before anything runs, so the store is
   // read once and every criterion consults the same one.
@@ -321,7 +326,7 @@ export async function runJob(
         outcome: 'unverified',
         reason: boot.reason ?? 'boot did not come up',
       }))
-      const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria, ...targetNote }, rules, values, execution)
+      const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria, startedAt, ...targetNote }, rules, values, execution)
       await feedIfOptedIn(opts, job, finished.result)
       return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
     }
@@ -351,7 +356,7 @@ export async function runJob(
     // browser reached, and a host the profile does not declare refuses the run.
     const egressVerdict = target !== undefined && target.undeclared.length > 0 ? 'refused' : 'allowed'
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict })
-    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, ...targetNote }, rules, values, execution)
+    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, startedAt, ...targetNote }, rules, values, execution)
     await feedIfOptedIn(opts, job, finished.result)
     return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
   } finally {
@@ -396,6 +401,7 @@ async function runSeveralProfiles(
     quarantineDir?: string
   },
   execution: ExecutionKind = detectExecution(),
+  startedAt: string = new Date().toISOString(),
 ): Promise<{ result: RunResult; isolation?: RunIsolation; isolations?: Array<{ name: string; isolation: RunIsolation }> }> {
   const groups = job.profiles
   // Every profile is resolved before any other refusal is decided, and before
@@ -461,6 +467,7 @@ async function runSeveralProfiles(
         schemaVersion: RESULT_SCHEMA_VERSION,
         verdict: 'refused',
         criteria,
+        startedAt,
         profiles: groups.map((group) => ({
           name: group.name,
           verdict: 'refused' as const,
@@ -533,7 +540,7 @@ async function runSeveralProfiles(
   }
   const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
   await writeCacheHits(job.evidenceDir, cacheHits)
-  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, profiles }, rules, undefined, execution)
+  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, startedAt, profiles }, rules, undefined, execution)
   await feedIfOptedIn(opts, job, finished.result)
   return { result: finished.result, ...(isolations.length > 0 ? { isolations } : {}) }
 }
@@ -803,13 +810,17 @@ async function refuseRun(
   targetNote: Pick<RunResult, 'target'> = {},
   isolation?: RunIsolation,
   execution: ExecutionKind = detectExecution(),
+  startedAt: string = new Date().toISOString(),
 ): Promise<{ result: RunResult; isolation?: RunIsolation }> {
   const criteria: CriterionResult[] = job.criteria.map((criterion) => ({
     id: criterion.id,
     outcome: 'unverified',
     reason,
   }))
-  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria, ...targetNote }, rules, undefined, execution)
+  // The wall clock starts when the run did, not when the refusal did: work
+  // done before the refusal (profile resolution, isolation) is time the run
+  // spent (#51).
+  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria, startedAt, ...targetNote }, rules, undefined, execution)
   await feedIfOptedIn(opts, job, finished.result)
   return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
 }
@@ -1056,8 +1067,10 @@ async function finishRun(
   // The run records where and with which versions it executed (issue #91):
   // the same fact the evidence comment states, written before redaction so
   // the version set is part of the published result itself.
+  // The wall clock (#51) rides the result: the caller names when the run
+  // started, and the result names when it was written.
   const full: RunResult = redactResult(
-    { ...result, job: { id: job.id }, environment: runEnvironment(execution) },
+    { ...result, job: { id: job.id }, environment: runEnvironment(execution), finishedAt: new Date().toISOString() },
     rules,
   )
   await mkdir(job.evidenceDir, { recursive: true })

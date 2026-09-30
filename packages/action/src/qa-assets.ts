@@ -63,34 +63,22 @@ export class GitHubQaAssetsPusher implements ScreenshotPusher {
    * raw URL, which serves the image from the branch, not the artifact.
    */
   async push(result: RunResult, evidenceDir: string): Promise<Record<string, string>> {
-    const files: Array<{ evidencePath: string; file: string }> = []
+    const files: Array<{ evidencePath: string; content: Buffer }> = []
     for (const evidencePath of screenshotsOf(result)) {
-      const file = join(evidenceDir, evidencePath)
       try {
-        await readFile(file)
+        files.push({ evidencePath, content: await readFile(join(evidenceDir, evidencePath)) })
       } catch {
         // Not on disk, so it was not captured: named but never linked (rule 4).
         continue
       }
-      files.push({ evidencePath, file })
     }
     if (files.length === 0) return {}
 
     const date = this.today()
-    const parent = await this.client.getBranchHead(this.branch)
-    const parentTree = parent === undefined ? undefined : await this.client.getCommitTree(parent)
-    const entries: GithubTreeEntry[] = []
-    for (const { evidencePath, file } of files) {
-      const sha = await this.client.createBlob(await readFile(file))
-      entries.push({ path: this.runPath(evidencePath, date), mode: '100644', type: 'blob', sha })
-    }
-    const tree = await this.client.createTree(entries, parentTree)
-    const sha = await this.client.createCommit(
+    await this.commitOntoBranch(
+      files.map(({ evidencePath, content }) => ({ path: this.runPath(evidencePath, date), content })),
       `qa-assets: screenshots for run ${this.headSha.slice(0, 12)} on ${date}`,
-      tree,
-      parent === undefined ? [] : [parent],
     )
-    await this.client.pushBranch(this.branch, sha, parent)
     const links: Record<string, string> = {}
     for (const { evidencePath } of files) links[evidencePath] = this.branchUrl(evidencePath, date)
     return links
@@ -98,6 +86,50 @@ export class GitHubQaAssetsPusher implements ScreenshotPusher {
 
   private runPath(evidencePath: string, date: string): string {
     return `runs/${date}/${this.headSha}/${this.runId}/${evidencePath}`
+  }
+
+  /**
+   * The run's metrics record rides the same append-only branch (#51), under a
+   * path naming the run: the numbers stay in the repository as data after the
+   * artifact expires, one JSON file per run, and the sweep joins them into
+   * one store.
+   */
+  async pushMetrics(record: unknown): Promise<string> {
+    const date = this.today()
+    const path = `metrics/${date}/${this.headSha}/${this.runId}.json`
+    await this.commitOntoBranch(
+      [{ path, content: Buffer.from(JSON.stringify(record, null, 2), 'utf8') }],
+      `qa-assets: metrics for run ${this.headSha.slice(0, 12)} on ${date}`,
+    )
+    return path
+  }
+
+  /**
+   * One commit on top of the branch head, holding every file, pushed so the
+   * branch only moves forward. Two qa-assets pushes can race: another run's
+   * commit lands between the head this push read and the update it sends, and
+   * GitHub refuses a ref update that is not a fast forward. Rather than lose
+   * the run's evidence to the race, the push reads the branch head afresh,
+   * rebuilds the tree and commit on top of it and tries again, three times,
+   * before the failure is real: the blob shas are content-addressed, so only
+   * the tree and the commit are rebuilt.
+   */
+  private async commitOntoBranch(files: Array<{ path: string; content: Buffer }>, message: string): Promise<void> {
+    const blobs: Array<{ path: string; sha: string }> = []
+    for (const file of files) blobs.push({ path: file.path, sha: await this.client.createBlob(file.content) })
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const parent = await this.client.getBranchHead(this.branch)
+      const parentTree = parent === undefined ? undefined : await this.client.getCommitTree(parent)
+      const entries: GithubTreeEntry[] = blobs.map((blob) => ({ path: blob.path, mode: '100644', type: 'blob', sha: blob.sha }))
+      const tree = await this.client.createTree(entries, parentTree)
+      const sha = await this.client.createCommit(message, tree, parent === undefined ? [] : [parent])
+      try {
+        await this.client.pushBranch(this.branch, sha, parent)
+        return
+      } catch (error) {
+        if (attempt === 3) throw error
+      }
+    }
   }
 
   private branchUrl(evidencePath: string, date: string): string {

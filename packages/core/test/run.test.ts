@@ -961,3 +961,30 @@ test('a cancel override of zero is normalized to the cancellation bound, so no c
     exit.mockRestore()
   }
 })
+
+test('a refused run keeps the timestamp the run started with, so the wall clock counts the work before the refusal (#51)', async () => {
+  vi.resetModules()
+  vi.doMock('../src/isolation.js', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../src/isolation.js')>()
+    return {
+      ...actual,
+      isolateRun: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30))
+        throw new Error('the compose project could not be minted')
+      },
+    }
+  })
+  try {
+    const { runJob: bootWithSlowIsolation } = await import('../src/run.js')
+    const job = await makeJob({ criteria: commandCriteria('echo ok'), profile: { inline: INLINE_PROFILE } })
+
+    const { result } = await bootWithSlowIsolation(job, HEALTHY_BOOT)
+
+    expect(result.verdict).toBe('refused')
+    // The wall clock starts when the run did, not when the refusal did: the
+    // isolation attempt above takes real time, and that time is the run's (#51).
+    expect(Date.parse(result.finishedAt) - Date.parse(result.startedAt)).toBeGreaterThanOrEqual(30)
+  } finally {
+    vi.doUnmock('../src/isolation.js')
+  }
+})

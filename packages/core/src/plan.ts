@@ -3,6 +3,7 @@
 // runtime dependency on the runner.
 import type { FlowAction, FlowDriverCapabilities, FlowElement } from './flow.js'
 import { identityOfPath, isSnapshotPath } from './locator.js'
+import type { ModelUsage } from './metrics.js'
 import { isUnsafeProfileName } from './profile.js'
 import { DEFAULT_PROFILE_NAME } from './monorepo.js'
 
@@ -133,6 +134,13 @@ export interface Plan {
    * one comment.
    */
   profiles?: PlanProfileRef[]
+  /**
+   * What the planning model spent on this plan (#51), summed over every
+   * attempt the planner made, including the ones whose answer was rejected:
+   * a rejected answer cost tokens the same as an accepted one. Absent when
+   * the plan was made without a model.
+   */
+  usage?: ModelUsage
 }
 
 const CHECK_KINDS: CheckKind[] = ['command', 'flow', 'visual', 'mail', 'tool']
@@ -217,7 +225,29 @@ function parseLoose(input: unknown, extraFlowActions: readonly string[]): Plan {
         fail(`criteria[${index}]`, `criterion "${criterion.id}" names no profile; a plan that names its profiles checks every criterion against the app it names`)
     }
   }
-  return { schemaVersion, criteria, ...(profiles === undefined ? {} : { profiles }) }
+  const usage = parseUsage(input.usage)
+  return { schemaVersion, criteria, ...(profiles === undefined ? {} : { profiles }), ...(usage === undefined ? {} : { usage }) }
+}
+
+/** The planning model's spend, optional, so an old plan without it still loads (#51). */
+function parseUsage(value: unknown): ModelUsage | undefined {
+  if (value === undefined) return undefined
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    typeof (value as Record<string, unknown>).inputTokens !== 'number' ||
+    typeof (value as Record<string, unknown>).outputTokens !== 'number'
+  )
+    fail('usage', 'usage must be a JSON object with inputTokens and outputTokens numbers')
+  const usage = value as { inputTokens: number; outputTokens: number }
+  requireCountable('usage.inputTokens', usage.inputTokens)
+  requireCountable('usage.outputTokens', usage.outputTokens)
+  return { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }
+}
+
+/** A token count is a count: finite, and at least zero as the schema says. */
+function requireCountable(field: string, count: number): void {
+  if (!Number.isFinite(count) || count < 0) fail(field, `${field} must be a number of at least 0, not ${JSON.stringify(count)}`)
 }
 
 function parseProfiles(value: unknown): PlanProfileRef[] {

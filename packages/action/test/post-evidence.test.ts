@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, test } from 'vitest'
@@ -372,4 +372,83 @@ test('screenshotsOf takes the png paths the result lists, deduplicated and in or
     }),
   ).toEqual(['checks/a/0/final.png', 'checks/b/0/shot.PNG'])
   expect(screenshotsOf(WITH_SCREENSHOT)).toEqual(['checks/export-csv/1/final.png'])
+})
+
+test('the run metrics record lands on the qa-assets branch under a path naming the run (#51)', async () => {
+  const pusher = new GitHubQaAssetsPusher(client, SHA, { runId: '42-1', today: () => '2026-09-25' })
+  const path = await pusher.pushMetrics({ schemaVersion: 'qare.metrics.v1', verdict: 'failed' })
+  expect(path).toBe(`metrics/2026-09-25/${SHA}/42-1.json`)
+  const head = fake.refs.get('refs/heads/qa-assets')
+  expect(head).toBeDefined()
+  // The record's content is on the branch, not only the link to it: the blob
+  // the branch's tree names is the JSON the run recorded.
+  const commit = fake.commits.get(head as string)
+  const tree = fake.trees.get(commit?.tree ?? '')
+  const entry = tree?.find((candidate) => candidate.path === path)
+  expect(entry).toBeDefined()
+  const blob = fake.blobs.get(entry?.sha ?? '')
+  expect(JSON.parse((blob as Buffer).toString('utf8'))).toMatchObject({ schemaVersion: 'qare.metrics.v1', verdict: 'failed' })
+})
+
+test('a metrics push that races the branch is rebuilt and retried, not lost (#51)', async () => {
+  const pusher = new GitHubQaAssetsPusher(client, SHA, { runId: '42-1', today: () => '2026-09-25' })
+  await pusher.pushMetrics({ schemaVersion: 'qare.metrics.v1', verdict: 'failed' })
+  const firstHead = fake.refs.get('refs/heads/qa-assets')
+  // Another run's push lands between the head this push read and the update
+  // it sends: GitHub refuses the update, the push reads the head afresh,
+  // rebuilds on top of it and lands the record anyway.
+  fake.failRefPatches = 1
+  await pusher.pushMetrics({ schemaVersion: 'qare.metrics.v1', verdict: 'passed' })
+  const head = fake.refs.get('refs/heads/qa-assets') as string
+  expect(fake.commits.get(head)?.parents).toEqual([firstHead])
+  expect(fake.calls.filter((call) => call.method === 'PATCH' && call.path.endsWith('/git/refs/heads/qa-assets'))).toHaveLength(2)
+})
+
+test('a metrics record that cannot be pushed is named, and the evidence still posts (#51)', async () => {
+  process.env.QARE_METRICS_TEST_TOKEN = FAKE_TOKEN
+  // The branch exists with a real head, and every ref update is refused: the
+  // push retries onto it three times and then reports the failure.
+  await new GitHubQaAssetsPusher(client, SHA, { runId: '42-1', today: () => '2026-09-25' }).pushMetrics({
+    schemaVersion: 'qare.metrics.v1',
+    verdict: 'failed',
+  })
+  fake.failRefPatches = 99
+  const dir = await mkdtemp(join(tmpdir(), 'qare-metrics-push-'))
+  try {
+    const resultPath = join(dir, 'judged-result.json')
+    await writeFile(resultPath, JSON.stringify(failed), 'utf8')
+    const metricsPath = join(dir, 'metrics.json')
+    await writeFile(metricsPath, JSON.stringify({ schemaVersion: 'qare.metrics.v1' }), 'utf8')
+    const lines: string[] = []
+    const code = await main(
+      [
+        'post-evidence',
+        '--result',
+        resultPath,
+        '--pr',
+        '12',
+        '--sha',
+        SHA,
+        '--repository',
+        'octocat/qare',
+        '--api-root',
+        fake.url,
+        '--token-env',
+        'QARE_METRICS_TEST_TOKEN',
+        '--metrics',
+        metricsPath,
+      ],
+      { write: (chunk) => lines.push(chunk) },
+      { write: () => {} },
+    )
+    expect(code).toBe(0)
+    expect(lines.join('')).toContain('metrics record not pushed')
+    // The evidence comment and the check run are still posted: the numbers
+    // are not worth a red run by themselves (#51).
+    expect(fake.issues.get(12)?.comments[0]).toContain(EVIDENCE_MARKER)
+    expect(fake.checkRuns).toHaveLength(1)
+  } finally {
+    await rm(dir, { recursive: true })
+    delete process.env.QARE_METRICS_TEST_TOKEN
+  }
 })

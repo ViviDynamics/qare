@@ -1,6 +1,7 @@
 import { mergeVerdicts } from './egress.js'
 import { BUILTIN_REDACTION_RULES, redactResult, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionOutcome, type CriterionResult, type RunResult, type RunVerdict } from './result.js'
+import type { ModelUsage } from './metrics.js'
 import type { AgentRunRequest, AgentRunner } from './runner.js'
 
 export interface SideResult {
@@ -291,9 +292,9 @@ export async function runVerifier(
   runner: AgentRunner,
   inputs: VerifierInputs,
   request: Partial<Omit<AgentRunRequest, 'prompt'>> = {},
-): Promise<CriterionVerdict[]> {
+): Promise<{ verdicts: CriterionVerdict[]; usage: ModelUsage | undefined }> {
   const criteria = inputs.criteria ?? []
-  if (inputs.claims.length === 0) return criteria
+  if (inputs.claims.length === 0) return { verdicts: criteria, usage: undefined }
   const payload = JSON.stringify({ criteria: inputs.claims, diff: inputs.diff })
   let result: Awaited<ReturnType<AgentRunner['run']>>
   try {
@@ -305,16 +306,21 @@ export async function runVerifier(
       prompt: `${inputs.instructions}\n\n${payload}`,
     })
   } catch (error) {
-    return verifierUnavailable(criteria, error instanceof Error ? error.message : String(error))
+    return { verdicts: verifierUnavailable(criteria, error instanceof Error ? error.message : String(error)), usage: undefined }
   }
+  // The verifier's spend counts whatever it decided (#51): an unavailable
+  // verifier cost tokens the same as a decisive one.
   if (result.status !== 'completed')
-    return verifierUnavailable(
-      criteria,
-      `the run stopped (${result.stopReason})${result.error === undefined ? '' : `: ${result.error}`}`,
-    )
+    return {
+      verdicts: verifierUnavailable(
+        criteria,
+        `the run stopped (${result.stopReason})${result.error === undefined ? '' : `: ${result.error}`}`,
+      ),
+      usage: result.usage,
+    }
   const findings = parseVerifierFindings(result.output)
-  if (findings === undefined) return verifierUnavailable(criteria, 'its answer was not a findings list')
-  return consumeVerifierFindings(criteria, findings)
+  if (findings === undefined) return { verdicts: verifierUnavailable(criteria, 'its answer was not a findings list'), usage: result.usage }
+  return { verdicts: consumeVerifierFindings(criteria, findings), usage: result.usage }
 }
 
 function parseVerifierFindings(output: unknown): VerifierFinding[] | undefined {
@@ -395,6 +401,12 @@ export function judgedResult(
     }),
     ...(loaded.job === undefined ? {} : { job: { id: loaded.job.id } }),
     ...(loaded.waived === undefined ? {} : { waived: loaded.waived }),
+    // The run's wall clock survives judging (#51), or the judged result could
+    // not say how long the run took and the metrics record would have
+    // nothing to join the verifier's spend to.
+    ...(loaded.startedAt === undefined ? {} : { startedAt: loaded.startedAt }),
+    ...(loaded.finishedAt === undefined ? {} : { finishedAt: loaded.finishedAt }),
+    ...(loaded.judgeUsage === undefined ? {} : { judgeUsage: loaded.judgeUsage }),
     ...(loaded.target === undefined ? {} : { target: loaded.target }),
     // Where the run executed is evidence like the verdict is, so judging it
     // again does not erase it (issue #91).
@@ -452,21 +464,27 @@ export interface JudgeExecutedOptions {
 export async function judgeExecuted(
   executed: RunResult,
   opts: JudgeExecutedOptions,
-): Promise<{ result: RunResult; changed: CriterionVerdict[] }> {
+): Promise<{ result: RunResult; changed: CriterionVerdict[]; judgeUsage: ModelUsage | undefined }> {
   const waived = executed.waived?.map((entry) => entry.criterionId) ?? []
   const judged = judgeRun({ base: [], head: toSideResults(executed), waived })
   const evidenceById = new Map(executed.criteria.map((criterion) => [criterion.id, evidenceOf(criterion)]))
   let criteria = judged.criteria
+  let judgeUsage: ModelUsage | undefined
   if (opts.verifier !== undefined && executed.verdict !== 'refused') {
-    criteria = await runVerifier(
+    const verified = await runVerifier(
       opts.verifier,
       prepareVerifierInputs({ criteria: judged.criteria, texts: opts.texts, evidence: Object.fromEntries(evidenceById), diff: opts.diff }),
     )
+    criteria = verified.verdicts
+    judgeUsage = verified.usage
   }
   const changed = criteria.filter((criterion, index) => criterion.outcome !== judged.criteria[index]?.outcome)
   // A refused run executed nothing, so there is nothing to judge: recomputing
   // it from all-unverified criteria would read it back as blocked.
   const verdict = executed.verdict === 'refused' ? 'refused' : verdictOf(criteria, judged.regressions, waived)
   const result = redactResult(judgedResult(executed, verdict, criteria, evidenceById), opts.rules ?? BUILTIN_REDACTION_RULES)
-  return { result, changed }
+  // What the verifier model spent (#51): part of the run's metrics, riding
+  // the judged result the same way the plan's spend rides the plan.
+  const full = { ...result, ...(judgeUsage === undefined ? {} : { judgeUsage }) }
+  return { result: full, changed, judgeUsage }
 }
