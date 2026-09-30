@@ -42,6 +42,7 @@ RUN apt-get update \
  && mkdir -p "$ANDROID_HOME/cmdline-tools" \
  && python3 -m zipfile -e /tmp/cmdline-tools.zip /tmp/cmdline-tools \
  && mv /tmp/cmdline-tools/cmdline-tools "$ANDROID_HOME/cmdline-tools/latest" \
+ && chmod -R +x "$ANDROID_HOME/cmdline-tools/latest/bin" \
  && rm /tmp/cmdline-tools.zip \
  && yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null \
  && "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "emulator" "$ANDROID_SYSTEM_IMAGE" > /dev/null \
