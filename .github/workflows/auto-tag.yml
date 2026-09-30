@@ -1,0 +1,97 @@
+name: Auto-tag
+
+# The release tag, created by the build that earns it (#188): once CI has
+# passed on a push to main, the version package.json carries is tagged on the
+# commit that was validated, and the release workflow is dispatched on that
+# tag, so the images publish without a human step. The org precedent is nare's
+# release workflow, which tags from a workflow_run of CI for the same reason:
+# an event a workflow triggers with the workflow's own token creates no
+# workflow runs, so the release is started explicitly rather than left to the
+# tag push.
+#
+# Idempotent by the tag's existence: a merge that changes no version finds the
+# tag already on origin and does nothing, and a tag a human pushed first means
+# the automation dispatches nothing, so the release runs exactly once per tag
+# and nothing loops.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: auto-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: tag the release version
+    # workflow_run fires for pull requests and failures too: the job accepts
+    # nothing but a successful push to this repository's main.
+    if: >-
+      github.event_name == 'workflow_dispatch' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      # contents: write pushes the tag; actions: write dispatches the release.
+      # The workflow's own token is the only credential: no secret is stored.
+      contents: write
+      actions: write
+    steps:
+      # The commit CI validated, with full history: with a shallow clone,
+      # GitHub has intermittently treated the tag's commit objects as new and
+      # rejected the push from a workflow token (steward's create-tag job
+      # documents the same lesson).
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+      - name: Read the version package.json carries
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+      - name: Do nothing when the tag already exists
+        run: |
+          set -euo pipefail
+          if [ -n "$(git ls-remote --tags origin "refs/tags/$version")" ]; then
+            echo "tag $version already exists on origin: nothing to do" >> "$GITHUB_STEP_SUMMARY"
+            echo "tagged=false" >> "$GITHUB_ENV"
+          else
+            echo "tagged=true" >> "$GITHUB_ENV"
+          fi
+      - name: Tag the validated commit and push it
+        if: env.tagged == 'true'
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          git tag "$version" "$sha" --message "qare $version"
+          git push origin "refs/tags/$version"
+      - name: Start the release on the tag
+        if: env.tagged == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          export version sha
+          gh workflow run release.yml --ref "$version"
+          # The dispatch is asynchronous: a release run for the tag must
+          # actually appear, or this job fails, so a release that never
+          # started is a visible red on main rather than a quiet one.
+          for _ in $(seq 1 30); do
+            started="$(gh run list --workflow=release.yml --limit 20 --json headBranch,headSha \
+              --jq '.[] | select(.headBranch == env.version) or select(.headSha == env.sha)')"
+            if [ -n "$started" ]; then
+              echo "release workflow run started for the tag $version" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "no release workflow run appeared for the tag $version" >&2
+          exit 1
