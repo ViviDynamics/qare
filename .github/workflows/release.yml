@@ -24,7 +24,7 @@ jobs:
   # tags, so a release is what makes the image exist; until the first release
   # that publishes one, the pipeline's pulls fail naming exactly this.
   images:
-    name: images (core + web)
+    name: images (the family)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -72,9 +72,67 @@ jobs:
             ghcr.io/vividynamics/qare-web:${{ github.ref_name }}
             ghcr.io/vividynamics/qare-web:${{ env.CALVER_LINE }}
             ghcr.io/vividynamics/qare-web:latest
+      - name: Build and push the android flavour from it
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/android/Dockerfile
+          # The emulator's system image is an x86_64 build, so the android
+          # flavour publishes for amd64 only (#89).
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            QARE_IMAGE=ghcr.io/vividynamics/qare-core:${{ github.ref_name }}
+          tags: |
+            ghcr.io/vividynamics/qare-android:${{ github.ref_name }}
+            ghcr.io/vividynamics/qare-android:${{ env.CALVER_LINE }}
+            ghcr.io/vividynamics/qare-android:latest
+      - name: Build and push the desktop-linux flavour from it
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/desktop-linux/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            QARE_IMAGE=ghcr.io/vividynamics/qare-core:${{ github.ref_name }}
+          tags: |
+            ghcr.io/vividynamics/qare-desktop-linux:${{ github.ref_name }}
+            ghcr.io/vividynamics/qare-desktop-linux:${{ env.CALVER_LINE }}
+            ghcr.io/vividynamics/qare-desktop-linux:latest
+
+  # The android flavour's release guard (#89): the published image's preboot
+  # check must pass on a hosted runner that has hardware virtualisation, and
+  # the same image must refuse before booting on a host that does not, naming
+  # the requirement it misses. Publication is from the images job; this runs
+  # what the images job published.
+  android-check:
+    needs: [images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: The check passes on a runner with hardware virtualisation
+        run: |
+          docker run --rm --device /dev/kvm --user 0 \
+            "ghcr.io/vividynamics/qare-android:${{ github.ref_name }}" \
+            /opt/qare/drivers/android/check
+      - name: The same image refuses without virtualisation, naming the requirement
+        run: |
+          set -euo pipefail
+          if output="$(docker run --rm \
+            "ghcr.io/vividynamics/qare-android:${{ github.ref_name }}" \
+            /opt/qare/drivers/android/check 2>&1)"; then
+            echo "the check passed without --device /dev/kvm; it must refuse before booting" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$output" | grep -q /dev/kvm; then
+            echo "the refusal must name /dev/kvm, the requirement it misses" >&2
+            exit 1
+          fi
 
   release:
-    needs: [derived-image]
+    needs: [derived-image, android-check]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

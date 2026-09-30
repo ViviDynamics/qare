@@ -47,7 +47,7 @@ test('the example builds FROM an overridable base and never runs as root', async
 test('the release workflow builds the example on every release', async () => {
   const workflow = await readFile(join(ROOT, '.github', 'workflows', 'release.yml'), 'utf8')
   assert.match(workflow, /derived-image:/, 'a derived-image job exists')
-  assert.match(workflow, /needs: \[derived-image\]/, 'the release publishes only after the guard passes')
+  assert.match(workflow, /needs: \[derived-image, android-check\]/, 'the release publishes only after both guards pass')
   assert.match(workflow, /--build-arg QARE_IMAGE=/, 'the example builds through the contract ARG')
   assert.match(workflow, /base-fixture\.Dockerfile/, 'the base is the contract fixture')
   assert.match(workflow, / qare --version/, 'the smoke check runs the entry point on PATH')

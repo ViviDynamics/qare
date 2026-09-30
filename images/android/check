@@ -1,0 +1,40 @@
+#!/bin/sh
+# The android flavour's preboot check (#89). It names what the host must
+# provide and refuses before anything boots: hardware virtualisation first,
+# then every piece of the driver family the flavour shipped. A refusal is
+# always worded so the requirement itself is named.
+set -eu
+
+missing=""
+
+if ! [ -c /dev/kvm ]; then
+  missing="hardware virtualisation: the host must expose /dev/kvm"
+elif ! [ -w /dev/kvm ]; then
+  missing="permission to use /dev/kvm: this user may not write /dev/kvm"
+fi
+
+for piece in \
+  "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+  "$ANDROID_HOME/platform-tools/adb" \
+  "$ANDROID_HOME/emulator/emulator"
+do
+  if ! [ -e "$piece" ]; then
+    missing="$missing; the sdk piece $piece is missing"
+  fi
+done
+
+# The system image and the avd: found by pattern, so a bump of the pinned
+# api level cannot leave the check naming a path that moved.
+if ! ls -d "$ANDROID_HOME"/system-images/*/*/* > /dev/null 2>&1; then
+  missing="$missing; the system image under $ANDROID_HOME/system-images is missing"
+fi
+if ! [ -e "$ANDROID_AVD_HOME/qare.avd" ]; then
+  missing="$missing; the qare avd under $ANDROID_AVD_HOME is missing"
+fi
+
+if [ -n "$missing" ]; then
+  printf 'refusing before boot: %s\n' "$missing" >&2
+  exit 1
+fi
+
+printf 'android check: hardware virtualisation present, the driver family complete\n'
