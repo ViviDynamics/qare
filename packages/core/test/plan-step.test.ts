@@ -797,7 +797,7 @@ test('the prompt tells the planner a criterion about the plan itself is not prov
   await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json'] } })
 
   expect(runner.requests[0].prompt).toContain('A criterion about the plan itself')
-  expect(runner.requests[0].prompt).toContain('unplannable rather than planning such a check')
+  expect(runner.requests[0].prompt).toContain('rather than planning a check that reads the plan')
 })
 
 const UNDECLARED_PROGRAM_PLAN = JSON.stringify({
