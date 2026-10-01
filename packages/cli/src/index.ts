@@ -309,6 +309,9 @@ async function ingestCommand(argv: string[], out: Writer, err: Writer): Promise<
       planner: nareRunners(nare).planner,
       ...(profile === undefined ? {} : { suites: profile.suites.map((suite) => suite.name) }),
       ...(profile === undefined || profile.target === undefined ? {} : { target: profile.target.url }),
+      ...(profile === undefined || profile.instructions === undefined ? {} : { qaMd: profile.instructions }),
+      ...(profile === undefined || profile.redact === undefined ? {} : { redact: profile.redact }),
+      ...(profile === undefined || profile.commands === undefined ? {} : { commands: profile.commands }),
     })
 
     const proposal: LedgerIngestProposal = {
@@ -654,7 +657,10 @@ function touchedPaths(diff: string): string[] {
  * plannable to a planner that had only the pipeline's own prose to go by.
  */
 function declaredRunPaths(outPath: string, profilePath: string | undefined, diff: string): string[] {
-  const paths = [relative(process.cwd(), outPath)]
+  // The plan file is deliberately not among the declared run inputs: it is the
+  // output this planning step writes, so a check that reads it would only show
+  // what the planner wrote, and plan time refuses such a read (#156).
+  const paths: string[] = []
   // The planner only knows repository-relative paths, so an absolute --profile
   // is normalized against the same root as the plan file, and a relative one
   // is kept as the caller wrote it (#162).
@@ -755,6 +761,9 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         runInputs: { paths: declaredRunPaths(outPath, profilePath, diff) },
         ...(suites === undefined ? {} : { suites }),
         ...(flowActions.length === 0 ? {} : { flowActions }),
+        ...(profile?.instructions ? { qaMd: profile.instructions } : {}),
+        ...(profile?.redact === undefined ? {} : { redact: profile.redact }),
+        ...(profile?.commands === undefined ? {} : { commands: profile.commands }),
         ...(mcpServer === undefined
           ? {}
           : {

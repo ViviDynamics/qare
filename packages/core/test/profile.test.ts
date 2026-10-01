@@ -384,3 +384,115 @@ test('a profile names the image flavour its checks need, and an unknown one fail
   }
   expect(() => validateProfileConfig({ target: MCP_HEALTH, flavour: 3 })).toThrow(/flavour/)
 })
+
+test('a profile with declared commands loads and carries them (#156)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(
+    join(dir, 'config.yml'),
+    `${fixtureConfig()}\ncommands:\n  test:\n    run: 'pnpm --filter {{package}} exec vitest run -t {{pattern}}'\n    about: runs the tests in one package whose name matches the pattern\n`,
+  )
+
+  const profile = await loadProfile(dir)
+
+  expect(profile.commands).toEqual({
+    test: { run: 'pnpm --filter {{package}} exec vitest run -t {{pattern}}', about: 'runs the tests in one package whose name matches the pattern' },
+  })
+  rmSync(dir, { recursive: true })
+})
+
+test('a target profile may declare commands too (#156)', () => {
+  const profile = validateProfileConfig({
+    target: MCP_HEALTH,
+    commands: { cli: { run: 'node packages/cli/dist/index.js', about: 'the qare CLI, built by the execute job' } },
+  })
+
+  expect(profile.commands).toEqual({
+    cli: { run: 'node packages/cli/dist/index.js', about: 'the qare CLI, built by the execute job' },
+  })
+})
+
+test('a command whose run carries shell syntax fails the profile, naming the command (#156)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: 'pnpm test | grep ok'\n    about: runs the tests\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test')
+  expect(error.message).toContain('"|"')
+  rmSync(dir, { recursive: true })
+})
+
+test('a command whose run carries a malformed placeholder fails the profile, naming the command (#156)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: 'pnpm test {pattern}'\n    about: runs the tests\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test')
+  expect(error.message).toContain('malformed placeholder')
+  rmSync(dir, { recursive: true })
+})
+
+test('a command named like a prototype key is a command, not a prototype change (#156)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  __proto__:\n    run: node probe.mjs\n    about: probes the app\n`)
+
+  const profile = await loadProfile(dir)
+  expect(Object.entries(profile.commands ?? {})).toHaveLength(1)
+  expect((profile.commands ?? {})['__proto__'].about).toBe('probes the app')
+  rmSync(dir, { recursive: true })
+})
+
+test('a command whose run starts with an env assignment fails the profile, naming the command (#156)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: 'FOO=bar pnpm test'\n    about: runs the tests\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test')
+  expect(error.message).toContain('must name its program itself')
+  rmSync(dir, { recursive: true })
+})
+
+test('a command whose run starts with a shell builtin fails the profile, naming the command (#156)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: 'cd app'\n    about: moves into the app\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test')
+  expect(error.message).toContain('"cd"')
+  rmSync(dir, { recursive: true })
+})
+
+test('a command whose program is a placeholder fails the profile, naming the command (#156)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: '{{tool}} test'\n    about: runs the tests\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test')
+  expect(error.message).toContain('must name its program itself')
+  rmSync(dir, { recursive: true })
+})
+
+test('a declared command without an about line fails the profile, naming the command (#156)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: pnpm test\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test.about')
+  expect(error.message).toContain('about')
+  rmSync(dir, { recursive: true })
+})
+
+test('a command whose name is not a safe name fails the profile (#156)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  'a/b':\n    run: pnpm test\n    about: runs the tests\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.a/b')
+  expect(error.message).toContain('a/b')
+  rmSync(dir, { recursive: true })
+})
+
+test('the loaded profile carries its QA.md instructions (#156)', async () => {
+  const profile = await loadProfile(fixtureDir)
+
+  expect(profile.instructions).toBe('QA instructions: what the app is, what matters, and how to log in.\n')
+})

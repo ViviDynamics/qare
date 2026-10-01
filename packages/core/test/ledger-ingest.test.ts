@@ -82,6 +82,26 @@ test('the same wording under a hand-minted id is still a duplicate', async () =>
   expect(outcome.duplicates).toHaveLength(1)
 })
 
+test('the ingest planner sees the QA.md and the declared commands the profile carries (#156)', async () => {
+  const text = 'the payouts page shows the 1099 notice for a host paid past the annual threshold'
+  const prompts: string[] = []
+  const outcome = await ingestCriteria([source({ body: `## Acceptance criteria\n\n- [ ] ${text}\n` })], {
+    ledger: [],
+    planner: {
+      run: async (request) => {
+        prompts.push(request.prompt)
+        return { status: 'completed', stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 }, output: JSON.stringify(planWith([PLANNED(text, [COMMAND_CHECK])])) }
+      },
+    },
+    qaMd: 'log in as jane@pilot.example, the seeded host',
+    commands: { test: { run: 'pnpm --filter {{package}} exec vitest run -t {{pattern}}', about: 'runs the tests in one package' } },
+  })
+  expect(prompts).toHaveLength(1)
+  expect(prompts[0]).toContain('log in as jane@pilot.example, the seeded host')
+  expect(prompts[0]).toContain('pnpm --filter {{package}} exec vitest run -t {{pattern}}')
+  expect(outcome.proposals).toHaveLength(1)
+})
+
 test('every proposal names the issue or pull request that stated it', async () => {
   const outcome = await ingestCriteria(
     [

@@ -2,10 +2,11 @@ import type { AgentRunner, AgentToolChannel } from './runner.js'
 import type { FlowDriverCapabilities } from './flow.js'
 import { EXPLORATION_TOOLS, isExplorableUrl, type ExplorationTool } from './explore.js'
 import { channelToolName } from './mcp.js'
-import { isUnsafeProfileName } from './profile.js'
+import { isUnsafeProfileName, type ProfileCommand } from './profile.js'
 import { sumUsage, type ModelUsage } from './metrics.js'
 import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
 import { shellCharacter } from './run.js'
+import { redactText, redactionRules, type ProfileRedaction } from './redact.js'
 
 export interface PlanCriterionInput {
   id: string
@@ -83,6 +84,12 @@ export interface PlanInputs {
     /** The registered servers and the tools they published, allowlisted. */
     servers: { name: string; tools: { name: string; description?: string }[] }[]
   }
+  /** The profile's QA.md instructions (#156), redacted and size capped before they reach the prompt. */
+  qaMd?: string
+  /** The profile's redaction rules (#52), which the QA.md text is redacted with, not just the builtins. */
+  redact?: ProfileRedaction
+  /** Named invocations the profile declares (#156), which command checks use instead of guessing. */
+  commands?: Record<string, ProfileCommand>
 }
 
 /**
@@ -334,6 +341,13 @@ export function planOutputSchema(extraFlowActions: readonly string[] = [], drive
 
 export const PLAN_OUTPUT_SCHEMA = planOutputSchema()
 
+const QA_MD_LIMIT = 4000
+
+function cappedQaMd(qaMd: string): string {
+  if (qaMd.length <= QA_MD_LIMIT) return qaMd
+  return `${qaMd.slice(0, QA_MD_LIMIT)}\n\nQA.md was truncated at ${QA_MD_LIMIT} characters.`
+}
+
 function prompt(inputs: PlanInputs, correction?: string): string {
   const criteria = inputs.criteria
     .map((criterion) => `- ${criterion.id}: ${criterion.text}`)
@@ -342,6 +356,10 @@ function prompt(inputs: PlanInputs, correction?: string): string {
   const suites = inputs.suites?.length
     ? `Suites this repository declares, which a check may name:\n${inputs.suites.map((suite) => `- ${suite}`).join('\n')}`
     : 'This repository declares no suites, so every check must stand on its own.'
+  const qaMd =
+    inputs.qaMd === undefined
+      ? undefined
+      : cappedQaMd(redactText(inputs.qaMd, inputs.redact === undefined ? undefined : redactionRules(inputs.redact)))
   return [
     'Map each acceptance criterion to the checks that would show it holds.',
     '',
@@ -353,6 +371,16 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     '',
     suites,
     '',
+    ...(qaMd === undefined
+      ? []
+      : ["The repository's own QA.md, which states what the app is, what matters and how to log in:", qaMd, '']),
+    ...(inputs.commands === undefined
+      ? []
+      : [
+          'The profile declares these commands, known to work in this repository. Use one, with its {{placeholders}} filled from the criterion, instead of guessing an invocation:',
+          ...Object.entries(inputs.commands).map(([name, command]) => `- ${name}: ${command.about} (${command.run})`),
+          '',
+        ]),
     'A check is one of:',
     '- command: {"kind":"command","name":...,"command":"an executable followed by its arguments"}',
     '- flow: {"kind":"flow","name":...,"suite":"an existing suite"} or {"kind":"flow","name":...,"actions":[{"action":"open","url":"the url to open first"},{"action":"type","element":{"role":"searchbox","name":"Search"},"value":"Ada Lovelace"},{"action":"click","element":{"role":"button","name":"Search"}},{"action":"assertText","text":"the text that must be visible"}]}',
@@ -376,11 +404,19 @@ function prompt(inputs: PlanInputs, correction?: string): string {
           'comment.md, checkrun.json and everything under the evidence directory are written when the',
           'run ends, so a check that reads one cannot pass, and neither can a command whose executable is not on the',
           "runner's PATH (qare, this harness's own CLI, is not).",
+          'The plan file itself, plan.json, is also off limits: it is what this planning session writes,',
+          'so a check that reads it shows what the planner wrote, never that the change under test holds.',
           'The executing job runs no model: no planning, verifying or exploring session runs inside it,',
           'so an artifact that can only come into existence through a model-driven session, such as a',
           'record of the tool calls a model made while exploring the app, never exists while a check runs,',
           'whatever the change under test says about it. A criterion whose evidence can only come from',
           'such a session is unplannable: mark it so instead of planning a check that reads such an artifact.',
+          'A criterion about the plan itself, or about what the planner does, one whose text says what',
+          "the plan must name, use or refuse, has no check the executing job can run: the plan is this",
+          "session's own output, so a grep against it shows only what this session wrote, never that the",
+          'change under test holds, and the repository tests that really prove planner behaviour cannot',
+          'run unless the profile declares a command that runs them. Mark such a criterion unplannable,',
+          'naming what the executing job cannot do, rather than planning a check that reads the plan.',
           'Plan the check against the declared run inputs, or mark the criterion unplannable.',
           '',
         ]),
@@ -469,6 +505,34 @@ function commandContractGap(plan: Plan): string | undefined {
 }
 
 /**
+ * The standard tools the executing job carries (#162), which every command
+ * check may use; anything else it runs must be a program of a command the
+ * profile declares (#156).
+ */
+const EXECUTE_PATH_TOOLS = ['node', 'npm', 'git', 'jq', 'grep', 'test']
+
+function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
+  if (inputs.commands === undefined) return undefined
+  const declared = new Set(
+    Object.values(inputs.commands).map((command) => command.run.split(/\s+/).find((token) => token !== '')),
+  )
+  for (const criterion of plan.criteria) {
+    if (!('checks' in criterion)) continue
+    for (const check of criterion.checks) {
+      if (check.kind !== 'command') continue
+      const program = check.command.split(/\s+/).find((token) => token !== '')
+      if (program === undefined) continue
+      if (declared.has(program) || EXECUTE_PATH_TOOLS.includes(program)) continue
+      return (
+        `criterion ${criterion.id} command check "${check.name}": the program ${program} is neither a program of ` +
+        'the declared commands nor a standard tool the runner carries (node, npm, git, jq, grep, test)'
+      )
+    }
+  }
+  return undefined
+}
+
+/**
  * The run's own outputs, named in the SPEC's run contract: a command check
  * reading one of them reads a file the run writes when it ends, which is why
  * they are the one artifact class doomed by construction rather than by
@@ -479,6 +543,12 @@ function commandContractGap(plan: Plan): string | undefined {
  */
 const RUN_OUTPUT_BASENAMES = ['result.json', 'judged-result.json', 'comment.md', 'checkrun.json']
 const RUN_OUTPUT_DIRECTORIES = ['evidence']
+/**
+ * The plan file is the run's own output too, but unlike the artifacts above it
+ * exists while a check runs: it is what the planning step wrote, which is why
+ * it gets its own refusal instead of the run-output one (#156).
+ */
+const PLAN_OUTPUT_BASENAME = 'plan.json'
 
 /** The harness's own CLI is never an executable on the runner's PATH (#162). */
 const HARNESS_CLI = 'qare'
@@ -528,6 +598,8 @@ function undeclaredReference(command: string, declared: string[]): string | unde
       RUN_OUTPUT_DIRECTORIES.includes(segments[0] ?? '')
     )
       return `${token} is an output the run writes when it ends, so it does not exist while a check runs`
+    if (segments[segments.length - 1] === PLAN_OUTPUT_BASENAME)
+      return "plan.json is the plan this run's own planning step writes, so a check that reads it shows what the planner wrote, never that the change under test holds"
     // An invented evidence path (or one merely covered by a declared
     // directory) is the #168 trap, but a file the profile declares by its
     // exact path is a committed input: it exists while a check runs whatever
@@ -615,6 +687,12 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
     const violation = commandContractGap(plan)
     if (violation !== undefined) {
       correction = `${violation}. The command is split on whitespace and spawned directly, with no shell.`
+      continue
+    }
+    const unknownProgram = unknownProgramGap(plan, inputs)
+    if (unknownProgram !== undefined) {
+      correction =
+        `${unknownProgram}. Use one of the declared commands, filling its placeholders from the criterion, ` + 'or a standard tool.'
       continue
     }
     const undeclared = undeclaredPathGap(plan, inputs)

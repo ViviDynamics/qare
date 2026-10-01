@@ -392,24 +392,24 @@ test('a second plan the runner cannot run fails loudly', async () => {
 test('the planner is told the run contract when run inputs are declared (#162)', async () => {
   const runner = new FakeAgentRunner([completed(planned())])
 
-  await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
 
   const prompt = runner.requests[0].prompt
-  expect(prompt).toContain('- plan.json')
   expect(prompt).toContain('- .qa')
   expect(prompt).toContain('result.json, judged-result.json')
   expect(prompt).toContain('checkrun.json')
   expect(prompt).toContain("qare, this harness's own CLI, is not")
+  expect(prompt).toContain('The plan file itself, plan.json')
 })
 
 test('qare as a search pattern is harmless; only the executable is the harness CLI (#162)', async () => {
   const criteria = [
-    { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'grep', command: 'grep qare plan.json' }] },
+    { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'grep', command: 'grep qare .qa/QA.md' }] },
     { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
   ]
   const runner = new FakeAgentRunner([completed(JSON.stringify({ schemaVersion: '1', criteria }))])
 
-  await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
 
   expect(runner.requests).toHaveLength(1)
 })
@@ -432,11 +432,41 @@ test('a command check reading a run output is corrected against the declared inp
   })
   const runner = new FakeAgentRunner([completed(doomed), completed(planned())])
 
-  await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json'] } })
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
 
   expect(runner.requests).toHaveLength(2)
   expect(runner.requests[1].prompt).toContain('result.json is an output the run writes when it ends')
-  expect(runner.requests[1].prompt).toContain('- plan.json')
+})
+
+test('a command check reading the plan file is corrected: the plan is what the planner just wrote (#156)', async () => {
+  const doomed = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'mention', command: 'grep pnpm plan.json' }] },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(doomed), completed(planned())])
+
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain("plan.json is the plan this run's own planning step writes")
+})
+
+test('a plan that still reads the plan file after its correction round fails closed (#156)', async () => {
+  const doomed = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'mention', command: 'grep pnpm plan.json' }] },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(doomed), completed(doomed)])
+
+  await expect(planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })).rejects.toThrow(
+    /plan.json is the plan this run's own planning step writes/,
+  )
 })
 
 test('a command check spawning the harness CLI is corrected the same way (#162)', async () => {
@@ -449,7 +479,7 @@ test('a command check spawning the harness CLI is corrected the same way (#162)'
   })
   const runner = new FakeAgentRunner([completed(doomed), completed(planned())])
 
-  await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
 
   expect(runner.requests).toHaveLength(2)
   expect(runner.requests[1].prompt).toContain('"qare" is this harness\'s own CLI')
@@ -465,7 +495,7 @@ test('a command check naming an undeclared path is corrected, and a declared dir
   })
   const runner = new FakeAgentRunner([completed(doomed), completed(planned())])
 
-  await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
 
   expect(runner.requests).toHaveLength(2)
   expect(runner.requests[1].prompt).toContain('single-app.diff is not among the declared run inputs')
@@ -482,7 +512,7 @@ test('a plan whose command checks read only declared run inputs is accepted on t
   })
   const runner = new FakeAgentRunner([completed(clean)])
 
-  await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
 
   expect(runner.requests).toHaveLength(1)
 })
@@ -497,7 +527,7 @@ test('a plan that still reads undeclared artifacts after its correction round fa
   })
   const runner = new FakeAgentRunner([completed(doomed), completed(doomed)])
 
-  await expect(planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json'] } })).rejects.toThrow(
+  await expect(planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })).rejects.toThrow(
     /result.json is an output the run writes when it ends/,
   )
   expect(runner.requests).toHaveLength(2)
@@ -512,17 +542,17 @@ test('a path that escapes with .. is corrected, and one that normalizes back ins
     JSON.stringify({ schemaVersion: '1', criteria: [{ ...criteria[0], checks: [{ kind: 'command', name: 'secrets', command }] }, criteria[1]] })
 
   const escape = new FakeAgentRunner([completed(planWith('grep x ../secrets.txt')), completed(planned())])
-  await planRun(escape, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+  await planRun(escape, { ...INPUTS, runInputs: { paths: ['.qa'] } })
   expect(escape.requests).toHaveLength(2)
   expect(escape.requests[1].prompt).toContain('climbs outside the repository root')
 
   const escapeDeclared = new FakeAgentRunner([completed(planWith('grep x .qa/../secrets.txt')), completed(planned())])
-  await planRun(escapeDeclared, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+  await planRun(escapeDeclared, { ...INPUTS, runInputs: { paths: ['.qa'] } })
   expect(escapeDeclared.requests).toHaveLength(2)
   expect(escapeDeclared.requests[1].prompt).toContain('.qa/../secrets.txt is not among the declared run inputs')
 
   const inside = new FakeAgentRunner([completed(planWith('grep x .qa/fixtures/../QA.md'))])
-  await planRun(inside, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+  await planRun(inside, { ...INPUTS, runInputs: { paths: ['.qa'] } })
   expect(inside.requests).toHaveLength(1)
 })
 
@@ -534,7 +564,7 @@ test('an absolute path is corrected, not normalized into a declared path (#162)'
   const doomed = JSON.stringify({ schemaVersion: '1', criteria })
   const runner = new FakeAgentRunner([completed(doomed), completed(planned())])
 
-  await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
 
   expect(runner.requests).toHaveLength(2)
   expect(runner.requests[1].prompt).toContain('/plan.json is an absolute path')
@@ -551,7 +581,7 @@ test('the evidence directory is a forbidden run output with or without an extens
     })
     const runner = new FakeAgentRunner([completed(doomed), completed(planned())])
 
-    await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json'] } })
+    await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
 
     expect(runner.requests, command).toHaveLength(2)
     expect(runner.requests[1].prompt, command).toContain('is an output the run writes when it ends')
@@ -561,7 +591,7 @@ test('the evidence directory is a forbidden run output with or without an extens
 test('the prompt states the model-driven phase contract of the executing job (#168)', async () => {
   const runner = new FakeAgentRunner([completed(planned())])
 
-  await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
 
   const prompt = runner.requests[0].prompt
   expect(prompt).toContain('The executing job runs no model')
@@ -585,7 +615,7 @@ test('a command check reading evidence under a declared directory is corrected, 
   })
   const runner = new FakeAgentRunner([completed(doomed), completed(corrected)])
 
-  const plan = await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })
+  const plan = await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
 
   expect(runner.requests).toHaveLength(2)
   expect(runner.requests[1].prompt).toContain('.qa/evidence/mcp-calls.jsonl is under an evidence directory')
@@ -603,7 +633,7 @@ test('a plan that still reads evidence after its correction round fails closed (
   })
   const runner = new FakeAgentRunner([completed(doomed), completed(doomed)])
 
-  await expect(planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', '.qa'] } })).rejects.toThrow(
+  await expect(planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })).rejects.toThrow(
     /is under an evidence directory/,
   )
   expect(runner.requests).toHaveLength(2)
@@ -743,4 +773,127 @@ test('a channel with no servers, or a server that could not be addressed, is ref
     /publishes no tools/,
   )
   expect(noTools.requests).toHaveLength(0)
+})
+
+test('the prompt carries the profile QA.md instructions, redacted (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, { ...INPUTS, qaMd: 'Log in with ghp_AAAABBBBCCCCDDDDEEEE. What matters is the login.' })
+
+  const [request] = runner.requests
+  expect(request.prompt).toContain('What matters is the login.')
+  expect(request.prompt).toContain('QA.md')
+  expect(request.prompt).not.toContain('ghp_AAAABBBBCCCCDDDDEEEE')
+})
+
+test('a QA.md past 4000 characters is carried truncated, with a visible note (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, { ...INPUTS, qaMd: 'x'.repeat(5000) })
+
+  const [request] = runner.requests
+  expect(request.prompt).toContain('QA.md was truncated at 4000 characters')
+  expect(request.prompt).not.toContain('x'.repeat(5000))
+  expect(request.prompt).toContain('x'.repeat(4000))
+})
+
+test('the prompt carries the commands the profile declared, with their purpose (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, {
+    ...INPUTS,
+    commands: { test: { run: 'pnpm --filter {{package}} exec vitest run -t {{pattern}}', about: 'runs the tests of one package' } },
+  })
+
+  const [request] = runner.requests
+  expect(request.prompt).toContain('pnpm --filter {{package}} exec vitest run -t {{pattern}}')
+  expect(request.prompt).toContain('runs the tests of one package')
+  expect(request.prompt).toContain('commands')
+})
+
+test('a profile with no QA.md text and no declared commands is prompted as before (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, INPUTS)
+
+  const [request] = runner.requests
+  expect(request.prompt).not.toContain('QA.md')
+  expect(request.prompt).not.toContain('declared commands')
+})
+
+test('the prompt tells the planner a criterion about the plan itself is not proven by a check that reads the plan (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
+
+  expect(runner.requests[0].prompt).toContain('A criterion about the plan itself')
+  expect(runner.requests[0].prompt).toContain('rather than planning a check that reads the plan')
+})
+
+test('the QA.md text is redacted with the rules the profile declares (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, {
+    ...INPUTS,
+    qaMd: 'log in as jane@pilot.example, the seeded host',
+    redact: { values: ['jane@pilot.example'] },
+  })
+
+  expect(runner.requests[0].prompt).not.toContain('jane@pilot.example')
+})
+
+const UNDECLARED_PROGRAM_PLAN = JSON.stringify({
+  schemaVersion: '1',
+  criteria: [
+    { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'count', command: 'wc -l single-app.diff' }] },
+    { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+  ],
+})
+
+const DECLARED_COMMANDS = { test: { run: 'pnpm test {{pattern}}', about: 'runs the tests the pattern names' } }
+
+test('a plan whose command check runs an undeclared program is corrected, naming the program (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(UNDECLARED_PROGRAM_PLAN), completed(planned())])
+
+  await planRun(runner, { ...INPUTS, commands: DECLARED_COMMANDS })
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('wc')
+  expect(runner.requests[1].prompt).toContain('the program wc is neither')
+})
+
+test('a plan that still runs an undeclared program is refused at plan time (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(UNDECLARED_PROGRAM_PLAN), completed(UNDECLARED_PROGRAM_PLAN)])
+
+  await expect(planRun(runner, { ...INPUTS, commands: DECLARED_COMMANDS })).rejects.toThrow(/the program wc is neither/)
+})
+
+test('a plan that runs the program of a declared command is accepted without a correction round (#156)', async () => {
+  const accepted = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'unit', command: 'pnpm test login' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(accepted)])
+
+  const plan = await planRun(runner, { ...INPUTS, commands: DECLARED_COMMANDS })
+
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ command: 'pnpm test login' }] })
+})
+
+test('a plan that runs a standard tool the runner carries is accepted (#156)', async () => {
+  const accepted = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'unit', command: 'npm test -- login' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(accepted)])
+
+  const plan = await planRun(runner, { ...INPUTS, commands: DECLARED_COMMANDS })
+
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ command: 'npm test -- login' }] })
 })

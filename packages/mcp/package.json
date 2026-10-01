@@ -1,6 +1,6 @@
 {
   "name": "@qare/mcp",
-  "version": "2026.9.1",
+  "version": "2026.10.0",
   "description": "QARE MCP server adapter",
   "license": "Elastic-2.0",
   "type": "module",

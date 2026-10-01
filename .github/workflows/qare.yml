@@ -544,6 +544,7 @@ jobs:
           elif jq -e '.verdict == "refused"' judged-result.json > /dev/null; then
             docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
               -e GITHUB_TOKEN \
+              -e GITHUB_REPOSITORY \
               -v "$PWD:$PWD" -w "$PWD" \
               --entrypoint node \
               "$IMAGE_REF" /opt/qare/lib/packages/action/dist/index.js stub-issues --result judged-result.json --pr "${{ github.event.pull_request.number }}"
@@ -569,6 +570,7 @@ jobs:
           set -euo pipefail
           docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
             -e GITHUB_TOKEN \
+            -e GITHUB_REPOSITORY \
             -v "$PWD:$PWD" -w "$PWD" \
             --entrypoint node \
             "$IMAGE_REF" /opt/qare/lib/packages/action/dist/index.js post-evidence \

@@ -54,6 +54,7 @@ export type {
   ProfileVisual,
   ProfileSuite,
   ProfileSuiteKind,
+  ProfileCommand,
   ProfileMcpServer,
   ProfileMcpToolMap,
   McpStep,
