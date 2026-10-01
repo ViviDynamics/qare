@@ -791,6 +791,15 @@ test('a profile with no QA.md text and no declared commands is prompted as befor
   expect(request.prompt).not.toContain('declared commands')
 })
 
+test('the prompt tells the planner a criterion about the plan itself is not proven by a check that reads the plan (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json'] } })
+
+  expect(runner.requests[0].prompt).toContain('A criterion about the plan itself')
+  expect(runner.requests[0].prompt).toContain('unplannable rather than planning such a check')
+})
+
 const UNDECLARED_PROGRAM_PLAN = JSON.stringify({
   schemaVersion: '1',
   criteria: [
