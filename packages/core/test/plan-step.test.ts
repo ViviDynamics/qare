@@ -744,3 +744,49 @@ test('a channel with no servers, or a server that could not be addressed, is ref
   )
   expect(noTools.requests).toHaveLength(0)
 })
+
+test('the prompt carries the profile QA.md instructions, redacted (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, { ...INPUTS, qaMd: 'Log in with ghp_AAAABBBBCCCCDDDDEEEE. What matters is the login.' })
+
+  const [request] = runner.requests
+  expect(request.prompt).toContain('What matters is the login.')
+  expect(request.prompt).toContain('QA.md')
+  expect(request.prompt).not.toContain('ghp_AAAABBBBCCCCDDDDEEEE')
+})
+
+test('a QA.md past 4000 characters is carried truncated, with a visible note (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, { ...INPUTS, qaMd: 'x'.repeat(5000) })
+
+  const [request] = runner.requests
+  expect(request.prompt).toContain('QA.md was truncated at 4000 characters')
+  expect(request.prompt).not.toContain('x'.repeat(5000))
+  expect(request.prompt).toContain('x'.repeat(4000))
+})
+
+test('the prompt carries the commands the profile declared, with their purpose (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, {
+    ...INPUTS,
+    commands: { test: { run: 'pnpm --filter {{package}} exec vitest run -t {{pattern}}', about: 'runs the tests of one package' } },
+  })
+
+  const [request] = runner.requests
+  expect(request.prompt).toContain('pnpm --filter {{package}} exec vitest run -t {{pattern}}')
+  expect(request.prompt).toContain('runs the tests of one package')
+  expect(request.prompt).toContain('commands')
+})
+
+test('a profile with no QA.md text and no declared commands is prompted as before (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, INPUTS)
+
+  const [request] = runner.requests
+  expect(request.prompt).not.toContain('QA.md')
+  expect(request.prompt).not.toContain('declared commands')
+})

@@ -2,10 +2,11 @@ import type { AgentRunner, AgentToolChannel } from './runner.js'
 import type { FlowDriverCapabilities } from './flow.js'
 import { EXPLORATION_TOOLS, isExplorableUrl, type ExplorationTool } from './explore.js'
 import { channelToolName } from './mcp.js'
-import { isUnsafeProfileName } from './profile.js'
+import { isUnsafeProfileName, type ProfileCommand } from './profile.js'
 import { sumUsage, type ModelUsage } from './metrics.js'
 import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
 import { shellCharacter } from './run.js'
+import { redactText } from './redact.js'
 
 export interface PlanCriterionInput {
   id: string
@@ -83,6 +84,10 @@ export interface PlanInputs {
     /** The registered servers and the tools they published, allowlisted. */
     servers: { name: string; tools: { name: string; description?: string }[] }[]
   }
+  /** The profile's QA.md instructions (#156), redacted and size capped before they reach the prompt. */
+  qaMd?: string
+  /** Named invocations the profile declares (#156), which command checks use instead of guessing. */
+  commands?: Record<string, ProfileCommand>
 }
 
 /**
@@ -334,6 +339,13 @@ export function planOutputSchema(extraFlowActions: readonly string[] = [], drive
 
 export const PLAN_OUTPUT_SCHEMA = planOutputSchema()
 
+const QA_MD_LIMIT = 4000
+
+function cappedQaMd(qaMd: string): string {
+  if (qaMd.length <= QA_MD_LIMIT) return qaMd
+  return `${qaMd.slice(0, QA_MD_LIMIT)}\n\nQA.md was truncated at ${QA_MD_LIMIT} characters.`
+}
+
 function prompt(inputs: PlanInputs, correction?: string): string {
   const criteria = inputs.criteria
     .map((criterion) => `- ${criterion.id}: ${criterion.text}`)
@@ -342,6 +354,7 @@ function prompt(inputs: PlanInputs, correction?: string): string {
   const suites = inputs.suites?.length
     ? `Suites this repository declares, which a check may name:\n${inputs.suites.map((suite) => `- ${suite}`).join('\n')}`
     : 'This repository declares no suites, so every check must stand on its own.'
+  const qaMd = inputs.qaMd === undefined ? undefined : cappedQaMd(redactText(inputs.qaMd))
   return [
     'Map each acceptance criterion to the checks that would show it holds.',
     '',
@@ -353,6 +366,16 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     '',
     suites,
     '',
+    ...(qaMd === undefined
+      ? []
+      : ["The repository's own QA.md, which states what the app is, what matters and how to log in:", qaMd, '']),
+    ...(inputs.commands === undefined
+      ? []
+      : [
+          'The profile declares these commands, known to work in this repository. Use one, with its {{placeholders}} filled from the criterion, instead of guessing an invocation:',
+          ...Object.entries(inputs.commands).map(([name, command]) => `- ${name}: ${command.about} (${command.run})`),
+          '',
+        ]),
     'A check is one of:',
     '- command: {"kind":"command","name":...,"command":"an executable followed by its arguments"}',
     '- flow: {"kind":"flow","name":...,"suite":"an existing suite"} or {"kind":"flow","name":...,"actions":[{"action":"open","url":"the url to open first"},{"action":"type","element":{"role":"searchbox","name":"Search"},"value":"Ada Lovelace"},{"action":"click","element":{"role":"button","name":"Search"}},{"action":"assertText","text":"the text that must be visible"}]}',

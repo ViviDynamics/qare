@@ -755,6 +755,8 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         runInputs: { paths: declaredRunPaths(outPath, profilePath, diff) },
         ...(suites === undefined ? {} : { suites }),
         ...(flowActions.length === 0 ? {} : { flowActions }),
+        ...(profile?.instructions ? { qaMd: profile.instructions } : {}),
+        ...(profile?.commands === undefined ? {} : { commands: profile.commands }),
         ...(mcpServer === undefined
           ? {}
           : {
