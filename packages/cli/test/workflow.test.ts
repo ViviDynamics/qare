@@ -399,3 +399,23 @@ test('release gains the dispatch trigger the automated path uses (#188)', () => 
   const release = readFileSync(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8')
   expect(release).toContain('workflow_dispatch:')
 })
+
+test("execute resolves its runtime image from the base revision's version (#194)", () => {
+  // Rule 7 for the runtime too: the pull request contributes data only. A
+  // version-bumping pull request must ship green before its own release
+  // exists, so the image version comes from the base revision, exactly as it
+  // does for plan and judge, and never from the pull request tree.
+  const execute = section('execute')
+  expect(execute).toMatch(/git show "\$BASE_SHA":package\.json/)
+  expect(execute).not.toContain('version="$(jq -r .version package.json)"')
+})
+
+test('release refuses to publish a tag that is not on the default branch (#194)', () => {
+  // A tag a human pushed from a pull request head dangles after the squash
+  // merge and publishes a release from a commit main's history does not
+  // carry. The guard turns that into a clear refusal naming the auto-tag
+  // flow, before any image is built.
+  const release = readFileSync(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8')
+  expect(release).toMatch(/git merge-base --is-ancestor/)
+  expect(release).toContain('auto-tag')
+})

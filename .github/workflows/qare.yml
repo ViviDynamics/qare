@@ -270,9 +270,17 @@ jobs:
       - name: Pull the flavour image
         id: image
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          version="$(jq -r .version package.json)"
+          # The runtime is pipeline infrastructure, resolved from the base
+          # revision exactly as plan and judge resolve theirs (#88, rule 7):
+          # a version-bumping pull request ships green before its release
+          # exists, and the release lands after the merge, from the default
+          # branch's history (#194).
+          git fetch origin "$BASE_SHA" --depth=1
+          version="$(git show "$BASE_SHA":package.json | jq -r .version)"
           ref="ghcr.io/vividynamics/qare-${{ steps.flavour.outputs.flavour }}:$version"
           if ! docker pull "$ref"; then
             echo "no published qare-${{ steps.flavour.outputs.flavour }} image for version $version ($ref): the image family publishes when a release is tagged, so tag a release and the images job in .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
