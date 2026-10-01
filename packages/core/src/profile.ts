@@ -68,6 +68,11 @@ export interface ProfileSuite {
   isolated?: boolean
 }
 
+export interface ProfileCommand {
+  run: string
+  about: string
+}
+
 /**
  * The pipeline steps a registered host tool server may run in (#93). The plan
  * step looks through its tools at the running app; the execute step runs pull
@@ -140,6 +145,8 @@ export interface QaProfile {
   mcp?: ProfileMcpServer[]
   /** Fixture data that must not be published in evidence (#52). */
   redact?: ProfileRedaction
+  commands?: Record<string, ProfileCommand>
+  instructions?: string
   /**
    * The areas of the repository this profile covers (#55): the touched paths
    * that select it when `.qa/` holds several profiles. A single root profile
@@ -289,6 +296,7 @@ async function isDirectory(dirPath: string): Promise<boolean> {
  */
 export async function loadProfile(dir: string, shared?: { resources?: string }): Promise<QaProfile> {
   await requireFile(join(dir, 'QA.md'), 'QA.md', 'the .qa/ profile instructions')
+  const instructions = await readFile(join(dir, 'QA.md'), 'utf8')
 
   const configPath = join(dir, 'config.yml')
   let text: string
@@ -317,7 +325,7 @@ export async function loadProfile(dir: string, shared?: { resources?: string }):
     await requireBootResource(dir, shared?.resources, 'fixtures', 'fixtures', 'the .qa/ fixtures directory')
     await requireBootResource(dir, shared?.resources, 'stubs', 'stubs', 'the .qa/ stubs directory')
   }
-  return profile
+  return { instructions, ...profile }
 }
 
 export function validateProfileConfig(config: unknown): QaProfile {
@@ -334,11 +342,12 @@ export function validateProfileConfig(config: unknown): QaProfile {
     ...(config.mcp === undefined ? {} : { mcp: parseMcp(config.mcp) }),
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
     ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
+    ...(config.commands === undefined ? {} : { commands: parseCommands(config.commands) }),
   }
 }
 
 /**
- * A profile that points at a running app (#122). It boots nothing, so it has
+  * A profile that points at a running app (#122). It boots nothing, so it has
  * no boot recipe and no stubs; hosts a check may reach are declared on the
  * target instead. visual and suites stay optional.
  */
@@ -359,6 +368,7 @@ function validateTargetConfig(config: Record<string, unknown>): QaProfile {
     ...(config.mcp === undefined ? {} : { mcp: parseMcp(config.mcp) }),
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
     ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
+    ...(config.commands === undefined ? {} : { commands: parseCommands(config.commands) }),
   }
 }
 
@@ -549,6 +559,37 @@ function parseMail(value: unknown): ProfileMail {
   const inbox = nonEmptyString(value.inbox, 'mail.inbox', 'mail inbox')
   httpUrl(inbox, 'mail.inbox', 'mail inbox')
   return { inbox }
+}
+
+function validatePlaceholders(run: string, base: string): void {
+  const withoutTokens = run.replace(/\{\{[A-Za-z_][A-Za-z0-9_]*\}\}/g, '')
+  if (!/[{}]/.test(withoutTokens)) return
+  fail(
+    base,
+    `run ${JSON.stringify(run)} carries a malformed placeholder; a substitution site is a {{name}} token of letters, digits and underscores`,
+  )
+}
+
+function parseCommands(value: unknown): Record<string, ProfileCommand> {
+  if (!isRecord(value)) fail('commands', 'commands must be a YAML object of named commands')
+  const commands: Record<string, ProfileCommand> = {}
+  for (const [name, entry] of Object.entries(value)) {
+    const base = `commands.${name}`
+    if (isUnsafeProfileName(name))
+      fail(base, `command name ${JSON.stringify(name)} must not carry a separator, ".." or a control character`)
+    if (!isRecord(entry)) fail(base, 'a declared command must be a YAML object with run and about')
+    const run = nonEmptyString(entry.run, `${base}.run`, 'run')
+    const character = shellCharacter(run)
+    if (character !== undefined)
+      fail(
+        base,
+        `run ${JSON.stringify(run)} carries ${JSON.stringify(character)}, which a shell would interpret: the command is split on whitespace and spawned with no shell`,
+      )
+    validatePlaceholders(run, base)
+    const about = nonEmptyString(entry.about, `${base}.about`, 'about')
+    commands[name] = { run, about }
+  }
+  return commands
 }
 
 function parseRedact(value: unknown): ProfileRedaction {
