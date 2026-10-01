@@ -408,6 +408,14 @@ test("execute resolves its runtime image from the base revision's version (#194)
   const execute = section('execute')
   expect(execute).toMatch(/git show "\$BASE_SHA":package\.json/)
   expect(execute).not.toContain('version="$(jq -r .version package.json)"')
+  // The version is only the base revision's if the image step itself wires
+  // BASE_SHA to the pull request's base commit and fetches that commit:
+  // removing either line fails the run at runtime while the assertions above
+  // stayed green.
+  const start = execute.indexOf('Pull the flavour image')
+  const image = execute.slice(start, execute.indexOf('\n      - name:', start))
+  expect(image).toContain('BASE_SHA: ${{ github.event.pull_request.base.sha }}')
+  expect(image).toMatch(/git fetch origin "\$BASE_SHA"/)
 })
 
 test('release refuses to publish a tag that is not on the default branch (#194)', () => {
@@ -418,4 +426,13 @@ test('release refuses to publish a tag that is not on the default branch (#194)'
   const release = readFileSync(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8')
   expect(release).toMatch(/git merge-base --is-ancestor/)
   expect(release).toContain('auto-tag')
+  // The ancestor check needs the full branch graph, and it targets the
+  // repository's default branch rather than a ref a pull request could name.
+  expect(release).toContain('fetch-depth: 0')
+  expect(release).toContain('github.event.repository.default_branch')
+  // The guard runs before any image is built: after publication has started,
+  // a refusal cannot un-publish what the earlier steps pushed.
+  const guard = release.indexOf('git merge-base --is-ancestor')
+  expect(guard).toBeGreaterThan(release.indexOf('fetch-depth: 0'))
+  expect(guard).toBeLessThan(release.indexOf('docker/build-push-action'))
 })
