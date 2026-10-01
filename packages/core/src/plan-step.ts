@@ -492,6 +492,34 @@ function commandContractGap(plan: Plan): string | undefined {
 }
 
 /**
+ * The standard tools the executing job carries (#162), which every command
+ * check may use; anything else it runs must be a program of a command the
+ * profile declares (#156).
+ */
+const EXECUTE_PATH_TOOLS = ['node', 'npm', 'git', 'jq', 'grep', 'test']
+
+function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
+  if (inputs.commands === undefined) return undefined
+  const declared = new Set(
+    Object.values(inputs.commands).map((command) => command.run.split(/\s+/).find((token) => token !== '')),
+  )
+  for (const criterion of plan.criteria) {
+    if (!('checks' in criterion)) continue
+    for (const check of criterion.checks) {
+      if (check.kind !== 'command') continue
+      const program = check.command.split(/\s+/).find((token) => token !== '')
+      if (program === undefined) continue
+      if (declared.has(program) || EXECUTE_PATH_TOOLS.includes(program)) continue
+      return (
+        `criterion ${criterion.id} command check "${check.name}": the program ${program} is neither a program of ` +
+        'the declared commands nor a standard tool the runner carries (node, npm, git, jq, grep, test)'
+      )
+    }
+  }
+  return undefined
+}
+
+/**
  * The run's own outputs, named in the SPEC's run contract: a command check
  * reading one of them reads a file the run writes when it ends, which is why
  * they are the one artifact class doomed by construction rather than by
@@ -638,6 +666,12 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
     const violation = commandContractGap(plan)
     if (violation !== undefined) {
       correction = `${violation}. The command is split on whitespace and spawned directly, with no shell.`
+      continue
+    }
+    const unknownProgram = unknownProgramGap(plan, inputs)
+    if (unknownProgram !== undefined) {
+      correction =
+        `${unknownProgram}. Use one of the declared commands, filling its placeholders from the criterion, ` + 'or a standard tool.'
       continue
     }
     const undeclared = undeclaredPathGap(plan, inputs)

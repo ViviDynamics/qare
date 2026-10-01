@@ -790,3 +790,59 @@ test('a profile with no QA.md text and no declared commands is prompted as befor
   expect(request.prompt).not.toContain('QA.md')
   expect(request.prompt).not.toContain('declared commands')
 })
+
+const UNDECLARED_PROGRAM_PLAN = JSON.stringify({
+  schemaVersion: '1',
+  criteria: [
+    { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'count', command: 'wc -l single-app.diff' }] },
+    { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+  ],
+})
+
+const DECLARED_COMMANDS = { test: { run: 'pnpm test {{pattern}}', about: 'runs the tests the pattern names' } }
+
+test('a plan whose command check runs an undeclared program is corrected, naming the program (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(UNDECLARED_PROGRAM_PLAN), completed(planned())])
+
+  await planRun(runner, { ...INPUTS, commands: DECLARED_COMMANDS })
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('wc')
+  expect(runner.requests[1].prompt).toContain('the program wc is neither')
+})
+
+test('a plan that still runs an undeclared program is refused at plan time (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(UNDECLARED_PROGRAM_PLAN), completed(UNDECLARED_PROGRAM_PLAN)])
+
+  await expect(planRun(runner, { ...INPUTS, commands: DECLARED_COMMANDS })).rejects.toThrow(/the program wc is neither/)
+})
+
+test('a plan that runs the program of a declared command is accepted without a correction round (#156)', async () => {
+  const accepted = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'unit', command: 'pnpm test login' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(accepted)])
+
+  const plan = await planRun(runner, { ...INPUTS, commands: DECLARED_COMMANDS })
+
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ command: 'pnpm test login' }] })
+})
+
+test('a plan that runs a standard tool the runner carries is accepted (#156)', async () => {
+  const accepted = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'unit', command: 'npm test -- login' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(accepted)])
+
+  const plan = await planRun(runner, { ...INPUTS, commands: DECLARED_COMMANDS })
+
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ command: 'npm test -- login' }] })
+})
