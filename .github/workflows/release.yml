@@ -31,6 +31,20 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Refuse a tag that is not on the default branch
+        run: |
+          set -euo pipefail
+          # A release publishes from the default branch's history (#188): a
+          # tag a human pushed from a pull request head dangles after the
+          # squash merge and would publish images from a commit main never
+          # carried. The ancestor check turns that into a refusal naming the
+          # flow that tags the commit CI validated instead (#194).
+          if ! git merge-base --is-ancestor HEAD "origin/${{ github.event.repository.default_branch }}"; then
+            echo "tag '$GITHUB_REF_NAME' points at a commit that is not on ${{ github.event.repository.default_branch }}: merge the change first, and the auto-tag workflow tags the commit CI validated (#188)" >&2
+            exit 1
+          fi
       - name: Validate the tag is CalVer (YYYY.M.PATCH)
         run: |
           if [[ ! "$GITHUB_REF_NAME" =~ ^20[0-9]{2}\.[0-9]+\.[0-9]+$ ]]; then
