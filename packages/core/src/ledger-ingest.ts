@@ -4,6 +4,8 @@ import { IssueCriteriaError, criteriaFromIssue } from './issue-criteria.js'
 import { appendChange, integrityOf, serializeLedgerDocument, type LedgerChange, type LedgerEntry } from './ledger.js'
 import { type PlanCriterion } from './plan.js'
 import { NO_DIFF, planRun, type PlanCriterionInput } from './plan-step.js'
+import type { ProfileCommand } from './profile.js'
+import type { ProfileRedaction } from './redact.js'
 import type { AgentRunner } from './runner.js'
 
 /**
@@ -69,6 +71,12 @@ export async function ingestCriteria(
     planner: AgentRunner
     suites?: string[]
     target?: string
+    /** The profile's QA.md instructions (#156), redacted and size capped before they reach the prompt. */
+    qaMd?: string
+    /** The profile's redaction rules (#52), which the QA.md text is redacted with. */
+    redact?: ProfileRedaction
+    /** Named invocations the profile declares (#156), which command checks use instead of guessing. */
+    commands?: Record<string, ProfileCommand>
     /** The change records the ledger already carries; the ingest's own is appended. */
     changes?: LedgerChange[]
     /** Injected clock for the change record; defaults to now. */
@@ -107,6 +115,9 @@ export async function ingestCriteria(
           criteria: candidates,
           ...(opts.suites === undefined ? {} : { suites: opts.suites }),
           ...(opts.target === undefined ? {} : { target: opts.target }),
+          ...(opts.qaMd === undefined ? {} : { qaMd: opts.qaMd }),
+          ...(opts.redact === undefined ? {} : { redact: opts.redact }),
+          ...(opts.commands === undefined ? {} : { commands: opts.commands }),
           driver: BROWSER_FLOW_DRIVER,
           diff: NO_DIFF,
         })

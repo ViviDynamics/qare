@@ -172,6 +172,7 @@ async function planOrReport(
       criteria,
       suites: profile.suites.map((suite) => suite.name),
       ...(profile.instructions ? { qaMd: profile.instructions } : {}),
+      ...(profile.redact === undefined ? {} : { redact: profile.redact }),
       ...(profile.commands === undefined ? {} : { commands: profile.commands }),
       // The profile's MCP mapping is the driver when it declares one (#94):
       // the mapping is the capability declaration, so plan time rejects an

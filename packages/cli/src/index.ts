@@ -309,6 +309,9 @@ async function ingestCommand(argv: string[], out: Writer, err: Writer): Promise<
       planner: nareRunners(nare).planner,
       ...(profile === undefined ? {} : { suites: profile.suites.map((suite) => suite.name) }),
       ...(profile === undefined || profile.target === undefined ? {} : { target: profile.target.url }),
+      ...(profile === undefined || profile.instructions === undefined ? {} : { qaMd: profile.instructions }),
+      ...(profile === undefined || profile.redact === undefined ? {} : { redact: profile.redact }),
+      ...(profile === undefined || profile.commands === undefined ? {} : { commands: profile.commands }),
     })
 
     const proposal: LedgerIngestProposal = {
@@ -756,6 +759,7 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         ...(suites === undefined ? {} : { suites }),
         ...(flowActions.length === 0 ? {} : { flowActions }),
         ...(profile?.instructions ? { qaMd: profile.instructions } : {}),
+        ...(profile?.redact === undefined ? {} : { redact: profile.redact }),
         ...(profile?.commands === undefined ? {} : { commands: profile.commands }),
         ...(mcpServer === undefined
           ? {}

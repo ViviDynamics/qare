@@ -431,6 +431,36 @@ test('a command whose run carries a malformed placeholder fails the profile, nam
   rmSync(dir, { recursive: true })
 })
 
+test('a command named like a prototype key is a command, not a prototype change (#156)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  __proto__:\n    run: node probe.mjs\n    about: probes the app\n`)
+
+  const profile = await loadProfile(dir)
+  expect(Object.entries(profile.commands ?? {})).toHaveLength(1)
+  expect((profile.commands ?? {})['__proto__'].about).toBe('probes the app')
+  rmSync(dir, { recursive: true })
+})
+
+test('a command whose run starts with an env assignment fails the profile, naming the command (#156)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: 'FOO=bar pnpm test'\n    about: runs the tests\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test')
+  expect(error.message).toContain('must name its program itself')
+  rmSync(dir, { recursive: true })
+})
+
+test('a command whose run starts with a shell builtin fails the profile, naming the command (#156)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: 'cd app'\n    about: moves into the app\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test')
+  expect(error.message).toContain('"cd"')
+  rmSync(dir, { recursive: true })
+})
+
 test('a command whose program is a placeholder fails the profile, naming the command (#156)', async () => {
   const dir = copiedProfile()
   writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: '{{tool}} test'\n    about: runs the tests\n`)

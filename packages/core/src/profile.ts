@@ -572,7 +572,7 @@ function validatePlaceholders(run: string, base: string): void {
 
 function parseCommands(value: unknown): Record<string, ProfileCommand> {
   if (!isRecord(value)) fail('commands', 'commands must be a YAML object of named commands')
-  const commands: Record<string, ProfileCommand> = {}
+  const commands = Object.create(null) as Record<string, ProfileCommand>
   for (const [name, entry] of Object.entries(value)) {
     const base = `commands.${name}`
     if (isUnsafeProfileName(name))
@@ -587,16 +587,45 @@ function parseCommands(value: unknown): Record<string, ProfileCommand> {
       )
     validatePlaceholders(run, base)
     const program = run.split(/\s+/).find((token) => token !== '')
-    if (program !== undefined && program.startsWith('{{'))
+    if (program !== undefined && (program.startsWith('{{') || program.includes('=')))
       fail(
         base,
-        `run ${JSON.stringify(run)} must name its program itself: the command is split on whitespace and its first token is the program a check spawns, so a placeholder cannot be the program`,
+        `run ${JSON.stringify(run)} must name its program itself: the command is split on whitespace and its first token is the program a check spawns, so a placeholder or an assignment cannot be the program`,
+      )
+    if (program !== undefined && SHELL_BUILTINS.has(program))
+      fail(
+        base,
+        `run ${JSON.stringify(run)} starts with ${JSON.stringify(program)}, which a shell interprets and the runner cannot spawn: name the program that runs`,
       )
     const about = nonEmptyString(entry.about, `${base}.about`, 'about')
     commands[name] = { run, about }
   }
   return commands
 }
+
+/**
+ * Words a shell interprets as builtins, which the runner carries no binary
+ * for: a declared command naming one would fail to spawn, the exact failure
+ * the declared commands exist to prevent.
+ */
+const SHELL_BUILTINS = new Set([
+  'alias',
+  'cd',
+  'eval',
+  'exec',
+  'export',
+  'logout',
+  'read',
+  'set',
+  'shift',
+  'source',
+  'times',
+  'trap',
+  'type',
+  'ulimit',
+  'umask',
+  'wait',
+])
 
 function parseRedact(value: unknown): ProfileRedaction {
   if (!isRecord(value)) fail('redact', 'redact must be a YAML object with values, patterns and/or masks')

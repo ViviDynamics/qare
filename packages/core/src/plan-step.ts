@@ -6,7 +6,7 @@ import { isUnsafeProfileName, type ProfileCommand } from './profile.js'
 import { sumUsage, type ModelUsage } from './metrics.js'
 import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
 import { shellCharacter } from './run.js'
-import { redactText } from './redact.js'
+import { redactText, redactionRules, type ProfileRedaction } from './redact.js'
 
 export interface PlanCriterionInput {
   id: string
@@ -86,6 +86,8 @@ export interface PlanInputs {
   }
   /** The profile's QA.md instructions (#156), redacted and size capped before they reach the prompt. */
   qaMd?: string
+  /** The profile's redaction rules (#52), which the QA.md text is redacted with, not just the builtins. */
+  redact?: ProfileRedaction
   /** Named invocations the profile declares (#156), which command checks use instead of guessing. */
   commands?: Record<string, ProfileCommand>
 }
@@ -354,7 +356,10 @@ function prompt(inputs: PlanInputs, correction?: string): string {
   const suites = inputs.suites?.length
     ? `Suites this repository declares, which a check may name:\n${inputs.suites.map((suite) => `- ${suite}`).join('\n')}`
     : 'This repository declares no suites, so every check must stand on its own.'
-  const qaMd = inputs.qaMd === undefined ? undefined : cappedQaMd(redactText(inputs.qaMd))
+  const qaMd =
+    inputs.qaMd === undefined
+      ? undefined
+      : cappedQaMd(redactText(inputs.qaMd, inputs.redact === undefined ? undefined : redactionRules(inputs.redact)))
   return [
     'Map each acceptance criterion to the checks that would show it holds.',
     '',

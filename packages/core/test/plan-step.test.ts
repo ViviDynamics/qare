@@ -800,6 +800,18 @@ test('the prompt tells the planner a criterion about the plan itself is not prov
   expect(runner.requests[0].prompt).toContain('rather than planning a check that reads the plan')
 })
 
+test('the QA.md text is redacted with the rules the profile declares (#156)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, {
+    ...INPUTS,
+    qaMd: 'log in as jane@pilot.example, the seeded host',
+    redact: { values: ['jane@pilot.example'] },
+  })
+
+  expect(runner.requests[0].prompt).not.toContain('jane@pilot.example')
+})
+
 const UNDECLARED_PROGRAM_PLAN = JSON.stringify({
   schemaVersion: '1',
   criteria: [
