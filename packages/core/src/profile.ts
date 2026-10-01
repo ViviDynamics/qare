@@ -347,7 +347,7 @@ export function validateProfileConfig(config: unknown): QaProfile {
 }
 
 /**
-  * A profile that points at a running app (#122). It boots nothing, so it has
+ * A profile that points at a running app (#122). It boots nothing, so it has
  * no boot recipe and no stubs; hosts a check may reach are declared on the
  * target instead. visual and suites stay optional.
  */
@@ -586,6 +586,12 @@ function parseCommands(value: unknown): Record<string, ProfileCommand> {
         `run ${JSON.stringify(run)} carries ${JSON.stringify(character)}, which a shell would interpret: the command is split on whitespace and spawned with no shell`,
       )
     validatePlaceholders(run, base)
+    const program = run.split(/\s+/).find((token) => token !== '')
+    if (program !== undefined && program.startsWith('{{'))
+      fail(
+        base,
+        `run ${JSON.stringify(run)} must name its program itself: the command is split on whitespace and its first token is the program a check spawns, so a placeholder cannot be the program`,
+      )
     const about = nonEmptyString(entry.about, `${base}.about`, 'about')
     commands[name] = { run, about }
   }

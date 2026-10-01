@@ -431,6 +431,16 @@ test('a command whose run carries a malformed placeholder fails the profile, nam
   rmSync(dir, { recursive: true })
 })
 
+test('a command whose program is a placeholder fails the profile, naming the command (#156)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: '{{tool}} test'\n    about: runs the tests\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test')
+  expect(error.message).toContain('must name its program itself')
+  rmSync(dir, { recursive: true })
+})
+
 test('a declared command without an about line fails the profile, naming the command (#156)', async () => {
   const dir = copiedProfile()
   writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: pnpm test\n`)
