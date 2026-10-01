@@ -432,7 +432,6 @@ test('release refuses to publish a tag that is not on the default branch (#194)'
   // The ancestor check needs the full branch graph, and it targets the
   // repository's default branch rather than a ref a pull request could name.
   // Marker fragments: see the execute test above (#196).
-  const gitPull = ['git ', 'fe', 'tch'].join('')
   const fullGraph = ['fe', 'tch-depth: 0'].join('')
   expect(release).toContain(fullGraph)
   expect(release).toContain('github.event.repository.default_branch')
