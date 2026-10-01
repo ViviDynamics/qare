@@ -404,6 +404,8 @@ function prompt(inputs: PlanInputs, correction?: string): string {
           'comment.md, checkrun.json and everything under the evidence directory are written when the',
           'run ends, so a check that reads one cannot pass, and neither can a command whose executable is not on the',
           "runner's PATH (qare, this harness's own CLI, is not).",
+          'The plan file itself, plan.json, is also off limits: it is what this planning session writes,',
+          'so a check that reads it shows what the planner wrote, never that the change under test holds.',
           'The executing job runs no model: no planning, verifying or exploring session runs inside it,',
           'so an artifact that can only come into existence through a model-driven session, such as a',
           'record of the tool calls a model made while exploring the app, never exists while a check runs,',
@@ -541,6 +543,12 @@ function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
  */
 const RUN_OUTPUT_BASENAMES = ['result.json', 'judged-result.json', 'comment.md', 'checkrun.json']
 const RUN_OUTPUT_DIRECTORIES = ['evidence']
+/**
+ * The plan file is the run's own output too, but unlike the artifacts above it
+ * exists while a check runs: it is what the planning step wrote, which is why
+ * it gets its own refusal instead of the run-output one (#156).
+ */
+const PLAN_OUTPUT_BASENAME = 'plan.json'
 
 /** The harness's own CLI is never an executable on the runner's PATH (#162). */
 const HARNESS_CLI = 'qare'
@@ -590,6 +598,8 @@ function undeclaredReference(command: string, declared: string[]): string | unde
       RUN_OUTPUT_DIRECTORIES.includes(segments[0] ?? '')
     )
       return `${token} is an output the run writes when it ends, so it does not exist while a check runs`
+    if (segments[segments.length - 1] === PLAN_OUTPUT_BASENAME)
+      return "plan.json is the plan this run's own planning step writes, so a check that reads it shows what the planner wrote, never that the change under test holds"
     // An invented evidence path (or one merely covered by a declared
     // directory) is the #168 trap, but a file the profile declares by its
     // exact path is a committed input: it exists while a check runs whatever
