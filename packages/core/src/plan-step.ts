@@ -404,14 +404,15 @@ function prompt(inputs: PlanInputs, correction?: string): string {
       ? []
       : [
           'Command checks run on a machine that has the repository checked out, with the standard',
-          'tools (node, npm, git, jq, grep, test) on its PATH and nothing more. A command check may',
+          'tools (node, grep, test, python3, nare) on its PATH and nothing more. A command check may',
           'read only these declared run inputs:',
           ...inputs.runInputs.paths.map((path) => `- ${path}`),
           'A declared directory covers the files under it.',
           "The run's own outputs do not exist while a check runs: result.json, judged-result.json,",
           'comment.md, checkrun.json and everything under the evidence directory are written when the',
           'run ends, so a check that reads one cannot pass, and neither can a command whose executable is not on the',
-          "runner's PATH (qare, this harness's own CLI, is not).",
+          "runner's PATH (qare, this harness's own CLI, sits on the image's PATH and still runs no check: the harness",
+          'is the thing under test, not its witness).',
           'The plan file itself, plan.json, is also off limits: it is what this planning session writes,',
           'so a check that reads it shows what the planner wrote, never that the change under test holds.',
           'The executing job runs no model: no planning, verifying or exploring session runs inside it,',
@@ -517,7 +518,7 @@ function commandContractGap(plan: Plan): string | undefined {
  * check may use; anything else it runs must be a program of a command the
  * profile declares (#156).
  */
-const EXECUTE_PATH_TOOLS = ['node', 'npm', 'git', 'jq', 'grep', 'test']
+export const EXECUTE_PATH_TOOLS = ['node', 'grep', 'test', 'python3', 'nare']
 
 function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
   if (inputs.commands === undefined) return undefined
@@ -533,7 +534,7 @@ function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
       if (declared.has(program) || EXECUTE_PATH_TOOLS.includes(program)) continue
       return (
         `criterion ${criterion.id} command check "${check.name}": the program ${program} is neither a program of ` +
-        'the declared commands nor a standard tool the runner carries (node, npm, git, jq, grep, test)'
+        'the declared commands nor a standard tool the runner carries (node, grep, test, python3, nare)'
       )
     }
   }
@@ -600,7 +601,7 @@ const RUN_OUTPUT_DIRECTORIES = ['evidence']
  */
 const PLAN_OUTPUT_BASENAME = 'plan.json'
 
-/** The harness's own CLI is never an executable on the runner's PATH (#162). */
+/** The harness's own CLI never runs a check: the harness is what the run tests, not its witness (#162). */
 const HARNESS_CLI = 'qare'
 
 function isPathLike(token: string): boolean {
@@ -635,7 +636,7 @@ function undeclaredReference(command: string, declared: string[]): string | unde
     declared.some((path) => token === path || token.startsWith(`${path}/`))
   const [executable, ...arguments_] = command.split(/\s+/).filter((token) => token !== '')
   if (executable === HARNESS_CLI)
-    return `"${HARNESS_CLI}" is this harness's own CLI, and the runner never installs it on its PATH, so the command cannot start`
+    return `"${HARNESS_CLI}" is this harness's own CLI, and a check that runs the harness proves what the harness wrote, never that the change holds`
   for (const token of arguments_) {
     if (token.startsWith('http://') || token.startsWith('https://') || token.startsWith('{{')) continue
     if (token.startsWith('/') || token.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(token))
