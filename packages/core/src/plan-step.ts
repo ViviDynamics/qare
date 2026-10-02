@@ -404,9 +404,9 @@ function prompt(inputs: PlanInputs, correction?: string): string {
       ? []
       : [
           'Command checks run on a machine that has the repository checked out. A command check may run',
-          'the standard tools (node, grep, test, python3, nare) and nothing else; other executables may exist',
-          'on the machine, but they are not available to a check. A command check may',
-          'read only these declared run inputs:',
+          'the standard tools (node, grep, test, python3, nare) or the program of a command the profile',
+          'declares, and nothing else; other executables may exist on the machine, but they are not available',
+          'to a check. A command check may read only these declared run inputs:',
           ...inputs.runInputs.paths.map((path) => `- ${path}`),
           'A declared directory covers the files under it.',
           "The run's own outputs do not exist while a check runs: result.json, judged-result.json,",
