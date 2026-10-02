@@ -63,7 +63,15 @@ Because of that:
 - A check script that would need writing is out of reach: the profile declares
   no scripts of its own, and the image runs only files the checkout already
   carries. A criterion whose check would be a new script is unplannable
-  naming the missing script, never a path that does not exist.
+  naming the missing script, never a path that does not exist. The checkout
+  carries no `checks/` directory and no `selection-verdict` or similar
+  helper anywhere: a plan naming one is a fiction that turns red at
+  execution, so do not write such a path into a plan.
+- A criterion that describes what the harness itself does with evidence
+  files is still checked against the checkout the change really touches:
+  grep the files that changed with the declared `source` command, or mark
+  the criterion unplannable naming the missing vocabulary, rather than
+  planning a script the repository does not carry.
 
 What a command check can genuinely show: structure on the paths the change
 touches, read with the tools the image really has. The profile declares those
