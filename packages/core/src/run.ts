@@ -2132,7 +2132,7 @@ function resolveSelection(
   const templateToken = template[position]
   if (templateToken === undefined) return undefined
   const filter = placeholderValue(templateToken, tokens[position])
-  if (filter === undefined || filter === '') return undefined
+  if (filter === undefined) return undefined
   return { filter, report: declared.report }
 }
 

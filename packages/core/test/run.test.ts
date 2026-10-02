@@ -1187,6 +1187,31 @@ test('a TAP line skipped by directive is not a test the command ran (#200 review
   expect(result.criteria[0].reason).toContain('none of the 1 test')
 })
 
+test('an empty embedded filter selects the whole suite and cannot prove (#200 review round 4)', async () => {
+  const script = await reportScript(vitestReport(['one', 'two', 'three']))
+  const job = await makeJob({
+    criteria: commandCriteria(`node ${script} --testNamePattern=`),
+    profile: {
+      inline: {
+        ...INLINE_PROFILE,
+        commands: {
+          test: {
+            run: 'node {{script}} --testNamePattern={{pattern}}',
+            about: 'runs the suite',
+            filter: 'pattern',
+            report: 'vitest-json',
+          },
+        },
+      },
+    },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.criteria[0].outcome).toBe('unverified')
+  expect(result.criteria[0].reason).toContain('selected all 3 tests')
+})
+
 test('a skipped junit testcase is not a test the command ran (#200 review round 3)', async () => {
   const script = await reportScript(
     "process.stdout.write('<testsuites><testsuite name=\"s\">' +\n" +
