@@ -2142,7 +2142,7 @@ function resolveSelection(
  * `--testNamePattern={{name}}`, matches the token whose constants agree; a
  * constant must be equal.
  */
-function tokenFillsTemplate(template: string, filled: string | undefined): boolean {
+export function tokenFillsTemplate(template: string, filled: string | undefined): boolean {
   if (filled === undefined) return false
   if (template.startsWith('{{') && template.endsWith('}}')) return true
   const embedded = /\{\{[^{}]+\}\}/.exec(template)
@@ -2157,7 +2157,7 @@ function tokenFillsTemplate(template: string, filled: string | undefined): boole
  * for a whole-token placeholder, the text around the constants for one
  * embedded in a token.
  */
-function placeholderValue(template: string, filled: string | undefined): string | undefined {
+export function placeholderValue(template: string, filled: string | undefined): string | undefined {
   if (filled === undefined) return undefined
   if (template.startsWith('{{') && template.endsWith('}}')) return filled
   const embedded = /\{\{[^{}]+\}\}/.exec(template)

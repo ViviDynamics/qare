@@ -5,7 +5,7 @@ import { channelToolName } from './mcp.js'
 import { isUnsafeProfileName, type ProfileCommand } from './profile.js'
 import { sumUsage, type ModelUsage } from './metrics.js'
 import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
-import { shellCharacter } from './run.js'
+import { placeholderValue, shellCharacter, tokenFillsTemplate } from './run.js'
 import { existsSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 import { redactText, redactionRules, type ProfileRedaction } from './redact.js'
@@ -557,12 +557,11 @@ function missingPathGap(plan: Plan, inputs: PlanInputs): string | undefined {
       for (const declared of Object.values(inputs.commands)) {
         const template = declared.run.split(/\s+/).filter((token) => token !== '')
         if (template.length !== tokens.length) continue
-        if (!template.every((token, index) => (token.startsWith('{{') ? true : token === tokens[index]))) continue
+        if (!template.every((token, index) => tokenFillsTemplate(token, tokens[index]))) continue
         for (const [index, token] of template.entries()) {
-          if (!token.startsWith('{{')) continue
-          const name = token.slice(2, -2)
-          if (name !== 'path' && name !== 'file') continue
-          const filled = tokens[index]
+          const name = /\{\{([^{}]+)\}\}/.exec(token)?.[1]
+          if (name === undefined || (name !== 'path' && name !== 'file')) continue
+          const filled = placeholderValue(token, tokens[index])
           if (filled === undefined) continue
           const resolved = resolve(inputs.repoPath, filled)
           const under = relative(inputs.repoPath, resolved)
