@@ -400,6 +400,43 @@ test('a profile with declared commands loads and carries them (#156)', async () 
   rmSync(dir, { recursive: true })
 })
 
+test('a declared test command carries its filter and report format (#157)', async () => {
+  const dir = copiedProfile()
+  const config = `${fixtureConfig()}\ncommands:\n  test:\n    run: 'pnpm --filter {{package}} exec vitest run -t {{pattern}}'\n    about: runs the tests in one package whose name matches the pattern\n    filter: pattern\n    report: vitest-json\n`
+  writeFileSync(join(dir, 'config.yml'), config)
+  const profile = await loadProfile(dir)
+  expect(profile.commands?.test).toEqual({
+    run: 'pnpm --filter {{package}} exec vitest run -t {{pattern}}',
+    about: 'runs the tests in one package whose name matches the pattern',
+    filter: 'pattern',
+    report: 'vitest-json',
+  })
+})
+
+test('a declared command that names a filter must name the report that reads it (#157)', async () => {
+  const dir = copiedProfile()
+  const config = `${fixtureConfig()}\ncommands:\n  test:\n    run: 'pnpm exec vitest run -t {{pattern}}'\n    about: runs the tests\n    filter: pattern\n`
+  writeFileSync(join(dir, 'config.yml'), config)
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test')
+})
+
+test('a declared report format must be one the runner can read (#157)', async () => {
+  const dir = copiedProfile()
+  const config = `${fixtureConfig()}\ncommands:\n  test:\n    run: 'pnpm exec vitest run -t {{pattern}}'\n    about: runs the tests\n    filter: pattern\n    report: unittest\n`
+  writeFileSync(join(dir, 'config.yml'), config)
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test')
+})
+
+test('a declared filter must name a placeholder of the command itself (#157)', async () => {
+  const dir = copiedProfile()
+  const config = `${fixtureConfig()}\ncommands:\n  test:\n    run: 'pnpm exec vitest run'\n    about: runs the tests\n    filter: pattern\n    report: vitest-json\n`
+  writeFileSync(join(dir, 'config.yml'), config)
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test')
+})
+
 test('a target profile may declare commands too (#156)', () => {
   const profile = validateProfileConfig({
     target: MCP_HEALTH,
@@ -418,6 +455,16 @@ test('a command whose run carries shell syntax fails the profile, naming the com
   const error = await profileError(() => loadProfile(dir))
   expect(error.field).toBe('commands.test')
   expect(error.message).toContain('"|"')
+  rmSync(dir, { recursive: true })
+})
+
+test('a command with two placeholders in one run token is refused (#200 review round 3)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: 'node {{script}} --tests={{pattern}}-{{suite}}'\n    about: runs the tests\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test')
+  expect(error.message).toContain('at most one placeholder per whitespace-separated token')
   rmSync(dir, { recursive: true })
 })
 

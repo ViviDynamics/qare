@@ -758,6 +758,7 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         criteria,
         diff,
         driver,
+        repoPath: process.cwd(),
         runInputs: { paths: declaredRunPaths(outPath, profilePath, diff) },
         ...(suites === undefined ? {} : { suites }),
         ...(flowActions.length === 0 ? {} : { flowActions }),

@@ -5,7 +5,9 @@ import { channelToolName } from './mcp.js'
 import { isUnsafeProfileName, type ProfileCommand } from './profile.js'
 import { sumUsage, type ModelUsage } from './metrics.js'
 import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
-import { shellCharacter } from './run.js'
+import { placeholderValue, shellCharacter, tokenFillsTemplate } from './run.js'
+import { existsSync } from 'node:fs'
+import { relative, resolve } from 'node:path'
 import { redactText, redactionRules, type ProfileRedaction } from './redact.js'
 
 export interface PlanCriterionInput {
@@ -44,6 +46,12 @@ export interface PlanInputs {
   suites?: string[]
   /** The URL of a running target the profile names (#122), which checks reach it at. */
   target?: string
+  /**
+   * The checkout root, when the caller has one (#201): a plan filling a
+   * path placeholder is checked against the checkout, and a path that does
+   * not exist is corrected away like any other contract violation.
+   */
+  repoPath?: string
   /**
    * Flow action kinds the change under review introduces (#64), so the schema,
    * the prompt and the plan loader accept them at the base revision. Kinds the
@@ -533,6 +541,48 @@ function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
 }
 
 /**
+ * A placeholder whose name says path or file must be filled with a file the
+ * checkout carries (#201): the declared command passes the program gate, but
+ * nothing stops a plan from filling {{path}} with a script that does not
+ * exist, and the runner would turn that guess into a red verdict. The
+ * correction round catches it instead.
+ */
+function missingPathGap(plan: Plan, inputs: PlanInputs): string | undefined {
+  if (inputs.repoPath === undefined || inputs.commands === undefined) return undefined
+  for (const criterion of plan.criteria) {
+    if (!('checks' in criterion)) continue
+    for (const check of criterion.checks) {
+      if (check.kind !== 'command') continue
+      const tokens = check.command.split(/\s+/).filter((token) => token !== '')
+      for (const declared of Object.values(inputs.commands)) {
+        const template = declared.run.split(/\s+/).filter((token) => token !== '')
+        if (template.length !== tokens.length) continue
+        if (!template.every((token, index) => tokenFillsTemplate(token, tokens[index]))) continue
+        for (const [index, token] of template.entries()) {
+          const name = /\{\{([^{}]+)\}\}/.exec(token)?.[1]
+          if (name === undefined || (name !== 'path' && name !== 'file')) continue
+          const filled = placeholderValue(token, tokens[index])
+          if (filled === undefined) continue
+          const resolved = resolve(inputs.repoPath, filled)
+          const under = relative(inputs.repoPath, resolved)
+          if (under.startsWith('..') || under === '')
+            return (
+              `criterion ${criterion.id} command check "${check.name}": the path ${filled} escapes the checkout, ` +
+              'so the check cannot run: fill the placeholder with a file the checkout carries, or mark the criterion unplannable'
+            )
+          if (!existsSync(resolved))
+            return (
+              `criterion ${criterion.id} command check "${check.name}": the path ${filled} does not exist in the checkout, ` +
+              'so the check cannot run: fill the placeholder with a file the checkout carries, or mark the criterion unplannable'
+            )
+        }
+      }
+    }
+  }
+  return undefined
+}
+
+/**
  * The run's own outputs, named in the SPEC's run contract: a command check
  * reading one of them reads a file the run writes when it ends, which is why
  * they are the one artifact class doomed by construction rather than by
@@ -693,6 +743,11 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
     if (unknownProgram !== undefined) {
       correction =
         `${unknownProgram}. Use one of the declared commands, filling its placeholders from the criterion, ` + 'or a standard tool.'
+      continue
+    }
+    const missingPath = missingPathGap(plan, inputs)
+    if (missingPath !== undefined) {
+      correction = missingPath
       continue
     }
     const undeclared = undeclaredPathGap(plan, inputs)

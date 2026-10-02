@@ -90,6 +90,7 @@ The evidence directory holds everything a run produced:
     stdout.txt
     stderr.txt
     command.json                   # a command check: the command as run, its outcome and exit code
+    selected.txt                   # a filtered command whose report was read: the tests the filter selected (#157)
     outbound.json                  # a flow on a target run: every host its browser reached
 ```
 
@@ -99,8 +100,16 @@ revision, so no regression was looked for.
 
 Every executed check captures its stdout and stderr there, and the result's
 `criteria[].evidence` arrays name those files; a command check also records
-`command.json`: the command as run, its outcome, and the exit code it closed
-with. Evidence references are
+`command.json`: the command as run, its outcome, and the exit code it closed. A
+check whose profile command declares a filter and a report format is verified
+against the command's own report (#157): an exit of 0 is not enough, because a
+filter that selected nothing (or the whole suite) exercises the criterion only
+by accident. The runner reads the report from stdout, counts the tests the
+filter selected, and downgrades the check to unverified naming the filter and
+the counts when the selection is empty or total, so a whole-suite run cannot
+prove a filtered criterion; the selected names are saved to `selected.txt`. A
+command with no declared filter is unaffected: exit 0 proves it as before.
+Evidence references are
 relative paths that stay inside the evidence directory: absolute paths and
 any `..` segment are rejected by the loaders. An orchestrator reads evidence
 files relative to the `evidenceDir` it named in the job.

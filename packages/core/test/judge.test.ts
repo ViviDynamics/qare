@@ -204,6 +204,24 @@ describe('consumeVerifierFindings', () => {
     expect(result).toEqual([failed, unverified])
   })
 
+  test('an unexercised finding downgrades a proven criterion to unverified, not failed (#157)', () => {
+    const result = consumeVerifierFindings([proven], [
+      {
+        criterionId: 'c1',
+        problem: 'the evidence is a whole-suite run; the criterion names replay behaviour',
+        kind: 'unexercised',
+      },
+    ])
+    expect(result).toEqual([
+      {
+        criterionId: 'c1',
+        outcome: 'unverified',
+        regression: false,
+        reason: 'verifier: the evidence is a whole-suite run; the criterion names replay behaviour',
+      },
+    ])
+  })
+
   test('findings naming criterion ids that were not given are dropped', () => {
     const result = consumeVerifierFindings([proven], [{ criterionId: 'ghost', problem: 'not a criterion' }])
     expect(result).toEqual([proven])

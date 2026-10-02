@@ -48,6 +48,33 @@ async function fakeNare(answer: unknown): Promise<string> {
   return binary
 }
 
+/**
+ * A nare stand-in whose answer depends on the round: the first call answers
+ * one plan, the second the correction. The round count rides on a marker
+ * file, because each invocation is a fresh process.
+ */
+async function twoRoundNare(first: unknown, second: unknown): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-plan-'))
+  const binary = join(dir, 'nare')
+  const script = [
+    '#!/usr/bin/env node',
+    'import { existsSync, writeFileSync } from "node:fs"',
+    `const marker = ${JSON.stringify(join(dir, 'round'))}`,
+    `const first = ${JSON.stringify(JSON.stringify(first))}`,
+    `const second = ${JSON.stringify(JSON.stringify(second))}`,
+    'const text = existsSync(marker) ? second : first',
+    'writeFileSync(marker, "2")',
+    `console.log(JSON.stringify({ type: 'output', text, detail: {} }))`,
+    `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
+    `  stop_reason: 'end_turn', turns: 1, contract: 1, output: JSON.parse(text), error: null }))`,
+  ].join('\n')
+  await writeFile(`${binary}.mjs`, script, 'utf8')
+  await writeFile(binary, `#!/bin/sh\nexec node ${binary}.mjs "$@"\n`, 'utf8')
+  const { chmod } = await import('node:fs/promises')
+  await chmod(binary, 0o755)
+  return binary
+}
+
 async function inputs(): Promise<{ criteriaPath: string; diffPath: string; outPath: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'qare-plan-in-'))
   const criteriaPath = join(dir, 'criteria.json')
@@ -701,4 +728,47 @@ test('the mcp call records are redacted like the evidence they are (#93)', async
   const result = String((records[0] as { result?: string }).result)
   expect(result).not.toContain('hunter2')
   expect(result).toContain('[redacted]')
+})
+
+test('qare plan hands its working directory to the plan step, so an invented script path is corrected (#201, #200 review round 2)', async () => {
+  const { criteriaPath, diffPath, outPath } = await inputs()
+  const root = await mkdtemp(join(tmpdir(), 'qare-plan-root-'))
+  await writeFile(join(root, 'check.js'), 'process.exit(0)\n')
+  const profileDir = join(root, '.qa')
+  await mkdir(profileDir, { recursive: true })
+  await writeFile(
+    join(profileDir, 'config.yml'),
+    'commands:\n  script:\n    run: node {{path}}\n    about: runs a check script the checkout carries\n',
+    'utf8',
+  )
+  const invented = {
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'x', command: 'node check-invented.js' }] },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no visual baseline yet' },
+    ],
+  }
+  const corrected = {
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'x', command: 'node check.js' }] },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'no visual baseline yet' },
+    ],
+  }
+  const binary = await twoRoundNare(invented, corrected)
+  const out = capture()
+  const previousCwd = process.cwd()
+  try {
+    process.chdir(root)
+    await main(
+      ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', outPath, '--profile', profileDir, '--nare', binary],
+      out.writer,
+    )
+  } finally {
+    process.chdir(previousCwd)
+  }
+
+  const plan = JSON.parse(await readFile(outPath, 'utf8'))
+  expect(JSON.stringify(plan)).toContain('check.js')
+  expect(JSON.stringify(plan)).not.toContain('check-invented.js')
 })

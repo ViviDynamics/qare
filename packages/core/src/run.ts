@@ -17,7 +17,7 @@ import type { FlowActionStep } from './plan.js'
 import { feedRunLedger } from './ledger-feed.js'
 import { extractCode, httpMailbox, mailEvidence, runMailCheck, type ReadMail } from './mailbox.js'
 import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCapabilities, mcpDriverServer, type McpToolResult } from './mcp.js'
-import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
+import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
@@ -711,7 +711,7 @@ interface LaneContext {
 async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): Promise<CriterionResult> {
   const { job, profile, opts } = ctx
   if (profile.app === undefined)
-    return runCriterion(criterion, job, ctx.rules, ctx.values, ctx.mail, ctx.artefacts, ctx.flow, ctx.execution, ctx.cache, ctx.policy)
+    return runCriterion(criterion, job, ctx.rules, ctx.values, ctx.mail, ctx.artefacts, ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands)
   let shardIsolation: RunIsolation
   try {
     shardIsolation = await isolateRun()
@@ -749,7 +749,7 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
     if (boot.kind === 'blocked') return { id: criterion.id, outcome: 'unverified', reason: boot.reason ?? 'boot did not come up' }
     // The criterion's artefact ledger starts empty: what its flow checks
     // publish or spend belongs to this app alone, never the run's (#69).
-    return await runCriterion(criterion, job, ctx.rules, shardValues, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy)
+    return await runCriterion(criterion, job, ctx.rules, shardValues, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands)
   } finally {
     // The criterion's app is torn down with the criterion: a sharded run
     // leaves no stack of its own holding a port or a volume the next
@@ -782,7 +782,7 @@ async function runCriteriaAcrossLanes(criteria: JobCriterion[], lanes: LanePlan,
           // A criterion the workers run beside others shares nothing with
           // them: its artefact ledger starts empty, so its flow checks
           // cannot spend or publish what another criterion's do (#69).
-          results[index] = await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy)
+          results[index] = await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands)
         }
       })(),
     ),
@@ -794,7 +794,7 @@ async function runCriteriaAcrossLanes(criteria: JobCriterion[], lanes: LanePlan,
         // the next one consumes, exactly as a serial run hands it over.
         results[index] = ownBoot
           ? await runOwnBootCriterion(criterion, ctx)
-          : await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, ctx.artefacts, ctx.flow, ctx.execution, ctx.cache, ctx.policy)
+          : await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, ctx.artefacts, ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands)
       }
     })(),
   ])
@@ -1165,6 +1165,7 @@ async function runCriterion(
   execution: ExecutionKind,
   cache: RunCacheContext | undefined,
   policy: FlakePolicy,
+  commands: Record<string, ProfileCommand> | undefined,
 ): Promise<CriterionResult> {
   const checks = criterion.checks ?? []
   if (checks.length === 0)
@@ -1393,10 +1394,18 @@ async function runCriterion(
       // is a secret like any other, so the check's evidence is swept with it (#64).
       if (resolved.consumed.length > 0) sweepRules.push(...valueRules(resolved.consumed.map((consumed) => consumed.artefact)))
       const checkDir = dirFor(index, attempt)
-      const outcome = await runCommandCheck(resolved.check, cwd, timeoutMs, execution)
+      const selection = resolveSelection(resolved.check, commands)
+      const outcome = await runCommandCheck(resolved.check, cwd, timeoutMs, execution, selection)
       await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
       await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), sweepRules))
       await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), redactText(truncationNote(outcome, 'stderr'), sweepRules))
+      if (outcome.selected !== undefined) {
+        await writeFile(
+          join(job.evidenceDir, checkDir, 'selected.txt'),
+          outcome.selected.length === 0 ? '' : `${redactText(outcome.selected.join('\n'), sweepRules)}\n`,
+        )
+        evidence.push(`${checkDir}/selected.txt`)
+      }
       evidence.push(`${checkDir}/stdout.txt`, `${checkDir}/stderr.txt`)
       // The command, its outcome and the exit code it closed with are evidence
       // like the streams are (#152): a check that passes silently (test -f,
@@ -2012,6 +2021,15 @@ interface CheckOutcome {
   stdoutTruncated?: boolean
   stderrTruncated?: boolean
   code?: number
+  selected?: string[]
+}
+
+/** The selection a declared test command carries (#157): which placeholder is
+ * the filter, and the machine-readable format the command's report is read
+ * from. Present only when the profile declares both. */
+interface Selection {
+  filter: string
+  report: ReportFormat
 }
 
 const MAX_CAPTURE_BYTES = 1024 * 1024
@@ -2085,11 +2103,154 @@ function checkEnvironment(env: JobCommandCheck['env'], execution: ExecutionKind 
   }
 }
 
+/**
+ * The selection a check verifies with: the filter value the plan filled into
+ * the declared command's filter placeholder, and the report format the
+ * profile declared for reading it (#157). The check's run is matched against
+ * every declared command's run shape - same tokens, placeholders taking the
+ * filled values - and one match resolves it. None or several leave the check
+ * a plain command, and the verifier's exercise rule still applies to it.
+ */
+function resolveSelection(
+  check: JobCommandCheck,
+  commands: Record<string, ProfileCommand> | undefined,
+): Selection | undefined {
+  if (commands === undefined) return undefined
+  const tokens = check.run.split(/\s+/).filter((token) => token !== '')
+  const matches = Object.values(commands).filter((command) => {
+    if (command.filter === undefined || command.report === undefined) return false
+    const template = command.run.split(/\s+/).filter((token) => token !== '')
+    if (template.length !== tokens.length) return false
+    return template.every((token, index) => tokenFillsTemplate(token, tokens[index]))
+  })
+  if (matches.length !== 1) return undefined
+  const declared = matches[0]
+  if (declared === undefined || declared.filter === undefined || declared.report === undefined) return undefined
+  const template = declared.run.split(/\s+/).filter((token) => token !== '')
+  const position = template.findIndex((token) => token.includes(`{{${declared.filter}}}`))
+  if (position < 0) return undefined
+  const templateToken = template[position]
+  if (templateToken === undefined) return undefined
+  const filter = placeholderValue(templateToken, tokens[position])
+  if (filter === undefined) return undefined
+  return { filter, report: declared.report }
+}
+
+/**
+ * Whether a template token matches the token the plan filled in. `{{name}}`
+ * takes the whole token; a placeholder embedded in a token, such as
+ * `--testNamePattern={{name}}`, matches the token whose constants agree; a
+ * constant must be equal.
+ */
+export function tokenFillsTemplate(template: string, filled: string | undefined): boolean {
+  if (filled === undefined) return false
+  if (template.startsWith('{{') && template.endsWith('}}')) return true
+  const embedded = /\{\{[^{}]+\}\}/.exec(template)
+  if (embedded === null) return template === filled
+  const prefix = template.slice(0, embedded.index)
+  const suffix = template.slice(embedded.index + embedded[0].length)
+  return filled.startsWith(prefix) && filled.endsWith(suffix) && filled.length >= prefix.length + suffix.length
+}
+
+/**
+ * The value a placeholder of a template token takes: the whole filled token
+ * for a whole-token placeholder, the text around the constants for one
+ * embedded in a token.
+ */
+export function placeholderValue(template: string, filled: string | undefined): string | undefined {
+  if (filled === undefined) return undefined
+  if (template.startsWith('{{') && template.endsWith('}}')) return filled
+  const embedded = /\{\{[^{}]+\}\}/.exec(template)
+  if (embedded === null) return undefined
+  const prefix = template.slice(0, embedded.index)
+  const suffix = template.slice(embedded.index + embedded[0].length)
+  if (!filled.startsWith(prefix) || !filled.endsWith(suffix)) return undefined
+  return filled.slice(prefix.length, filled.length - suffix.length)
+}
+
+function testNames(report: ReportFormat, stdout: string): string[] | undefined {
+  if (report === 'vitest-json') {
+    try {
+      const parsed: unknown = JSON.parse(stdout)
+      if (typeof parsed !== 'object' || parsed === null) return undefined
+      const testResults = (parsed as { testResults?: unknown }).testResults
+      if (!Array.isArray(testResults)) return undefined
+      const names: string[] = []
+      for (const entry of testResults) {
+        const assertionResults = (entry as { assertionResults?: unknown }).assertionResults
+        if (!Array.isArray(assertionResults)) return undefined
+        for (const assertion of assertionResults) {
+          const status = (assertion as { status?: unknown }).status
+          if (status === 'skipped' || status === 'todo') continue
+          const name = (assertion as { fullName?: unknown }).fullName
+          if (typeof name !== 'string') return undefined
+          names.push(name)
+        }
+      }
+      return names
+    } catch {
+      return undefined
+    }
+  }
+  if (report === 'junit-xml') {
+    const names: string[] = []
+    for (const part of stdout.split(/(?=<testcase\b)/).slice(1)) {
+      const name = /<testcase\b[^>]*\bname="([^"]*)"/.exec(part)?.[1]
+      if (name === undefined) continue
+      if (part.includes('<skipped')) continue
+      names.push(name)
+    }
+    return names
+  }
+  const names: string[] = []
+  for (const line of stdout.split('\n')) {
+    const tap = /^(?:ok|not ok) \d+ (?:- )?(.+)$/.exec(line.trim())
+    if (tap === null || tap[1] === undefined) continue
+    if (/\#\s*skip/i.test(tap[1])) continue
+    names.push(tap[1].split(' #')[0]?.trim() ?? '')
+  }
+  return names
+}
+
+function selectionVerdict(
+  selection: Selection,
+  stdout: string,
+): { status: 'passed'; selected: string[] } | { status: 'unverified'; reason: string; selected?: string[] } {
+  const names = testNames(selection.report, stdout)
+  if (names === undefined)
+    return {
+      status: 'unverified',
+      reason: `the check's report could not be read as ${selection.report}, so the filter's selection is unknown`,
+    }
+  let matchesName: (name: string) => boolean
+  try {
+    const pattern = new RegExp(selection.filter)
+    matchesName = (name) => pattern.test(name)
+  } catch {
+    matchesName = (name) => name.includes(selection.filter)
+  }
+  const selected = names.filter((name) => matchesName(name))
+  if (selected.length === 0)
+    return {
+      status: 'unverified',
+      reason: `the filter ${selection.filter} selected none of the ${names.length} tests the command ran, so nothing it names was exercised`,
+      selected: [],
+    }
+  if (selected.length === names.length)
+    return {
+      status: 'unverified',
+      reason: `the filter ${selection.filter} selected all ${names.length} tests: a whole-suite run does not prove a filtered criterion`,
+      selected,
+    }
+  return { status: 'passed', selected }
+}
+
 export function runCommandCheck(
   check: JobCommandCheck,
   cwd: string,
   timeoutMs: number,
   execution?: ExecutionKind,
+  selection?: Selection,
 ): Promise<CheckOutcome> {
   const env = checkEnvironment(check.env, execution)
   return new Promise((resolve) => {
@@ -2160,9 +2321,21 @@ export function runCommandCheck(
           stdoutTruncated,
           stderrTruncated,
         })
-      else if (code === 0)
-        settle({ status: 'passed', code, stdout, stderr, stdoutTruncated, stderrTruncated })
-      else
+      else if (code === 0) {
+        if (selection === undefined)
+          settle({ status: 'passed', code, stdout, stderr, stdoutTruncated, stderrTruncated })
+        else {
+          const verdict = selectionVerdict(selection, stdout)
+          settle({
+            code,
+            stdout,
+            stderr,
+            stdoutTruncated,
+            stderrTruncated,
+            ...verdict,
+          })
+        }
+      } else
         settle({
           status: 'failed',
           code: code === null ? undefined : code,

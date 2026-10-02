@@ -83,6 +83,8 @@ Judge:
 - A blocked run whose every unverified criterion is one the planner could not plan, whose planned command cannot run without a shell, or whose check could not start at all (the planner named an executable the runner does not have), reports the criteria by name and the check run comes out neutral: the gap is in the planning vocabulary, and nothing was disproven. Any other blocked run — a check that could not reach the app, an environment that would not boot — is a fault and stays red.
 - A planner whose plan the loader rejects through its correction round ends in the same neutral path: the plan command writes every criterion as `unplannable` naming the rejection, and the run reports rather than fails red.
 - A command check may read only the declared run inputs: the plan file itself, the profile directory, and the paths the diff touches. The run's own outputs — `result.json`, `judged-result.json`, `comment.md`, the evidence directory — do not exist while a check runs, because the run writes them when it ends, and the harness's own CLI is not on the runner's PATH. The planner is told this up front; a plan that still reads an undeclared path after its correction round marks the criterion unplannable and the run stays neutral (#162).
+- A plan whose command check fills a path placeholder with a file the checkout does not carry is corrected, then refused, like any other contract violation (#201): an invented script is a model-step guess, and the correction round catches it before the runner turns it into a red verdict.
+- A command check whose profile command declares a filter and a report format is proven only if its report shows the filter selecting tests: none or all selected leaves the check unverified naming the filter and the counts, and the selected names are saved to evidence, because a whole-suite run does not prove a filtered criterion (#157). A command with no declared filter is proven by exit 0 as before.
 - A criterion whose evidence can only come into existence through a model-driven session is unplannable: the executing job runs no model, so no check can produce that evidence, and the run publishes evidence only when it ends. Evidence under a declared profile directory is not an exception — a command check reading it is corrected, then refused like any other undeclared input (#168).
 
 ## The `.qa/` profile (per repo)
@@ -124,6 +126,8 @@ commands:                        # optional: invocations the planner may rely on
   test:
     run: "pnpm --filter {{package}} exec vitest run -t {{pattern}}"  # the planner fills {{placeholders}} itself
     about: runs the tests of one package whose name matches the pattern
+    filter: pattern              # which placeholder is the test filter (#157)
+    report: vitest-json          # the machine-readable report the command prints: vitest-json, junit-xml or node-tap
 redact:                          # optional: fixture data that must not be published
   values: ["jane@pilot.example"] # literal strings
   patterns: ['CUST-\d{6}']       # regular expressions
