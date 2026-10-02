@@ -521,9 +521,12 @@ function commandContractGap(plan: Plan): string | undefined {
 export const EXECUTE_PATH_TOOLS = ['node', 'grep', 'test', 'python3', 'nare']
 
 function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
-  if (inputs.commands === undefined) return undefined
+  // The allowlist follows the run contract, not the declared commands: a
+  // profile may declare none, and then every standard tool is the only
+  // executable a command check may run.
+  if (inputs.runInputs === undefined && inputs.commands === undefined) return undefined
   const declared = new Set(
-    Object.values(inputs.commands).map((command) => command.run.split(/\s+/).find((token) => token !== '')),
+    Object.values(inputs.commands ?? {}).map((command) => command.run.split(/\s+/).find((token) => token !== '')),
   )
   for (const criterion of plan.criteria) {
     if (!('checks' in criterion)) continue
@@ -531,6 +534,11 @@ function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
       if (check.kind !== 'command') continue
       const program = check.command.split(/\s+/).find((token) => token !== '')
       if (program === undefined) continue
+      if (program === HARNESS_CLI)
+        return (
+          `criterion ${criterion.id} command check "${check.name}": "${HARNESS_CLI}" is this harness's own CLI, ` +
+          'and a check that runs the harness proves what the harness wrote, never that the change holds'
+        )
       if (declared.has(program) || EXECUTE_PATH_TOOLS.includes(program)) continue
       return (
         `criterion ${criterion.id} command check "${check.name}": the program ${program} is neither a program of ` +
@@ -743,7 +751,10 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
     const unknownProgram = unknownProgramGap(plan, inputs)
     if (unknownProgram !== undefined) {
       correction =
-        `${unknownProgram}. Use one of the declared commands, filling its placeholders from the criterion, ` + 'or a standard tool.'
+        `${unknownProgram}. ` +
+        (Object.keys(inputs.commands ?? {}).length > 0
+          ? 'Use one of the declared commands, filling its placeholders from the criterion, or a standard tool.'
+          : 'Use a standard tool the runner carries.')
       continue
     }
     const missingPath = missingPathGap(plan, inputs)

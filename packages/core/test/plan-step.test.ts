@@ -495,7 +495,7 @@ test('a command check naming an undeclared path is corrected, and a declared dir
   const doomed = JSON.stringify({
     schemaVersion: '1',
     criteria: [
-      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'diffstats', command: 'wc -l single-app.diff' }] },
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'diffstats', command: 'grep -n done single-app.diff' }] },
       { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
     ],
   })
@@ -577,7 +577,7 @@ test('an absolute path is corrected, not normalized into a declared path (#162)'
 })
 
 test('the evidence directory is a forbidden run output with or without an extension (#162)', async () => {
-  for (const command of ['ls evidence', 'grep done evidence/streams']) {
+  for (const command of ['test -d evidence', 'grep done evidence/streams']) {
     const doomed = JSON.stringify({
       schemaVersion: '1',
       criteria: [
@@ -1064,6 +1064,23 @@ test('a plan that runs a standard tool the runner carries is accepted (#156)', a
   const plan = await planRun(runner, { ...INPUTS, commands: DECLARED_COMMANDS })
 
   expect(plan.criteria[0]).toMatchObject({ checks: [{ command: 'node --version' }] })
+})
+
+test('the allowlist applies even when the profile declares no commands (#198)', async () => {
+  const doomed = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'x', command: 'npm test' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(doomed), completed(planned())])
+
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('the program npm is neither')
+  expect(runner.requests[1].prompt).toContain('Use a standard tool the runner carries')
 })
 
 test('a plan that runs a program the image does not carry is corrected (#198)', async () => {
