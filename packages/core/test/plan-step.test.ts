@@ -1007,9 +1007,14 @@ test('the standard tools the prompt names are the ones the image contract ships 
     { tool: 'python3', pattern: /FROM python:3\.12-slim/ },
     { tool: 'nare', pattern: /pip install .*\$NARE_WHEEL/ },
   ]
-  for (const tool of EXECUTE_PATH_TOOLS) {
-    if (tool === 'grep' || tool === 'test') continue
-    expect(markers.some((marker) => marker.tool === tool && marker.pattern.test(runtime))).toBe(true)
+  // The allowlist equals the image contract exactly: a tool that joins or
+  // leaves the list has to change this test, which is the point.
+  const imageTools = ['node', 'grep', 'test', 'python3', 'nare']
+  expect([...EXECUTE_PATH_TOOLS].sort()).toEqual([...imageTools].sort())
+  // Every marker is verified independently of the allowlist, so a tool the
+  // image drops turns the test red even if the list drifted with it.
+  for (const marker of markers) {
+    expect(marker.pattern.test(runtime)).toBe(true)
   }
   expect(EXECUTE_PATH_TOOLS).not.toContain('npm')
   expect(EXECUTE_PATH_TOOLS).not.toContain('git')
