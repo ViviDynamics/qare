@@ -28,3 +28,40 @@ page that cannot be reached is reported unverified or blocked, never failed.
 The checks drive a browser, so the run executes in the published web image
 (#88): the profile names `flavour: web`, and the pipeline's execute step pulls
 the flavour the profile names.
+
+What qare is: a harness a repository points at its own pull requests. The
+pipeline collects the criteria from the issue, the planner turns each one
+into checks, the runner executes the plan, and the judge reads the evidence
+against the criterion. The planner is a model: it plans well only when the
+profile tells it the truth about what a check can do here.
+
+What qare's own criteria are usually about, and how each is shown in real
+development:
+
+- A package's behaviour: its vitest tests, filtered to the behaviour.
+- The CLI's behaviour: the built CLI driven with fixtures.
+- The pipeline contract: the workflow's structural tests.
+- A flow against a running site: the kind this profile's target covers.
+
+What a self-run can and cannot show. The executing job runs the published
+image against a raw checkout of the pull request: it installs and builds
+nothing, and the image carries no test runner, no npm, no git and no jq.
+Because of that:
+
+- A criterion shown by a test suite is out of reach: the checkout has no
+  node_modules and there is no test runner to invoke. Mark it unplannable
+  naming the missing test runner instead of guessing an invocation that
+  cannot start.
+- The CLI's behaviour through this pull request's own build is out of reach
+  for the same reason: nothing builds the checkout, and the image's own qare
+  binary is the base revision's, which says nothing about the change.
+- Evidence only a model-driven session can produce is out of reach: the
+  executing job runs no model.
+- A behaviour that needs Docker the check drives itself, several concurrent
+  runners, or a clock the check controls is out of reach: the image has no
+  Docker CLI, the job runs one runner, with its own clock.
+
+What a command check can genuinely show: structure on the paths the change
+touches, read with the tools the image really has. The profile declares those
+commands; prefer them over inventing invocations, fill every placeholder from
+the criterion, and keep the check inside the declared run inputs.

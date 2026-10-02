@@ -12,3 +12,16 @@ target:
   health: { http: /wiki/Main_Page, timeout: 30s }
   hosts: ["*.wikipedia.org", "*.wikimedia.org", "wikipedia.org", "wikimedia.org"]
 flavour: web
+
+# The commands a command check can genuinely run in the published image
+# (#158): the image carries node, grep, test, python3 and nothing that runs
+# the repository's test suites. QA.md says what is out of reach, so the
+# planner marks suite-driven criteria unplannable instead of guessing an
+# invocation that cannot start.
+commands:
+  source:
+    run: grep -n -- {{pattern}} {{path}}
+    about: Asserts that the file {{path}} in the checkout carries {{pattern}}, printing the matching lines; empty output means the pattern is absent, so the check fails.
+  script:
+    run: node -- {{path}}
+    about: Runs the plain JavaScript check script at {{path}} that the change adds; the script's exit code is the verdict and its stdout and stderr are the report.
