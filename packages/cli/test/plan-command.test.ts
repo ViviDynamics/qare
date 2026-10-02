@@ -22,7 +22,7 @@ const PLAN = {
   schemaVersion: '1',
   usage: { inputTokens: 1, outputTokens: 1 },
   criteria: [
-    { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'login', command: 'npm test -- login' }] },
+    { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'login', command: 'node --version' }] },
     { id: 'c2', text: CRITERIA[1].text, unplannable: 'no visual baseline yet' },
   ],
 }
@@ -150,7 +150,7 @@ test('a command check the no-shell loader rejects twice comes out neutral, not r
       {
         id: 'c1',
         text: CRITERIA[0].text,
-        checks: [{ kind: 'command', name: 'login', command: 'npm test -- "an argument with spaces"' }],
+        checks: [{ kind: 'command', name: 'login', command: 'node -- "an argument with spaces"' }],
       },
       { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
     ],
@@ -178,7 +178,7 @@ test('a schema-invalid plan the loader rejects twice comes out neutral, not red 
       {
         id: 'c1',
         text: CRITERIA[0].text,
-        checks: [{ kind: 'command', name: 'login', command: 'npm test' }],
+        checks: [{ kind: 'command', name: 'login', command: 'node --version' }],
         unplannable: 'both carried',
       },
     ],
@@ -219,7 +219,7 @@ test('qare plan reads criteria straight from an issue body', async () => {
   const text = 'the login form rejects an empty password'
   const answer = {
     schemaVersion: '1',
-    criteria: [{ id: criterionIdFor(text), text, checks: [{ kind: 'command', name: 'login', command: 'npm test' }] }],
+    criteria: [{ id: criterionIdFor(text), text, checks: [{ kind: 'command', name: 'login', command: 'node --version' }] }],
   }
   const out = capture()
 

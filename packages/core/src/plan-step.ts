@@ -403,15 +403,17 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     ...(inputs.runInputs === undefined
       ? []
       : [
-          'Command checks run on a machine that has the repository checked out, with the standard',
-          'tools (node, npm, git, jq, grep, test) on its PATH and nothing more. A command check may',
-          'read only these declared run inputs:',
+          'Command checks run on a machine that has the repository checked out. A command check may run',
+          'the standard tools (node, grep, test, python3, nare) or the program of a command the profile',
+          'declares, and nothing else; other executables may exist on the machine, but they are not available',
+          'to a check. A command check may read only these declared run inputs:',
           ...inputs.runInputs.paths.map((path) => `- ${path}`),
           'A declared directory covers the files under it.',
           "The run's own outputs do not exist while a check runs: result.json, judged-result.json,",
           'comment.md, checkrun.json and everything under the evidence directory are written when the',
           'run ends, so a check that reads one cannot pass, and neither can a command whose executable is not on the',
-          "runner's PATH (qare, this harness's own CLI, is not).",
+          "runner's PATH (qare, this harness's own CLI, sits on the image's PATH and still runs no check: the harness",
+          'is the thing under test, not its witness).',
           'The plan file itself, plan.json, is also off limits: it is what this planning session writes,',
           'so a check that reads it shows what the planner wrote, never that the change under test holds.',
           'The executing job runs no model: no planning, verifying or exploring session runs inside it,',
@@ -517,12 +519,15 @@ function commandContractGap(plan: Plan): string | undefined {
  * check may use; anything else it runs must be a program of a command the
  * profile declares (#156).
  */
-const EXECUTE_PATH_TOOLS = ['node', 'npm', 'git', 'jq', 'grep', 'test']
+export const EXECUTE_PATH_TOOLS: readonly string[] = Object.freeze(['node', 'grep', 'test', 'python3', 'nare'])
 
 function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
-  if (inputs.commands === undefined) return undefined
+  // The allowlist follows the run contract, not the declared commands: a
+  // profile may declare none, and then every standard tool is the only
+  // executable a command check may run.
+  if (inputs.runInputs === undefined && inputs.commands === undefined) return undefined
   const declared = new Set(
-    Object.values(inputs.commands).map((command) => command.run.split(/\s+/).find((token) => token !== '')),
+    Object.values(inputs.commands ?? {}).map((command) => command.run.split(/\s+/).find((token) => token !== '')),
   )
   for (const criterion of plan.criteria) {
     if (!('checks' in criterion)) continue
@@ -530,10 +535,15 @@ function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
       if (check.kind !== 'command') continue
       const program = check.command.split(/\s+/).find((token) => token !== '')
       if (program === undefined) continue
+      if (program === HARNESS_CLI)
+        return (
+          `criterion ${criterion.id} command check "${check.name}": "${HARNESS_CLI}" is this harness's own CLI, ` +
+          'and a check that runs the harness proves what the harness wrote, never that the change holds'
+        )
       if (declared.has(program) || EXECUTE_PATH_TOOLS.includes(program)) continue
       return (
         `criterion ${criterion.id} command check "${check.name}": the program ${program} is neither a program of ` +
-        'the declared commands nor a standard tool the runner carries (node, npm, git, jq, grep, test)'
+        'the declared commands nor a standard tool the runner carries (node, grep, test, python3, nare)'
       )
     }
   }
@@ -600,7 +610,7 @@ const RUN_OUTPUT_DIRECTORIES = ['evidence']
  */
 const PLAN_OUTPUT_BASENAME = 'plan.json'
 
-/** The harness's own CLI is never an executable on the runner's PATH (#162). */
+/** The harness's own CLI never runs a check: the harness is what the run tests, not its witness (#162). */
 const HARNESS_CLI = 'qare'
 
 function isPathLike(token: string): boolean {
@@ -635,7 +645,7 @@ function undeclaredReference(command: string, declared: string[]): string | unde
     declared.some((path) => token === path || token.startsWith(`${path}/`))
   const [executable, ...arguments_] = command.split(/\s+/).filter((token) => token !== '')
   if (executable === HARNESS_CLI)
-    return `"${HARNESS_CLI}" is this harness's own CLI, and the runner never installs it on its PATH, so the command cannot start`
+    return `"${HARNESS_CLI}" is this harness's own CLI, and a check that runs the harness proves what the harness wrote, never that the change holds`
   for (const token of arguments_) {
     if (token.startsWith('http://') || token.startsWith('https://') || token.startsWith('{{')) continue
     if (token.startsWith('/') || token.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(token))
@@ -742,7 +752,10 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
     const unknownProgram = unknownProgramGap(plan, inputs)
     if (unknownProgram !== undefined) {
       correction =
-        `${unknownProgram}. Use one of the declared commands, filling its placeholders from the criterion, ` + 'or a standard tool.'
+        `${unknownProgram}. ` +
+        (Object.keys(inputs.commands ?? {}).length > 0
+          ? 'Use one of the declared commands, filling its placeholders from the criterion, or a standard tool.'
+          : 'Use a standard tool the runner carries.')
       continue
     }
     const missingPath = missingPathGap(plan, inputs)

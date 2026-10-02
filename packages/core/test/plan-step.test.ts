@@ -1,9 +1,12 @@
 import { expect, test } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
+  EXECUTE_PATH_TOOLS,
   FakeAgentRunner,
   PlanStepError,
   planRun,
@@ -26,7 +29,7 @@ function planned(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     schemaVersion: '1',
     criteria: [
-      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'login unit', command: 'npm test -- login' }] },
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'login unit', command: 'node --version' }] },
       { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
     ],
     ...overrides,
@@ -43,7 +46,7 @@ test('a plan comes back parsed, with every criterion covered', async () => {
   const plan = await planRun(runner, INPUTS)
 
   expect(plan.criteria.map((criterion) => criterion.id)).toEqual(['c1', 'c2'])
-  expect(plan.criteria[0]).toMatchObject({ checks: [{ kind: 'command', command: 'npm test -- login' }] })
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ kind: 'command', command: 'node --version' }] })
 })
 
 test('the request carries the criteria, the diff and the available suites', async () => {
@@ -401,7 +404,7 @@ test('the planner is told the run contract when run inputs are declared (#162)',
   expect(prompt).toContain('- .qa')
   expect(prompt).toContain('result.json, judged-result.json')
   expect(prompt).toContain('checkrun.json')
-  expect(prompt).toContain("qare, this harness's own CLI, is not")
+  expect(prompt).toContain("qare, this harness's own CLI, sits on the image's PATH")
   expect(prompt).toContain('The plan file itself, plan.json')
 })
 
@@ -492,7 +495,7 @@ test('a command check naming an undeclared path is corrected, and a declared dir
   const doomed = JSON.stringify({
     schemaVersion: '1',
     criteria: [
-      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'diffstats', command: 'wc -l single-app.diff' }] },
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'diffstats', command: 'grep -n done single-app.diff' }] },
       { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
     ],
   })
@@ -574,7 +577,7 @@ test('an absolute path is corrected, not normalized into a declared path (#162)'
 })
 
 test('the evidence directory is a forbidden run output with or without an extension (#162)', async () => {
-  for (const command of ['ls evidence', 'grep done evidence/streams']) {
+  for (const command of ['test -d evidence', 'grep done evidence/streams']) {
     const doomed = JSON.stringify({
       schemaVersion: '1',
       criteria: [
@@ -990,11 +993,70 @@ test('a plan that runs the program of a declared command is accepted without a c
   expect(plan.criteria[0]).toMatchObject({ checks: [{ command: 'pnpm test login' }] })
 })
 
+test('the standard tools the prompt names are the ones the image contract ships (#198)', () => {
+  const dockerfile = readFileSync(fileURLToPath(new URL('../../../images/core/Dockerfile', import.meta.url)), 'utf8')
+  // Only the runtime stage is the contract: the builder may install anything
+  // it likes, and the runtime FROM line is the last one in the file.
+  const runtime = dockerfile.slice(dockerfile.lastIndexOf('FROM'))
+  // The image contract: node is copied from the builder, python3 is the base
+  // image and nare is pip-installed; grep and test are POSIX tools the debian
+  // slim base carries. npm, git and jq are the tools that never were, and the
+  // runtime stage installs no package toolchain at all.
+  const markers: Array<{ tool: string; pattern: RegExp }> = [
+    { tool: 'node', pattern: /COPY --from=builder \/usr\/bin\/node/ },
+    { tool: 'python3', pattern: /FROM python:3\.12-slim/ },
+    { tool: 'nare', pattern: /pip install .*\$NARE_WHEEL/ },
+  ]
+  // The allowlist equals the image contract exactly: a tool that joins or
+  // leaves the list has to change this test, which is the point.
+  const imageTools = ['node', 'grep', 'test', 'python3', 'nare']
+  expect([...EXECUTE_PATH_TOOLS].sort()).toEqual([...imageTools].sort())
+  // Every marker is verified independently of the allowlist, so a tool the
+  // image drops turns the test red even if the list drifted with it.
+  for (const marker of markers) {
+    expect(marker.pattern.test(runtime)).toBe(true)
+  }
+  expect(EXECUTE_PATH_TOOLS).not.toContain('npm')
+  expect(EXECUTE_PATH_TOOLS).not.toContain('git')
+  expect(EXECUTE_PATH_TOOLS).not.toContain('jq')
+  // The runtime stage carries none of npm, pnpm, git or jq, however the stage
+  // lays out its install commands: the pip that ships nare is image-build time,
+  // and no check installs or rebuilds anything while it runs.
+  expect(runtime).not.toMatch(/\b(npm|pnpm|git|jq)\b/)
+})
+
+test('the planner is told only the tools the run image really carries (#198)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
+
+  const prompt = runner.requests[0].prompt
+  expect(prompt).toContain('(node, grep, test, python3, nare)')
+  expect(prompt).not.toContain('npm, git, jq')
+})
+
+test('the gate correction names only the tools the run image really carries (#198)', async () => {
+  const doomed = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'x', command: 'jq length plan.json' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(doomed), completed(planned())])
+
+  await planRun(runner, { ...INPUTS, commands: DECLARED_COMMANDS })
+
+  expect(runner.requests[1].prompt).toContain('the program jq is neither')
+  expect(runner.requests[1].prompt).toContain('(node, grep, test, python3, nare)')
+  expect(runner.requests[1].prompt).not.toContain('npm, git, jq')
+})
+
 test('a plan that runs a standard tool the runner carries is accepted (#156)', async () => {
   const accepted = JSON.stringify({
     schemaVersion: '1',
     criteria: [
-      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'unit', command: 'npm test -- login' }] },
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'unit', command: 'node --version' }] },
       { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
     ],
   })
@@ -1002,5 +1064,38 @@ test('a plan that runs a standard tool the runner carries is accepted (#156)', a
 
   const plan = await planRun(runner, { ...INPUTS, commands: DECLARED_COMMANDS })
 
-  expect(plan.criteria[0]).toMatchObject({ checks: [{ command: 'npm test -- login' }] })
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ command: 'node --version' }] })
+})
+
+test('the allowlist applies even when the profile declares no commands (#198)', async () => {
+  const doomed = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'x', command: 'npm test' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(doomed), completed(planned())])
+
+  await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('the program npm is neither')
+  expect(runner.requests[1].prompt).toContain('Use a standard tool the runner carries')
+})
+
+test('a plan that runs a program the image does not carry is corrected (#198)', async () => {
+  const doomed = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'unit', command: 'npm test -- login' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(doomed), completed(planned())])
+
+  await planRun(runner, { ...INPUTS, commands: DECLARED_COMMANDS })
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('the program npm is neither')
 })
