@@ -1,4 +1,7 @@
 import { expect, test } from 'vitest'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   FakeAgentRunner,
@@ -851,6 +854,7 @@ const UNDECLARED_PROGRAM_PLAN = JSON.stringify({
 })
 
 const DECLARED_COMMANDS = { test: { run: 'pnpm test {{pattern}}', about: 'runs the tests the pattern names' } }
+const SCRIPT_COMMANDS = { script: { run: 'node -- {{path}}', about: 'runs the plain JavaScript check script at {{path}}' } }
 
 test('a plan whose command check runs an undeclared program is corrected, naming the program (#156)', async () => {
   const runner = new FakeAgentRunner([completed(UNDECLARED_PROGRAM_PLAN), completed(planned())])
@@ -866,6 +870,40 @@ test('a plan that still runs an undeclared program is refused at plan time (#156
   const runner = new FakeAgentRunner([completed(UNDECLARED_PROGRAM_PLAN), completed(UNDECLARED_PROGRAM_PLAN)])
 
   await expect(planRun(runner, { ...INPUTS, commands: DECLARED_COMMANDS })).rejects.toThrow(/the program wc is neither/)
+})
+
+test('a plan that fills a path placeholder with a file the checkout does not carry is corrected, naming the path (#201)', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'qare-plan-path-'))
+  const invented = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'x', command: 'node -- .qa/check-invented.js' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'v', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(invented), completed(invented)])
+
+  await expect(planRun(runner, { ...INPUTS, commands: SCRIPT_COMMANDS, repoPath: root })).rejects.toThrow(PlanStepError)
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('.qa/check-invented.js')
+  expect(runner.requests[1].prompt).toContain('does not exist in the checkout')
+})
+
+test('a plan that fills a path placeholder with a file the checkout carries is accepted (#201)', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'qare-plan-path-'))
+  await writeFile(join(root, 'check.js'), 'process.exit(0)\n')
+  const accepted = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'x', command: 'node -- check.js' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'v', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(accepted)])
+
+  const plan = await planRun(runner, { ...INPUTS, commands: SCRIPT_COMMANDS, repoPath: root })
+
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ command: 'node -- check.js' }] })
 })
 
 test('a plan that runs the program of a declared command is accepted without a correction round (#156)', async () => {

@@ -110,7 +110,7 @@ export async function checkCriteria(opts: CheckOptions): Promise<CheckOutcome> {
   const plan =
     profile === undefined
       ? unplanned(criteria, 'there is no usable profile to plan against')
-      : await planOrReport(opts.planner, criteria, profile, opts.evidenceDir, notes)
+      : await planOrReport(opts.planner, criteria, profile, opts.evidenceDir, notes, opts.repoPath)
   await writeFile(join(opts.evidenceDir, 'plan.json'), `${JSON.stringify(plan, null, 2)}\n`)
 
   const { job, notes: runNotes } = jobFromPlan(plan, {
@@ -154,6 +154,7 @@ async function planOrReport(
   profile: QaProfile,
   evidenceDir: string,
   notes: string[],
+  repoPath?: string,
 ): Promise<Plan> {
   const registered = profile.mcp ?? []
   const records: McpCallRecord[] = []
@@ -170,6 +171,7 @@ async function planOrReport(
     server = sources.length === 0 ? undefined : await startMcpToolServer(sources)
     plan = await planRun(planner, {
       criteria,
+      repoPath,
       suites: profile.suites.map((suite) => suite.name),
       ...(profile.instructions ? { qaMd: profile.instructions } : {}),
       ...(profile.redact === undefined ? {} : { redact: profile.redact }),
