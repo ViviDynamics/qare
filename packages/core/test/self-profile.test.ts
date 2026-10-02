@@ -25,4 +25,7 @@ test("qare's own profile says plainly what a self-run cannot show", async () => 
   const instructions = (profile.instructions ?? '').replace(/\s+/g, ' ')
   expect(instructions).toContain('no test runner')
   expect(instructions).toContain('installs and builds nothing')
+  expect(instructions).toContain('runs no model')
+  expect(instructions).toContain('Docker the check drives itself')
+  expect(instructions).toContain('one runner, with its own clock')
 })

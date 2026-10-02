@@ -57,8 +57,9 @@ Because of that:
   binary is the base revision's, which says nothing about the change.
 - Evidence only a model-driven session can produce is out of reach: the
   executing job runs no model.
-- A behaviour that needs several concurrent runners or a clock the check
-  controls is out of reach: the job runs one runner with its own clock.
+- A behaviour that needs Docker the check drives itself, several concurrent
+  runners, or a clock the check controls is out of reach: the image has no
+  Docker CLI, the job runs one runner, with its own clock.
 
 What a command check can genuinely show: structure on the paths the change
 touches, read with the tools the image really has. The profile declares those

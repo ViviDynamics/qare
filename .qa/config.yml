@@ -20,8 +20,8 @@ flavour: web
 # invocation that cannot start.
 commands:
   source:
-    run: grep -n {{pattern}} {{path}}
+    run: grep -n -- {{pattern}} {{path}}
     about: Asserts that the file {{path}} in the checkout carries {{pattern}}, printing the matching lines; empty output means the pattern is absent, so the check fails.
   script:
-    run: node {{path}}
+    run: node -- {{path}}
     about: Runs the plain JavaScript check script at {{path}} that the change adds; the script's exit code is the verdict and its stdout and stderr are the report.
