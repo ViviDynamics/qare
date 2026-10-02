@@ -995,6 +995,9 @@ test('a plan that runs the program of a declared command is accepted without a c
 
 test('the standard tools the prompt names are the ones the image contract ships (#198)', () => {
   const dockerfile = readFileSync(fileURLToPath(new URL('../../../images/core/Dockerfile', import.meta.url)), 'utf8')
+  // Only the runtime stage is the contract: the builder may install anything
+  // it likes, and the runtime FROM line is the last one in the file.
+  const runtime = dockerfile.slice(dockerfile.lastIndexOf('FROM'))
   // The image contract: node is copied from the builder, python3 is the base
   // image and nare is pip-installed; grep and test are POSIX tools the debian
   // slim base carries. npm, git and jq are the tools that never were, and the
@@ -1006,14 +1009,13 @@ test('the standard tools the prompt names are the ones the image contract ships 
   ]
   for (const tool of EXECUTE_PATH_TOOLS) {
     if (tool === 'grep' || tool === 'test') continue
-    expect(markers.some((marker) => marker.tool === tool && marker.pattern.test(dockerfile))).toBe(true)
+    expect(markers.some((marker) => marker.tool === tool && marker.pattern.test(runtime))).toBe(true)
   }
   expect(EXECUTE_PATH_TOOLS).not.toContain('npm')
   expect(EXECUTE_PATH_TOOLS).not.toContain('git')
   expect(EXECUTE_PATH_TOOLS).not.toContain('jq')
   // The runtime stage ships no package toolchain: nothing rebuilds or downloads
   // packages while a check runs.
-  const runtime = dockerfile.slice(dockerfile.lastIndexOf('FROM'))
   expect(runtime).not.toMatch(/npm|pnpm|apt-get install.*(git|jq)/)
 })
 
