@@ -50,16 +50,6 @@ async function fakeNare(answer: unknown): Promise<string> {
 
 /**
  * A nare stand-in whose answer depends on the round: the first call answers
- * one plan, the second the correction. The round count rides on a marker file,
- * because each invocation is a fresh process.
- */
-/**
- * A nare stand-in whose answer depends on the round: the first call answers
- * one plan, the second the correction. The round count rides on a marker
- * file, because each invocation is a fresh process.
- */
-/**
- * A nare stand-in whose answer depends on the round: the first call answers
  * one plan, the second the correction. The round count rides on a marker
  * file, because each invocation is a fresh process.
  */

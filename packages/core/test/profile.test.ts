@@ -458,6 +458,16 @@ test('a command whose run carries shell syntax fails the profile, naming the com
   rmSync(dir, { recursive: true })
 })
 
+test('a command with two placeholders in one run token is refused (#200 review round 3)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: 'node {{script}} --tests={{pattern}}-{{suite}}'\n    about: runs the tests\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test')
+  expect(error.message).toContain('at most one placeholder per whitespace-separated token')
+  rmSync(dir, { recursive: true })
+})
+
 test('a command whose run carries a malformed placeholder fails the profile, naming the command (#156)', async () => {
   const dir = copiedProfile()
   writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: 'pnpm test {pattern}'\n    about: runs the tests\n`)

@@ -2194,8 +2194,12 @@ function testNames(report: ReportFormat, stdout: string): string[] | undefined {
   }
   if (report === 'junit-xml') {
     const names: string[] = []
-    const testcase = /<testcase\b[^>]*\bname="([^"]*)"/g
-    for (const match of stdout.matchAll(testcase)) names.push(match[1] ?? '')
+    for (const part of stdout.split(/(?=<testcase\b)/).slice(1)) {
+      const name = /<testcase\b[^>]*\bname="([^"]*)"/.exec(part)?.[1]
+      if (name === undefined) continue
+      if (part.includes('<skipped')) continue
+      names.push(name)
+    }
     return names
   }
   const names: string[] = []

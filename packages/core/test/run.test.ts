@@ -1187,6 +1187,36 @@ test('a TAP line skipped by directive is not a test the command ran (#200 review
   expect(result.criteria[0].reason).toContain('none of the 1 test')
 })
 
+test('a skipped junit testcase is not a test the command ran (#200 review round 3)', async () => {
+  const script = await reportScript(
+    "process.stdout.write('<testsuites><testsuite name=\"s\">' +\n" +
+    "  '<testcase name=\"replay stores a run\"><skipped message=\"no\"/></testcase>' +\n" +
+    "  '<testcase name=\"suite other a\"></testcase>' +\n" +
+    "  '</testsuite></testsuites>')\n",
+  )
+  const job = await makeJob({
+    criteria: commandCriteria(`node ${script} replay`),
+    profile: {
+      inline: {
+        ...INLINE_PROFILE,
+        commands: {
+          test: {
+            run: 'node {{script}} {{pattern}}',
+            about: 'runs the suite, printing its machine-readable report',
+            filter: 'pattern',
+            report: 'junit-xml',
+          },
+        },
+      },
+    },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.criteria[0].outcome).toBe('unverified')
+  expect(result.criteria[0].reason).toContain('none of the 1 test')
+})
+
 test('a filter embedded in a flag token is resolved and verified, not bypassed (#157, #200 review)', async () => {
   const script = await reportScript(vitestReport(['one', 'two', 'three']))
   const job = await makeJob({

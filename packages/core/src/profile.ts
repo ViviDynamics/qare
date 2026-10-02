@@ -600,6 +600,14 @@ function parseCommands(value: unknown): Record<string, ProfileCommand> {
         `run ${JSON.stringify(run)} carries ${JSON.stringify(character)}, which a shell would interpret: the command is split on whitespace and spawned with no shell`,
       )
     validatePlaceholders(run, base)
+    for (const token of run.split(/\s+/)) {
+      const placeholders = token.match(/\{\{[A-Za-z_][A-Za-z0-9_]*\}\}/g)
+      if (placeholders !== null && placeholders.length > 1)
+        fail(
+          base,
+          `run ${JSON.stringify(run)} carries more than one placeholder in a token: at most one placeholder per whitespace-separated token`,
+        )
+    }
     const program = run.split(/\s+/).find((token) => token !== '')
     if (program !== undefined && (program.startsWith('{{') || program.includes('=')))
       fail(
