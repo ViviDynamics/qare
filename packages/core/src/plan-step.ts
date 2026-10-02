@@ -7,7 +7,7 @@ import { sumUsage, type ModelUsage } from './metrics.js'
 import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
 import { shellCharacter } from './run.js'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { relative, resolve } from 'node:path'
 import { redactText, redactionRules, type ProfileRedaction } from './redact.js'
 
 export interface PlanCriterionInput {
@@ -564,7 +564,14 @@ function missingPathGap(plan: Plan, inputs: PlanInputs): string | undefined {
           if (name !== 'path' && name !== 'file') continue
           const filled = tokens[index]
           if (filled === undefined) continue
-          if (!existsSync(join(inputs.repoPath, filled)))
+          const resolved = resolve(inputs.repoPath, filled)
+          const under = relative(inputs.repoPath, resolved)
+          if (under.startsWith('..') || under === '')
+            return (
+              `criterion ${criterion.id} command check "${check.name}": the path ${filled} escapes the checkout, ` +
+              'so the check cannot run: fill the placeholder with a file the checkout carries, or mark the criterion unplannable'
+            )
+          if (!existsSync(resolved))
             return (
               `criterion ${criterion.id} command check "${check.name}": the path ${filled} does not exist in the checkout, ` +
               'so the check cannot run: fill the placeholder with a file the checkout carries, or mark the criterion unplannable'
