@@ -1019,9 +1019,9 @@ test('the standard tools the prompt names are the ones the image contract ships 
   expect(EXECUTE_PATH_TOOLS).not.toContain('npm')
   expect(EXECUTE_PATH_TOOLS).not.toContain('git')
   expect(EXECUTE_PATH_TOOLS).not.toContain('jq')
-  // The runtime stage ships no package toolchain: nothing rebuilds or downloads
-  // packages while a check runs, and no forbidden tool is copied in under any
-  // name, however the stage lays out its install commands.
+  // The runtime stage carries none of npm, pnpm, git or jq, however the stage
+  // lays out its install commands: the pip that ships nare is image-build time,
+  // and no check installs or rebuilds anything while it runs.
   expect(runtime).not.toMatch(/\b(npm|pnpm|git|jq)\b/)
 })
 
