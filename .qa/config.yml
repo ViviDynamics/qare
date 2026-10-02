@@ -24,4 +24,4 @@ commands:
     about: Asserts that the file {{path}} in the checkout carries {{pattern}}, printing the matching lines; empty output means the pattern is absent, so the check fails.
   script:
     run: node -- {{path}}
-    about: Runs the plain JavaScript check script at {{path}} that the change adds; the script's exit code is the verdict and its stdout and stderr are the report.
+    about: Runs the plain JavaScript check script at {{path}}, a file the checkout already carries; the profile declares no scripts of its own, and a path that does not exist is not a check that can run, so fill {{path}} with a file that is in the repository.
