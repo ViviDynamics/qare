@@ -1142,3 +1142,70 @@ test('a command check whose profile command declares no filter is unchanged (#15
   expect(result.criteria[0].outcome).toBe('proven')
   expect(result.criteria[0].evidence).not.toContain('checks/criterion-1/0/selected.txt')
 })
+
+test('a filter embedded in a flag token is resolved and verified, not bypassed (#157, #200 review)', async () => {
+  const script = await reportScript(vitestReport(['one', 'two', 'three']))
+  const job = await makeJob({
+    criteria: commandCriteria(`node ${script} --testNamePattern=nomatch`),
+    profile: {
+      inline: {
+        ...INLINE_PROFILE,
+        commands: {
+          test: {
+            run: 'node {{script}} --testNamePattern={{pattern}}',
+            about: 'runs the suite',
+            filter: 'pattern',
+            report: 'vitest-json',
+          },
+        },
+      },
+    },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.criteria[0].outcome).toBe('unverified')
+  expect(result.criteria[0].reason).toContain('none of the 3 tests')
+})
+
+test('a TAP directive is not part of the name a filter matches (#157, #200 review)', async () => {
+  const script = await reportScript(
+    "process.stdout.write('TAP version 13\\nok 1 replay case # SKIP not important\\nok 2 suite other a\\n')\n",
+  )
+  const job = await makeJob({
+    criteria: commandCriteria(`node ${script} replay`),
+    profile: {
+      inline: {
+        ...INLINE_PROFILE,
+        commands: {
+          test: {
+            run: 'node {{script}} {{pattern}}',
+            about: 'runs the suite',
+            filter: 'pattern',
+            report: 'node-tap',
+          },
+        },
+      },
+    },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.criteria[0].outcome).toBe('proven')
+  const selected = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'selected.txt'), 'utf8')
+  expect(selected).toBe('replay case\n')
+})
+
+test('an empty selection writes an empty selected.txt: the report was read, nothing was selected (#157, #200 review)', async () => {
+  const script = await reportScript(vitestReport(['one', 'two', 'three']))
+  const job = await makeJob({
+    criteria: commandCriteria(`node ${script} nomatch`),
+    profile: { inline: { ...INLINE_PROFILE, commands: TEST_COMMANDS } },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.criteria[0].outcome).toBe('unverified')
+  const selected = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'selected.txt'), 'utf8')
+  expect(selected).toBe('')
+})

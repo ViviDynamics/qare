@@ -108,8 +108,8 @@ by accident. The runner reads the report from stdout, counts the tests the
 filter selected, and downgrades the check to unverified naming the filter and
 the counts when the selection is empty or total, so a whole-suite run cannot
 prove a filtered criterion; the selected names are saved to `selected.txt`. A
-command with no declared filter is unaffected: exit 0 proves it as before
-with. Evidence references are
+command with no declared filter is unaffected: exit 0 proves it as before.
+Evidence references are
 relative paths that stay inside the evidence directory: absolute paths and
 any `..` segment are rejected by the loaders. An orchestrator reads evidence
 files relative to the `evidenceDir` it named in the job.

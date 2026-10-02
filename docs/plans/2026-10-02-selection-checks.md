@@ -52,13 +52,12 @@ declaration carries them:
 
 ## Changes
 
-1. `packages/core/src/profile.ts` - `ProfileCommand.filter`, `ProfileCommand.report`, validation in `parseCommands`.
-2. `packages/core/src/job.ts` - `JobCommandCheck.filter`, `JobCommandCheck.report`, parsed conditionally.
-3. `packages/core/src/job-from-plan.ts` - resolve the declared command by shape, attach the filter value and format.
-4. `packages/core/src/run.ts` - selection verification in the close handler, `selected` on `CheckOutcome`, `selected.txt` beside `stdout.txt`.
-5. `packages/core/src/judge.ts` - the exercise rule in `VERIFIER_INSTRUCTIONS`, `kind: 'unexercised'` in the output schema and in `consumeVerifierFindings`.
-6. `docs/SPEC.md` and `docs/orchestrator.md` - the contract and the evidence layout.
-7. Tests: runner (exact selection passes and writes selected.txt; none and every unverified; unreadable report unverified; plain command unchanged), judge (unexercised downgrades to unverified), profile (filter/report validation), job-from-plan (threading), and a test named for #138: the whole-suite run cannot prove a filtered criterion.
+1. `packages/core/src/profile.ts` - `ProfileCommand.filter`, `ProfileCommand.report`, validation in `parseCommands`. The plan artifact and `job-from-plan.ts` are unchanged: the runner resolves the plan's filled command against the declared command's shape itself, because that is where the loaded profile is already in scope.
+2. `packages/core/src/run.ts` - `resolveSelection` matches the check's filled command against the declared command shape (placeholders whole-token or embedded in a flag), reads the report in the close handler, `selected` on `CheckOutcome`, `selected.txt` beside `stdout.txt`.
+3. `packages/core/src/judge.ts` - the exercise rule in `VERIFIER_INSTRUCTIONS`, `kind: 'unexercised'` in the output schema and in `consumeVerifierFindings`.
+4. `docs/SPEC.md` and `docs/orchestrator.md` - the contract and the evidence layout.
+5. Tests: runner (exact selection passes and writes selected.txt; none and every unverified; unreadable report unverified; embedded-flag filter; TAP directives; plain command unchanged), judge (unexercised downgrades to unverified), profile (filter/report validation), and a test named for #138: the whole-suite run cannot prove a filtered criterion.
+6. Follow-up in the same PR: the plan step corrects a filled `path` or `file` placeholder with a file the checkout does not carry (#201), so an invented script cannot reach the runner.
 
 ## Evidence
 

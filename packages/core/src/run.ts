@@ -1400,7 +1400,10 @@ async function runCriterion(
       await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), sweepRules))
       await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), redactText(truncationNote(outcome, 'stderr'), sweepRules))
       if (outcome.selected !== undefined) {
-        await writeFile(join(job.evidenceDir, checkDir, 'selected.txt'), `${redactText(outcome.selected.join('\n'), sweepRules)}\n`)
+        await writeFile(
+          join(job.evidenceDir, checkDir, 'selected.txt'),
+          outcome.selected.length === 0 ? '' : `${redactText(outcome.selected.join('\n'), sweepRules)}\n`,
+        )
         evidence.push(`${checkDir}/selected.txt`)
       }
       evidence.push(`${checkDir}/stdout.txt`, `${checkDir}/stderr.txt`)
@@ -2118,18 +2121,51 @@ function resolveSelection(
     if (command.filter === undefined || command.report === undefined) return false
     const template = command.run.split(/\s+/).filter((token) => token !== '')
     if (template.length !== tokens.length) return false
-    return template.every((token, index) => (token.startsWith('{{') ? true : token === tokens[index]))
+    return template.every((token, index) => tokenFillsTemplate(token, tokens[index]))
   })
   if (matches.length !== 1) return undefined
   const declared = matches[0]
   if (declared === undefined || declared.filter === undefined || declared.report === undefined) return undefined
-  const position = declared.run
-    .split(/\s+/)
-    .filter((token) => token !== '')
-    .indexOf(`{{${declared.filter}}}`)
-  const filter = position < 0 ? undefined : tokens[position]
+  const template = declared.run.split(/\s+/).filter((token) => token !== '')
+  const position = template.findIndex((token) => token.includes(`{{${declared.filter}}}`))
+  if (position < 0) return undefined
+  const templateToken = template[position]
+  if (templateToken === undefined) return undefined
+  const filter = placeholderValue(templateToken, tokens[position])
   if (filter === undefined || filter === '') return undefined
   return { filter, report: declared.report }
+}
+
+/**
+ * Whether a template token matches the token the plan filled in. `{{name}}`
+ * takes the whole token; a placeholder embedded in a token, such as
+ * `--testNamePattern={{name}}`, matches the token whose constants agree; a
+ * constant must be equal.
+ */
+function tokenFillsTemplate(template: string, filled: string | undefined): boolean {
+  if (filled === undefined) return false
+  if (template.startsWith('{{') && template.endsWith('}}')) return true
+  const embedded = /\{\{[^{}]+\}\}/.exec(template)
+  if (embedded === null) return template === filled
+  const prefix = template.slice(0, embedded.index)
+  const suffix = template.slice(embedded.index + embedded[0].length)
+  return filled.startsWith(prefix) && filled.endsWith(suffix) && filled.length >= prefix.length + suffix.length
+}
+
+/**
+ * The value a placeholder of a template token takes: the whole filled token
+ * for a whole-token placeholder, the text around the constants for one
+ * embedded in a token.
+ */
+function placeholderValue(template: string, filled: string | undefined): string | undefined {
+  if (filled === undefined) return undefined
+  if (template.startsWith('{{') && template.endsWith('}}')) return filled
+  const embedded = /\{\{[^{}]+\}\}/.exec(template)
+  if (embedded === null) return undefined
+  const prefix = template.slice(0, embedded.index)
+  const suffix = template.slice(embedded.index + embedded[0].length)
+  if (!filled.startsWith(prefix) || !filled.endsWith(suffix)) return undefined
+  return filled.slice(prefix.length, filled.length - suffix.length)
 }
 
 function testNames(report: ReportFormat, stdout: string): string[] | undefined {
@@ -2163,7 +2199,8 @@ function testNames(report: ReportFormat, stdout: string): string[] | undefined {
   const names: string[] = []
   for (const line of stdout.split('\n')) {
     const tap = /^(?:ok|not ok) \d+ (?:- )?(.+)$/.exec(line.trim())
-    if (tap !== null) names.push(tap[1] ?? '')
+    if (tap === null || tap[1] === undefined) continue
+    names.push(tap[1].split(' #')[0]?.trim() ?? '')
   }
   return names
 }
@@ -2190,7 +2227,7 @@ function selectionVerdict(
     return {
       status: 'unverified',
       reason: `the filter ${selection.filter} selected none of the ${names.length} tests the command ran, so nothing it names was exercised`,
-      selected: names,
+      selected: [],
     }
   if (selected.length === names.length)
     return {
