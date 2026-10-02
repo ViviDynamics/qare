@@ -988,3 +988,157 @@ test('a refused run keeps the timestamp the run started with, so the wall clock 
     vi.doUnmock('../src/isolation.js')
   }
 })
+
+async function reportScript(content: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-report-'))
+  const path = join(dir, 'report.js')
+  await writeFile(path, content)
+  return path
+}
+
+const TEST_COMMANDS: QaProfile['commands'] = {
+  test: {
+    run: 'node {{script}} {{pattern}}',
+    about: 'runs the suite, printing its machine-readable report',
+    filter: 'pattern',
+    report: 'vitest-json',
+  },
+}
+
+const vitestReport = (names: string[]): string =>
+  `process.stdout.write(JSON.stringify({ testResults: [{ assertionResults: [${names
+    .map((name) => `{ fullName: ${JSON.stringify(name)} }`)
+    .join(', ')}] }] }))\n`
+
+test('a filtered command whose report shows the filter selecting exactly some tests passes and writes selected.txt (#157)', async () => {
+  const script = await reportScript(
+    vitestReport(['replay stores a run', 'suite other a', 'suite other b']),
+  )
+  const job = await makeJob({
+    criteria: commandCriteria(`node ${script} replay`),
+    profile: { inline: { ...INLINE_PROFILE, commands: TEST_COMMANDS } },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.criteria[0].outcome).toBe('proven')
+  expect(result.criteria[0].evidence).toContain('checks/criterion-1/0/selected.txt')
+  const selected = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'selected.txt'), 'utf8')
+  expect(selected).toContain('replay stores a run')
+  expect(selected).not.toContain('suite other a')
+})
+
+test('a filter that selects nothing leaves the check unverified naming the filter and the counts: replaying #138s plan yields unverified, not proven (#157)', async () => {
+  const script = await reportScript(
+    vitestReport(['one', 'two', 'three', 'four', 'five', 'six']),
+  )
+  const job = await makeJob({
+    criteria: commandCriteria(`node ${script} --testNamePattern=replay`),
+    profile: {
+      inline: {
+        ...INLINE_PROFILE,
+        commands: {
+          test: {
+            run: 'node {{script}} {{pattern}}',
+            about: 'runs the suite',
+            filter: 'pattern',
+            report: 'vitest-json',
+          },
+        },
+      },
+    },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.criteria[0].outcome).toBe('unverified')
+  expect(result.criteria[0].reason).toContain('--testNamePattern=replay')
+  expect(result.criteria[0].reason).toContain('none of the 6 tests')
+})
+
+test('a filter that selects every test leaves the check unverified: a whole-suite run cannot prove a filtered criterion (#157)', async () => {
+  const script = await reportScript(vitestReport(['replay one', 'replay two']))
+  const job = await makeJob({
+    criteria: commandCriteria(`node ${script} replay`),
+    profile: { inline: { ...INLINE_PROFILE, commands: TEST_COMMANDS } },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.criteria[0].outcome).toBe('unverified')
+  expect(result.criteria[0].reason).toContain('all 2 tests')
+})
+
+test('a report the runner cannot read leaves the check unverified, never passed (#157)', async () => {
+  const script = await reportScript("process.stdout.write('this is not a machine-readable report\\n')\n")
+  const job = await makeJob({
+    criteria: commandCriteria(`node ${script} replay`),
+    profile: { inline: { ...INLINE_PROFILE, commands: TEST_COMMANDS } },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.criteria[0].outcome).toBe('unverified')
+})
+
+test('a filter matches the way vitest matches -t, as a regular expression against the full name (#157)', async () => {
+  const script = await reportScript(vitestReport(['a replay', 'replay b']))
+  const job = await makeJob({
+    criteria: commandCriteria(`node ${script} ^a`),
+    profile: { inline: { ...INLINE_PROFILE, commands: TEST_COMMANDS } },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.criteria[0].outcome).toBe('proven')
+  const selected = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'selected.txt'), 'utf8')
+  expect(selected).toContain('a replay')
+  expect(selected).not.toContain('replay b')
+})
+
+test('a node --test TAP report is read the same way: the filter selects the tests it names (#157)', async () => {
+  const script = await reportScript(
+    "process.stdout.write('TAP version 13\\nok 1 replay stores a run\\nok 2 suite other a\\nnot ok 3 suite other b\\n')\n",
+  )
+  const job = await makeJob({
+    criteria: commandCriteria(`node ${script} replay`),
+    profile: {
+      inline: {
+        ...INLINE_PROFILE,
+        commands: {
+          test: {
+            run: 'node {{script}} {{pattern}}',
+            about: 'runs the suite',
+            filter: 'pattern',
+            report: 'node-tap',
+          },
+        },
+      },
+    },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.criteria[0].outcome).toBe('proven')
+  const selected = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'selected.txt'), 'utf8')
+  expect(selected).toContain('replay stores a run')
+  expect(selected).not.toContain('suite other a')
+})
+
+test('a command check whose profile command declares no filter is unchanged (#157)', async () => {
+  const script = await reportScript("process.stdout.write('all good\\n')\n")
+  const job = await makeJob({
+    criteria: commandCriteria(`node ${script}`),
+    profile: {
+      inline: {
+        ...INLINE_PROFILE,
+        commands: { script: { run: 'node {{script}}', about: 'runs a plain script' } },
+      },
+    },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.criteria[0].outcome).toBe('proven')
+  expect(result.criteria[0].evidence).not.toContain('checks/criterion-1/0/selected.txt')
+})

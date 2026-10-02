@@ -168,6 +168,10 @@ export function toSideResults(result: Pick<RunResult, 'criteria'>): SideResult[]
 export interface VerifierFinding {
   criterionId: string
   problem: string
+  /** Present only for the exercise finding (#157): the evidence exercised the
+   * criterion by a filter that selected nothing or the whole suite, which
+   * leaves the criterion unverified instead of failed. */
+  kind?: 'unexercised'
 }
 
 /** A proven criterion as the verifier sees it: what it says, and what was saved. */
@@ -189,7 +193,8 @@ const VERIFIER_INSTRUCTIONS = [
   'You receive the criteria the run claims to have proven, each with its text and the evidence files saved for it, and the diff under review. You can read the evidence files.',
   'Report PROBLEMS ONLY: a finding names a criterion whose evidence does not actually show what the criterion says, or that the diff shows is not met. Report gaps against the criterion, never style.',
   'A finding downgrades its criterion to failed with your problem as the reason. Findings naming criteria you were not given are dropped: your output can never upgrade a verdict or create a criterion.',
-  'Answer with {"findings": [{"criterionId": string, "problem": string}]}. An empty list changes nothing.',
+  'When a criterion was proven by a filtered test command, check that the evidence shows the filter actually selecting tests: a report whose filter selected nothing, or the whole suite, exercised the criterion only by accident. Say so with kind "unexercised"; any other finding needs no kind.',
+  'Answer with {"findings": [{"criterionId": string, "problem": string, "kind": "unexercised"_OR_omit}]}. An empty list changes nothing.',
 ].join('\n')
 
 /** The answer shape nare validates the verifier's output against. */
@@ -207,6 +212,7 @@ export const VERIFIER_OUTPUT_SCHEMA = {
         properties: {
           criterionId: { type: 'string' },
           problem: { type: 'string' },
+          kind: { type: 'string', enum: ['unexercised'] },
         },
       },
     },
@@ -253,14 +259,16 @@ export function prepareVerifierInputs(input: {
  * outcome, rewrite another reason, or create a criterion.
  */
 export function consumeVerifierFindings(criteria: CriterionVerdict[], findings: VerifierFinding[]): CriterionVerdict[] {
-  const problems = new Map<string, string>()
+  const first = new Map<string, VerifierFinding>()
   for (const finding of findings ?? []) {
-    if (!problems.has(finding.criterionId)) problems.set(finding.criterionId, finding.problem)
+    if (!first.has(finding.criterionId)) first.set(finding.criterionId, finding)
   }
   return (criteria ?? []).map((criterion) => {
-    const problem = problems.get(criterion.criterionId)
-    if (problem === undefined || criterion.outcome !== 'proven') return criterion
-    return { ...criterion, outcome: 'failed' as const, reason: `verifier: ${problem}` }
+    const finding = first.get(criterion.criterionId)
+    if (finding === undefined || criterion.outcome !== 'proven') return criterion
+    if (finding.kind === 'unexercised')
+      return { ...criterion, outcome: 'unverified' as const, reason: `verifier: ${finding.problem}` }
+    return { ...criterion, outcome: 'failed' as const, reason: `verifier: ${finding.problem}` }
   })
 }
 

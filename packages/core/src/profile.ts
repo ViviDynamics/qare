@@ -71,7 +71,21 @@ export interface ProfileSuite {
 export interface ProfileCommand {
   run: string
   about: string
+  /**
+   * The placeholder of `run` whose filled token is the test filter (#157):
+   * the runner reads the check's machine-readable report and counts the tests
+   * the filter selected, so a filter that selects nothing or everything stays
+   * unverified instead of proving the wrong thing.
+   */
+  filter?: string
+  /** The machine-readable report the command prints on stdout (#157). */
+  report?: ReportFormat
 }
+
+/** The report formats a command check's selection can be read from (#157). */
+export const REPORT_FORMATS = ['vitest-json', 'junit-xml', 'node-tap'] as const
+
+export type ReportFormat = (typeof REPORT_FORMATS)[number]
 
 /**
  * The pipeline steps a registered host tool server may run in (#93). The plan
@@ -598,7 +612,30 @@ function parseCommands(value: unknown): Record<string, ProfileCommand> {
         `run ${JSON.stringify(run)} starts with ${JSON.stringify(program)}, which a shell interprets and the runner cannot spawn: name the program that runs`,
       )
     const about = nonEmptyString(entry.about, `${base}.about`, 'about')
-    commands[name] = { run, about }
+    const filter = entry.filter === undefined ? undefined : nonEmptyString(entry.filter, `${base}.filter`, 'filter')
+    const report = entry.report === undefined ? undefined : nonEmptyString(entry.report, `${base}.report`, 'report')
+    if (filter === undefined && report === undefined) {
+      commands[name] = { run, about }
+      continue
+    }
+    if (filter === undefined)
+      fail(
+        base,
+        `report ${JSON.stringify(report)} needs a filter to verify: name the placeholder whose filled token is the test filter`,
+      )
+    if (report === undefined)
+      fail(
+        base,
+        `filter ${JSON.stringify(filter)} needs a report to read: declare the machine-readable format the command prints`,
+      )
+    if (!run.includes(`{{${filter}}}`))
+      fail(base, `filter ${JSON.stringify(filter)} must name a placeholder of run, which carries no {{${filter}}}`)
+    if (!REPORT_FORMATS.includes(report as ReportFormat))
+      fail(
+        base,
+        `report ${JSON.stringify(report)} must be one of the formats the runner reads: ${REPORT_FORMATS.join(', ')}`,
+      )
+    commands[name] = { run, about, filter, report: report as ReportFormat }
   }
   return commands
 }
