@@ -563,7 +563,7 @@ function missingPathGap(plan: Plan, inputs: PlanInputs): string | undefined {
           const name = token.slice(2, -2)
           if (name !== 'path' && name !== 'file') continue
           const filled = tokens[index]
-          if (filled === undefined || !filled.includes('/')) continue
+          if (filled === undefined) continue
           if (!existsSync(join(inputs.repoPath, filled)))
             return (
               `criterion ${criterion.id} command check "${check.name}": the path ${filled} does not exist in the checkout, ` +

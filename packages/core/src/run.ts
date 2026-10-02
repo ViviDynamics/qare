@@ -2180,6 +2180,8 @@ function testNames(report: ReportFormat, stdout: string): string[] | undefined {
         const assertionResults = (entry as { assertionResults?: unknown }).assertionResults
         if (!Array.isArray(assertionResults)) return undefined
         for (const assertion of assertionResults) {
+          const status = (assertion as { status?: unknown }).status
+          if (status === 'skipped' || status === 'todo') continue
           const name = (assertion as { fullName?: unknown }).fullName
           if (typeof name !== 'string') return undefined
           names.push(name)
@@ -2200,6 +2202,7 @@ function testNames(report: ReportFormat, stdout: string): string[] | undefined {
   for (const line of stdout.split('\n')) {
     const tap = /^(?:ok|not ok) \d+ (?:- )?(.+)$/.exec(line.trim())
     if (tap === null || tap[1] === undefined) continue
+    if (/\#\s*skip/i.test(tap[1])) continue
     names.push(tap[1].split(' #')[0]?.trim() ?? '')
   }
   return names

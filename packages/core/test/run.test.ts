@@ -1143,6 +1143,50 @@ test('a command check whose profile command declares no filter is unchanged (#15
   expect(result.criteria[0].evidence).not.toContain('checks/criterion-1/0/selected.txt')
 })
 
+test('a skipped vitest test is not a test the command ran (#200 review round 2)', async () => {
+  const script = await reportScript(
+    "process.stdout.write(JSON.stringify({ testResults: [{ assertionResults: [" +
+    "{ fullName: 'replay stores a run', status: 'skipped' }, { fullName: 'suite other a', status: 'passed' }" +
+    "] }] }))\n",
+  )
+  const job = await makeJob({
+    criteria: commandCriteria(`node ${script} replay`),
+    profile: { inline: { ...INLINE_PROFILE, commands: TEST_COMMANDS } },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.criteria[0].outcome).toBe('unverified')
+  expect(result.criteria[0].reason).toContain('none of the 1 test')
+})
+
+test('a TAP line skipped by directive is not a test the command ran (#200 review round 2)', async () => {
+  const script = await reportScript(
+    "process.stdout.write('TAP version 13\\nok 1 replay case # SKIP pattern\\nok 2 suite other a\\n')\n",
+  )
+  const job = await makeJob({
+    criteria: commandCriteria(`node ${script} replay`),
+    profile: {
+      inline: {
+        ...INLINE_PROFILE,
+        commands: {
+          test: {
+            run: 'node {{script}} {{pattern}}',
+            about: 'runs the suite, printing its machine-readable report',
+            filter: 'pattern',
+            report: 'node-tap',
+          },
+        },
+      },
+    },
+  })
+
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.criteria[0].outcome).toBe('unverified')
+  expect(result.criteria[0].reason).toContain('none of the 1 test')
+})
+
 test('a filter embedded in a flag token is resolved and verified, not bypassed (#157, #200 review)', async () => {
   const script = await reportScript(vitestReport(['one', 'two', 'three']))
   const job = await makeJob({
@@ -1170,7 +1214,7 @@ test('a filter embedded in a flag token is resolved and verified, not bypassed (
 
 test('a TAP directive is not part of the name a filter matches (#157, #200 review)', async () => {
   const script = await reportScript(
-    "process.stdout.write('TAP version 13\\nok 1 replay case # SKIP not important\\nok 2 suite other a\\n')\n",
+    "process.stdout.write('TAP version 13\\nok 1 replay case # IMPORTANT note\\nok 2 suite other a\\n')\n",
   )
   const job = await makeJob({
     criteria: commandCriteria(`node ${script} replay`),

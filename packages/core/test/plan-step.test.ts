@@ -889,6 +889,23 @@ test('a plan that fills a path placeholder with a file the checkout does not car
   expect(runner.requests[1].prompt).toContain('does not exist in the checkout')
 })
 
+test('a plan that fills a path placeholder with a root-level file the checkout does not carry is corrected too (#200 review round 2)', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'qare-plan-path-'))
+  const invented = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'x', command: 'node -- check-invented.js' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'v', screenshot: 'dashboard', widths: [390] }] },
+    ],
+  })
+  const runner = new FakeAgentRunner([completed(invented), completed(invented)])
+
+  await expect(planRun(runner, { ...INPUTS, commands: SCRIPT_COMMANDS, repoPath: root })).rejects.toThrow(PlanStepError)
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].prompt).toContain('check-invented.js')
+  expect(runner.requests[1].prompt).toContain('does not exist in the checkout')
+})
+
 test('a plan that fills a path placeholder with a file the checkout carries is accepted (#201)', async () => {
   const root = await mkdtemp(join(tmpdir(), 'qare-plan-path-'))
   await writeFile(join(root, 'check.js'), 'process.exit(0)\n')
