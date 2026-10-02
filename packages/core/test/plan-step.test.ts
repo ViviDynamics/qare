@@ -1020,8 +1020,9 @@ test('the standard tools the prompt names are the ones the image contract ships 
   expect(EXECUTE_PATH_TOOLS).not.toContain('git')
   expect(EXECUTE_PATH_TOOLS).not.toContain('jq')
   // The runtime stage ships no package toolchain: nothing rebuilds or downloads
-  // packages while a check runs.
-  expect(runtime).not.toMatch(/npm|pnpm|apt-get install.*(git|jq)/)
+  // packages while a check runs, and no forbidden tool is copied in under any
+  // name, however the stage lays out its install commands.
+  expect(runtime).not.toMatch(/\b(npm|pnpm|git|jq)\b/)
 })
 
 test('the planner is told only the tools the run image really carries (#198)', async () => {

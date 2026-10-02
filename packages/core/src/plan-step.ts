@@ -518,7 +518,7 @@ function commandContractGap(plan: Plan): string | undefined {
  * check may use; anything else it runs must be a program of a command the
  * profile declares (#156).
  */
-export const EXECUTE_PATH_TOOLS = ['node', 'grep', 'test', 'python3', 'nare']
+export const EXECUTE_PATH_TOOLS: readonly string[] = Object.freeze(['node', 'grep', 'test', 'python3', 'nare'])
 
 function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
   // The allowlist follows the run contract, not the declared commands: a
