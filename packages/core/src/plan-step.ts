@@ -403,8 +403,9 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     ...(inputs.runInputs === undefined
       ? []
       : [
-          'Command checks run on a machine that has the repository checked out, with the standard',
-          'tools (node, grep, test, python3, nare) on its PATH and nothing more. A command check may',
+          'Command checks run on a machine that has the repository checked out. A command check may run',
+          'the standard tools (node, grep, test, python3, nare) and nothing else; other executables may exist',
+          'on the machine, but they are not available to a check. A command check may',
           'read only these declared run inputs:',
           ...inputs.runInputs.paths.map((path) => `- ${path}`),
           'A declared directory covers the files under it.',
