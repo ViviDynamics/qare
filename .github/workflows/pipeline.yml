@@ -1117,6 +1117,7 @@ jobs:
     if: >-
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
       (startsWith(github.event.comment.body, '/qa-dismiss') ||
       startsWith(github.event.comment.body, '/qa-promote'))
     runs-on: ${{ fromJSON(inputs.runs-on) }}

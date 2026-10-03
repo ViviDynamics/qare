@@ -96,8 +96,10 @@ test('a reply on a pull request starts the advisory job, which holds the identit
   expect(advisory, 'pipeline.yml has no advisory job').toBeDefined()
   // Only a comment on a pull request that opens with one of the two commands.
   expect(advisory?.if?.replace(/\s+/g, ' ')).toBe(
-    "github.event_name == 'issue_comment' && github.event.issue.pull_request && (startsWith(github.event.comment.body, '/qa-dismiss') || startsWith(github.event.comment.body, '/qa-promote'))",
+    "github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(fromJSON('[\"OWNER\", \"MEMBER\", \"COLLABORATOR\"]'), github.event.comment.author_association) && (startsWith(github.event.comment.body, '/qa-dismiss') || startsWith(github.event.comment.body, '/qa-promote'))",
   )
+  // A stranger's comment starts no job at all: the same three associations
+  // qare-action holds a reply to, checked before anything runs.
   expect(advisory?.needs).toBeUndefined()
   expect(advisory?.['runs-on']).toBe('${{ fromJSON(inputs.runs-on) }}')
   expect(advisory?.permissions).toEqual({ contents: 'read', issues: 'write', 'pull-requests': 'write' })
