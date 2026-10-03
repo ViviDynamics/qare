@@ -73,7 +73,13 @@ jobs:
       nare-model: claude-haiku
     secrets:
       model-key: ${{ secrets.QARE_MODEL_KEY }}
+      app-id: ${{ secrets.QARE_APP_ID }}
+      app-private-key: ${{ secrets.QARE_APP_PRIVATE_KEY }}
+      personal-access-token: ${{ secrets.QARE_GITHUB_TOKEN }}
 ```
+
+The last three lines are who qare posts as, and all three are optional: see
+"GitHub identity".
 
 ## Inputs
 
@@ -89,24 +95,99 @@ jobs:
 | `planner-diff-exclude` | empty | Space-separated git pathspecs left out of the planner's copy of the diff, for a diff too large to plan from whole. execute and judge still read the full diff. |
 | `qare-ref` | the release | The qare revision the pipeline runs. It defaults to the release the workflow file ships in. Leave it alone and pin the release in `uses:`. |
 
-## The secret
+## Secrets
 
-One secret, passed by name:
+Each is passed by name. Only the model key is needed for a run:
 
 | Secret | What it is |
 | --- | --- |
 | `model-key` | The key for the model service. The caller names which of its own secrets holds it: `model-key: ${{ secrets.YOUR_SECRET }}`. |
+| `app-id` | The id (or client id) of the GitHub App qare posts as. Optional. It is declared as a secret so that you can hand it over from a secret or from a variable (`${{ vars.QARE_APP_ID }}`). |
+| `app-private-key` | A private key of that App, the whole `.pem` file. Optional, and passed together with `app-id`. |
+| `personal-access-token` | A personal access token qare posts with when no App is passed. Optional. |
 
-Pass it by name, as above, and never with `secrets: inherit`: the pipeline
-should be handed the one secret it uses, not every secret the repository
-holds. Only two steps ever see the key, the planner in plan and the verifier
-in judge, and neither holds a GitHub token. execute, the job that runs the
-pull request's code, holds no secret at all. That map is at the top of
-`pipeline.yml` and a test holds the file to it.
+Pass them by name, as above, and never with `secrets: inherit`: the pipeline
+should be handed the secrets it uses, not every secret the repository holds.
+Only two steps ever see the model key, the planner in plan and the verifier
+in judge, and neither holds a GitHub token or the identity. The identity
+reaches only the steps that write to GitHub, in judge, report and requeue.
+execute, the job that runs the pull request's code, holds no secret at all.
+That map is at the top of `pipeline.yml` and a test holds the file to it.
 
 A pull request from a fork has no secrets, so plan skips and collect says
 why. A repository that never set the secret gets a failed plan step that
 names `model-key`, not a pass.
+
+## GitHub identity
+
+qare writes to GitHub: one comment and a check run on the pull request,
+issues for missing stubs, the `qa-assets` branch, and pull requests that
+propose criteria. Who it writes as is your choice, and you make it by which
+secrets the caller passes. Nothing else changes, in your workflow or in qare:
+
+| You pass | qare posts as | Notes |
+| --- | --- | --- |
+| `app-id` and `app-private-key` | your GitHub App, `<app name>[bot]` | Preferred for an organisation: its own actor, installed per repository, scoped permissions, a far higher rate limit. |
+| `personal-access-token` | the user the token belongs to | One secret and nothing to register. The rate limit is shared with everything else that user runs. |
+| neither | `github-actions[bot]`, with the run's own token | Nothing to set up. Good for verdicts and comments; it cannot open a criteria proposal that gets checked (below). |
+
+When more than one is passed, the App wins over the token, and either wins
+over the run's own token. Passing `app-id` without `app-private-key`, or the
+reverse, stops the posting step with a message that names the missing one:
+half an App never falls back to a weaker identity without saying so.
+
+Two constraints decide between them:
+
+- **A pull request opened with the run's own token triggers no workflows.**
+  GitHub does this so workflows cannot start each other without end. A
+  criteria proposal opened that way would reach its reviewer with no checks
+  on it, so `qare-action ingest-deliver` refuses to open one with the run's
+  own token and names the two identities that can. Verdicts, comments and
+  stub issues do not have this constraint.
+- **Only a GitHub App may write a check run.** A personal access token
+  cannot, whatever its scopes. With a token, the check run is still written
+  by the run's own token, which GitHub counts as an App, and everything else
+  is written as the user. This needs nothing from you: the pipeline hands the
+  posting steps both.
+
+What each needs:
+
+The GitHub App, as repository permissions, installed on every repository
+that calls the pipeline:
+
+| Permission | Access | What it is for |
+| --- | --- | --- |
+| Contents | Read and write | The `qa-assets` branch, and the branch a criteria proposal is opened from. |
+| Issues | Read and write | Stub issues, sweep findings, questions on issues. |
+| Pull requests | Read and write | The evidence comment, the `/qa` comments of requeue, criteria proposals. |
+| Checks | Read and write | The `QARE verdict` check run. |
+| Metadata | Read | Required by GitHub for every App. |
+
+It needs no webhook, no organisation permission and no account permission.
+qare signs in as the App with the private key, asks for the installation on
+the calling repository, and is given a token for that one repository that
+expires within the hour. The key itself is only ever used to sign in.
+
+A personal access token, fine-grained, limited to the repositories that call
+the pipeline: Contents, Issues and Pull requests at Read and write, Metadata
+at Read. A fine-grained token has no Checks permission to grant, for the
+reason above. A classic token needs the `repo` scope (`public_repo` is enough
+for a public repository). Neither needs the `workflow` scope: qare never
+writes a workflow file.
+
+The run's own token needs only the permissions the calling job grants, which
+is the next section. Keep granting them whichever identity you choose: the
+check run under a personal access token is written with them, and collect
+reads the linked issues with them.
+
+Two things change on the pull requests that are open when you switch:
+
+- The comment is found again by its author. The new identity posts a comment
+  of its own, and the one the old identity left stays as it was, naming the
+  commit it checked.
+- The `QARE verdict` check run comes from a different App. If a branch
+  protection rule requires that check from a named source, choose the new
+  source there.
 
 ## Permissions
 
@@ -120,6 +201,10 @@ it needs under it:
 | `checks: write` | judge and report, for the check run on the head commit. |
 | `pull-requests: write`, `issues: write` | judge, report and requeue, for the comment and the stub issues. collect reads issues. |
 | `actions: read` | report, to name the job and step that failed when no verdict was published. |
+
+These are the permissions of the run's own token. A GitHub App or a personal
+access token carries its own (see "GitHub identity"), and the calling job
+grants these all the same.
 
 Granting less stops the run before any job starts, with an error that names
 the job and the permission.

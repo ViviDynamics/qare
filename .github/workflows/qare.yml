@@ -4,7 +4,7 @@ name: QARE
 # workflow is a caller of the reusable pipeline in pipeline.yml, the same way
 # any repository calls it, and holds only what a caller holds: the triggers,
 # the concurrency group, the permission ceiling, the profile's model, and the
-# model key passed by name. The jobs, and the secret-hygiene map that says
+# model key and the GitHub identity (#61) passed by name. The jobs, and the secret-hygiene map that says
 # which of them holds what (constitution rule 7), live in pipeline.yml.
 #
 # Two things differ from a repository that calls a release. The pipeline is
@@ -55,3 +55,9 @@ jobs:
       planner-diff-exclude: packages/*/test/* .agents .claude
     secrets:
       model-key: ${{ secrets.QARE_PLANNER_KEY }}
+      # Who qare posts as (#61): the App once #155 has stored its id and key,
+      # else a personal access token, else the workflow run. A secret that is
+      # not set is empty, so this caller is the same before and after.
+      app-id: ${{ secrets.QARE_APP_ID }}
+      app-private-key: ${{ secrets.QARE_APP_PRIVATE_KEY }}
+      personal-access-token: ${{ secrets.QARE_GITHUB_TOKEN }}

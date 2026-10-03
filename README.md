@@ -47,7 +47,7 @@ what `qare ingest` can and cannot infer, is in
 
 The pull request pipeline is a reusable workflow: a repository calls it from a
 workflow of about ten lines, pinned to a qare release tag. The caller
-workflow, its inputs, the one secret and how to upgrade are in
+workflow, its inputs, its secrets, the identity qare posts as and how to upgrade are in
 [docs/pipeline.md](docs/pipeline.md).
 
 ## Extending the images

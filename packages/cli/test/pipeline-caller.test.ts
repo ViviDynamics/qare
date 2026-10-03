@@ -52,6 +52,15 @@ const version = (JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')
 
 const LEVEL: Record<string, number> = { none: 0, read: 1, write: 2 }
 
+// #61: who qare posts as. The caller hands the identity over by name, and
+// each secret reaches a posting step under the variable qare-action reads.
+const IDENTITY_SECRETS: Record<string, string> = {
+  'app-id': 'QARE_APP_ID',
+  'app-private-key': 'QARE_APP_PRIVATE_KEY',
+  'personal-access-token': 'QARE_GITHUB_TOKEN',
+}
+const IDENTITY = /secrets\.(app-id|app-private-key|personal-access-token)|QARE_APP_ID|QARE_APP_PRIVATE_KEY|QARE_GITHUB_TOKEN/
+
 /** Every permission a called job declares must be covered by what the calling job grants. */
 function expectCeilingCovers(ceiling: Permissions | undefined, where: string): void {
   expect(ceiling, `${where} grants no permissions, so every called job would run with the repository default`).toBeDefined()
@@ -83,7 +92,7 @@ test('the pipeline is a reusable workflow and nothing else triggers it', () => {
     expect(Object.keys(pipeline.jobs)).toContain(job)
 })
 
-test('the interface a caller sees: its inputs, their defaults, and the one secret', () => {
+test('the interface a caller sees: its inputs, their defaults, and its secrets', () => {
   expect(Object.keys(call.inputs).sort()).toEqual([
     'execute-runs-on',
     'model-key-env',
@@ -106,10 +115,12 @@ test('the interface a caller sees: its inputs, their defaults, and the one secre
   expect(call.inputs['model-key-env']?.default).toBe('OPENAI_API_KEY')
   // A JSON string, because an input cannot be a list: one label or several.
   expect(JSON.parse(String(call.inputs['runs-on']?.default))).toBe('ubuntu-latest')
-  // One secret, by name. A fork pull request has none to pass, so it is not
-  // required at the interface; the steps that need it fail closed instead.
-  expect(Object.keys(call.secrets)).toEqual(['model-key'])
-  expect(call.secrets['model-key']?.required).not.toBe(true)
+  // The model key and the identity (#61), each by name. A fork pull request
+  // has none to pass, so the key is not required at the interface; the steps
+  // that need it fail closed instead. The identity is never required: with
+  // none, qare posts as the workflow run.
+  expect(Object.keys(call.secrets)).toEqual(['model-key', ...Object.keys(IDENTITY_SECRETS)])
+  for (const name of Object.keys(call.secrets)) expect(call.secrets[name]?.required, name).not.toBe(true)
 })
 
 test('every input the pipeline declares is one it reads', () => {
@@ -146,16 +157,66 @@ test('the model key reaches the planner and the verifier steps, and nothing else
     for (const step of job.steps ?? []) {
       const text = JSON.stringify(step)
       for (const match of text.matchAll(/secrets\.([\w-]+)/g))
-        expect(['model-key', 'GITHUB_TOKEN'], `${id} reads a secret the interface does not declare`).toContain(match[1])
+        expect(['model-key', 'GITHUB_TOKEN', ...Object.keys(IDENTITY_SECRETS)], `${id} reads a secret the interface does not declare`).toContain(match[1])
       if (!text.includes('secrets.model-key')) continue
       holders.push(`${id}: ${step.name ?? ''}`)
       // Rule 7: the step that holds the model key holds no GitHub token.
       expect(text, `${id}: ${step.name ?? ''} holds the model key and a token`).not.toMatch(/GITHUB_TOKEN|GH_TOKEN|github\.token/)
+      expect(text, `${id}: ${step.name ?? ''} holds the model key and the identity`).not.toMatch(IDENTITY)
     }
   }
   expect(holders).toEqual(['plan: Plan the QA run', 'judge: Judge the result'])
   // The job that runs pull request code holds nothing at all.
   expect(JSON.stringify(pipeline.jobs.execute)).not.toMatch(/secrets\.|github\.token/)
+})
+
+test('the identity reaches the steps that post, and nothing else', () => {
+  const holders: string[] = []
+  for (const [id, job] of Object.entries(pipeline.jobs)) {
+    for (const step of job.steps ?? []) {
+      const text = JSON.stringify(step)
+      if (!IDENTITY.test(text)) continue
+      holders.push(`${id}: ${step.name ?? ''}`)
+      // All of it or none: the choice between the App and a token is made by
+      // which of the caller's secrets are set, never by which step runs.
+      for (const [secret, variable] of Object.entries(IDENTITY_SECRETS))
+        expect(step.env?.[variable], `${id}: ${step.name ?? ''} must read ${secret} as ${variable}`).toBe(`\${{ secrets.${secret} }}`)
+      // The Actions token stays beside it: it is the identity when the caller
+      // configured none, and the one token that may write a check run when
+      // the caller's identity is a personal access token.
+      expect(step.env?.GITHUB_TOKEN, `${id}: ${step.name ?? ''}`).toBe('${{ secrets.GITHUB_TOKEN }}')
+      // A step that runs qare in the image hands each variable on by name.
+      // Its value is never written on a command line.
+      const run = step.run ?? ''
+      if (run.includes('docker run'))
+        for (const variable of Object.values(IDENTITY_SECRETS)) expect(run, `${id}: ${step.name ?? ''}`).toContain(`-e ${variable} `)
+      expect(run, `${id}: ${step.name ?? ''}`).not.toMatch(/\$\{?QARE_(APP_ID|APP_PRIVATE_KEY|GITHUB_TOKEN)/)
+    }
+  }
+  // The steps that write to GitHub: the stub issues and the verdict in judge,
+  // the failure report, and the /qa comments of requeue. collect only reads,
+  // so it keeps the Actions token and never holds a key that can post.
+  expect(holders).toEqual([
+    'judge: File stub issues (refused runs only)',
+    'judge: Post the evidence on the pull request',
+    'report: Report the failure on the pull request',
+    'requeue: Re-queue refused PRs unblocked by the merged stubs',
+  ])
+  // Rule 7: the identity exists where qare posts, never where the pull
+  // request's code runs, and never beside the planner.
+  for (const id of ['collect', 'plan', 'execute']) expect(JSON.stringify(pipeline.jobs[id]), id).not.toMatch(IDENTITY)
+})
+
+test('the sweep posts as the same identity, in its publishing step alone', () => {
+  const sweep = load('.github/workflows/sweep.yml')
+  const holders: string[] = []
+  for (const step of sweep.jobs.sweep?.steps ?? []) {
+    if (!/QARE_APP_ID|QARE_APP_PRIVATE_KEY|QARE_GITHUB_TOKEN/.test(JSON.stringify(step))) continue
+    holders.push(step.name ?? '')
+    for (const variable of Object.values(IDENTITY_SECRETS)) expect(step.env?.[variable]).toBe(`\${{ secrets.${variable} }}`)
+    expect(step.env?.GITHUB_TOKEN).toBe('${{ secrets.GITHUB_TOKEN }}')
+  }
+  expect(holders).toEqual(['Publish the standing report and file findings'])
 })
 
 test('a missing model key stops the run by name rather than reaching the model without one', () => {
@@ -210,6 +271,11 @@ test("qare's own workflow calls the pipeline it ships", () => {
   // the pushed revision on a push.
   expect(job.with?.['qare-ref']).toBe('${{ github.event.pull_request.base.sha || github.sha }}')
   expect((job.secrets as Record<string, string>)['model-key']).toBe('${{ secrets.QARE_PLANNER_KEY }}')
+  // The identity (#61), by the names #155 stores the App under: until those
+  // secrets exist each is empty and qare posts as the workflow run, and
+  // setting them is the whole switch.
+  for (const [secret, variable] of Object.entries(IDENTITY_SECRETS))
+    expect((job.secrets as Record<string, string>)[secret]).toBe(`\${{ secrets.${variable} }}`)
   // qare is public: its own jobs stay on the default, GitHub-hosted runners.
   expect(Object.keys(job.with ?? {})).not.toContain('runs-on')
   expect(readFileSync(join(repoRoot, '.github/workflows/qare.yml'), 'utf8')).not.toContain('self-hosted')
@@ -240,8 +306,26 @@ test('the documented caller fits the interface and pins the current release', ()
   })
   expect(Math.min(...sizes.map((size) => size.job))).toBeLessThanOrEqual(12)
   expect(Math.min(...sizes.map((size) => size.file))).toBeLessThanOrEqual(16)
-  // Every input and the secret are documented by name.
+  // Every input and every secret is documented by name.
   for (const name of [...Object.keys(call.inputs), ...Object.keys(call.secrets)]) expect(doc).toContain(`\`${name}\``)
+})
+
+test('the documentation says what each identity needs', () => {
+  const doc = readFileSync(join(repoRoot, 'docs', 'pipeline.md'), 'utf8')
+  const start = doc.indexOf('\n## GitHub identity\n')
+  expect(start, 'docs/pipeline.md has no "GitHub identity" section').toBeGreaterThan(-1)
+  const section = doc.slice(start, doc.indexOf('\n## ', start + 1))
+  // The App's repository permissions, as #155 creates it.
+  for (const permission of ['Contents', 'Issues', 'Pull requests', 'Checks', 'Metadata']) expect(section).toContain(`| ${permission} |`)
+  // A documented caller passes the App, so the section is not prose alone.
+  const callers = [...doc.matchAll(/```yaml\n([\s\S]*?)```/g)]
+    .map((match) => match[1] ?? '')
+    .filter((block) => block.includes(`uses: ViviDynamics/qare/${PIPELINE}@`))
+  const passed = callers.flatMap((block) => Object.keys(((parse(block) as Workflow).jobs.qare?.secrets ?? {}) as Record<string, string>))
+  for (const secret of Object.keys(IDENTITY_SECRETS)) expect(passed, `no documented caller passes ${secret}`).toContain(secret)
+  // The two things a person choosing has to know.
+  expect(section).toMatch(/triggers? no workflows/)
+  expect(section).toMatch(/only a GitHub App (may|can) write a check run/i)
 })
 
 test('the caller qare init writes fits the interface, pins the current release, and is the documented one', () => {

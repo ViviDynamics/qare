@@ -54,6 +54,43 @@ steps, never in the step that executes pull request code.
 - Hosting a shared App for other organisations is out of scope (issue #61,
   out of scope): an org runs its own App or uses a token.
 
+## Implementation (2026-10-03, issue #61)
+
+The interface is `GitHubIdentity` in `packages/action/src/identity.ts`: a
+token for each request, a token for check runs, and the login what it writes
+is attributed to. It has three implementations, chosen by `resolveIdentity`
+from what is configured, in this order:
+
+| Configured | Identity |
+| --- | --- |
+| `QARE_APP_ID` and `QARE_APP_PRIVATE_KEY` | the App's installation on the repository |
+| `QARE_GITHUB_TOKEN` | a personal access token |
+| `GITHUB_TOKEN` | the Actions token of the workflow run |
+
+The reusable pipeline declares the first three as the secrets `app-id`,
+`app-private-key` and `personal-access-token`, and hands them to the posting
+steps of judge, report and requeue. Decisions taken while building it:
+
+- **qare mints the installation token itself**, with `node:crypto`: a JSON
+  web token signed by the private key, the repository's installation, and a
+  token scoped to that one repository. No third-party action holds the key,
+  and the same code serves `qare-action` run outside a workflow.
+- **The Actions token is a third implementation, not a missing one.** Every
+  install starts with it, and the code can land before any App exists. It is
+  the one identity a criteria proposal is refused under.
+- **Half an App is an error.** An id without a key, or the reverse, stops the
+  step by name instead of falling to a weaker identity (rule 6).
+- **Check runs under a personal access token are written by the Actions
+  token.** GitHub lets only an App write one.
+- **collect does not hold the identity.** It only reads the linked issues,
+  and a job that never posts should not hold a key that can.
+- **The comment author is the identity's login**, so a pull request open
+  while an install switches identity gets a new comment and keeps the old.
+
+The App path is built against GitHub's documented REST API and tested
+against a fake of it. Until the App exists (#155) it has not been exercised
+against GitHub itself.
+
 ## References
 
 - [Issue #61](https://github.com/ViviDynamics/qare/issues/61).

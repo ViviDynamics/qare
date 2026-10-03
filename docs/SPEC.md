@@ -813,6 +813,18 @@ with no checks; QARE opens them with the App or the token instead. And the
 identity only ever exists in the plan and judge steps, never in the step that
 executes pull request code.
 
+The choice is made by the credentials an install configures, never by code.
+The posting code is written against one interface with an implementation for
+each: an App's id and private key make qare post as the App, a personal access
+token makes it post as that user, and with neither it posts as the workflow
+run, which serves for verdicts and comments and is refused for a proposal. The
+App wins when both are configured, and half an App stops the step by name. The
+reusable pipeline takes all of it as secrets passed by name and hands it to
+the steps that write to GitHub and to no other. GitHub lets only an App write
+a check run, so under a personal access token that one write stays with the
+workflow run's own token. The permissions each option needs are listed in
+[the pipeline guide](./pipeline.md#github-identity).
+
 ## Clients
 
 A flow says what a person does: open this, type that, expect to see the other.
@@ -913,7 +925,8 @@ The pipeline is a reusable workflow, shipped (#145). A repository does not
 copy it: it calls `ViviDynamics/qare/.github/workflows/pipeline.yml` at a
 release tag from a workflow of about ten lines, and passes what is its own to
 choose: the profile path, the model and its endpoint, the runners, and the
-model key, by the name of the secret that holds it. The triggers, the
+model key and the identity qare posts as, each by the name of the secret that
+holds it. The triggers, the
 concurrency group and the permission ceiling stay with the caller, because a
 called workflow can hold no permission its calling job does not grant.
 [docs/pipeline.md](pipeline.md) is the caller's guide.
@@ -925,8 +938,9 @@ moves the pipeline, the qare its token-only jobs build and the images its
 other jobs pull together, and upgrading is that one line.
 
 The secret boundaries are the ones the jobs have always had: the caller
-passes one secret by name and never inherits its secrets into the pipeline,
-the planner and the verifier steps are the only ones that see it, and the
+passes its secrets by name and never inherits them into the pipeline, the
+planner and the verifier steps are the only ones that see the model key, the
+steps that write to GitHub are the only ones that see the identity, and the
 job that runs pull request code holds nothing. No step or job is allowed to
 fail without failing the run, and a missing model key stops the plan by name
 rather than reading as a pass.

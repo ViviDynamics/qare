@@ -7,7 +7,7 @@ name: Sweep
 # There is no pull request in this picture: the checkout is main, so the
 # secret-hygiene map (constitution rule 7) holds trivially. The
 # classification step holds no secrets at all; the publish step holds the
-# GitHub token and runs nothing but code from main.
+# GitHub identity (#61) and runs nothing but code from main.
 #
 # A sweep failure is a finding, not a broken build: the classification step
 # exits clean even when the ledger is unreadable, and the publish step files
@@ -65,8 +65,14 @@ jobs:
       - name: Classify the ledger
         run: node packages/cli/dist/index.js sweep --ledger .qa --out sweep-payload.json
       - name: Publish the standing report and file findings
+        # The identity the pull request pipeline posts as (#61): the App,
+        # else a personal access token, else the workflow run. An unset
+        # secret is empty, and qare then posts with the Actions token.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QARE_APP_ID: ${{ secrets.QARE_APP_ID }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.QARE_APP_PRIVATE_KEY }}
+          QARE_GITHUB_TOKEN: ${{ secrets.QARE_GITHUB_TOKEN }}
         run: |
           node packages/action/dist/index.js sweep-report --from sweep-payload.json \
             --repository "${{ github.repository }}"

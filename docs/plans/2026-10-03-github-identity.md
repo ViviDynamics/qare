@@ -74,9 +74,9 @@ Out:
   `identity.test.ts`)
 - [x] 4. Posting commands find their own sticky comment under any identity,
   and `ingest-deliver` refuses the Actions token. (`identity-commands.test.ts`)
-- [ ] 5. The pipeline declares the identity secrets and hands them to the
+- [x] 5. The pipeline declares the identity secrets and hands them to the
   posting steps only; qare's caller and the sweep pass them.
   (`packages/cli/test/pipeline-caller.test.ts`)
-- [ ] 6. Documentation: `docs/pipeline.md` (identity, secrets, permissions per
+- [x] 6. Documentation: `docs/pipeline.md` (identity, secrets, permissions per
   option), the spec section, ADR-0003.
 - [ ] 7. Release 2026.10.4 (`scripts/sync-version.mjs`).
