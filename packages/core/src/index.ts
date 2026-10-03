@@ -155,6 +155,8 @@ export type { RunIsolation } from './isolation.js'
 export { reapProjects } from './reap.js'
 export type { ReapOutcome, ReapOpts } from './reap.js'
 export { installCancelCleanup, runJob } from './run.js'
+export { prepareBaseCheckout } from './base-checkout.js'
+export type { BaseCheckout, BaseCheckoutInput, BaseCheckoutOutcome } from './base-checkout.js'
 export type { FlowSessionFactory } from './run.js'
 export {
   collectCriterionFiles,
