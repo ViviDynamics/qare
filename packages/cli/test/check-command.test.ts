@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
-import { NO_DIFF, loadResult } from '@qare/core'
+import { NO_DIFF, encodePng, loadResult, type BootOpts, type VisualSessionFactory } from '@qare/core'
 import { main } from '../src/index.js'
 import type { Writer } from '../src/index.js'
 
@@ -183,18 +183,53 @@ test('without --profile the profile is the one in --repo, as the MCP tool resolv
   expect(out.text()).toContain('check-1 proven')
 })
 
-test('a criterion planned only with checks the runner skips says so in its reason, not only on stderr', async () => {
+/** A screenshot backend that paints a blank page as wide as the viewport, and records where it was pointed. */
+function fakeVisual(): { captures: string[]; visualSession: VisualSessionFactory } {
+  const captures: string[] = []
+  return {
+    captures,
+    visualSession: async () => ({
+      screenshot: async (url, width, theme) => {
+        captures.push(`${url} ${width} ${theme}`)
+        return encodePng({ width, height: 2, pixels: Buffer.alloc(width * 2 * 4, 255) })
+      },
+      dispose: async () => {},
+      outbound: () => [],
+    }),
+  }
+}
+
+test('a visual check on a running target proves the criterion with a head screenshot at each width, and says there is no base comparison (#143)', async () => {
   const repo = await targetRepo()
-  const visual = { schemaVersion: '1', criteria: [{ id: 'check-1', text: 'looks right', checks: [{ kind: 'visual', name: 'home', screenshot: 'home' }] }] }
+  const text = 'the article on Ada Lovelace renders at 390 and 1440 wide'
+  const visual = {
+    schemaVersion: '1',
+    criteria: [{ id: 'check-1', text, checks: [{ kind: 'visual', name: 'article', screenshot: 'ada-lovelace', url: '/wiki/Ada_Lovelace', widths: [390, 1440] }] }],
+  }
   const out = capture()
+  const err = capture()
+  const backend = fakeVisual()
 
-  await main(['check', 'looks right', ...args(repo, '--nare', (await fakeNare(visual)).binary, '--runner', 'none')], out.writer, capture().writer, UP)
+  const code = await main(['check', text, ...args(repo, '--nare', (await fakeNare(visual)).binary, '--runner', 'none')], out.writer, err.writer, { ...UP, visualSession: backend.visualSession } as BootOpts)
 
-  expect(out.text()).toContain('check-1 unverified: looks right (the plan checks it only with visual checks, which the runner does not execute yet)')
+  expect(code).toBe(0)
+  expect(out.text()).toContain(`check-1 proven: ${text}`)
+  expect(backend.captures).toEqual([`${TARGET_URL}/wiki/Ada_Lovelace 390 light`, `${TARGET_URL}/wiki/Ada_Lovelace 1440 light`])
+  // Nothing is compared on a target, and the check says so rather than leaving it to be assumed.
+  expect(err.text()).toContain('check-1: the visual check ada-lovelace captured the head only: the profile names a running target, which has one side only, so there is no base to compare with')
+  expect(err.text()).not.toMatch(/does not execute/)
+  const executed = loadResult(await readFile(join(repo, 'evidence', 'result.json'), 'utf8'))
+  expect(executed.criteria[0]?.evidence).toEqual([
+    'checks/check-1/0/visual.json',
+    'checks/check-1/0/outbound.json',
+    'checks/check-1/0/head/390xlight.png',
+    'checks/check-1/0/head/1440xlight.png',
+  ])
 })
 
-test('a criterion whose run checks pass while others planned for it never ran is unverified, not proven', async () => {
+test('a criterion whose command passes while its visual check could not capture is unverified, not proven', async () => {
   const repo = await targetRepo()
+  // The check names no width and the target profile declares none, so there is nothing to capture at.
   const mixed = {
     schemaVersion: '1',
     criteria: [{ ...PLAN.criteria[0], checks: [...PLAN.criteria[0]!.checks!, { kind: 'visual', name: 'home', screenshot: 'home' }] }],
@@ -205,7 +240,7 @@ test('a criterion whose run checks pass while others planned for it never ran is
 
   expect(code).toBe(2)
   expect(out.text()).toContain('check-1 unverified')
-  expect(out.text()).toContain('1 of its planned checks did not run (visual)')
+  expect(out.text()).toContain("the visual check names no width and the profile's visual section declares none")
 })
 
 test('what the verifier overturned is reported, as qare judge reports it', async () => {
