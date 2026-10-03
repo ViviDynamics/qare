@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Plan, PlanCheck, PlanCriterion } from './plan.js'
 
-const CHECK_FIELDS = ['kind', 'name', 'command', 'suite', 'actions', 'screenshot', 'widths', 'themes', 'address', 'from', 'subject', 'body', 'code', 'timeoutMs', 'singleUse', 'tool', 'args', 'assert', 'inferred']
+const CHECK_FIELDS = ['kind', 'name', 'command', 'suite', 'actions', 'screenshot', 'url', 'widths', 'themes', 'address', 'from', 'subject', 'body', 'code', 'timeoutMs', 'singleUse', 'tool', 'args', 'assert', 'inferred']
 
 export interface PlanComparison {
   matches: boolean
@@ -42,6 +42,11 @@ function canonicalCheck(check: PlanCheck): PlanCheck {
   } else if (check.kind === 'visual') {
     canonical.screenshot = check.screenshot
     if (check.url !== undefined) canonical.url = check.url
+    if (check.widths !== undefined) canonical.widths = [...check.widths]
+    if (check.themes !== undefined) canonical.themes = [...check.themes]
+  } else if (check.kind === 'a11y') {
+    if (check.url !== undefined) canonical.url = check.url
+    if (check.actions !== undefined) canonical.actions = [...check.actions]
     if (check.widths !== undefined) canonical.widths = [...check.widths]
     if (check.themes !== undefined) canonical.themes = [...check.themes]
   }
@@ -205,5 +210,7 @@ function describeCheck(check: PlanCheck): string {
   }
   if (check.kind === 'mail') return `mail "${check.name}" (${check.address})`
   if (check.kind === 'tool') return `tool "${check.name}" (tool ${check.tool})`
+  if (check.kind === 'a11y')
+    return check.actions !== undefined ? `a11y "${check.name}" (actions ${JSON.stringify(check.actions)})` : `a11y "${check.name}" (page ${check.url ?? '/'})`
   return `visual "${check.name}" (screenshot ${check.screenshot})`
 }

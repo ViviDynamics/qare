@@ -185,6 +185,36 @@ test('visual check themes become evidence file names, so they cannot escape the 
   expect(parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ ...check, themes: ['light', 'dark'] }] }] }).criteria[0].checks[0].themes).toEqual(['light', 'dark'])
 })
 
+test('an a11y check names a page or drives to one with the flow vocabulary, never both (#149)', () => {
+  const planOf = (check: unknown) => parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [check] }] })
+  const byUrl = { kind: 'a11y', name: 'settings', url: '/settings', widths: [390], themes: ['dark'], inferred: true }
+  expect(planOf(byUrl).criteria[0]).toMatchObject({ checks: [byUrl] })
+  const actions = [{ action: 'open', url: '/login' }, { action: 'click', element: { role: 'button', name: 'Sign in' } }]
+  expect(planOf({ kind: 'a11y', name: 'after sign in', actions }).criteria[0]).toMatchObject({ checks: [{ kind: 'a11y', name: 'after sign in', actions }] })
+  // Neither audits the app's root.
+  expect(planOf({ kind: 'a11y', name: 'home' }).criteria[0]).toMatchObject({ checks: [{ kind: 'a11y', name: 'home' }] })
+
+  expect(planError(() => planOf({ kind: 'a11y', name: 'n', url: '/x', actions })).field).toBe('criteria[0].checks[0].url')
+  expect(planError(() => planOf({ kind: 'a11y', name: 'n', url: '' })).field).toBe('criteria[0].checks[0].url')
+  expect(planError(() => planOf({ kind: 'a11y', name: 'n', actions: ['open it'] })).field).toBe('criteria[0].checks[0].actions[0]')
+  expect(planError(() => planOf({ kind: 'a11y', name: 'n', widths: [0] })).field).toBe('criteria[0].checks[0].widths[0]')
+  expect(planError(() => planOf({ kind: 'a11y', name: 'n', themes: ['a/b'] })).field).toBe('criteria[0].checks[0].themes[0]')
+  expect(planError(() => planOf({ kind: 'sixth-sense', name: 'n' })).message).toContain('"a11y"')
+})
+
+test('an a11y check that drives a flow is held to the actions the driver declares (#149, #70)', () => {
+  const driver = { name: 'kiosk', actions: ['open'], evidence: [] }
+  const error = planError(() =>
+    parsePlan(
+      { schemaVersion: '1', criteria: [{ ...criterion, checks: [{ kind: 'a11y', name: 'n', actions: [{ action: 'click', element: { testId: 'go' } }] }] }] },
+      [],
+      driver,
+    ),
+  )
+  expect(error.field).toBe('criteria[0].checks[0].actions[0].action')
+  expect(error.message).toContain('kiosk')
+})
+
 test('a valid inline plan round-trips with inferred omitted when absent', () => {
   const plan = parsePlan(valid)
   expect(plan.criteria[0]).toEqual({
