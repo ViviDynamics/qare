@@ -550,6 +550,7 @@ function validateClientConfig(config: Record<string, unknown>): QaProfile {
     ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
     ...(config.commands === undefined ? {} : { commands: parseCommands(config.commands) }),
     ...(config.ux === undefined ? {} : { ux: parseUx(config.ux) }),
+    ...(config.findings === undefined ? {} : { findings: parseFindings(config.findings) }),
   }
 }
 

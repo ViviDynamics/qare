@@ -77,4 +77,7 @@ test('a client profile declares what its driver cannot do, when the profile load
   const kept = validateProfileConfig({ client: CLIENT, visual: { widths: [], themes: [] }, redact: { masks: ['css=.secret'] }, suites: [{ name: 'unit', command: 'npm test', kind: 'command' }] })
   expect(kept.redact?.masks).toEqual(['css=.secret'])
   expect(kept.suites).toHaveLength(1)
+  // Who a finding on main reaches is the repository's to say, whatever the client (#154).
+  expect(validateProfileConfig({ client: CLIENT, findings: { fallback: 'octocat' } }).findings).toEqual({ fallback: 'octocat' })
+  expect(fieldOf({ client: CLIENT, findings: { fallback: 'not a login' } })).toBe('findings.fallback')
 })
