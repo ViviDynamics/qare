@@ -189,6 +189,12 @@ commands:                        # optional: invocations the planner may rely on
 base:                            # optional: what the base side of a run costs (#147)
   criteria: ledger               # all (default), ledger (only criteria the base's ledger carries), or none
   budget: 10m                    # the base side's wall clock; what did not run is "not compared"
+a11y:                            # optional: what an accessibility audit holds a page to (#149)
+  standard: wcag22aa             # the rule set: wcag2a, wcag2aa, wcag21a, wcag21aa or wcag22aa (default)
+  fail: [serious, critical]      # the impacts that fail a check (default); minor and moderate are reported
+  standing: true                 # audit every action flow, without a planned a11y check
+  accept:                        # known violations, each carried with its reason
+    - { rule: color-contrast, page: /legacy, reason: "brand grey, replaced in the redesign" }
 redact:                          # optional: fixture data that must not be published
   values: ["jane@pilot.example"] # literal strings
   patterns: ['CUST-\d{6}']       # regular expressions
@@ -374,6 +380,87 @@ browser reached, and a host the profile does not declare refuses the run, as
 it does for a flow (#122). The text of the record is redacted like any other
 evidence; the images are masked at capture, and the pipeline's sweep (#52)
 accepts them as images.
+
+### Accessibility checks
+
+A screen can meet every stated criterion and still be unusable with a keyboard
+or a screen reader. Accessibility rules are objective, so they are checked in
+code and decide the outcome (rule 3). An `a11y` check (#149) runs a rule
+engine, axe-core, in the pages it visits. It names its page, or reaches it
+with the actions a flow takes, never both; with neither it audits the app's
+root.
+
+```json
+{ "kind": "a11y", "name": "settings are accessible", "url": "/settings", "inferred": true }
+{ "kind": "a11y", "name": "the dashboard after sign-in", "actions": [{ "action": "open", "url": "/login" }, { "action": "click", "element": { "role": "button", "name": "Sign in" } }, { "action": "assertText", "text": "Dashboard" }] }
+```
+
+The planner may add one to any criterion about a user interface, marked
+`inferred` unless the criterion asked for it. A profile whose `a11y` section
+says `standing: true` audits every action flow of the run without a planned
+check, and what the audit finds decides the flow's criterion. A flow that
+names a `suite` runs a browser of its own, which nothing here can audit.
+
+The audit rides the flow's own session, so nothing is driven twice. The page
+is audited where the plan itself declared it settled: after each `open`,
+after each `waitFor`, `assertText` and `assertElement` that held, and at the
+end of a flow that passed, skipping a point nothing acted on the page since
+the last one. Each point is audited at every width and theme: the check's own,
+else the profile's `visual` section, by resizing the viewport and emulating
+the colour scheme in place and putting both back. With no width anywhere the
+page is audited once at the viewport the flow ran in, and with no theme in
+`light`. The engine's source is evaluated into the page, never fetched by it.
+Only the page's own document is audited; content inside a frame is not.
+
+The profile's `a11y` section says what a page is held to: `standard` is the
+rule set, `fail` the impacts that fail a check, and `accept` the violations
+the project knowingly carries, each with a `reason` and optionally narrowed to
+a `page` (the URL path) and an `element` (its snapshot path or selector). The
+configuration in force is written into the record, so a change that accepts a
+violation shows that it did.
+
+New and existing violations are told apart on the two sides the run already
+executes (#147), the way a visual check gets its base screenshots: the base
+side audits and saves its record under `base/`, and the head side reads it.
+A head violation is matched against the base audit of the same point of the
+flow, width and theme, first on its exact identity (rule, snapshot path,
+selector) and then on its path with occurrence indexes dropped, each base
+violation matching once, so an unnamed button added beside an old one is one
+new violation and not two. The head profile's rule set, impacts, accepted
+list, widths and themes are in force at the base too, so a pull request that
+turns the audit on is compared under one set of rules and old debt does not
+fail it.
+
+| What happened | Outcome |
+| --- | --- |
+| No violation at a failing impact, or only accepted ones | `proven`; milder findings are listed as `reported` |
+| Two sides, and every failing violation was already there at the base | `proven`; each is listed as `existing` |
+| Two sides, and a failing violation the base audit did not have | `failed`, naming the rule and the element; a regression by the rule above |
+| Two sides, failing violations at the head, and no base audit to hold them against (the base did not boot, the profile's `base` limits left the criterion out, its flow stopped earlier) | `unverified`, naming why, never `failed`; not cached (#47) |
+| One side (a target, #122, or a run nobody asked a base of) and a failing violation | `failed`: nothing excuses it |
+| The audit could not be made (a driver with no audit, axe-core missing, the page threw) | `unverified`, naming why |
+| The flow part failed an assertion, or could not run an action | the flow's own outcome; what was audited on the way is still recorded |
+
+A head with nothing wrong is proven without reading the base: nothing can be
+new on a clean page.
+
+Evidence, under the check's directory beside the flow's own: `a11y.json` and
+`a11y/<point>-<width>x<theme>.png`, a full-page screenshot of each audited
+page that had a violation, masked like every other screenshot (#119) and
+withheld while a one-time code is on the page (#64). The record names the rule
+set, impacts and accepted list in force, each audit, and each violation on
+each element: its rule, impact and help text, its status (`new`, `existing`,
+`accepted` with the reason, `reported`, `uncompared`), the page, the
+element's role, accessible name and path from the normalised snapshot (#82),
+its selector, and the screenshot it appears in. An element the snapshot does
+not hold (the document itself, text with no role of its own) is named by its
+selector alone. Markup is not recorded: it is where fixture data leaks. The
+record is redacted like any other evidence, and the audits are swept before
+they are compared, so a redacted name reads the same at both sides.
+
+The criterion's result carries the counts (`a11y`), and the comment lists
+them by criterion under "Accessibility", so violations that fail nothing are
+still reported where the verdict is read.
 
 ### Mail checks
 

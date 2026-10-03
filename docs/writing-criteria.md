@@ -40,10 +40,14 @@ the checks that would carry it. Three kinds cover most criteria:
 | `visual` | A page captured at named widths and themes, compared pixel for pixel with the same page at the base | How a page looks: layout, spacing, state differences a flow would step over. Any difference from the base fails it, so state it for a page the change should leave looking the same |
 
 A criterion is `command` when every check that carries it is a command, and
-`flow` otherwise. Two further kinds exist in the plan schema, `mail` (a
-message waited for and read) and `tool` (a host tool invoked directly); a
-criterion that needs one of those says so in its wording, and this guide's
-three kinds stay the ones criteria are written for.
+`flow` otherwise. Three further kinds exist in the plan schema: `mail` (a
+message waited for and read), `tool` (a host tool invoked directly) and
+`a11y` (the pages a flow visits, audited against accessibility rules, where
+only violations the base did not already have fail it). A criterion that
+needs one of those says so in its wording, and this guide's three kinds stay
+the ones criteria are written for. An `a11y` check needs no criterion of its
+own: the planner may add one beside the checks of any criterion about a user
+interface, and a profile can audit every flow.
 
 ## Weak criteria, rewritten
 
