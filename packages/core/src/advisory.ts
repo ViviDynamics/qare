@@ -76,7 +76,7 @@ export interface DismissedFinding {
   element?: string
 }
 
-// Bounded so the findings fit a pull request comment twice over: once to be read, once as data.
+// Bounded so a pull request comment can hold the findings twice over: once to be read, once as data.
 const MAX_FINDINGS = 12
 const MAX_TEXT = 300
 const MAX_ELEMENT = 160
