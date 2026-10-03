@@ -188,6 +188,24 @@ export interface QaProfile {
    * holds screens to. Absent, the review runs with no house rules.
    */
   ux?: ProfileUx
+  /**
+   * Who a finding on `main` reaches (#154): the fallback an issue mentions
+   * when no change can be blamed, and the logins treated as bots. Absent, an
+   * issue with nobody to blame mentions nobody and says so.
+   */
+  findings?: ProfileFindings
+}
+
+/**
+ * The profile's `findings` section (#154). Both values are published as
+ * mentions or compared with logins, so each is a GitHub login, and the
+ * fallback may be a team (`org/team`).
+ */
+export interface ProfileFindings {
+  /** A person (`octocat`) or a team (`acme/qa-leads`), without the at sign. */
+  fallback?: string
+  /** Logins whose pull requests are a bot's: an orchestrator that opens them with a person's token. */
+  bots?: string[]
 }
 
 /**
@@ -431,6 +449,7 @@ export function validateProfileConfig(config: unknown): QaProfile {
     ...(config.base === undefined ? {} : { base: parseProfileBase(config.base) }),
     ...(config.a11y === undefined ? {} : { a11y: parseA11y(config.a11y) }),
     ...(config.ux === undefined ? {} : { ux: parseUx(config.ux) }),
+    ...(config.findings === undefined ? {} : { findings: parseFindings(config.findings) }),
   }
 }
 
@@ -461,6 +480,7 @@ function validateTargetConfig(config: Record<string, unknown>): QaProfile {
     ...(config.commands === undefined ? {} : { commands: parseCommands(config.commands) }),
     ...(config.a11y === undefined ? {} : { a11y: parseA11y(config.a11y) }),
     ...(config.ux === undefined ? {} : { ux: parseUx(config.ux) }),
+    ...(config.findings === undefined ? {} : { findings: parseFindings(config.findings) }),
   }
 }
 
@@ -669,6 +689,43 @@ function parseA11y(value: unknown): ProfileA11y {
     ...(impacts === undefined ? {} : { fail: impacts }),
     ...(value.standing === undefined ? {} : { standing: value.standing as boolean }),
     ...(accept === undefined ? {} : { accept }),
+  }
+}
+
+/** A GitHub login: letters, digits and single hyphens, at most 39 characters. */
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/
+/** A team as a mention names it: the organisation, a slash, the team's slug. */
+const GITHUB_TEAM = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}\/[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+/**
+ * The profile's `findings` section (#154). What it names is written after an
+ * at sign on a public issue, so each value is held to the shape of a login
+ * (or, for the fallback, a team): nothing else can ride in as a mention.
+ */
+function parseFindings(value: unknown): ProfileFindings {
+  if (!isRecord(value)) fail('findings', 'findings must be a YAML object with fallback and bots')
+  for (const key of Object.keys(value))
+    if (!['fallback', 'bots'].includes(key)) fail(`findings.${key}`, `findings takes fallback and bots, not ${JSON.stringify(key)}`)
+  let fallback: string | undefined
+  if (value.fallback !== undefined) {
+    const named = typeof value.fallback === 'string' ? value.fallback.replace(/^@/, '') : ''
+    if (!GITHUB_LOGIN.test(named) && !GITHUB_TEAM.test(named))
+      fail('findings.fallback', `findings.fallback must be a GitHub login ("octocat") or a team ("org/team"), not ${JSON.stringify(value.fallback)}`)
+    fallback = named
+  }
+  let bots: string[] | undefined
+  if (value.bots !== undefined) {
+    if (!Array.isArray(value.bots)) fail('findings.bots', 'findings.bots must be an array of GitHub logins')
+    bots = value.bots.map((entry: unknown, index) => {
+      const login = typeof entry === 'string' ? entry.replace(/^@/, '') : ''
+      // A bot's own login ends in [bot]; GitHub names those itself, and one may be listed here too.
+      if (!GITHUB_LOGIN.test(login.replace(/\[bot\]$/, ''))) fail(`findings.bots[${index}]`, `findings.bots[${index}] must be a GitHub login, not ${JSON.stringify(entry)}`)
+      return login
+    })
+  }
+  return {
+    ...(fallback === undefined ? {} : { fallback }),
+    ...(bots === undefined ? {} : { bots }),
   }
 }
 
