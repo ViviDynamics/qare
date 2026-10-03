@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import type { CellRecord, ClientCell } from './client-cell.js'
 import { describeElement, type FlowDriverCapabilities, type FlowElement, type FlowPage, type FlowTrace } from './flow.js'
-import { resolveFlowElement } from './flow-playwright.js'
+import { captureMasks, followPage, resolveFlowElement, takeFrame } from './flow-playwright.js'
+import { MAX_PLATFORM_LOG_LINE_CHARACTERS as MAX_LINE_CHARACTERS, makePlatformLog, type PlatformLogEntry } from './platform-log.js'
 import { pathOnTarget } from './profile.js'
 import { normaliseAriaSnapshot } from './snapshot.js'
 
@@ -20,7 +21,7 @@ import { normaliseAriaSnapshot } from './snapshot.js'
 export const ELECTRON_FLOW_DRIVER: FlowDriverCapabilities = {
   name: 'electron',
   actions: ['open', 'type', 'click', 'choose', 'waitFor', 'assertText', 'assertElement', 'capture', 'totp', 'backupCode'],
-  evidence: ['screenshot', 'trace', 'console'],
+  evidence: ['screenshot', 'trace', 'console', 'recording'],
   checks: [],
 }
 
@@ -36,10 +37,6 @@ const DEFAULT_LAUNCH_TIMEOUT_MS = 30_000
 const DEFAULT_FIND_TIMEOUT_MS = 30_000
 const DEFAULT_POLL_INTERVAL_MS = 100
 const DEFAULT_CLOSE_GRACE_MS = 5_000
-/** The lines of output one check keeps; a chatty application drops its oldest, and the log says how many. */
-const MAX_CONSOLE_LINES = 5_000
-/** The characters one line of output keeps; the build is pull request code, and a line with no end must not grow the run. */
-const MAX_LINE_CHARACTERS = 8_192
 /** How much of the output a failed start quotes in its reason. */
 const FAILURE_OUTPUT_LINES = 20
 
@@ -250,6 +247,8 @@ export async function makeElectronFlowSession(opts: {
   dispose: () => Promise<void>
   /** Everything the application wrote and every window it opened or closed, in order. */
   console: () => string[]
+  /** The same lines, each with the moment it was written (#78). */
+  platformLog: () => PlatformLogEntry[]
   /** What the build reached for, as its cell's gate recorded it (#223). Only with a cell, and only once disposed. */
   reached?: () => CellRecord
 }> {
@@ -294,17 +293,9 @@ export async function makeElectronFlowSession(opts: {
   // The application's own output and its windows' lifecycle, in the order
   // they happened. Bounded, so a build that logs in a loop cannot grow the
   // run without limit; what was dropped is counted.
-  const lines: string[] = []
-  let dropped = 0
-  const cut = (text: string): string => (text.length <= MAX_LINE_CHARACTERS ? text : `${text.slice(0, MAX_LINE_CHARACTERS)} [line cut at ${MAX_LINE_CHARACTERS} characters]`)
-  const record = (label: string, text?: string): void => {
-    lines.push(text === undefined ? `[${label}]` : `[${label}] ${cut(text)}`)
-    if (lines.length > MAX_CONSOLE_LINES) {
-      lines.shift()
-      dropped += 1
-    }
-  }
-  const output = (): string[] => (dropped === 0 ? [...lines] : [`[console] ${dropped} earlier lines dropped: the log keeps the last ${MAX_CONSOLE_LINES}`, ...lines])
+  const platform = makePlatformLog()
+  const record = platform.record
+  const output = platform.lines
 
   // Inside a cell the directory is the cell's own and goes with it, and the
   // port is the one the cell relays: nothing else is in that namespace.
@@ -450,10 +441,7 @@ export async function makeElectronFlowSession(opts: {
     if (windows.some((window) => window.page === page)) return
     const window = { id: windows.length + 1, page }
     windows.push(window)
-    record(`window ${window.id} opened`, page.url())
-    page.on('console', (message) => record(`window ${window.id} console.${message.type()}`, message.text()))
-    page.on('pageerror', (error) => record(`window ${window.id} error`, error.message))
-    page.on('close', () => record(`window ${window.id} closed`))
+    followPage(page, `window ${window.id}`, record)
   }
   let context: ReturnType<Browser['contexts']>[number]
   try {
@@ -573,13 +561,14 @@ export async function makeElectronFlowSession(opts: {
       }
       throw new Error('assert failed: the element is not visible in any open window')
     },
-    screenshot: async (path) => {
+    screenshot: async (path, capture) => {
       const shown = currentPage()
       // Masks black out their regions at capture, as in the browser (#119).
-      await shown.screenshot(
-        opts.masks === undefined || opts.masks.length === 0 ? { path } : { path, mask: opts.masks.map((selector) => shown.locator(selector)), maskColor: '#000000' },
-      )
+      await shown.screenshot({ path, ...captureMasks(shown, opts.masks, capture) })
     },
+    // A frame of the recording is the window the flow is in (#78), masked as
+    // its screenshot is; over a cell's relayed endpoint it is one more call.
+    frame: async (capture) => takeFrame(currentPage(), opts.masks, capture),
     snapshot: async () => normaliseAriaSnapshot(await currentPage().ariaSnapshot()),
   }
 
@@ -600,6 +589,7 @@ export async function makeElectronFlowSession(opts: {
     trace,
     dispose,
     console: output,
+    platformLog: platform.entries,
     ...(contained === undefined ? {} : { reached: (): CellRecord => contained.record() }),
   }
 }

@@ -27,7 +27,7 @@ test('the electron driver declares the browser\'s whole vocabulary, so a flow mo
   expect(ELECTRON_FLOW_DRIVER.name).toBe('electron')
   expect([...ELECTRON_FLOW_DRIVER.actions].sort()).toEqual([...BROWSER_FLOW_DRIVER.actions].sort())
   // The evidence it produces: the browser's kinds, and the application's own console output.
-  expect(ELECTRON_FLOW_DRIVER.evidence).toEqual(['screenshot', 'trace', 'console'])
+  expect(ELECTRON_FLOW_DRIVER.evidence).toEqual(['screenshot', 'trace', 'console', 'recording'])
 })
 
 test('a driver declares the check kinds it serves beyond a flow, and the electron driver serves none (#72)', () => {

@@ -92,7 +92,7 @@ Out:
   recording before it is typed; the bounds drop the oldest frames.
 - [x] 4. Browser driver: `frame`, concealed screenshots, console, page errors
   and crashes. Failing tests against the fake chromium.
-- [ ] 5. Electron driver: `frame`, concealed screenshots, a crashed window,
+- [x] 5. Electron driver: `frame`, concealed screenshots, a crashed window,
   the shared platform log. Failing tests against the fake application.
 - [ ] 6. The run (`run.ts`): `failure.log` for a check that did not pass,
   `console.log` for the browser, and the planted secret: a failing flow on a
