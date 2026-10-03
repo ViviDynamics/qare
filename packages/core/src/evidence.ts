@@ -273,6 +273,26 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
       ),
     )
   }
+  // What the accessibility audits found (#149), by criterion. A violation
+  // the base already had does not fail anything, so the verdict table says
+  // nothing about it: this is where old debt is reported. The counts are the
+  // harness's own; each violation is named in the criterion's a11y.json.
+  const audited = result.criteria.filter((criterion) => criterion.a11y !== undefined && Object.values(criterion.a11y).some((count) => count > 0))
+  if (audited.length > 0) {
+    lines.push(
+      '',
+      '## Accessibility',
+      '',
+      'Accessibility violations the audits found, counted by criterion. Only violations new at the head fail a criterion. Existing ones were already there at the base, accepted ones are carried by the profile with a reason, reported ones sit below the impacts that fail, and ones not compared had no base audit to be held against. Each is named, with its rule and element, in the `a11y.json` of the criterion.',
+      '',
+      '| criterion | new | existing | accepted | reported | not compared |',
+      '| --- | --- | --- | --- | --- | --- |',
+      ...audited.map((criterion) => {
+        const counts = criterion.a11y!
+        return `| ${cell(criterion.id)} | ${counts.new} | ${counts.existing} | ${counts.accepted} | ${counts.reported} | ${counts.uncompared} |`
+      }),
+    )
+  }
   if (links.kind === 'relative') {
     const details = detailLinks(result.criteria)
     if (details.length > 0) lines.push('', 'Details:', '', ...details)

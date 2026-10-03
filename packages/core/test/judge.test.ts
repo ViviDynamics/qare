@@ -530,6 +530,32 @@ test('judgedResult carries the environment through judging', () => {
   expect(result.environment).toEqual(environment)
 })
 
+test('what the accessibility audits counted survives judging, whatever the judge decides (#149)', () => {
+  const counts = { new: 0, existing: 2, accepted: 0, reported: 1, uncompared: 0 }
+  const executed: RunResult = {
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'passed',
+    criteria: [
+      { id: 'c1', outcome: 'proven', evidence: ['checks/c1/0/a11y.json'], a11y: counts },
+      { id: 'c2', outcome: 'proven', evidence: ['checks/c2/0/a11y.json'], a11y: counts },
+      { id: 'c3', outcome: 'proven', evidence: ['checks/c3/0/stdout.txt'] },
+    ],
+  }
+  const result = judgedResult(
+    executed,
+    'failed',
+    [
+      { criterionId: 'c1', outcome: 'proven', regression: false, reason: 'proven at head' },
+      { criterionId: 'c2', outcome: 'failed', regression: false, reason: 'verifier: the record shows nothing was audited' },
+      { criterionId: 'c3', outcome: 'proven', regression: false, reason: 'proven at head' },
+    ],
+    new Map([['c1', ['checks/c1/0/a11y.json']], ['c2', ['checks/c2/0/a11y.json']], ['c3', ['checks/c3/0/stdout.txt']]]),
+  )
+  expect(result.criteria[0]?.a11y).toEqual(counts)
+  expect(result.criteria[1]).toMatchObject({ outcome: 'failed', a11y: counts })
+  expect('a11y' in result.criteria[2]!).toBe(false)
+})
+
 test('a result without an environment judges to one without it', () => {
   const result = judgedResult(
     { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [] },

@@ -432,3 +432,15 @@ test('a regression is only ever claimed over a base that proved the criterion (#
     parseResult(withCriterion({ id: 'c', outcome: 'unverified', reason: 'waived by human', regression: true, base: { outcome: 'proven' } })).criteria[0],
   ).toMatchObject({ regression: true })
 })
+
+test('a criterion result may carry what its accessibility audits counted (#149)', () => {
+  const withCriterion = (criterion: unknown) => ({ schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [criterion] })
+  const counts = { new: 0, existing: 2, accepted: 1, reported: 3, uncompared: 0 }
+  expect(parseResult(withCriterion({ id: 'c', outcome: 'proven', evidence: ['a11y.json'], a11y: counts })).criteria[0]?.a11y).toEqual(counts)
+  // Absent on a criterion nothing audited.
+  expect('a11y' in parseResult(withCriterion({ id: 'c', outcome: 'proven', evidence: ['a.txt'] })).criteria[0]!).toBe(false)
+  // A count is a count.
+  expect(resultError(() => parseResult(withCriterion({ id: 'c', outcome: 'proven', evidence: ['a.txt'], a11y: 'two' }))).field).toBe('criteria[0].a11y')
+  expect(resultError(() => parseResult(withCriterion({ id: 'c', outcome: 'proven', evidence: ['a.txt'], a11y: { ...counts, existing: -1 } }))).field).toBe('criteria[0].a11y.existing')
+  expect(resultError(() => parseResult(withCriterion({ id: 'c', outcome: 'proven', evidence: ['a.txt'], a11y: { new: 1 } }))).field).toBe('criteria[0].a11y.existing')
+})

@@ -322,6 +322,36 @@ test('a run without repairs renders no repairs section (#83)', () => {
   expect(renderComment(allProven)).not.toContain('Locator repairs')
 })
 
+test('the comment lists what the accessibility audits found, existing violations included (#149)', () => {
+  const run = result('failed', [
+    { id: 'settings', outcome: 'proven', evidence: ['head/checks/settings/0/a11y.json'], a11y: { new: 0, existing: 2, accepted: 1, reported: 3, uncompared: 0 } },
+    {
+      id: 'billing',
+      outcome: 'failed',
+      evidence: ['head/checks/billing/0/a11y.json'],
+      reason: '1 new accessibility violation: button-name on document/main/button (/billing)',
+      a11y: { new: 1, existing: 0, accepted: 0, reported: 0, uncompared: 0 },
+    },
+    // Audited and clean: nothing to list.
+    { id: 'about', outcome: 'proven', evidence: ['head/checks/about/0/a11y.json'], a11y: { new: 0, existing: 0, accepted: 0, reported: 0, uncompared: 0 } },
+  ])
+  const body = renderComment(run)
+  expect(body).toContain('## Accessibility')
+  expect(body).toContain('Only violations new at the head fail a criterion.')
+  expect(body).toContain('| criterion | new | existing | accepted | reported | not compared |')
+  expect(body).toContain('| settings | 0 | 2 | 1 | 3 | 0 |')
+  expect(body).toContain('| billing | 1 | 0 | 0 | 0 | 0 |')
+  expect(body).not.toContain('| about | 0 |')
+  // The failure names the rule and the element in the table itself.
+  expect(body).toContain('| billing | failed | 1 new accessibility violation: button-name on document/main/button (/billing) |')
+})
+
+test('a run nothing audited, or whose audits found nothing, renders no accessibility section (#149)', () => {
+  expect(renderComment(allProven)).not.toContain('Accessibility')
+  const clean = result('passed', [{ id: 'about', outcome: 'proven', evidence: ['a11y.json'], a11y: { new: 0, existing: 0, accepted: 0, reported: 0, uncompared: 0 } }])
+  expect(renderComment(clean)).not.toContain('## Accessibility')
+})
+
 const twoSided: RunResult = {
   ...result('failed', [
     {
