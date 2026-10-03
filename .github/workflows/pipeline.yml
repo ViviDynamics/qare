@@ -125,7 +125,7 @@ on:
           workflow ships in, so pin the release in `uses:` and leave this
           alone.
         type: string
-        default: '2026.10.2'
+        default: '2026.10.3'
     secrets:
       model-key:
         description: >-
@@ -458,6 +458,57 @@ jobs:
         with:
           name: plan.json
           path: .
+      # The runner's docker (#209): a profile that boots its app does it with
+      # `docker compose` against the runner's daemon, so the run is handed the
+      # runner's docker CLI, the compose and buildx plugins that CLI names,
+      # and the daemon's endpoint, with the group that may open its socket.
+      # The image ships none of them: the client that talks to a daemon is
+      # the one installed beside it. The containers compose starts are
+      # siblings of the run's container, publishing the app on the runner's
+      # loopback, so the run shares the runner's network: the port it picks
+      # is free on the runner, and its health check and its checks reach the
+      # app at localhost.
+      #
+      # What that grants, and why it is granted
+      # (docs/decisions/adr-0005-execute-docker-access.md): whoever can ask
+      # the daemon for a container owns the runner, so the run's container is
+      # not a sandbox and is not described as one. The boundary rule 7 draws
+      # is the machine: this job holds no secret, and a runner that outlives
+      # it must be one no secret-holding job ever lands on.
+      - name: Find the runner's docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker_access=(--network host -v "$(readlink -f "$(command -v docker)"):/usr/bin/docker:ro")
+          # The plugins are named by the CLI that will run them, so they are
+          # found wherever this runner keeps them. buildx travels with
+          # compose because a compose file that builds its image builds
+          # through it.
+          plugins=""
+          while read -r plugin path; do
+            case "$plugin" in compose | buildx) ;; *) continue ;; esac
+            [ -f "$path" ] || continue
+            docker_access+=(-v "$(readlink -f "$path"):/usr/local/lib/docker/cli-plugins/docker-$plugin:ro")
+            plugins="$plugins $plugin"
+          done < <(docker info --format '{{range .ClientInfo.Plugins}}{{println .Name .Path}}{{end}}' 2>/dev/null || true)
+          case "$plugins" in
+            *compose*) ;;
+            *) echo "this runner's docker has no compose plugin, so a profile that boots its app with compose cannot boot it here: install docker compose v2 on the runner" >> "$GITHUB_STEP_SUMMARY" ;;
+          esac
+          # The daemon is the one this runner's docker talks to: its socket,
+          # opened as the group that owns it, or the endpoint it is reached
+          # at when that is not a socket.
+          endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
+          case "$endpoint" in
+            unix://*)
+              socket="${endpoint#unix://}"
+              docker_access+=(-v "$socket:/var/run/docker.sock" --group-add "$(stat -L -c %g "$socket")")
+              ;;
+            ?*) docker_access+=(-e "DOCKER_HOST=$endpoint") ;;
+            *) echo "this runner's docker names no daemon endpoint, so a profile that boots its app cannot reach one" >> "$GITHUB_STEP_SUMMARY" ;;
+          esac
+          # One argument a line, for the steps that start the run's container.
+          printf '%s\n' "${docker_access[@]}" > "$RUNNER_TEMP/qare-docker-access"
       - name: Run the plan
         shell: bash
         env:
@@ -474,9 +525,10 @@ jobs:
           # the flavour image, so the runner's own record names the image ref
           # and digest that produced the evidence (#88): the ref and digest
           # travel in the environment, the flavour and driver versions travel
-          # in the image. The docker CLI and socket are mounted for the stub
-          # containers the plan boots (execute holds no secrets), and the
-          # workspace maps to itself, so the compose paths the runner names
+          # in the image.
+          #
+          # The docker arguments are the ones the step above found (#209).
+          # The workspace maps to itself, so the paths a compose file names
           # line up with the daemon's.
           #
           # The base side (#147): a profile that boots an app is checked at
@@ -506,6 +558,7 @@ jobs:
           else
             echo "the base commit could not be checked out, so qare checks the head alone and reports every criterion as not compared" >> "$GITHUB_STEP_SUMMARY"
           fi
+          mapfile -t docker_access < "$RUNNER_TEMP/qare-docker-access"
           code=0
           docker run --rm \
             -u "$(id -u):$(id -g)" \
@@ -514,8 +567,7 @@ jobs:
             -e QARE_IMAGE_DIGEST="$IMAGE_DIGEST" \
             -v "$PWD:$PWD" -w "$PWD" \
             "${base_mount[@]}" \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v /usr/bin/docker:/usr/bin/docker:ro \
+            "${docker_access[@]}" \
             "$IMAGE_REF" qare run --plan plan.json \
             --id "pr-${PR_NUMBER}" \
             --repo "$PWD" \
@@ -581,6 +633,35 @@ jobs:
             exit 1
           fi
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+      # The run leaves the head's stack up, because teardown is its caller's
+      # job (#53), and this pipeline is the caller: the compose projects the
+      # run named in its evidence are taken down, volumes and all. On a
+      # runner that outlives the job, a stack left behind would hold its
+      # memory and its port until someone noticed. The verdict is already
+      # recorded, so a teardown that fails is said and does not change it.
+      - name: Tear down what the run booted
+        if: always()
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: |
+          set -euo pipefail
+          if [ ! -d evidence ] || [ ! -f "$RUNNER_TEMP/qare-docker-access" ]; then
+            echo "no run evidence: nothing was booted, so there is nothing to tear down"
+            exit 0
+          fi
+          mapfile -t projects < <(find evidence -name isolation.json -exec jq -r '.project // empty' {} + | sort -u)
+          if [ "${#projects[@]}" -eq 0 ]; then
+            echo "the run booted no compose project"
+            exit 0
+          fi
+          mapfile -t docker_access < "$RUNNER_TEMP/qare-docker-access"
+          if ! docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              -v "$PWD:$PWD" -w "$PWD" \
+              "${docker_access[@]}" \
+              "$IMAGE_REF" qare reap "${projects[@]}"; then
+            echo "::warning::qare reap failed: a compose project this run booted may still be running on the runner (${projects[*]}); the verdict is unaffected"
+          fi
       # Evidence is published, so it is redacted before it leaves this
       # machine, and a redaction that fails uploads nothing (#52). The run
       # already redacts what it writes; this also covers files a crashed run

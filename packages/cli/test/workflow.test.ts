@@ -606,3 +606,66 @@ test('execute hands qare run a checkout of the base commit, so both sides run wi
   expect(execute).not.toContain('secrets.')
   expect(step).not.toMatch(/-e [A-Z_]*(KEY|TOKEN)/)
 })
+
+test("execute hands the run the runner's docker, so a profile can boot its compose app (#209)", () => {
+  const execute = section('execute')
+  const find = execute.slice(execute.indexOf("- name: Find the runner's docker"), execute.indexOf('- name: Run the plan'))
+  const run = execute.slice(execute.indexOf('- name: Run the plan'), execute.indexOf('- name: Read the recorded verdict'))
+  // The CLI and its plugins are the runner's own, found where this runner
+  // keeps them: a path written here would hold on GitHub's runners and
+  // nowhere else. buildx travels with compose, for a stack that builds.
+  expect(find).toContain('-v "$(readlink -f "$(command -v docker)"):/usr/bin/docker:ro"')
+  expect(find).toContain("docker info --format '{{range .ClientInfo.Plugins}}{{println .Name .Path}}{{end}}'")
+  expect(find).toContain('case "$plugin" in compose | buildx) ;; *) continue ;; esac')
+  expect(find).toContain('/usr/local/lib/docker/cli-plugins/docker-$plugin:ro')
+  expect(execute).not.toContain('-v /usr/bin/docker:/usr/bin/docker:ro')
+  // A runner without compose says so by name rather than leaving a blocked
+  // boot to explain itself.
+  expect(find).toMatch(/\*\) echo "this runner's docker has no compose plugin/)
+  // The daemon is reached as the group that owns its socket: the run keeps
+  // the runner's uid, which alone may not open it.
+  expect(find).toContain(`endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"`)
+  expect(find).toContain('docker_access+=(-v "$socket:/var/run/docker.sock" --group-add "$(stat -L -c %g "$socket")")')
+  expect(find).toContain('docker_access+=(-e "DOCKER_HOST=$endpoint")')
+  // The runner's network: compose publishes the app on the runner, so the
+  // port the run picks and the localhost its checks name are the runner's.
+  expect(find).toContain('docker_access=(--network host')
+  // The run starts its container with what the step found, still as the
+  // runner's user and never privileged.
+  expect(run).toContain('mapfile -t docker_access < "$RUNNER_TEMP/qare-docker-access"')
+  expect(run).toContain('"${docker_access[@]}"')
+  expect(run).toContain('-u "$(id -u):$(id -g)"')
+  expect(execute).not.toContain('--privileged')
+  // Rule 7: daemon access is not a secret, and the job gains none with it.
+  expect(execute).not.toContain('secrets.')
+})
+
+test('execute takes down the compose projects the run booted, whatever the run exited with (#209)', () => {
+  const execute = section('execute')
+  const start = execute.indexOf('- name: Tear down what the run booted')
+  expect(start).toBeGreaterThan(execute.indexOf('- name: Run the plan'))
+  const step = execute.slice(start, execute.indexOf('- name: Redact the evidence'))
+  expect(step).toContain('if: always()')
+  // Exactly the projects the run named in its evidence: reap refuses a name
+  // that is not qare's, and another run's stack on the same runner stays up.
+  expect(step).toContain(`find evidence -name isolation.json -exec jq -r '.project // empty' {} +`)
+  expect(step).toContain('qare reap "${projects[@]}"')
+  // The verdict is already recorded: a failed teardown is said, not gating.
+  expect(step).toContain('::warning::qare reap failed')
+})
+
+test("CI boots a compose app through the pipeline's own execute steps (#209)", () => {
+  // Not a copy of the steps: the script runs the ones this file carries, so
+  // the path every caller gets is the path CI exercises.
+  const ci = readFileSync(join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8')
+  expect(ci).toContain('  compose-boot:')
+  expect(ci).toContain('run: scripts/compose-boot.sh qare-core:ci')
+  const script = readFileSync(join(repoRoot, 'scripts', 'compose-boot.sh'), 'utf8')
+  expect(script).toContain('node scripts/run-pipeline-step.mjs execute "$1"')
+  const execute = section('execute')
+  for (const name of ["Find the runner's docker", 'Run the plan', 'Tear down what the run booted']) {
+    expect(script).toMatch(new RegExp(`step ["']${name}["']`))
+    expect(execute).toContain(`- name: ${name}\n`)
+  }
+  expect(script).toContain('PROFILE=examples/compose-app/.qa')
+})
