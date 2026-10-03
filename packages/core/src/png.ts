@@ -16,7 +16,7 @@ export interface PngImage {
   pixels: Buffer
 }
 
-const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+export const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 
 /** Channels per pixel for the colour types read here. */
 const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 4: 2, 6: 4 }
@@ -32,12 +32,12 @@ export class PngError extends Error {
 }
 
 export function decodePng(png: Buffer): PngImage {
-  if (png.length < SIGNATURE.length || !png.subarray(0, SIGNATURE.length).equals(SIGNATURE)) throw new PngError('the file is not a PNG')
+  if (png.length < PNG_SIGNATURE.length || !png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) throw new PngError('the file is not a PNG')
   let width = 0
   let height = 0
   let colorType = -1
   const data: Buffer[] = []
-  let offset = SIGNATURE.length
+  let offset = PNG_SIGNATURE.length
   while (offset + 8 <= png.length) {
     const length = png.readUInt32BE(offset)
     const type = png.toString('latin1', offset + 4, offset + 8)
@@ -122,7 +122,8 @@ function crc32(bytes: Buffer): number {
   return (crc ^ 0xffffffff) >>> 0
 }
 
-function chunk(type: string, body: Buffer): Buffer {
+/** One PNG chunk: its length, its type and body, and their checksum. */
+export function pngChunk(type: string, body: Buffer): Buffer {
   const typed = Buffer.concat([Buffer.from(type, 'latin1'), body])
   const length = Buffer.alloc(4)
   length.writeUInt32BE(body.length)
@@ -139,7 +140,7 @@ export function encodePng(image: PngImage): Buffer {
   const stride = image.width * 4
   const raw = Buffer.alloc((stride + 1) * image.height)
   for (let y = 0; y < image.height; y += 1) image.pixels.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride)
-  return Buffer.concat([SIGNATURE, chunk('IHDR', header), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))])
+  return Buffer.concat([PNG_SIGNATURE, pngChunk('IHDR', header), pngChunk('IDAT', deflateSync(raw)), pngChunk('IEND', Buffer.alloc(0))])
 }
 
 /**
