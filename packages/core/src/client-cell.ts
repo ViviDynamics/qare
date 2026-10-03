@@ -274,7 +274,10 @@ export async function startClientCell(opts: ClientCellOptions): Promise<ClientCe
       docker.spawn([
         'run', '--rm', '--name', appName, ...common,
         // The whole of the containment: no interface but loopback, and a resolver on it.
-        '--network', 'none', '--dns', '127.0.0.1',
+        // No search domain: the runner's own would have every name asked for a second
+        // time with the runner's suffix, which names the runner to the build and
+        // puts a host nobody reached for in the record.
+        '--network', 'none', '--dns', '127.0.0.1', '--dns-search', '.',
         '-v', `${opts.repoPath}:${opts.repoPath}:ro`, '-w', opts.repoPath,
         opts.image, 'qare', 'cell', 'launch', '--socket-dir', SOCKET_DIR, '--cdp-port', String(GATE_RELAY_PORT), '--',
         command, ...args,

@@ -80,12 +80,13 @@ test('a cell is a volume, a gate on the default network, and a build with no net
 
   const child = cell.spawn('/work/repo/dist/app/app', ['--no-sandbox', '--remote-debugging-port=9222'])
   // The build: no network, a resolver on its own loopback, no capability, the checkout read-only, no docker socket.
+  // The runner's search domain stays out: with it, every name the build asks for is asked again with the runner's own suffix.
   expect(spawned[1]?.args).toEqual([
     'run', '--rm', '--name', 'qare-cell-abc123-app',
     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
     '-u', '1001:118', '-e', 'HOME=/tmp',
     '-v', 'qare-cell-abc123:/run/qare-cell',
-    '--network', 'none', '--dns', '127.0.0.1',
+    '--network', 'none', '--dns', '127.0.0.1', '--dns-search', '.',
     '-v', '/work/repo:/work/repo:ro', '-w', '/work/repo',
     'qare-web:test', 'qare', 'cell', 'launch', '--socket-dir', '/run/qare-cell', '--cdp-port', '9222', '--',
     '/work/repo/dist/app/app', '--no-sandbox', '--remote-debugging-port=9222',
