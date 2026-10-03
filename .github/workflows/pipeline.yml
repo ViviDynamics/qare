@@ -130,6 +130,15 @@ on:
           Empty means runs-on.
         type: string
         default: ''
+      self-hosted:
+        description: >-
+          A public repository keeps its runs on GitHub-hosted runners: on a
+          self-hosted runner, execute refuses the run by name, because a
+          runner that outlives its job keeps whatever a pull request left on
+          it. Set this to 'allow' to use your own capacity anyway. It changes
+          nothing for a private repository, or on hosted runners.
+        type: string
+        default: ''
       planner-diff-exclude:
         description: >-
           Paths left out of the planner's copy of the diff, as space-separated
@@ -444,6 +453,16 @@ jobs:
     # pull request code, and rule 7 keeps that off a machine that holds, or
     # will later hold, a secret.
     runs-on: ${{ fromJSON(inputs.execute-runs-on || inputs.runs-on) }}
+    # Where this run was placed (#76). The run decides, in code, whether it
+    # may execute here: a public repository's run on a self-hosted runner is
+    # refused by name unless the caller opted in. These two facts are the
+    # workflow's to know, so they are the job's environment and nothing the
+    # pull request writes; the runner's own kind is RUNNER_ENVIRONMENT, which
+    # every runner sets. The run step hands all three into the run's
+    # container, and the evidence names the kind of host that produced it.
+    env:
+      QARE_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+      QARE_SELF_HOSTED: ${{ inputs.self-hosted }}
     outputs:
       # Where the evidence was uploaded, the one place the posted comment may
       # link to (CONSTITUTION rule 4). Empty when nothing was uploaded.
@@ -637,6 +656,9 @@ jobs:
             -e HOME=/tmp \
             -e QARE_IMAGE_REF="$IMAGE_REF" \
             -e QARE_IMAGE_DIGEST="$IMAGE_DIGEST" \
+            -e QARE_RUNNER_ENVIRONMENT="${RUNNER_ENVIRONMENT:-}" \
+            -e QARE_REPOSITORY_VISIBILITY="${QARE_REPOSITORY_VISIBILITY:-}" \
+            -e QARE_SELF_HOSTED="${QARE_SELF_HOSTED:-}" \
             -v "$PWD:$PWD" -w "$PWD" \
             "${base_mount[@]}" \
             "${docker_access[@]}" \
@@ -648,10 +670,13 @@ jobs:
             --profile "$PROFILE" \
             "${base_args[@]}" \
             --evidence evidence || code=$?
-          # 3 is refused: this repository has no profile or no stubs, so
-          # qare will not pretend to have checked it. That is an outcome about
-          # the repository rather than a fault in the change, judge still
-          # reports it, and stub issues are filed.
+          # 3 is refused: this repository has no profile or no stubs, or the
+          # run landed where it cannot execute (#76: a host without what the
+          # profile requires, or a self-hosted runner a public repository did
+          # not opt in to), so qare will not pretend to have checked it. That
+          # is an outcome about the repository or its runners rather than a
+          # fault in the change, judge still reports it, and stub issues are
+          # filed when a stub is what is missing.
           if [ "$code" -eq 3 ]; then
             # A refusal writes result.json like any other run; without it,
             # exit 3 means something else went wrong and judge has nothing.
@@ -659,7 +684,8 @@ jobs:
               echo "exit 3 but no evidence/result.json: not a refusal qare recorded" >&2
               exit 1
             fi
-            echo "qare refused this run (no profile or stubs yet); judge will report it and file stub issues" >> "$GITHUB_STEP_SUMMARY"
+            reason="$(jq -r '[.criteria[] | select(.outcome == "unverified") | .reason][0] // empty' evidence/result.json 2>/dev/null || true)"
+            echo "qare refused this run: ${reason:-it recorded no reason}; judge will report it, and file stub issues when a stub is what is missing" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           # 2 is blocked: nothing was disproven, but something was left

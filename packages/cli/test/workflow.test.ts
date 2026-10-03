@@ -62,6 +62,30 @@ test('execute takes the builds a client profile installs from an artifact the ca
   for (const job of ['collect', 'plan', 'judge']) expect(section(job)).not.toContain('inputs.artefacts')
 })
 
+test('execute tells the run where it was placed, and self-hosted capacity for a public repository is the caller\'s opt in (#76)', () => {
+  // An input, empty by default: a public repository's runs stay on hosted runners until its caller says otherwise.
+  expect(workflow).toMatch(/\n {6}self-hosted:\n {8}description: >-\n[\s\S]*?\n {8}type: string\n {8}default: ''\n/)
+  const execute = section('execute')
+  // The repository's visibility and the opt in are the workflow's to know:
+  // they are the job's environment, never something the pull request writes.
+  expect(execute).toContain('      QARE_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}\n')
+  expect(execute).toContain('      QARE_SELF_HOSTED: ${{ inputs.self-hosted }}\n')
+  // The run's container has none of the runner's own variables, so the three
+  // facts the run decides on are handed in: the runner's kind as GitHub
+  // Actions names it, the visibility, and the opt in.
+  const run = execute.slice(execute.indexOf('- name: Run the plan'), execute.indexOf('- name: Read the recorded verdict'))
+  expect(run).toContain('-e QARE_RUNNER_ENVIRONMENT="${RUNNER_ENVIRONMENT:-}" \\\n')
+  expect(run).toContain('-e QARE_REPOSITORY_VISIBILITY="${QARE_REPOSITORY_VISIBILITY:-}" \\\n')
+  expect(run).toContain('-e QARE_SELF_HOSTED="${QARE_SELF_HOSTED:-}" \\\n')
+  // The decision is the run's, in code: the workflow carries no rule of its own about runners.
+  expect(workflow).not.toContain("runner.environment == 'self-hosted'")
+  // A refusal says its own reason in the job summary, whatever it was refused for.
+  expect(run).toContain('qare refused this run: ${reason:-it recorded no reason}')
+  expect(run).not.toContain('qare refused this run (no profile or stubs yet)')
+  // Only the job that runs pull request code is placed by this rule.
+  for (const job of ['collect', 'plan', 'judge', 'report']) expect(section(job)).not.toContain('QARE_SELF_HOSTED')
+})
+
 test('secret hygiene: the model-key job never holds a GitHub token', () => {
   // The whole point of collect: it reads the issue, so the job that talks to a
   // model needs no token, and the secret map in the header stays true.

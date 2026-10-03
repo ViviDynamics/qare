@@ -104,6 +104,7 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
     'profile',
     'qare-ref',
     'runs-on',
+    'self-hosted',
   ])
   for (const [name, input] of Object.entries(call.inputs)) {
     expect(input.type, name).toBe('string')
@@ -141,6 +142,8 @@ test('the caller chooses the runners for every job', () => {
   // whose runners outlive a job can keep it off the ones that hold secrets.
   expect(pipeline.jobs.execute?.['runs-on']).toBe('${{ fromJSON(inputs.execute-runs-on || inputs.runs-on) }}')
   expect(call.inputs['execute-runs-on']?.default).toBe('')
+  // And a public repository's execute stays on a hosted runner unless the caller opts in (#76).
+  expect(call.inputs['self-hosted']?.default).toBe('')
 })
 
 test('the pipeline pins the release it ships in, so a caller pins one tag', () => {
