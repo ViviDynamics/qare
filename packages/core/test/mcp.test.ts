@@ -198,11 +198,12 @@ test('a server reachable over HTTP speaks the same JSON-RPC', async () => {
 
 async function waitForPortFile(portFile: string): Promise<string> {
   for (let waited = 0; waited < 5000; waited += 50) {
-    try {
-      return await readFile(portFile, 'utf8')
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 50))
-    }
+    // The file exists a moment before the fixture's write lands in it, and a
+    // read in that moment is empty: an address with no origin. Wait for the
+    // content, not for the file.
+    const address = await readFile(portFile, 'utf8').catch(() => '')
+    if (address !== '') return address
+    await new Promise((resolve) => setTimeout(resolve, 50))
   }
   throw new Error('the fixture server wrote no port to read')
 }
