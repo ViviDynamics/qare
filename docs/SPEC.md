@@ -51,6 +51,43 @@ Per run:
 A regression is anything that worked at the merge base and fails at the head,
 whether or not a criterion covers it.
 
+Both sides (#147). To find one, a run of a profile that boots an app executes
+the same locked plan twice: against the app booted from the base revision,
+then against the app booted from the head, each under an isolation of its own
+(#53), the base torn down before the head boots. The result says, per
+criterion, what the base showed:
+
+| At the base | At the head | Reported as |
+| --- | --- | --- |
+| proven | failed | `failed`, a regression (`regression: true`), with the base's evidence beside the head's |
+| failed | failed | `failed`, not a regression (`regression: false`): behaviour that does not work yet |
+| failed | proven | `proven`: new behaviour, or a fix |
+| not compared | anything | the head's outcome, with why nothing was compared |
+
+Not compared is never passed and never a regression. A base that has no
+checkout, has no profile, or will not boot is not compared, for every
+criterion, and the result names why once. A check that cannot run at the base
+(the behaviour is new, so what it needs is not there) is not compared for its
+criterion alone. The verdict is the head's: the base side decides only which
+of the head's failures are regressions, so nothing that happens at the base
+can turn a criterion green. The comparison is computed in code from the
+executed outcomes of both sides. A criterion the verifier fails after its
+check passed is `failed` with the verifier's reason and is never named a
+regression, because no model output creates one. A waiver does not cover a
+regression: a waived criterion that regressed still fails the run, and the
+comment says so on its row.
+
+The base side has a cost, two boots and two runs of the plan, and the profile
+states it (`base` in `config.yml`). `criteria: ledger` runs at the base only
+the criteria the ledger at the base already carries as active, which are the
+old behaviours a regression can be found in; `criteria: none` runs nothing
+there; `budget: 10m` bounds the base side's wall clock from the moment it
+starts. Whatever those leave out is reported as not compared, with the limit
+named.
+
+A run against a target (#122) has one side by definition and says so, and so
+does `qare check`, which checks the app as it runs.
+
 Not evaluated (#203). A pipeline that fails before it records a verdict
 (a tool that will not install, an image that will not pull, a planner that
 will not answer, or judge failing to post) evaluated no criterion, so it has
@@ -82,7 +119,7 @@ and the artifacts execute uploaded.
 | --- | --- | --- | --- |
 | **collect** | GitHub token | yes | Reads the pull request body, linked issues and diff from the base commit's checkout; writes `criteria.json`. Never executes PR code. |
 | **plan** | model key | yes | Reads the criteria, the diff and `.qa/`; writes `plan.json` mapping each criterion to checks tagged `command`, `flow` or `visual`. The planner is also told any flow action kinds the change itself introduces, read from the diff as data. The planner is told the run's declared inputs — the profile directory and every path the diff touches — and a command check reading anything else, the plan file itself included, is corrected against them (#162, #156). The planner is also told that the executing job runs no model, so a criterion whose evidence can only come from a model-driven session is marked unplannable instead of planned as a check for an artifact the pipeline never produces (#168). It is also told the profile's QA.md instructions, redacted and size capped, and the commands the profile declares as known to work; a plan whose command check runs a program that is neither the program of a declared command nor one of the standard tools the runner carries is corrected, naming the program, then refused (#156). A plan the loader still rejects after its correction round comes out with every criterion marked `unplannable` naming why (#64), so the pipeline reports the planning gap instead of failing red. Never executes PR code. |
-| **execute** | none | stub containers only | Boots the app at the merge base and at the head with stubs, runs the plan, saves artifacts and raw results. |
+| **execute** | none | stub containers only | Boots the app at the merge base and at the head with stubs, runs the plan on both sides, saves artifacts and raw results. The run image carries no git, so the step checks the base commit out on the runner, outside the head's checkout, and hands it to `qare run --base-repo`; both sides run in this one job, which holds nothing (#147). |
 | **judge** | model key, GitHub token | yes | Computes verdicts in code from raw results, runs the verifier model on the evidence, posts the comment and check. The plan is loaded with the same flow action kinds the plan step was given. Runs whenever execute recorded a verdict, including a failed or blocked one that left execute red (#203). |
 | **report** | GitHub token | yes | Runs only when the pipeline failed and no verdict reached the pull request. Reads the run's jobs from the Actions API and posts the not-evaluated comment and check naming the job and step that failed (#203). Builds qare from the base commit. Never executes PR code. |
 
@@ -98,6 +135,7 @@ Exploration (#87). When the planner explores a running application, an explorati
 Judge:
 
 - Criterion verdicts come from executed results only.
+- Regressions are computed from both sides (#147). `result.json` carries what the base showed for each criterion, so the judge is handed a base wherever a result is judged (`qare run`, `qare judge`, replay, this job), and it alone decides what regressed.
 - Visual diffs are advisory evidence for the human, never the sole basis for a pass.
 - The verifier model gets the criteria, diff and evidence in a fresh context and reports only criteria the evidence does not actually show. Its findings can downgrade a verdict, never upgrade one. A verifier that gives no readable answer leaves the criteria it was asked about unverified, so the run blocks rather than passing unchecked.
 - A blocked run whose every unverified criterion is one the planner could not plan, whose planned command cannot run without a shell, or whose check could not start at all (the planner named an executable the runner does not have), reports the criteria by name and the check run comes out neutral: the gap is in the planning vocabulary, and nothing was disproven. Any other blocked run — a check that could not reach the app, an environment that would not boot — is a fault and stays red.
@@ -148,6 +186,9 @@ commands:                        # optional: invocations the planner may rely on
     about: runs the tests of one package whose name matches the pattern
     filter: pattern              # which placeholder is the test filter (#157)
     report: vitest-json          # the machine-readable report the command prints: vitest-json, junit-xml or node-tap
+base:                            # optional: what the base side of a run costs (#147)
+  criteria: ledger               # all (default), ledger (only criteria the base's ledger carries), or none
+  budget: 10m                    # the base side's wall clock; what did not run is "not compared"
 redact:                          # optional: fixture data that must not be published
   values: ["jane@pilot.example"] # literal strings
   patterns: ['CUST-\d{6}']       # regular expressions

@@ -77,7 +77,7 @@ export async function prepareBaseCheckout(input: BaseCheckoutInput): Promise<Bas
   if (base.missing)
     return {
       ok: false,
-      reason: 'git is not available here to check out the base revision, and no base checkout was handed in (qare run --base-repo <dir>, or QARE_BASE_REPO)',
+      reason: 'git is not available here to check out the base revision, and no base checkout was handed in (qare run --base-repo <dir>)',
     }
   if (!base.ok || !COMMIT_ID.test(base.stdout))
     return { ok: false, reason: `the base ref ${JSON.stringify(input.baseRef)} does not name a commit in the repository at ${input.repoPath}, so there is no base revision to check out` }

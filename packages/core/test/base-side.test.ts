@@ -1,8 +1,9 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
 import {
   FileLedgerStore,
@@ -351,4 +352,38 @@ test('a profile can turn the base side off: no checkout, no boot, and the run sa
   const criterion = criterionOf(result, 'old-behaviour')
   expect(criterion).toMatchObject({ outcome: 'failed', base: { outcome: 'not-compared' } })
   expect('regression' in criterion).toBe(false)
+})
+
+const validProfileDir = fileURLToPath(new URL('../fixtures/qa-valid/.qa', import.meta.url))
+
+test('the base boots from the base tree\'s own profile: a base without one is not compared (#147)', async () => {
+  const trees = await twoTrees({ base: ['old.txt'], head: [] })
+  // The head carries a profile on disk, named by an absolute path as the CLI
+  // names it; the base revision predates it.
+  await cp(validProfileDir, join(trees.head, '.qa'), { recursive: true })
+  const job: Job = { ...jobFor(trees.head, [fileCheck('old-behaviour', 'old.txt')]), profile: { path: join(trees.head, '.qa') } }
+  const boot = recordingBoot()
+  const { result } = await runJob(job, { ...boot, base: { repoPath: trees.base } })
+
+  expect(result.base?.status).toBe('not-executed')
+  expect(result.base?.reason).toContain('the base revision has no usable .qa/ profile')
+  // The reason names the base tree, so the profile was looked for there and not at the head.
+  expect(result.base?.reason).toContain(join(trees.base, '.qa'))
+  expect(boot.calls.filter((args) => args.includes('up'))).toHaveLength(1)
+  expect(criterionOf(result, 'old-behaviour')).toMatchObject({ outcome: 'failed', base: { outcome: 'not-compared' } })
+})
+
+test('a base whose profile names a running target boots nothing, so nothing is compared with it (#147)', async () => {
+  const trees = await twoTrees({ base: ['old.txt'], head: [] })
+  await cp(validProfileDir, join(trees.head, '.qa'), { recursive: true })
+  await mkdir(join(trees.base, '.qa'))
+  await writeFile(join(trees.base, '.qa', 'QA.md'), 'The deployed site.\n')
+  await writeFile(join(trees.base, '.qa', 'config.yml'), `target:\n  url: ${TARGET_URL}\n  health: { http: /up, timeout: 1s }\n`)
+  const job: Job = { ...jobFor(trees.head, [fileCheck('old-behaviour', 'old.txt')]), profile: { path: '.qa' } }
+  const { result } = await runJob(job, { ...recordingBoot(), base: { repoPath: trees.base } })
+
+  expect(result.base?.status).toBe('not-executed')
+  expect(result.base?.reason).toContain('names a running target')
+  expect(existsSync(join(job.evidenceDir, 'base/checks'))).toBe(false)
+  expect('regression' in criterionOf(result, 'old-behaviour')).toBe(false)
 })

@@ -20,9 +20,9 @@ In:
   `base/`, head evidence under `head/`, and the top-level `result.json` is the
   comparison of the two.
 - Where the base tree comes from: a checkout the caller already has
-  (`qare run --base-repo <dir>`, or `QARE_BASE_REPO`), else a detached git
-  worktree of `baseRef` the run makes and removes itself. No checkout means
-  no base side, with the reason named.
+  (`qare run --base-repo <dir>`), else a detached git worktree of `baseRef`
+  the run makes and removes itself. No checkout means no base side, with the
+  reason named.
 - `result.json` records the comparison: a run-level `base` (the ref, whether
   it executed, why not) and, per criterion, what the base showed (`proven`,
   `failed`, or `not-compared` with the reason) plus `regression` on a
@@ -31,8 +31,9 @@ In:
   `judgeExecuted` (so in `qare judge`, `qare check`'s judge step, replay and
   the pipeline's judge job, which reads the base from `result.json`).
 - The profile's `base` section states the cost: `criteria: ledger` runs only
-  the criteria the ledger at the base already carries, `budget: 10m` bounds
-  the base side's wall clock. What did not run is `not-compared`.
+  the criteria the ledger at the base already carries, `criteria: none` runs
+  nothing there, `budget: 10m` bounds the base side's wall clock. What did
+  not run is `not-compared`.
 - The comment and the check run name regressions, and a regression's base
   evidence is listed beside its head evidence.
 - `qare run` and the MCP run tools ask for the base side. The pipeline's
@@ -79,20 +80,22 @@ Out:
   target profile (#122) and a missing profile are untouched: one side, the
   evidence layout as it is today.
 - The pipeline runs the base revision's published image, which has no git
-  and, until the next release, no base side. So the workflow passes the base
-  checkout through an environment variable, which an older image ignores,
-  instead of a flag it would reject. The step stays secretless.
+  and, until the next release, no base side. `qare run` reads its flags by
+  name and ignores one it does not know, so the workflow can pass
+  `--base-repo` today: the published image ignores it and runs the head
+  alone, as it does now, and the next release runs both sides. The step
+  stays secretless.
 - A several-profile job (#55) gets the same treatment through the same
   wrapper: each app's base boots from the base tree.
 
 ## Tasks
 
-- [ ] 1. Result schema: `base` on the run and on each criterion, `regression`: `packages/core/test/result.test.ts`.
-- [ ] 2. Profile `base` section (`criteria`, `budget`): `packages/core/test/profile.test.ts`.
-- [ ] 3. Base checkout (given directory, or a git worktree): `packages/core/test/base-checkout.test.ts`.
-- [ ] 4. `runJob` runs both sides and compares them: `packages/core/test/base-side.test.ts`.
-- [ ] 5. `judgeExecuted` reads the base from the result and keeps the comparison: `packages/core/test/judge.test.ts`.
-- [ ] 6. Comment and check run name regressions: `packages/core/test/evidence.test.ts`.
-- [ ] 7. `qare run --base-repo` / `QARE_BASE_REPO`, MCP run tools: `packages/cli/test/base-side.test.ts`, `packages/mcp/test/mcp.test.ts`.
-- [ ] 8. Pipeline execute step hands in the base worktree: `packages/cli/test/workflow.test.ts`.
-- [ ] 9. SPEC, schemas, orchestrator docs.
+- [x] 1. Result schema: `base` on the run and on each criterion, `regression`: `packages/core/test/result.test.ts`.
+- [x] 2. Profile `base` section (`criteria`, `budget`): `packages/core/test/profile.test.ts`.
+- [x] 3. Base checkout (given directory, or a git worktree): `packages/core/test/base-checkout.test.ts`.
+- [x] 4. `runJob` runs both sides and compares them: `packages/core/test/base-side.test.ts`.
+- [x] 5. `judgeExecuted` reads the base from the result and keeps the comparison: `packages/core/test/judge.test.ts`.
+- [x] 6. Comment and check run name regressions: `packages/core/test/evidence.test.ts`.
+- [x] 7. `qare run --base-repo` / `QARE_BASE_REPO`, MCP run tools: `packages/cli/test/base-side.test.ts`, `packages/mcp/test/mcp.test.ts`.
+- [x] 8. Pipeline execute step hands in the base worktree: `packages/cli/test/workflow.test.ts`.
+- [x] 9. SPEC, schemas, orchestrator docs.

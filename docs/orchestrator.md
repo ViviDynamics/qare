@@ -98,6 +98,34 @@ A run against a target (a profile naming `target` rather than `app`) carries
 `target: { url, comparison: "none" }` in result.json: nothing ran at a base
 revision, so no regression was looked for.
 
+`qare run` on a profile that boots an app checks both sides (#147): the same
+plan against the app booted from `baseRef`, then against the head. Each side
+keeps a directory of its own, laid out as above, and the root `result.json` is
+the comparison of the two:
+
+```
+<evidenceDir>/
+  result.json                      # the head's outcomes and verdict, plus what the base showed
+  base/                            # the base side: result.json, isolation.json, checks/...
+  head/                            # the head side: result.json, isolation.json, checks/...
+```
+
+Evidence paths in the root result carry their side (`head/checks/...`), and
+each criterion names what the base showed in `base` (`proven`, `failed`, or
+`not-compared` with the reason) with the base's evidence under `base/`. A
+failed criterion the base proved carries `regression: true`; one that failed
+at the base too carries `regression: false`; one that was not compared carries
+neither. The root `base` says which ref was checked and whether it executed.
+The verdict and the exit code are the head's, as they always were: the base
+side only tells a regression from a failure that is new.
+
+The base tree is a checkout you already have (`qare run --base-repo <dir>`),
+or a detached git worktree of `baseRef` the run makes and removes. With
+neither (no git, a ref that names no commit, the same revision on both sides)
+the head is still checked, the root `base` is `not-executed` naming why, and
+stderr says so. The base's app is stopped before the head boots; the head's is
+left up for you, as on a one-sided run.
+
 Every executed check captures its stdout and stderr there, and the result's
 `criteria[].evidence` arrays name those files; a command check also records
 `command.json`: the command as run, its outcome, and the exit code it closed. A
