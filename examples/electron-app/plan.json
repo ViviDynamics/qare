@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "1",
+  "criteria": [
+    {
+      "id": "greets",
+      "text": "Typing a name and choosing a greeting shows that greeting to that name",
+      "checks": [
+        {
+          "kind": "flow",
+          "name": "greet",
+          "actions": [
+            { "action": "open", "url": "/" },
+            { "action": "waitFor", "element": { "role": "textbox", "name": "Name" } },
+            { "action": "type", "element": { "role": "textbox", "name": "Name" }, "value": "Ada" },
+            { "action": "choose", "element": { "role": "combobox", "name": "Greeting" }, "value": "Good evening" },
+            { "action": "click", "element": { "role": "button", "name": "Greet" } },
+            { "action": "assertText", "text": "Good evening, Ada." },
+            { "action": "assertElement", "element": { "role": "status", "name": "Greeting shown" } },
+            { "action": "capture" }
+          ]
+        }
+      ]
+    }
+  ]
+}

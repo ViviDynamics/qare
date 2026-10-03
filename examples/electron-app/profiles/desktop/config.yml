@@ -1,0 +1,15 @@
+# The desktop target (#72): the packaged build, which the run launches for
+# every flow check and drives through its own windows. Nothing boots, and
+# there is no URL: a flow opens the application's pages by path.
+#
+# The path resolves from the repository root, where the pipeline runs.
+# `node examples/electron-app/package.mjs` produces the build.
+client:
+  driver: electron
+  executable: examples/electron-app/dist/qare-example/qare-example
+  # Chromium's own sandbox needs privileges that neither a container nor a
+  # hosted runner gives it; the run is already inside the pipeline's sandbox.
+  args: [--no-sandbox]
+# The web image ships the virtual display and the libraries a desktop shell
+# needs beside the browser's.
+flavour: web
