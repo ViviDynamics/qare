@@ -19,14 +19,15 @@ import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type
 import type { FlowActionStep } from './plan.js'
 import { feedRunLedger } from './ledger-feed.js'
 import { FileLedgerStore } from './ledger.js'
-import { extractCode, httpMailbox, mailEvidence, runMailCheck, type ReadMail } from './mailbox.js'
+import { mailReader, mailSourceOf, type DeclaredMailSource, type MailSource } from './mail-source.js'
+import { extractCode, mailEvidence, runMailCheck, type ReadMail } from './mailbox.js'
 import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCapabilities, mcpDriverServer, type McpToolResult } from './mcp.js'
 import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
 import { runVisualCheckJob, visualPageUrl, type VisualComparison, type VisualContext, type VisualSessionFactory } from './visual-run.js'
-import { mintRunValues, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
+import { mintRunValues, mintedMailAddress, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
 import {
   addQuarantineRecord,
   checkFingerprint,
@@ -318,6 +319,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     ...(profile.target === undefined ? {} : { targetUrl: profile.target.url }),
     ...(isolation === undefined ? {} : { runId: isolation.runId }),
     ...(isolation?.port === undefined ? {} : { appPort: String(isolation.port) }),
+    ...(profile.mail?.domain === undefined ? {} : { mailDomain: profile.mail.domain }),
   })
   // A run against a target has one side only, and the result says so rather
   // than implying a base comparison it never made (#122).
@@ -378,10 +380,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
       return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
     }
 
-    const mail = {
-      inbox: profile.mail?.inbox,
-      readMail: opts.readMail ?? (profile.mail?.inbox === undefined ? undefined : httpMailbox(profile.mail.inbox)),
-    }
+    const mail = mailContextOf(profile, values, opts.readMail)
     // Single-use artefacts are a per-run ledger: what was consumed in this run
     // says nothing about any other run (#69).
     const artefacts = new Artefacts()
@@ -662,6 +661,7 @@ async function runProfileGroup(
     ...(profile.target === undefined ? {} : { targetUrl: profile.target.url }),
     ...(isolation === undefined ? {} : { runId: isolation.runId }),
     ...(isolation?.port === undefined ? {} : { appPort: String(isolation.port) }),
+    ...(profile.mail?.domain === undefined ? {} : { mailDomain: profile.mail.domain }),
   })
   // One isolation file per app, written before validation, so a refusal still
   // names the compose project a leftover stack runs under — the caller holds
@@ -702,10 +702,7 @@ async function runProfileGroup(
         ...(isolation === undefined ? {} : { isolation }),
       }
     }
-    const mail = {
-      inbox: profile.mail?.inbox,
-      readMail: opts.readMail ?? (profile.mail?.inbox === undefined ? undefined : httpMailbox(profile.mail.inbox)),
-    }
+    const mail = mailContextOf(profile, values, opts.readMail)
     // Single-use artefacts are a per-run ledger; per app, the ledger starts
     // empty, so one app's checks cannot spend another app's artefacts (#69).
     const artefacts = new Artefacts()
@@ -779,12 +776,36 @@ interface FlowContext {
   tracesRoot?: string
 }
 
+/**
+ * Where a run's mail checks read from (#65): the source the profile declares,
+ * addressed with the run's values, behind the reader a mail check waits on.
+ * `label` is what a reason calls it.
+ */
+interface MailContext {
+  label?: string
+  readMail?: ReadMail
+  source?: MailSource
+}
+
+function mailContextOf(profile: QaProfile, values: RunValues, injected: ReadMail | undefined): MailContext {
+  const declared: DeclaredMailSource | undefined =
+    profile.mail?.source ?? (profile.mail?.inbox === undefined ? undefined : { kind: 'inbox', url: profile.mail.inbox })
+  if (declared === undefined) return injected === undefined ? {} : { readMail: injected }
+  const source = mailSourceOf({ kind: declared.kind, url: substituteValues(declared.url, values) })
+  return {
+    // The inbox contract has always been named by its URL alone.
+    label: profile.mail?.inbox ?? source.describe,
+    readMail: injected ?? mailReader(source),
+    source,
+  }
+}
+
 interface LaneContext {
   job: Job
   profile: QaProfile
   rules: readonly RedactionRule[]
   values: RunValues
-  mail: { inbox?: string; readMail?: ReadMail }
+  mail: MailContext
   artefacts: Artefacts
   flow: FlowContext
   execution: ExecutionKind
@@ -838,7 +859,7 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
   const shardValues: RunValues = {
     ...ctx.values,
     id: shardIsolation.runId,
-    mail_address: `qare-${shardIsolation.runId}@localhost`,
+    mail_address: mintedMailAddress(shardIsolation.runId, profile.mail?.domain),
     ...(shardIsolation.port === undefined ? {} : { app_port: String(shardIsolation.port) }),
   }
   const bootedShard = {
@@ -851,7 +872,10 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
     if (boot.kind === 'blocked') return { id: criterion.id, outcome: 'unverified', reason: boot.reason ?? 'boot did not come up' }
     // The criterion's artefact ledger starts empty: what its flow checks
     // publish or spend belongs to this app alone, never the run's (#69).
-    return await runCriterion(criterion, job, ctx.rules, shardValues, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands)
+    // The criterion's app carries its own catcher, published on its own port:
+    // the source is addressed with the shard's values, not the run's (#65).
+    const shardMail = mailContextOf(profile, shardValues, opts.readMail)
+    return await runCriterion(criterion, job, ctx.rules, shardValues, shardMail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands)
   } finally {
     // The criterion's app is torn down with the criterion: a sharded run
     // leaves no stack of its own holding a port or a volume the next
@@ -1369,6 +1393,8 @@ function validatePlanValues(criteria: JobCriterion[], profile: QaProfile, values
     // The health URL may name the port the run publishes the app on (#53).
     validateValueReferences(profile.app.health.http, values, 'app.health.http')
   }
+  // A mail source may be published behind a port the run mints (#65).
+  if (profile.mail?.source !== undefined) validateValueReferences(profile.mail.source.url, values, 'mail.source.url')
   // Mail artefact names are validated in walk order: a check may only read an
   // artefact from a mail check that has already waited for its message (#69),
   // and only for the fields that check actually exposes (#64).
@@ -1651,7 +1677,7 @@ async function runCriterion(
   job: Job,
   rules: readonly RedactionRule[],
   values: RunValues,
-  mail: { inbox?: string; readMail?: ReadMail },
+  mail: MailContext,
   artefacts: Artefacts,
   flow: FlowContext,
   execution: ExecutionKind,
@@ -1753,7 +1779,7 @@ async function runCriterion(
         const checkDir = dirFor(index, attempt)
         const outcome = await runMailCheck(
           substituted,
-          mail.inbox,
+          mail.label,
           mail.readMail,
           substituted.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
         )

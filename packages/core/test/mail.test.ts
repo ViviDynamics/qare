@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mkdtemp } from 'node:fs/promises'
-import { expect, test } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 import {
   PlanValidationError,
   extractCode,
@@ -16,6 +16,11 @@ import {
   type MailMessage,
   type ReadMail,
 } from '../src/index.js'
+import { caughtMessage, fakeMailpit, type Caught } from './fake-mailpit.js'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 // Test files must not carry network literals (the offline scanner), so the
 // schemes and authorities are joined at runtime.
@@ -49,14 +54,14 @@ const HEALTHY_BOOT = {
   pollIntervalMs: 1,
 }
 
-async function makeJob(criteria: JobCriterion[]): Promise<Parameters<typeof runJob>[0]> {
+async function makeJob(criteria: JobCriterion[], mail?: Record<string, unknown>): Promise<Parameters<typeof runJob>[0]> {
   const repoPath = await mkdtemp(join(tmpdir(), 'qare-mail-'))
   return {
     id: 'job-mail-smoke',
     repoPath,
     baseRef: 'main',
     headRef: 'HEAD~1',
-    profile: { inline: INLINE_PROFILE },
+    profile: { inline: mail === undefined ? INLINE_PROFILE : { ...INLINE_PROFILE, mail } },
     criteria,
     evidenceDir: join(repoPath, 'evidence'),
     post: 'none',
@@ -348,4 +353,52 @@ test('a mail section that names no source, two sources, or an unknown kind is re
 test('a mail domain that is not a host name is refused, naming the field (#65)', () => {
   for (const domain of ['', 'has space.test', 'someone@qa.test', '-qa.test', 'QA.Example.test/'])
     expect(profileField({ inbox: INBOX_URL, domain })).toMatch(/^mail\.domain: /)
+})
+
+const CATCHER_TEMPLATE = ['http:', '//catcher.local/{{run.id}}/mailpit'].join('')
+
+/**
+ * A fake catcher behind the global fetch a declared source reads with. It
+ * catches one message for whatever address is first searched for, the way an
+ * app that was just asked to send one would have delivered it.
+ */
+function catcher(deliver: (address: string) => Caught[] = (address) => [caughtMessage({ to: address, created: new Date(Date.now() + 5).toISOString() })]) {
+  const caught: Caught[] = []
+  const fake = fakeMailpit(caught)
+  const delivered = new Set<string>()
+  vi.stubGlobal('fetch', (async (input: string | URL | Request, init?: RequestInit) => {
+    const query = /^to:"(.*)"$/.exec(new URL(String(input)).searchParams.get('query') ?? '')
+    const address = query?.[1]
+    if (address !== undefined && !delivered.has(address)) {
+      delivered.add(address)
+      caught.push(...deliver(address))
+    }
+    return fake.fetch(input, init)
+  }) as typeof fetch)
+  return { caught, requests: fake.requests }
+}
+
+test('a run reads through the source its profile declares, at an address minted on the profile domain (#65)', async () => {
+  const sink = catcher()
+  const job = await makeJob(mailCriteria({ address: '{{run.mail_address}}', subject: 'Confirm' }), {
+    source: { kind: 'mailpit', url: CATCHER_TEMPLATE },
+    domain: 'qa.example.test',
+  })
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('passed')
+  // The source URL carried the run's id, and the address its domain.
+  expect(sink.requests[0]).toMatch(/^GET \/[0-9a-f-]{36}\/mailpit\/api\/v1\/search\?query=to%3A%22qare-[0-9a-f-]{36}%40qa\.example\.test%22/)
+})
+
+test('a mail source URL naming a value the run does not mint refuses the run, naming the field (#65)', async () => {
+  const sink = catcher()
+  const job = await makeJob(mailCriteria({ address: '{{run.mail_address}}' }), {
+    source: { kind: 'mailpit', url: ['http:', '//catcher.local/{{run.nonsense}}/mailpit'].join('') },
+  })
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('refused')
+  expect(JSON.stringify(result.criteria)).toContain('mail.source.url')
+  expect(sink.requests).toEqual([])
 })

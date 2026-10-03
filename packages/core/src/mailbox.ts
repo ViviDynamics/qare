@@ -80,7 +80,7 @@ export async function runMailCheck(
   if (readMail === undefined) {
     return {
       status: 'unverified',
-      reason: `no mail source: the profile declares no mail.inbox, so the mailbox for ${check.address} is unreachable`,
+      reason: `no mail source: the profile declares no mail.source and no mail.inbox, so the mailbox for ${check.address} is unreachable`,
     }
   }
   const startedAt = Date.now()
