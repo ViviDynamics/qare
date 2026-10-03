@@ -159,6 +159,13 @@ export async function attachedAndroidDevices(run: () => Promise<{ code: number; 
   return attached.length === 0 ? { attached, detail: 'adb lists no attached device in the device state' } : { attached }
 }
 
+/** Why hardware virtualisation is not usable on this host, or undefined when it is. Only a Linux host can be asked. */
+export function virtualisationProblem(host: HostKind, probes: HostProbes = {}): string | undefined {
+  if (host.virtualisation) return undefined
+  if (host.os !== 'linux') return `qare detects it on Linux only (${KVM}), and this host is ${host.os}`
+  return (probes.virtualisation ?? kvmProblem)() ?? 'this host offers none'
+}
+
 const DEVICE_PROBES: Record<DeviceKind, () => Promise<AttachedDevices>> = {
   android: () => attachedAndroidDevices(),
 }
@@ -172,13 +179,8 @@ const DEVICE_PROBES: Record<DeviceKind, () => Promise<AttachedDevices>> = {
 export async function unmetRequirements(requirements: Requirements, host: HostKind, probes: HostProbes = {}): Promise<string[]> {
   const missing: string[] = []
   if (requirements.os !== undefined && requirements.os !== host.os) missing.push(`a ${requirements.os} host (requires.os): this host is ${host.os}`)
-  if (requirements.virtualisation === true && !host.virtualisation) {
-    const why =
-      host.os === 'linux'
-        ? ((probes.virtualisation ?? kvmProblem)() ?? 'this host offers none')
-        : `qare detects it on Linux only (${KVM}), and this host is ${host.os}`
-    missing.push(`hardware virtualisation (requires.virtualisation): ${why}`)
-  }
+  const unvirtualised = requirements.virtualisation === true ? virtualisationProblem(host, probes) : undefined
+  if (unvirtualised !== undefined) missing.push(`hardware virtualisation (requires.virtualisation): ${unvirtualised}`)
   for (const kind of requirements.devices ?? []) {
     const found = await (probes.devices ?? ((asked: DeviceKind) => DEVICE_PROBES[asked]()))(kind)
     if (found.attached.length === 0) missing.push(`an attached ${kind} device (requires.devices): ${found.detail ?? 'none is attached'}`)

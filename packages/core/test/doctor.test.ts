@@ -204,10 +204,10 @@ test('a host with no docker on PATH is reported not reachable', async () => {
   expect(docker?.detail).toBe('docker daemon not reachable')
 })
 
-test('a profile that names a desktop client requires a display, and says how to get one (#72)', async () => {
+test('a profile that launches a desktop build on the host requires a display, and says how to get one (#72)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'qare-doctor-client-'))
   await writeFile(join(dir, 'QA.md'), '# QA\n')
-  await writeFile(join(dir, 'config.yml'), 'client:\n  driver: electron\n  executable: dist/app/app\n')
+  await writeFile(join(dir, 'config.yml'), 'client:\n  driver: electron\n  executable: dist/app/app\n  egress: uncontained\n')
 
   const problem = 'the electron driver needs a display, and neither DISPLAY nor WAYLAND_DISPLAY is set'
   const dark = await runDoctor({ profilePath: dir, probes: { ...HEALTHY_PROBES, display: () => problem } })
@@ -237,7 +237,7 @@ test('a profile that installs an archive requires tar, and one that installs a d
   const config = (kind: string): string =>
     ['client:', '  driver: electron', '  artefact:', `    kind: ${kind}`, '    executable: greeter/greeter', '    head: { path: artefacts/head }'].join('\n')
   await writeFile(join(dir, 'config.yml'), config('archive'))
-  const probes = { ...HEALTHY_PROBES, display: () => undefined }
+  const probes = { ...HEALTHY_PROBES, display: () => undefined, host: { cell: async () => undefined } }
 
   const bare = await runDoctor({ profilePath: dir, probes: { ...probes, which: (name: string) => (name === 'tar' ? undefined : `/usr/local/bin/${name}`) } })
   const tar = bare.findings.find((finding) => finding.name === 'tar')
@@ -253,4 +253,99 @@ test('a profile that installs an archive requires tar, and one that installs a d
   await writeFile(join(dir, 'config.yml'), config('directory'))
   const copied = await runDoctor({ profilePath: dir, probes })
   expect(copied.findings.find((finding) => finding.name === 'tar')).toBeUndefined()
+})
+
+const LINUX_HOST = { platform: 'linux', arch: 'x64', env: {}, virtualisation: () => '/dev/kvm is not there, so this host offers no hardware virtualisation' }
+
+async function profileDir(config: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-doctor-requires-'))
+  await writeFile(join(dir, 'QA.md'), '# QA\n')
+  await writeFile(join(dir, 'config.yml'), config)
+  return dir
+}
+
+const TARGET_CONFIG = ['target:', `  url: ${['https:', '//app.example.test'].join('')}`, '  health: { http: /up, timeout: 5s }'].join('\n')
+
+test('the host kind is reported, and a profile that requires nothing of it requires nothing (#76)', async () => {
+  const report = await runDoctor({ probes: { ...HEALTHY_PROBES, host: { ...LINUX_HOST, env: { RUNNER_ENVIRONMENT: 'github-hosted' } } } })
+  expect(report.host).toEqual({ os: 'linux', arch: 'x64', virtualisation: false, runner: 'github-hosted' })
+  expect(report.findings.find((finding) => finding.name === 'host')).toEqual({
+    name: 'host',
+    ok: true,
+    required: false,
+    detail: 'a linux x64 host, a GitHub-hosted runner; hardware virtualisation is not usable (/dev/kvm is not there, so this host offers no hardware virtualisation)',
+  })
+  for (const name of ['os', 'virtualisation', 'cell']) expect(report.findings.find((finding) => finding.name === name), name).toBeUndefined()
+  expect(report.ready).toBe(true)
+})
+
+test('what a profile requires of the host is held to it: operating system, virtualisation, attached devices (#76)', async () => {
+  const dir = await profileDir(`${TARGET_CONFIG}\nrequires:\n  os: macos\n  virtualisation: true\n  devices: [android]\n`)
+  const short = await runDoctor({
+    profilePath: dir,
+    probes: { ...HEALTHY_PROBES, host: { ...LINUX_HOST, devices: async () => ({ attached: [], detail: 'adb lists no attached device in the device state' }) } },
+  })
+  expect(short.ready).toBe(false)
+  const byName = new Map(short.findings.map((finding) => [finding.name, finding]))
+  expect(byName.get('os')).toEqual({
+    name: 'os',
+    ok: false,
+    required: true,
+    detail: 'this profile requires a macos host (requires.os): this host is linux',
+    install: 'run it on a macos host: an operating system is not something to install',
+  })
+  expect(byName.get('virtualisation')).toMatchObject({
+    ok: false,
+    required: true,
+    detail: 'this profile requires hardware virtualisation (requires.virtualisation): /dev/kvm is not there, so this host offers no hardware virtualisation',
+  })
+  expect(byName.get('virtualisation')?.install).toContain('/dev/kvm')
+  expect(byName.get('devices')).toMatchObject({
+    ok: false,
+    required: true,
+    detail: 'this profile requires an attached android device (requires.devices): adb lists no attached device in the device state',
+  })
+  expect(byName.get('devices')?.install).toContain('adb')
+
+  const mac = await runDoctor({
+    profilePath: dir,
+    probes: { ...HEALTHY_PROBES, host: { platform: 'darwin', arch: 'arm64', env: {}, devices: async () => ({ attached: ['R58M12ABCDE'] }) } },
+  })
+  const onMac = new Map(mac.findings.map((finding) => [finding.name, finding]))
+  expect(onMac.get('os')).toEqual({ name: 'os', ok: true, required: true, detail: 'this host is macos, which the profile requires' })
+  expect(onMac.get('devices')).toEqual({ name: 'devices', ok: true, required: true, detail: 'an attached android device is there, which the profile requires' })
+  // Virtualisation is detected on Linux only, and a macOS host is told so.
+  expect(onMac.get('virtualisation')?.detail).toBe(
+    'this profile requires hardware virtualisation (requires.virtualisation): qare detects it on Linux only (/dev/kvm), and this host is macos',
+  )
+  expect(mac.ready).toBe(false)
+})
+
+test('a contained client build requires a cell of the host, not a display (#223, #76)', async () => {
+  const dir = await profileDir('client:\n  driver: electron\n  executable: dist/app/app\n')
+  const problem = 'a client build runs contained, in a cell the docker daemon makes, and no daemon answered (docker exited 127)'
+  const bare = await runDoctor({
+    profilePath: dir,
+    probes: {
+      ...HEALTHY_PROBES,
+      display: () => {
+        throw new Error('a contained build was asked about a display')
+      },
+      host: { ...LINUX_HOST, cell: async () => problem },
+    },
+  })
+  expect(bare.ready).toBe(false)
+  expect(bare.findings.find((finding) => finding.name === 'cell')).toEqual({
+    name: 'cell',
+    ok: false,
+    required: true,
+    detail: problem,
+    install: 'run it where a docker daemon holds the qare image the run is in (the pipeline does), or say client.egress: uncontained in the profile',
+  })
+  // Its windows open on the cell's display, so this host's is not required.
+  expect(bare.findings.find((finding) => finding.name === 'display')).toMatchObject({ ok: true, required: false })
+
+  const able = await runDoctor({ profilePath: dir, probes: { ...HEALTHY_PROBES, host: { ...LINUX_HOST, cell: async () => undefined } } })
+  expect(able.ready).toBe(true)
+  expect(able.findings.find((finding) => finding.name === 'cell')).toEqual({ name: 'cell', ok: true, required: true, detail: 'this host can make a cell for the build' })
 })
