@@ -51,10 +51,29 @@ Per run:
 A regression is anything that worked at the merge base and fails at the head,
 whether or not a criterion covers it.
 
+Not evaluated (#203). A pipeline that fails before it records a verdict
+(a tool that will not install, an image that will not pull, a planner that
+will not answer, or judge failing to post) evaluated no criterion, so it has
+no verdict above. The report job posts the sticky comment headed `QARE run:
+not evaluated (qare or its environment failed)` and a failing check run
+titled `QARE: not evaluated (qare or environment failure)`. Both name the job
+and step that failed and say the failure is on qare's side or the runner's,
+not the project's. The check fails closed: not reaching a verdict never
+passes. A failed or blocked verdict is never reported this way. It is in
+`result.json`, and judge publishes it even though it left execute red. When
+execute recorded a verdict and judge then failed before posting it, the report
+says so instead: the comment is headed `QARE run: verdict not published (qare
+failed after checking)`, names the recorded verdict and the step that kept it
+from the pull request, and points to the evidence artifact that holds it. A
+verdict already in the sticky comment for the same head (judge posted it, then
+failed creating its check run) is never replaced by a report. A run
+whose execute step recorded no readable verdict fails execute, so it can never
+leave the pipeline green with nothing posted.
+
 ## Pipeline
 
 Four jobs, so the model and the GitHub token never share a machine with PR
-code. Every secret-holding job builds and runs qare from the base commit, a
+code, plus a report job for a run that reached no verdict. Every secret-holding job builds and runs qare from the base commit, a
 revision the pull request cannot change; the pull request contributes data
 only: its body, the linked issues, the diff, its `.qa/` profile read as YAML,
 and the artifacts execute uploaded.
@@ -64,7 +83,8 @@ and the artifacts execute uploaded.
 | **collect** | GitHub token | yes | Reads the pull request body, linked issues and diff from the base commit's checkout; writes `criteria.json`. Never executes PR code. |
 | **plan** | model key | yes | Reads the criteria, the diff and `.qa/`; writes `plan.json` mapping each criterion to checks tagged `command`, `flow` or `visual`. The planner is also told any flow action kinds the change itself introduces, read from the diff as data. The planner is told the run's declared inputs — the profile directory and every path the diff touches — and a command check reading anything else, the plan file itself included, is corrected against them (#162, #156). The planner is also told that the executing job runs no model, so a criterion whose evidence can only come from a model-driven session is marked unplannable instead of planned as a check for an artifact the pipeline never produces (#168). It is also told the profile's QA.md instructions, redacted and size capped, and the commands the profile declares as known to work; a plan whose command check runs a program that is neither the program of a declared command nor one of the standard tools the runner carries is corrected, naming the program, then refused (#156). A plan the loader still rejects after its correction round comes out with every criterion marked `unplannable` naming why (#64), so the pipeline reports the planning gap instead of failing red. Never executes PR code. |
 | **execute** | none | stub containers only | Boots the app at the merge base and at the head with stubs, runs the plan, saves artifacts and raw results. |
-| **judge** | model key, GitHub token | yes | Computes verdicts in code from raw results, runs the verifier model on the evidence, posts the comment and check. The plan is loaded with the same flow action kinds the plan step was given. |
+| **judge** | model key, GitHub token | yes | Computes verdicts in code from raw results, runs the verifier model on the evidence, posts the comment and check. The plan is loaded with the same flow action kinds the plan step was given. Runs whenever execute recorded a verdict, including a failed or blocked one that left execute red (#203). |
+| **report** | GitHub token | yes | Runs only when the pipeline failed and no verdict reached the pull request. Reads the run's jobs from the Actions API and posts the not-evaluated comment and check naming the job and step that failed (#203). Builds qare from the base commit. Never executes PR code. |
 
 Execute stages, per side (base, head):
 

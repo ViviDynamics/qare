@@ -1,7 +1,7 @@
 name: QARE
 
-# Four-job qare pipeline: collect -> plan -> execute -> judge (+ requeue on
-# push), with artifact handoff.
+# Four-job qare pipeline: collect -> plan -> execute -> judge (+ report when
+# no verdict was published, + requeue on push), with artifact handoff.
 #
 # Secret-hygiene map (constitution rule 7: secrets never share a machine with
 # pull request code):
@@ -11,6 +11,7 @@ name: QARE
 #   - judge:   holds the model key + GitHub token only, in separate steps
 #     (QARE_PLANNER_KEY for the verifier, which reads evidence but runs
 #     nothing; GITHUB_TOKEN for the steps that write to GitHub)
+#   - report:  holds the GitHub token only    (says why no verdict was posted)
 #   - requeue: holds the GitHub token only    (posts /qa on refused PRs)
 # No secret values are written here; only names, resolved at runtime.
 #
@@ -249,6 +250,10 @@ jobs:
       # Where the evidence was uploaded, the one place the posted comment may
       # link to (CONSTITUTION rule 4). Empty when nothing was uploaded.
       evidence-url: ${{ steps.evidence.outputs.artifact-url }}
+      # The verdict the run recorded, whatever the plan step exited with
+      # (#203). Empty when the run wrote no result.json: then nothing was
+      # evaluated, judge is skipped, and the report job says why.
+      verdict: ${{ steps.recorded.outputs.verdict }}
     steps:
       # actions/checkout checks out the PR merge ref on pull_request events
       - uses: actions/checkout@v4
@@ -364,6 +369,27 @@ jobs:
             exit 0
           fi
           exit "$code"
+      # A failed or blocked verdict exits non-zero and leaves this job red,
+      # and judge still publishes it, so the pull request is told which
+      # criteria failed rather than shown a red job that reads the same as
+      # qare failing (#203). Read whatever the plan step exited with.
+      - name: Read the recorded verdict
+        id: recorded
+        if: always()
+        shell: bash
+        # No readable verdict fails this step (rule 6): judge is skipped, so a
+        # run that recorded nothing must not leave the pipeline green with
+        # nothing posted. The report job names the failure instead.
+        run: |
+          verdict=""
+          if [ -f evidence/result.json ]; then
+            verdict="$(jq -r '.verdict // empty' evidence/result.json 2>/dev/null || true)"
+          fi
+          if [ -z "$verdict" ]; then
+            echo "no readable verdict in evidence/result.json: the run recorded none, so nothing was evaluated" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
       # Evidence is published, so it is redacted before it leaves this
       # machine, and a redaction that fails uploads nothing (#52). The run
       # already redacts what it writes; this also covers files a crashed run
@@ -413,7 +439,15 @@ jobs:
     # collect and plan for the diff and the criteria text the verifier reads;
     # execute for the evidence it checks them against.
     needs: [collect, plan, execute]
-    if: always() && needs.execute.result == 'success'
+    outputs:
+      # Whether the verdict reached the pull request; the report job stays
+      # out of the way when it did.
+      posted: ${{ steps.posted.outputs.posted }}
+    # Whenever execute recorded a verdict, including a failed or blocked one
+    # that left execute red (#203): that verdict is the project's answer, and
+    # the pull request is told it. No recorded verdict means nothing was
+    # evaluated; the report job explains that instead.
+    if: always() && needs.execute.outputs.verdict != ''
     runs-on: ubuntu-latest
     permissions:
       # contents: write is for the qa-assets push: the judge step commits the
@@ -566,6 +600,7 @@ jobs:
       # after 90 days (ADR-0002). Last, so a posting failure cannot stop stub
       # issues.
       - name: Post the evidence on the pull request
+        id: posted
         if: github.event_name == 'pull_request'
         shell: bash
         env:
@@ -585,6 +620,9 @@ jobs:
             --result judged-result.json \
             --pr "$PR_NUMBER" --sha "$HEAD_SHA" --artifact-url "$EVIDENCE_URL" \
             --evidence evidence --metrics metrics.json
+          # The verdict is on the pull request: the report job must not
+          # replace it, whatever fails after this (#203).
+          echo "posted=true" >> "$GITHUB_OUTPUT"
       - name: Upload judge artifacts (comment.md, checkrun.json, judged-result.json, metrics.json)
         if: always()
         uses: actions/upload-artifact@v4
@@ -596,6 +634,66 @@ jobs:
             judged-result.json
             metrics.json
           if-no-files-found: ignore
+
+  # label: report (GitHub token only)
+  # A pipeline that failed without publishing a verdict evaluated no
+  # criterion: a tool that would not install, an image that would not pull, a
+  # planner that would not answer, or judge failing to post. On the pull
+  # request that is only a red job, which reads like the project failing
+  # (#203). This job names the job and step that failed, and posts the
+  # sticky comment and a failing check run saying no criterion was evaluated
+  # and the failure is qare's side or the runner's, not the project's.
+  report:
+    name: report (GitHub token only)
+    needs: [collect, plan, execute, judge]
+    if: >-
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.judge.outputs.posted != 'true' &&
+      contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      # actions: read is for listing this run's jobs and steps.
+      actions: read
+      checks: write
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      # The base commit, like every job holding the token (rule 7): the qare
+      # it builds and runs is a revision the pull request cannot change.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Report the failure on the pull request
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Empty when execute recorded no verdict (nothing was evaluated);
+          # set when it did and judge failed to publish it.
+          RECORDED_VERDICT: ${{ needs.execute.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          node packages/action/dist/index.js report-failure \
+            --run-id "$RUN_ID" --attempt "$RUN_ATTEMPT" \
+            --pr "$PR_NUMBER" --sha "$HEAD_SHA" --run-url "$RUN_URL" \
+            --recorded-verdict "$RECORDED_VERDICT" \
+            --pipeline collect,plan,execute,judge \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
   # label: requeue (GitHub token only)
   requeue:

@@ -441,3 +441,69 @@ test('release refuses to publish a tag that is not on the default branch (#194)'
   expect(guard).toBeGreaterThan(release.indexOf(fullGraph))
   expect(guard).toBeLessThan(release.indexOf('docker/build-push-action'))
 })
+
+// #203: a pipeline that fails before it reaches a verdict (a tool that will
+// not install, an image that will not pull) evaluated nothing, yet left the
+// pull request a red job that read like the project failing. A report job
+// says so where the verdict would have been.
+test('a report job explains a pipeline that published no verdict', () => {
+  const report = section('report')
+  expect(report).toContain('needs: [collect, plan, execute, judge]')
+  // Only when something failed and judge did not publish a verdict, and only
+  // on a pull request from this repository: a fork's token cannot comment.
+  expect(report).toContain('always()')
+  expect(report).toContain("github.event_name == 'pull_request'")
+  expect(report).toContain('github.event.pull_request.head.repo.full_name == github.repository')
+  // Gated on the verdict reaching the pull request, not on judge's result: a
+  // step failing after the post must not replace a verdict with "not evaluated".
+  expect(report).toContain("needs.judge.outputs.posted != 'true'")
+  expect(report).not.toContain('needs.judge.result')
+  const judge = section('judge')
+  expect(judge).toContain('posted: ${{ steps.posted.outputs.posted }}')
+  const post = judge.indexOf('- name: Post the evidence')
+  const postStep = judge.slice(post, judge.indexOf('- name:', post + 1))
+  expect(postStep).toContain('id: posted')
+  expect(postStep.indexOf('echo "posted=true" >> "$GITHUB_OUTPUT"')).toBeGreaterThan(postStep.indexOf('post-evidence'))
+  expect(report).toContain("contains(needs.*.result, 'failure')")
+  expect(report).toContain('report-failure')
+  for (const flag of ['--run-id "$RUN_ID"', '--attempt "$RUN_ATTEMPT"', '--pr "$PR_NUMBER"', '--sha "$HEAD_SHA"', '--run-url "$RUN_URL"', '--recorded-verdict "$RECORDED_VERDICT"'])
+    expect(report).toContain(flag)
+  // requeue (push only) and report itself are not the pipeline it describes.
+  expect(report).toContain('--pipeline collect,plan,execute,judge')
+  // Checked but unpublished is told apart from never evaluated.
+  expect(report).toContain('RECORDED_VERDICT: ${{ needs.execute.outputs.verdict }}')
+})
+
+test('the report job holds the GitHub token only and runs qare from the base commit', () => {
+  const report = section('report')
+  expect(report).toContain('${{ secrets.GITHUB_TOKEN }}')
+  expect(report).not.toContain('QARE_PLANNER_KEY')
+  expect(report).not.toContain('QARE_MODEL_KEY')
+  // Reading the run's jobs needs actions: read; posting needs the rest.
+  for (const permission of ['actions: read', 'checks: write', 'issues: write', 'pull-requests: write'])
+    expect(report).toContain(permission)
+  expect(report).not.toContain('contents: write')
+  const checkout = report.indexOf('actions/checkout@v4')
+  const ref = report.indexOf('ref: ${{ github.event.pull_request.base.sha }}')
+  expect(ref, 'report must check out the base commit').toBeGreaterThan(checkout)
+  expect(report).toMatch(/actions\/checkout@v4\n\s+with:\n\s+persist-credentials: false/)
+  expect(report.indexOf('pnpm install')).toBeGreaterThan(ref)
+})
+
+// A failed or blocked verdict exits non-zero, so execute goes red; judge
+// still publishes it, so a project that failed its criteria is told which,
+// rather than left with the same unexplained red job as a qare failure.
+test('judge runs whenever execute recorded a verdict, not only when execute passed', () => {
+  const execute = section('execute')
+  expect(execute).toContain('verdict: ${{ steps.recorded.outputs.verdict }}')
+  const recorded = execute.indexOf('id: recorded')
+  expect(recorded).toBeGreaterThan(execute.indexOf('- name: Run the plan'))
+  const step = execute.slice(execute.lastIndexOf('- name:', recorded), execute.indexOf('- name:', recorded))
+  expect(step).toContain('if: always()')
+  expect(step).toContain('evidence/result.json')
+  // Rule 6: a run that recorded no readable verdict never falls through to a
+  // green pipeline with nothing posted. The step fails, and report says why.
+  expect(step).toMatch(/if \[ -z "\$verdict" \]; then\n(?:.*\n)*?\s+exit 1\n/)
+  expect(section('judge')).toContain("if: always() && needs.execute.outputs.verdict != ''")
+  expect(section('judge')).not.toContain("needs.execute.result == 'success'")
+})

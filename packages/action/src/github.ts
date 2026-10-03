@@ -43,6 +43,13 @@ export interface GitHubCheckRun {
   output: { title: string; summary: string }
 }
 
+/** A job of a workflow run, as the Actions jobs API lists it. */
+export interface GitHubRunJob {
+  name: string
+  conclusion: string | null
+  steps?: Array<{ name: string; conclusion: string | null }>
+}
+
 interface GithubRef {
   object: { sha: string }
 }
@@ -144,6 +151,22 @@ export class GitHubClient {
 
   async createCheckRun(run: GitHubCheckRun): Promise<void> {
     await this.request('POST', `/repos/${this.repository}/check-runs`, undefined, run)
+  }
+
+  /** Every job of one attempt of a workflow run, in the order the API lists them. */
+  async listRunJobs(runId: number, attempt: number): Promise<GitHubRunJob[]> {
+    const jobs: GitHubRunJob[] = []
+    for (let page = 1; ; page += 1) {
+      const batch = await this.request<{ jobs?: GitHubRunJob[] }>(
+        'GET',
+        `/repos/${this.repository}/actions/runs/${runId}/attempts/${attempt}/jobs`,
+        new URLSearchParams({ per_page: '100', page: String(page) }),
+      )
+      const listed = Array.isArray(batch.jobs) ? batch.jobs : []
+      jobs.push(...listed)
+      if (listed.length < 100) break
+    }
+    return jobs
   }
 
   /** The commit a branch head points at, or undefined when the branch does not exist. */

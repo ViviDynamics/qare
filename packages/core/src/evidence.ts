@@ -106,7 +106,7 @@ function detailNames(criteria: CriterionResult[], screenshots: Record<string, st
 // link, raw HTML, a bare URL or an @mention in a reason or a path stays text.
 // The fence is longer than any backtick run inside, so the text is shown
 // exactly (a path can still be found in the artifact) and cannot end the span.
-function codeSpan(text: string): string {
+export function codeSpan(text: string): string {
   const flat = text.replaceAll('\r', ' ').replaceAll('\n', ' ')
   const longest = Math.max(0, ...(flat.match(/`+/g) ?? []).map(run => run.length))
   const fence = '`'.repeat(longest + 1)

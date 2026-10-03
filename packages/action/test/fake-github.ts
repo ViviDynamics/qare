@@ -32,6 +32,11 @@ export interface FakeGithub {
   /** Every comment with its id, in the order written; issue.comments mirrors the bodies. */
   commentRecords: FakeComment[]
   checkRuns: unknown[]
+  /**
+   * The jobs of each workflow run attempt, keyed "<run id>/<attempt>", as the
+   * Actions jobs API lists them: name, conclusion and steps.
+   */
+  runJobs: Map<string, unknown[]>
   /** Branch heads: refs/heads/&lt;branch&gt; to the head commit sha. */
   refs: Map<string, string>
   /** Every commit the fake has accepted, sha to its tree and parents. */
@@ -82,6 +87,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
   const calls: FakeCall[] = []
   const commentRecords: FakeComment[] = []
   const checkRuns: unknown[] = []
+  const runJobs = new Map<string, unknown[]>()
   const refs = new Map<string, string>()
   const commits = new Map<string, FakeCommit>()
   const pulls: FakePull[] = []
@@ -211,6 +217,17 @@ export function startFakeGithub(): Promise<FakeGithub> {
       respond(response, 201, { id: checkRuns.length, ...(body as object) })
       return
     }
+    if (
+      parts[0] === 'repos' && parts[3] === 'actions' && parts[4] === 'runs' && parts[6] === 'attempts' &&
+      parts[8] === 'jobs' && parts.length === 9 && request.method === 'GET'
+    ) {
+      const jobs = runJobs.get(`${parts[5]}/${parts[7]}`)
+      if (jobs === undefined) return respond(response, 404, { message: 'run attempt not found' })
+      const perPage = Number(url.searchParams.get('per_page') ?? '30')
+      const page = Number(url.searchParams.get('page') ?? '1')
+      respond(response, 200, { total_count: jobs.length, jobs: jobs.slice((page - 1) * perPage, page * perPage) })
+      return
+    }
     // A small git data API: blobs, trees, commits and refs are stored in
     // memory so a push can be followed from blob to ref.
     if (parts[0] === 'repos' && parts[3] === 'git' && parts[4] === 'blobs' && parts.length === 5) {
@@ -325,6 +342,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
         issues,
         commentRecords,
         checkRuns,
+        runJobs,
         refs,
         commits,
         pulls,

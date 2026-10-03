@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
-import { loadResult, VERSION } from '@qare/core'
+import { loadResult, RUN_VERDICTS, VERSION } from '@qare/core'
 import { GitHubClient, GitHubClientError } from './github.js'
 import { GitHubQaAssetsPusher } from './qa-assets.js'
 import { fileRefusalStubs, GitHubStubIssuePoster } from './stub-issues.js'
@@ -11,6 +11,7 @@ import { GitHubEvidencePoster, postEvidence } from './post-evidence.js'
 import { deliverIngest, IngestDeliveryError } from './ingest-deliver.js'
 import { loadQuestions, postQuestions } from './post-questions.js'
 import { parseSweepPayload, publishSweep } from './sweep-report.js'
+import { reportPipelineFailure } from './report-failure.js'
 export interface Writer {
   write(chunk: string): void
 }
@@ -30,13 +31,14 @@ export async function main(argv: string[], out: Writer = process.stdout, err: Wr
     if (command === 'ingest-deliver') return await ingestDeliverCommand(rest, out)
     if (command === 'post-questions') return await postQuestionsCommand(rest, out)
     if (command === 'sweep-report') return await sweepReportCommand(rest, out)
+    if (command === 'report-failure') return await reportFailureCommand(rest, out)
   } catch (error) {
     err.write(error instanceof Error ? `${error.name}: ${error.message}\n` : `${String(error)}\n`)
     return 1
   }
   entry(out)
   if (command !== undefined) {
-    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence", "ingest-deliver", "post-questions" and "sweep-report"\n`)
+    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence", "ingest-deliver", "post-questions", "sweep-report" and "report-failure"\n`)
     return 1
   }
   return 0
@@ -164,6 +166,65 @@ async function postEvidenceCommand(argv: string[], out: Writer): Promise<number>
   })
   out.write(`posted verdict ${result.verdict} on pull request #${pr} at ${headSha.slice(0, 12)}\n`)
   if (riding.length > 0) out.write(`asked ${riding.length} question(s) in the evidence comment\n`)
+  return 0
+}
+
+/**
+ * `qare-action report-failure`: the pipeline failed and published no verdict
+ * (#203). Read the run's jobs, and when one failed, post on the pull request
+ * that no criterion was evaluated, naming the job and step, so a failure in
+ * qare or its runner is never read as the project failing its criteria.
+ */
+async function reportFailureCommand(argv: string[], out: Writer): Promise<number> {
+  const flags = parseFlags(argv)
+  const runId = flags.number('run-id')
+  const pr = flags.number('pr')
+  const headSha = flags.string('sha')
+  if (runId === undefined || runId <= 0) throw new GitHubClientError('qare-action report-failure needs --run-id <workflow run id>')
+  if (pr === undefined) throw new GitHubClientError('qare-action report-failure needs --pr <pull request number>')
+  if (headSha === undefined) throw new GitHubClientError('qare-action report-failure needs --sha <head commit>')
+  const attempt = flags.number('attempt') ?? 1
+  if (attempt <= 0) throw new GitHubClientError(`--attempt must be a positive integer (got ${attempt})`)
+  const runUrl = flags.string('run-url') || undefined
+  if (runUrl !== undefined && !/^https:\/\/[^\s<>`]+$/.test(runUrl))
+    throw new GitHubClientError(`--run-url must be an https URL (got ${JSON.stringify(runUrl)})`)
+  // Execute's verdict output, passed as is: empty when it recorded none.
+  const recordedVerdict = flags.string('recorded-verdict') || undefined
+  if (recordedVerdict !== undefined && !(RUN_VERDICTS as readonly string[]).includes(recordedVerdict))
+    throw new GitHubClientError(
+      `--recorded-verdict must be a run verdict (${RUN_VERDICTS.join(', ')}) or empty (got ${JSON.stringify(recordedVerdict)})`,
+    )
+  const client = new GitHubClient({
+    repository: flags.string('repository'),
+    apiRoot: flags.string('api-root'),
+    tokenEnv: flags.string('token-env'),
+  })
+  const author = flags.string('author') || undefined
+  const poster = new GitHubEvidencePoster(client, pr, headSha, author)
+  const outcome = await reportPipelineFailure(client, poster, {
+    id: runId,
+    attempt,
+    pr,
+    headSha,
+    author,
+    url: runUrl,
+    recordedVerdict,
+    // The workflow's pipeline job ids: jobs outside them (one gated on push,
+    // the report job itself) are neither the failure nor skipped by it.
+    pipeline: flags.list('pipeline'),
+  })
+  if (outcome.kind === 'nothing-failed') {
+    out.write(`no job in run ${runId} failed: nothing to report\n`)
+    return 0
+  }
+  if (outcome.kind === 'verdict-kept') {
+    out.write(`a verdict for ${headSha.slice(0, 12)} is already on pull request #${pr}; left it in place\n`)
+    return 0
+  }
+  const { failure } = outcome
+  const where = failure.step === undefined ? failure.job : `${failure.job} failing at ${failure.step}`
+  const side = recordedVerdict === undefined ? 'not evaluated' : `verdict ${recordedVerdict} not published`
+  out.write(`reported ${where} on pull request #${pr} at ${headSha.slice(0, 12)}: ${side}, qare or environment failure\n`)
   return 0
 }
 

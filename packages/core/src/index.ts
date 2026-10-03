@@ -28,6 +28,7 @@ export { shardCriteria, criterionOwnBoot } from './shards.js'
 export type { LanePlan } from './shards.js'
 export {
   RESULT_SCHEMA_VERSION,
+  RUN_VERDICTS,
   ResultValidationError,
   loadResult,
   parseResult,
@@ -234,6 +235,8 @@ export { replayRun } from './replay.js'
 export type { ReplayDifference, ReplayReport, StoredVerdict } from './replay.js'
 export { renderComment, renderCheckRun } from './evidence.js'
 export type { CheckRunPayload, EvidenceLinks, EvidencePoster } from './evidence.js'
+export { classifyPipelineFailure, renderPipelineFailureCheckRun, renderPipelineFailureComment } from './pipeline-failure.js'
+export type { PipelineFailure, PipelineFailureReport, PipelineJob, PipelineStep } from './pipeline-failure.js'
 export {
   SetSeenShas,
   decideTrigger,
