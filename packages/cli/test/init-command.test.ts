@@ -187,6 +187,34 @@ test('a target profile that is already there is enough to write the workflow it 
   expect(out).toContain('- add the repository secret OPENAI_API_KEY')
 })
 
+test('a booted profile whose compose file the inventory does not look for still gets its workflow', async () => {
+  const config = [
+    'app:',
+    '  boot: { compose: compose.qa.yaml, service: admin }',
+    `  health: { http: ${JSON.stringify(url('http', 'localhost:3000/up'))}, timeout: 120s }`,
+    '  seed: { command: "bin/seed" }',
+    '  login: { fixture: fixtures/users.yml, role: admin }',
+    'stubs: []',
+    'visual: { widths: [1440], themes: [light] }',
+    'suites: []',
+  ].join('\n')
+  const repo = await repoWith({
+    'compose.qa.yaml': 'services:\n  admin:\n    healthcheck: {}\n  aaa: {}\n',
+    '.qa/QA.md': '# QA\n',
+    '.qa/config.yml': config,
+    '.qa/fixtures/users.yml': '',
+    '.qa/stubs/.gitkeep': '',
+  })
+  const { code, out, err } = await run(['init', repo])
+  expect(err).toBe('')
+  expect(code).toBe(0)
+  expect(out).toContain('kept .qa/')
+  // What it would have written follows the profile that is there.
+  expect(out).toContain('    boot: { compose: "compose.qa.yaml", service: "admin" }\n')
+  expect(out).toContain('wrote .github/workflows/qare.yml\n')
+  expect(await readFile(join(repo, '.qa', 'config.yml'), 'utf8')).toBe(config)
+})
+
 test('--file-issues files each stub gap once, through the poster the pipeline files refusals with', async () => {
   const repo = await composeRepo()
   const filed: StubIssueDraft[] = []

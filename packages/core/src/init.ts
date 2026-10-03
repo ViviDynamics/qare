@@ -86,14 +86,19 @@ export async function planInit(repoPath: string, opts: InitOptions = {}): Promis
     kind = 'target'
     config = targetConfig(target, opts.health, suites)
   } else {
-    const compose = inventory.boot[0]
+    // A profile that is already there may boot from a file the inventory
+    // does not look for (compose.qa.yaml): its own word on the file and the
+    // service comes first, so such a repository can still get its workflow.
+    const booted = inventory.profile.boot
+    const own = booted !== undefined && (await exists(join(inventory.repoPath, booted.compose), 'file')) ? booted : undefined
+    const compose = own === undefined ? inventory.boot[0]?.file : `./${own.compose.replace(/^\.\//, '')}`
     if (compose === undefined)
       throw new InitError(
         'no compose file found, so there is nothing for qare to boot: name the running app to check with --target <url>',
       )
     kind = 'app'
-    const service = await chooseService(inventory.repoPath, compose.file, opts.service)
-    config = appConfig({ ...service, ...(opts.health === undefined ? {} : { healthPath: opts.health }) }, compose.file, inventory, suites)
+    const service = await chooseService(inventory.repoPath, compose, opts.service ?? own?.service)
+    config = appConfig({ ...service, ...(opts.health === undefined ? {} : { healthPath: opts.health }) }, compose, inventory, suites)
   }
 
   // Fail closed: a profile init would write is one the loader accepts.
