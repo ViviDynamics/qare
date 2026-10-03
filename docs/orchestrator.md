@@ -165,6 +165,21 @@ Anything else — malformed JSON, an unknown `schemaVersion`, a verdict outside
 the five — is a harness problem, not a verdict: fail closed with a named error
 and do not proceed.
 
+## Regressions on main
+
+A criterion that passed before and fails in a run on the default branch is
+filed as an issue labelled `qa-regression` (see "Findings on main" in
+[SPEC.md](./SPEC.md)). That label is the hand-off: an orchestrator picks up
+open issues that carry it. The issue names the criterion, the evidence, the
+commits since the criterion last passed and the pull request the evidence
+points at. qare does not fix the regression and does not merge anything; it
+comments on the issue while the criterion still fails and closes it when a
+run proves the criterion again, so an orchestrator need not close it.
+
+`qa-environment` (nothing could boot or be reached) and `qa-failure` (a
+failure nothing shows ever passed) are not hand-offs: neither names a change
+to undo.
+
 ## The worked example
 
 ```

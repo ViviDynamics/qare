@@ -202,6 +202,9 @@ ux:                              # optional: the advisory UX review (#150), whic
   review: true                   # false turns it off (default: on, for runs whose flows drove pages)
   rules:                         # house rules the reviewer holds screens to
     - An error message says what went wrong and what to do next.
+findings:                        # optional: who a finding on main reaches (#154)
+  fallback: acme/qa-leads        # a person or a team, mentioned when no change can be blamed
+  bots: [release-robot]          # logins whose pull requests are a bot's, beyond the ones GitHub marks
 redact:                          # optional: fixture data that must not be published
   values: ["jane@pilot.example"] # literal strings
   patterns: ['CUST-\d{6}']       # regular expressions
@@ -1023,11 +1026,72 @@ default, so a sweep works before anyone writes configuration.
 
 A sweep failure is reported as a finding, not as a broken build: a scheduled
 sweep has no pull request to turn red, so a ledger or configuration it
-cannot read is filed through the findings flow (#154), one issue per
+cannot read is filed as a sweep finding, one issue per
 problem, fingerprinted so the next sweep updates it in place instead of
 duplicating it, mentioning the person whose change last touched the ledger.
 The ledger, not the report, is the store: the standing report is written for
 someone with no QARE installed, exactly as the published view is.
+
+### Findings on main
+
+A run against `main` (a sweep, or a check of a deployment) has no pull
+request to comment on, so what it finds becomes GitHub issues (#154), the way
+a missing stub does (#31): one issue per problem, found again by a hidden
+marker, never a pile of duplicates. `qare-action main-findings` reads the
+judged result of such a run, the ledger and the profile, and files.
+
+What is a finding, of which kind, and who it names is decided in code from
+the executed result and the ledger. No model has a say in any of it.
+
+- **One issue per problem.** A failed criterion has a fingerprint: its id
+  plus a failure signature, the checks that produced the evidence and how the
+  criterion failed (its checks, or the verifier overturning them). An open
+  issue with that fingerprint gets a comment carrying the new run and its
+  evidence; a new issue is opened only for a new fingerprint. An issue is
+  qare's own only when the identity qare posts as opened it: a marker anyone
+  else wrote finds nothing.
+- **What it says.** The criterion's text, the outcome, the verdict, the
+  evidence and the run. Text from the run, the ledger and the repository sits
+  in code spans, where nothing renders and nothing mentions, and is redacted
+  (#52) before it is written. A screenshot is linked only when it was pushed
+  to `qa-assets`; every other file is named.
+- **Blame.** The ledger records when each criterion last passed, so the
+  issue lists the commits on the checked revision since then and the pull
+  requests that brought them, and mentions each one's author. When the range
+  holds several, the issue says which one the evidence points at most: the
+  one that changed the most files the criterion's checks cover. When the
+  files cannot tell them apart, it says that instead. A pull request a bot
+  opened names the person who merged it, else one who approved it, because a
+  bot cannot act on a notification; the profile's `findings.bots` lists the
+  logins GitHub does not itself mark as bots. At most ten people are
+  mentioned on one issue, and one run opens at most ten new issues: the
+  rest are left for the next run, and the step says which.
+- **Nobody to blame.** When the ledger has no record of a pass, or nothing
+  but direct pushes or bots is in the range, the issue mentions the profile's
+  `findings.fallback`, a person or a team, and says why no author is named.
+  With no fallback it mentions nobody and says how to name one.
+- **Notified once.** Mentions are written on the new issue and nowhere else.
+  The comment a later run leaves mentions nobody, so a failure that recurs
+  does not notify again. Notification is GitHub's own, web and email.
+- **Closing the loop.** When a later run proves the criterion, qare comments
+  with that run and closes the issue, and retires its marker: the same
+  problem coming back later opens a new issue with a new range. An issue
+  that is closed and still carries its marker was closed by a person; while
+  the criterion still fails it is reopened, with the evidence.
+- **Kinds are kept apart.** A failure of a criterion that passed before is a
+  `qa-regression` issue. A run in which no check executed because nothing
+  could boot or be reached is one `qa-environment` issue for the whole run,
+  for the fallback, closed when a run executes a check again; while it is
+  down, nothing is reported as failing or recovered. A criterion held by a
+  quarantined check files nothing: a flake goes to quarantine and the
+  standing report. A failure nothing shows ever passed is a `qa-failure`
+  issue, never called a regression.
+- **Hand-off.** The `qa-regression` label is the signal an orchestrator
+  picks an issue up by. qare itself never fixes and never merges.
+
+Only the judge side files: the step holds the GitHub identity and runs
+nothing from the repository (rule 7). The step that runs code holds no
+token, so it cannot.
 
 ## GitHub identity
 

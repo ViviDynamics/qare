@@ -164,7 +164,7 @@ that calls the pipeline:
 | Permission | Access | What it is for |
 | --- | --- | --- |
 | Contents | Read and write | The `qa-assets` branch, and the branch a criteria proposal is opened from. |
-| Issues | Read and write | Stub issues, sweep findings, questions on issues, an advisory finding a person promoted. |
+| Issues | Read and write | Stub issues, sweep findings, findings on `main`, questions on issues, an advisory finding a person promoted. |
 | Pull requests | Read and write | The evidence comment, the `/qa` comments of requeue, the answers to advisory replies, criteria proposals. |
 | Checks | Read and write | The `QARE verdict` check run. |
 | Metadata | Read | Required by GitHub for every App. |
@@ -411,6 +411,58 @@ your caller sets a `concurrency` group on `github.ref`, give a comment's run
 a group of its own, as the larger caller above does: on a comment the ref is
 the default branch, and a shared group would let one comment cancel another
 run.
+
+## Findings on main
+
+A run against `main` has no pull request to comment on. `qare-action
+main-findings` files what it found as issues instead: one per problem,
+commented on while it still fails, closed when a run proves the criterion
+again. See "Findings on main" in [SPEC.md](./SPEC.md) for what an issue says
+and whom it mentions.
+
+Nothing in the pipeline calls it. It opens issues and mentions people, so
+it is a step you add, in a job that already has a judged result of a run on
+your default branch:
+
+```yaml
+      - name: File what the run on main found
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QARE_APP_ID: ${{ secrets.QARE_APP_ID }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.QARE_APP_PRIVATE_KEY }}
+          QARE_GITHUB_TOKEN: ${{ secrets.QARE_GITHUB_TOKEN }}
+        run: |
+          node qare/packages/action/dist/index.js main-findings \
+            --result judged-result.json --ledger .qa --profile .qa \
+            --sha "${{ github.sha }}" --repository "${{ github.repository }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+```
+
+| Flag | What it is |
+| --- | --- |
+| `--result` | The judged result of the run on `main`. Required. |
+| `--ledger` | The ledger directory: when each criterion last passed, its text and its checks. Required. |
+| `--sha` | The 40 character commit the run checked. Required. |
+| `--profile` | The profile directory: `findings.fallback`, `findings.bots` and the `redact` rules. Without it nobody is a fallback and only the built-in rules redact. |
+| `--evidence` | The run's evidence directory. Given, the failing criteria's screenshots are pushed to `qa-assets` and linked. |
+| `--run-url`, `--artifact-url` | Links the issue carries. Each must be an https URL. |
+| `--dry-run true` | Reads, writes nothing, and prints what a real run would open, comment on, reopen or close, and whom it would mention. Run it first. |
+
+The job needs `issues: write` to file, `pull-requests: read` and `contents:
+read` to read the range, and `contents: write` only when `--evidence` pushes
+screenshots. It is a judge-side step: give it the identity and nothing that
+runs repository code (rule 7).
+
+The profile says who hears of a finding nobody can be blamed for:
+
+```yaml
+findings:
+  fallback: acme/qa-leads   # a person or a team
+  bots: [release-robot]     # an orchestrator that opens pull requests with a person's token
+```
+
+The labels `qa-regression`, `qa-environment` and `qa-failure` are created by
+GitHub the first time an issue carries one.
 
 ## Triggers
 

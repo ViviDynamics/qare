@@ -2,7 +2,8 @@ import { execFile } from 'node:child_process'
 import { readFile, writeFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
-import { loadResult, RUN_VERDICTS, VERSION } from '@qare/core'
+import { resolve } from 'node:path'
+import { FileLedgerStore, loadProfile, loadResult, redactionRules, RUN_VERDICTS, valueRules, VERSION } from '@qare/core'
 import { GitHubClient, GitHubClientError } from './github.js'
 import { GitHubQaAssetsPusher } from './qa-assets.js'
 import { fileRefusalStubs, GitHubStubIssuePoster } from './stub-issues.js'
@@ -13,6 +14,7 @@ import { loadQuestions, postQuestions } from './post-questions.js'
 import { parseSweepPayload, publishSweep } from './sweep-report.js'
 import { reportPipelineFailure } from './report-failure.js'
 import { carryOutAdvisoryReplies } from './advisory-replies.js'
+import { MAX_NEW_ISSUES, publishMainFindings, type MainFindingAction } from './main-findings.js'
 // The GitHub client and the stub issue poster, for `qare init --file-issues`
 // (#146): the CLI files a stub issue the way the pipeline does.
 export { GitHubClient, GitHubClientError } from './github.js'
@@ -53,13 +55,14 @@ export async function main(argv: string[], out: Writer = process.stdout, err: Wr
     if (command === 'sweep-report') return await sweepReportCommand(rest, out)
     if (command === 'report-failure') return await reportFailureCommand(rest, out)
     if (command === 'advisory-replies') return await advisoryRepliesCommand(rest, out)
+    if (command === 'main-findings') return await mainFindingsCommand(rest, out)
   } catch (error) {
     err.write(error instanceof Error ? `${error.name}: ${error.message}\n` : `${String(error)}\n`)
     return 1
   }
   entry(out)
   if (command !== undefined) {
-    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence", "ingest-deliver", "post-questions", "sweep-report", "report-failure" and "advisory-replies"\n`)
+    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence", "ingest-deliver", "post-questions", "sweep-report", "report-failure", "advisory-replies" and "main-findings"\n`)
     return 1
   }
   return 0
@@ -280,6 +283,87 @@ async function advisoryRepliesCommand(argv: string[], out: Writer): Promise<numb
   out.write(`carried out ${replies.answered} advisory reply(ies) on pull request #${pr}: ${replies.dismissed.length} dismissed finding(s) stand\n`)
   for (const entry of replies.promoted) out.write(`filed advisory finding ${entry.id} as #${entry.issue}\n`)
   return 0
+}
+
+/**
+ * `qare-action main-findings`: file what a run on `main` found (#154). A run
+ * there has no pull request to comment on, so a failed criterion becomes an
+ * issue, found again by its marker: opened once, commented on while it still
+ * fails, reopened when a person closed it too early, closed when a run
+ * proves the criterion again. A run in which nothing booted is one issue.
+ *
+ * This is a judge-side step: it holds the GitHub identity (#61) and runs
+ * nothing from the repository (rule 7). The result, the ledger and the
+ * profile are read as data. `--dry-run true` reads and writes nothing, and
+ * prints what a real run would do and whom it would mention.
+ */
+async function mainFindingsCommand(argv: string[], out: Writer): Promise<number> {
+  const flags = parseFlags(argv)
+  const resultPath = flags.string('result')
+  const ledgerDir = flags.string('ledger')
+  const headSha = flags.string('sha')
+  if (resultPath === undefined || resultPath === '')
+    throw new GitHubClientError('qare-action main-findings needs --result <path to judged-result.json>')
+  if (ledgerDir === undefined || ledgerDir === '') throw new GitHubClientError('qare-action main-findings needs --ledger <the ledger directory>')
+  if (headSha === undefined || !/^[0-9a-f]{40}$/.test(headSha))
+    throw new GitHubClientError(`--sha must be the 40 character commit the run checked (got ${JSON.stringify(headSha ?? '')})`)
+  // An empty value is what a workflow expression gives when there is none.
+  const link = (name: string): string | undefined => {
+    const url = flags.string(name) || undefined
+    if (url !== undefined && !/^https:\/\/[^\s<>`]+$/.test(url)) throw new GitHubClientError(`--${name} must be an https URL (got ${JSON.stringify(url)})`)
+    return url
+  }
+  const runUrl = link('run-url')
+  const artifactUrl = link('artifact-url')
+  const dryRun = flags.string('dry-run') === 'true'
+  const result = loadResult(await readFile(resultPath, 'utf8'))
+  const ledger = await new FileLedgerStore(resolve(ledgerDir)).loadDocument()
+  // The profile names the fallback and the bots, and what must not be published.
+  const profileDir = flags.string('profile') || undefined
+  const profile = profileDir === undefined ? undefined : await loadProfile(resolve(profileDir))
+  const login = profile?.app?.login
+  const rules = [...redactionRules(profile?.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value])]
+  const client = new GitHubClient({
+    repository: flags.string('repository'),
+    apiRoot: flags.string('api-root'),
+    tokenEnv: flags.string('token-env'),
+  })
+  const author = flags.string('author') || (await client.identity.login())
+  const evidenceDir = flags.string('evidence') || undefined
+  const outcome = await publishMainFindings(client, {
+    result,
+    ledger,
+    headSha,
+    author,
+    findings: profile?.findings,
+    rules,
+    runUrl,
+    artifactUrl,
+    push: evidenceDir === undefined ? undefined : new GitHubQaAssetsPusher(client, headSha, { branch: flags.string('branch') }),
+    evidenceDir,
+    dryRun,
+  })
+  if (dryRun) out.write('dry run: nothing is written\n')
+  if (outcome.actions.length === 0) out.write('no finding on main to file, update or close\n')
+  for (const action of outcome.actions) out.write(`${describeMainFindingAction(action, dryRun)}\n`)
+  for (const criterion of outcome.flaky) out.write(`${criterion} is held by a quarantined check: nothing is filed for a flake\n`)
+  return 0
+}
+
+function describeMainFindingAction(action: MainFindingAction, dryRun: boolean): string {
+  const about = action.criterion ?? 'the environment'
+  if (action.action === 'opened') {
+    const label = action.kind === 'environment' ? 'qa-environment' : action.kind === 'regression' ? 'qa-regression' : 'qa-failure'
+    const who = action.mentions.length === 0 ? 'mentioning nobody' : `mentioning ${action.mentions.join(', ')}`
+    return dryRun || action.issue === undefined
+      ? `would open an issue for ${about} (${label}), ${who}`
+      : `opened #${action.issue} for ${about} (${label}), ${who}`
+  }
+  if (action.action === 'deferred') return `left ${about} for the next run: this run opened its ${MAX_NEW_ISSUES} issues`
+  const still = action.criterion === undefined ? 'still down' : 'still failing'
+  if (action.action === 'updated') return `${dryRun ? 'would comment' : 'commented'} on #${action.issue} for ${about}: ${still}`
+  if (action.action === 'reopened') return `${dryRun ? 'would reopen' : 'reopened'} #${action.issue} for ${about}: closed while ${still}`
+  return `${dryRun ? 'would close' : 'closed'} #${action.issue} for ${about}: ${action.criterion === undefined ? 'a check executed again' : 'proven again'}`
 }
 
 /**

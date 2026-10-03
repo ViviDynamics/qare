@@ -232,6 +232,7 @@ export type {
   UxReviewInputs,
 } from './advisory.js'
 export type { ProfileUx } from './profile.js'
+export type { ProfileFindings } from './profile.js'
 export { ADVISORY_DISMISS_COMMAND, ADVISORY_PROMOTE_COMMAND, renderAdvisorySection } from './advisory-comment.js'
 export { runFlowCheck, runSuiteCheck } from './flow.js'
 export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult, FlowTotpConfig, FlowDriverCapabilities } from './flow.js'
@@ -464,3 +465,7 @@ export {
   sumUsage,
 } from './metrics.js'
 export type { MetricsNote, MetricsNoteKind, MetricsStore, MetricsSummary, ModelUsage, RunMetricsRecord } from './metrics.js'
+// Findings on main (#154): what a run on main amounts to, who it names, and what the issue says.
+export * from './main-findings.js'
+export * from './main-findings-blame.js'
+export * from './main-findings-render.js'

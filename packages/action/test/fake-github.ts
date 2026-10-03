@@ -9,6 +9,29 @@ export interface FakeIssue {
   comments: string[]
 }
 
+/** What GitHub keeps about an issue beside its text (#154): its state, its labels and who opened it. */
+export interface FakeIssueMeta {
+  state: 'open' | 'closed'
+  stateReason?: string
+  labels: string[]
+  author: string
+}
+
+export interface FakeAccount {
+  login: string
+  type: 'User' | 'Bot'
+}
+
+/** A pull request as the fake serves it to blame (#154). */
+export interface FakePullRecord {
+  title: string
+  author?: FakeAccount
+  mergedBy?: FakeAccount
+  merged: boolean
+  files: string[]
+  reviews: Array<{ user: FakeAccount; state: string }>
+}
+
 export interface FakeCall {
   method: string
   path: string
@@ -59,6 +82,17 @@ export interface FakeGithub {
   url: string
   calls: FakeCall[]
   issues: Map<number, FakeIssue>
+  /**
+   * State, labels and author of the issues created through the API, or set by
+   * a test. An issue with no entry here is served as it always was: text only.
+   */
+  issueMeta: Map<number, FakeIssueMeta>
+  /** The default branch's commits, oldest first, as the commits API lists them (#154). */
+  commitLog: Array<{ sha: string; message: string; date: string }>
+  /** The pull requests each commit came in by, by number. */
+  commitPulls: Map<string, number[]>
+  /** The pull requests blame can read. */
+  pullRecords: Map<number, FakePullRecord>
   /** Every comment with its id, in the order written; issue.comments mirrors the bodies. */
   commentRecords: FakeComment[]
   /** Every token the fake accepts. FAKE_TOKEN, the Actions token, is there from the start. */
@@ -121,6 +155,22 @@ interface FakeCommit {
 
 export function startFakeGithub(): Promise<FakeGithub> {
   const issues = new Map<number, FakeIssue>()
+  const issueMeta = new Map<number, FakeIssueMeta>()
+  const commitLog: Array<{ sha: string; message: string; date: string }> = []
+  const commitPulls = new Map<string, number[]>()
+  const pullRecords = new Map<number, FakePullRecord>()
+  /** An issue as the API answers with it: its text, and what GitHub keeps beside it when the fake knows it. */
+  const served = (issue: FakeIssue): unknown => {
+    const meta = issueMeta.get(issue.number)
+    if (meta === undefined) return issue
+    return {
+      ...issue,
+      state: meta.state,
+      ...(meta.stateReason === undefined ? {} : { state_reason: meta.stateReason }),
+      labels: meta.labels.map((name) => ({ name })),
+      user: { login: meta.author },
+    }
+  }
   const calls: FakeCall[] = []
   const commentRecords: FakeComment[] = []
   const checkRuns: unknown[] = []
@@ -219,22 +269,27 @@ export function startFakeGithub(): Promise<FakeGithub> {
     if (url.pathname === '/search/issues' && request.method === 'GET') {
       const q = url.searchParams.get('q') ?? ''
       const phrase = /"([^"]+)"/.exec(q)?.[1] ?? ''
-      const matched = [...issues.values()].filter((issue) => issue.body.includes(phrase) || issue.title.includes(phrase))
+      // is:open and is:closed narrow by state; an issue the fake holds no state for is open.
+      const wanted = /\bis:(open|closed)\b/.exec(q)?.[1]
+      const matched = [...issues.values()]
+        .filter((issue) => issue.body.includes(phrase) || issue.title.includes(phrase))
+        .filter((issue) => wanted === undefined || (issueMeta.get(issue.number)?.state ?? 'open') === wanted)
       const perPage = Number(url.searchParams.get('per_page') ?? '30')
       const page = Number(url.searchParams.get('page') ?? '1')
       const items =
         Number.isInteger(perPage) && perPage > 0 && Number.isInteger(page) && page > 0
           ? matched.slice((page - 1) * perPage, page * perPage)
           : matched
-      respond(response, 200, { total_count: matched.length, items })
+      respond(response, 200, { total_count: matched.length, items: items.map(served) })
       return
     }
     if (parts[0] === 'repos' && parts[3] === 'issues' && parts.length === 4 && request.method === 'POST') {
-      const payload = body as { title: string; body: string }
+      const payload = body as { title: string; body: string; labels?: string[] }
       const issue: FakeIssue = { number: nextNumber, title: payload.title, body: payload.body, comments: [] }
       nextNumber += 1
       issues.set(issue.number, issue)
-      respond(response, 201, issue)
+      issueMeta.set(issue.number, { state: 'open', labels: payload.labels ?? [], author: caller.login })
+      respond(response, 201, served(issue))
       return
     }
     if (parts[0] === 'repos' && parts[3] === 'issues' && parts[4] !== undefined && parts.length === 5) {
@@ -244,12 +299,18 @@ export function startFakeGithub(): Promise<FakeGithub> {
         return
       }
       if (request.method === 'GET') {
-        respond(response, 200, issue)
+        respond(response, 200, served(issue))
         return
       }
       if (request.method === 'PATCH') {
-        issue.body = (body as { body: string }).body
-        respond(response, 200, issue)
+        // Only what the request names changes: a state change leaves the body alone.
+        const patch = body as { body?: string; state?: 'open' | 'closed'; state_reason?: string }
+        if (patch.body !== undefined) issue.body = patch.body
+        if (patch.state !== undefined) {
+          const meta = issueMeta.get(issue.number) ?? { state: 'open', labels: [], author: TOKEN_LOGIN }
+          issueMeta.set(issue.number, { ...meta, state: patch.state, ...(patch.state_reason === undefined ? {} : { stateReason: patch.state_reason }) })
+        }
+        respond(response, 200, served(issue))
         return
       }
     }
@@ -322,6 +383,49 @@ export function startFakeGithub(): Promise<FakeGithub> {
       const page = Number(url.searchParams.get('page') ?? '1')
       respond(response, 200, { total_count: jobs.length, jobs: jobs.slice((page - 1) * perPage, page * perPage) })
       return
+    }
+    // What blame reads (#154): the commits since a moment, the pull requests a
+    // commit came in by, and a pull request's people, files and reviews.
+    if (parts[0] === 'repos' && parts[3] === 'commits' && parts.length === 4 && request.method === 'GET') {
+      const since = Date.parse(url.searchParams.get('since') ?? '')
+      const perPage = Number(url.searchParams.get('per_page') ?? '30')
+      const page = Number(url.searchParams.get('page') ?? '1')
+      const listed = [...commitLog]
+        .filter((commit) => Number.isNaN(since) || Date.parse(commit.date) >= since)
+        .reverse()
+        .slice((page - 1) * perPage, page * perPage)
+      respond(response, 200, listed.map((commit) => ({ sha: commit.sha, commit: { message: commit.message, committer: { date: commit.date } } })))
+      return
+    }
+    if (parts[0] === 'repos' && parts[3] === 'commits' && parts[5] === 'pulls' && parts.length === 6 && request.method === 'GET') {
+      const numbers = commitPulls.get(parts[4] ?? '') ?? []
+      respond(
+        response,
+        200,
+        numbers.map((number) => {
+          const record = pullRecords.get(number)
+          return { number, title: record?.title ?? '', user: record?.author ?? null, merged_at: record?.merged === true ? '2026-09-29T00:00:00Z' : null }
+        }),
+      )
+      return
+    }
+    if (parts[0] === 'repos' && parts[3] === 'pulls' && parts[4] !== undefined && request.method === 'GET') {
+      const record = pullRecords.get(Number(parts[4]))
+      if (record === undefined) return respond(response, 404, { message: 'pull request not found' })
+      if (parts.length === 5) {
+        respond(response, 200, { number: Number(parts[4]), title: record.title, user: record.author ?? null, merged_by: record.mergedBy ?? null, merged_at: record.merged ? '2026-09-29T00:00:00Z' : null })
+        return
+      }
+      const perPage = Number(url.searchParams.get('per_page') ?? '30')
+      const page = Number(url.searchParams.get('page') ?? '1')
+      if (parts[5] === 'files' && parts.length === 6) {
+        respond(response, 200, record.files.slice((page - 1) * perPage, page * perPage).map((filename) => ({ filename })))
+        return
+      }
+      if (parts[5] === 'reviews' && parts.length === 6) {
+        respond(response, 200, record.reviews)
+        return
+      }
     }
     // A small git data API: blobs, trees, commits and refs are stored in
     // memory so a push can be followed from blob to ref.
@@ -453,6 +557,10 @@ export function startFakeGithub(): Promise<FakeGithub> {
         url: ['http:', `//127.0.0.1:${port}`].join(''),
         calls,
         issues,
+        issueMeta,
+        commitLog,
+        commitPulls,
+        pullRecords,
         commentRecords,
         tokens,
         minted,
