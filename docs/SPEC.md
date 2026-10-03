@@ -1149,6 +1149,37 @@ The first run on a repo with no `.qa/` does not QA anything. It inventories how
 the app boots, which outbound services it reaches, which are stubbed, and which
 are not, then posts a readiness report and files one issue per missing stub.
 
+`qare init [path]` turns that inventory into a starting point (#146). It
+writes `.qa/` and the workflow that calls the pipeline
+([pipeline.md](./pipeline.md)), and never overwrites: an existing `.qa/` or
+caller workflow is left alone, and init prints what it would have written.
+
+- A repository with a compose file gets a profile that boots it: the compose
+  file, the service that is the application (the one built from the
+  repository, or `--service <name>`), the health URL its healthcheck and
+  published port give, one stub per outbound origin the scan read, and the
+  suites init recognises by their files (Cucumber, Playwright, RSpec system
+  tests).
+- A repository with no compose file gets a target profile for
+  `--target <url>`. With neither, init writes nothing and names the flag.
+  The health check passes on a 200 alone, so `--health <path>` names a page
+  that answers one; without it the path is `/` and a placeholder asks for it
+  to be confirmed.
+
+What init cannot know it leaves as `TODO(qare init):` lines in `QA.md` and
+`config.yml`. The profile loads with them in place, so readiness reports each
+one as a gap until a person replaces it, along with a compose file or service
+the profile names that is not there, and a stub whose compose service nothing
+defines. init ends with that list as its next steps: it is the list
+`qare readiness` prints, so the two cannot disagree. Loopback hosts and the
+compose file's own service names are not outbound origins.
+
+Each stub gap is named as the issue it becomes, under the key a refused run
+files with (`qare-stub: <host>`), so the issue a run would file later is the
+same one. `--file-issues <owner/name>` files them, with `GITHUB_TOKEN` or
+`GH_TOKEN`; without it nothing is filed, because the scan reads every URL in
+the tree and a person prunes the stub list first.
+
 ## Surfaces
 
 One TypeScript codebase, one core, thin adapters:
