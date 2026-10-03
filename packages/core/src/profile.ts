@@ -177,8 +177,12 @@ export interface QaProfile {
 }
 
 export interface ProfileBase {
-  /** `all` (the default) runs the whole plan at the base; `ledger` only the criteria the ledger at the base already carries. */
-  criteria?: 'all' | 'ledger'
+  /**
+   * `all` (the default) runs the whole plan at the base; `ledger` only the
+   * criteria the ledger at the base already carries; `none` runs nothing
+   * there, so the run has one side and says so.
+   */
+  criteria?: 'all' | 'ledger' | 'none'
   /** The base side's wall clock bound, as a duration like `10m`. */
   budget?: string
 }
@@ -187,8 +191,8 @@ function parseProfileBase(value: unknown): ProfileBase {
   if (!isRecord(value)) fail('base', 'base must be a YAML object with criteria and budget')
   for (const key of Object.keys(value))
     if (key !== 'criteria' && key !== 'budget') fail(`base.${key}`, `base takes criteria and budget, not ${JSON.stringify(key)}`)
-  if (value.criteria !== undefined && value.criteria !== 'all' && value.criteria !== 'ledger')
-    fail('base.criteria', `base.criteria must be "all" or "ledger", not ${JSON.stringify(value.criteria)}`)
+  if (value.criteria !== undefined && value.criteria !== 'all' && value.criteria !== 'ledger' && value.criteria !== 'none')
+    fail('base.criteria', `base.criteria must be "all", "ledger" or "none", not ${JSON.stringify(value.criteria)}`)
   let budget: string | undefined
   if (value.budget !== undefined) {
     budget = nonEmptyString(value.budget, 'base.budget', 'base budget')

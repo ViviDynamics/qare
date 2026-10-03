@@ -78,6 +78,7 @@ import {
 } from '@qare/core'
 import type {
   BootOpts,
+  RunJobOpts,
   FlowDriverCapabilities,
   IngestOutcome,
   IntroducedCriterion,
@@ -134,7 +135,7 @@ export async function main(
   if (argv[0] === 'metrics') return metricsCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) [--workers <n>] | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare sweep [--ledger <dir>] [--json] [--out <file>] | qare metrics <record|note> | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) [--base-repo <dir>] [--workers <n>] | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare sweep [--ledger <dir>] [--json] [--out <file>] | qare metrics <record|note> | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -2039,13 +2040,23 @@ async function runCommand(
       if (!Number.isInteger(flakeAttempts) || flakeAttempts < 1)
         throw new Error(`--flake-attempts takes a whole number of attempts, one or more, not ${JSON.stringify(flakeFlag)}`)
     }
-    const runOpts: BootOpts & { flakeAttempts?: number; quarantineDir?: string; workers?: number } = { ...boot }
+    // A run of a profile that boots an app checks the base revision too
+    // (#147), so a criterion that worked there and fails at the head is named
+    // a regression. The base tree is a checkout the caller already has
+    // (--base-repo), or a git worktree of --base the run makes for itself.
+    const baseRepoFlag = flag(argv, '--base-repo')
+    const runOpts: RunJobOpts = { ...boot, base: baseRepoFlag === undefined ? {} : { repoPath: resolve(baseRepoFlag) } }
     if (cacheFlag !== undefined) runOpts.cacheDir = resolve(cacheFlag)
     if (quarantineFlag !== undefined) runOpts.quarantineDir = resolve(quarantineFlag)
     if (flakeAttempts !== undefined) runOpts.flakeAttempts = flakeAttempts
     if (workers !== undefined) runOpts.workers = workers
     const { result } = await runJob(job, runOpts)
     const code = exitCodeFor(result.verdict)
+    // A base side that did not run is said out loud: the verdict is the
+    // head's either way, but nobody should read it as a comparison.
+    if (result.base?.status === 'not-executed') err.write(`base ${result.base.ref} not checked, so nothing was compared: ${result.base.reason ?? ''}\n`)
+    for (const criterion of result.criteria)
+      if (criterion.regression === true) out.write(`regression ${criterion.id}: proven at the base, failed at the head\n`)
     out.write(`verdict ${result.verdict}; evidence ${job.evidenceDir}\n`)
     return code
   } catch (error) {

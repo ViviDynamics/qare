@@ -55,7 +55,7 @@ test('a base section states what the base side costs: which criteria, and how lo
   writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\nbase:\n  criteria: some\n`)
   const criteria = await profileError(() => loadProfile(dir))
   expect(criteria.field).toBe('base.criteria')
-  expect(criteria.message).toContain('"all" or "ledger"')
+  expect(criteria.message).toContain('"all", "ledger" or "none"')
 
   writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\nbase:\n  budget: soon\n`)
   expect((await profileError(() => loadProfile(dir))).field).toBe('base.budget')

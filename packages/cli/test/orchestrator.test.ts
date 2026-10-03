@@ -76,11 +76,14 @@ test('a real qare run writes a result.json the orchestrator example reacts to as
   expect(result.verdict).toBe('passed')
   expect(result.job).toEqual({ id: 'job-cli' })
   expect(result.criteria[0].outcome).toBe('proven')
-  expect(result.criteria[0].evidence).toContain('checks/criterion-1/0/stdout.txt')
+  // qare run asks for both sides (#147), so the head's evidence sits under
+  // head/. This job's directory is no repository, so no base was checked out.
+  expect(result.criteria[0].evidence).toContain('head/checks/criterion-1/0/stdout.txt')
+  expect(result.base.status).toBe('not-executed')
 
   const reaction = capture()
   const reactionCode = reactToResult(loadOrchestratorResult(text), { out: reaction.writer })
   expect(reactionCode).toBe(0)
   expect(reaction.lines.join('')).toContain('QARE_PASS:')
-  expect(reaction.lines.join('')).toContain('evidence: checks/criterion-1/0/stdout.txt')
+  expect(reaction.lines.join('')).toContain('evidence: head/checks/criterion-1/0/stdout.txt')
 })

@@ -329,3 +329,26 @@ test('a run over several apps compares each app with its own base (#147, #55)', 
   // Two apps at the base, both torn down, then two at the head.
   expect(boot.calls.map((args) => args.find((arg) => arg === 'up' || arg === 'down'))).toEqual(['up', 'up', 'down', 'down', 'up', 'up'])
 })
+
+test('a profile can turn the base side off: no checkout, no boot, and the run says it had one side (#147)', async () => {
+  const trees = await twoTrees({ base: ['old.txt'], head: [] })
+  const boot = recordingBoot()
+  let asked = 0
+  const job = jobFor(trees.head, [fileCheck('old-behaviour', 'old.txt')], { ...APP_PROFILE, base: { criteria: 'none' } })
+  const { result } = await runJob(job, {
+    ...boot,
+    base: {
+      checkout: async () => {
+        asked += 1
+        return { ok: false, reason: 'never asked' }
+      },
+    },
+  })
+
+  expect(asked).toBe(0)
+  expect(boot.calls.filter((args) => args.includes('up'))).toHaveLength(1)
+  expect(result.base).toEqual({ ref: 'origin/main', status: 'not-executed', reason: 'the profile runs no criteria at the base (base.criteria: none)' })
+  const criterion = criterionOf(result, 'old-behaviour')
+  expect(criterion).toMatchObject({ outcome: 'failed', base: { outcome: 'not-compared' } })
+  expect('regression' in criterion).toBe(false)
+})

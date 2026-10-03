@@ -105,6 +105,11 @@ test('the MCP surface round-trips a full job through submit, result, and evidenc
         { id: 'criterion-2', outcome: 'proven' },
       ],
     })
+    // The job is asked for both sides, as qare run asks (#147). This
+    // directory is no repository, so there is no base revision to check out:
+    // the head is still checked, and the result says nothing was compared.
+    expect(runResult.base).toMatchObject({ ref: 'main', status: 'not-executed' })
+    expect(runResult.criteria[0].base).toMatchObject({ outcome: 'not-compared' })
 
     const loaded = await client.send({
       jsonrpc: '2.0',
@@ -127,7 +132,7 @@ test('the MCP surface round-trips a full job through submit, result, and evidenc
       (evidence.result as { content: Array<{ text: string }> }).content[0].text,
     ).files as string[]
     expect(files).toContain('result.json')
-    expect(files.some((file) => file.startsWith('checks/criterion-1/0/'))).toBe(true)
+    expect(files.some((file) => file.startsWith('head/checks/criterion-1/0/'))).toBe(true)
     expect(files).toEqual([...files].sort())
   } finally {
     await rm(repoPath, { recursive: true })

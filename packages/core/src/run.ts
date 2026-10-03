@@ -978,10 +978,12 @@ async function baseLimits(
   basePath: string,
 ): Promise<{ nothingToRun: boolean; gate: (criterion: JobCriterion) => string | undefined }> {
   const ledgerOnly = new Set<string>()
+  const off = new Set<string>()
   const budgets = new Map<string, { ms: number; label: string }>()
   for (const { profile, criteria } of profiles) {
     for (const criterion of criteria) {
       if (profile.base?.criteria === 'ledger') ledgerOnly.add(criterion.id)
+      if (profile.base?.criteria === 'none') off.add(criterion.id)
       if (profile.base?.budget !== undefined) budgets.set(criterion.id, { ms: parseDurationMs(profile.base.budget), label: profile.base.budget })
     }
   }
@@ -994,12 +996,13 @@ async function baseLimits(
       // A ledger that cannot be read carries nothing: nothing runs at the base on its word.
     }
   }
-  const leftOut = (id: string): boolean => ledgerOnly.has(id) && !carried.has(id)
+  const leftOut = (id: string): boolean => off.has(id) || (ledgerOnly.has(id) && !carried.has(id))
   const all = profiles.flatMap((entry) => entry.criteria)
   const startedMs = Date.now()
   return {
     nothingToRun: all.length > 0 && all.every((criterion) => leftOut(criterion.id)),
     gate: (criterion) => {
+      if (off.has(criterion.id)) return `${NOT_RUN_AT_BASE}the profile runs no criteria at the base (base.criteria: none)`
       if (leftOut(criterion.id))
         return `${NOT_RUN_AT_BASE}the profile limits the base side to the criteria already in the ledger, and the ledger at the base does not carry ${criterion.id}`
       const budget = budgets.get(criterion.id)
@@ -1027,6 +1030,10 @@ async function runBaseSide(
   const booted: BootedApp[] = []
   let checkout: BaseCheckout | undefined
   try {
+    // A profile that runs nothing at the base costs nothing there: no
+    // checkout, no boot, and the result says the run had one side.
+    if (profiles.length > 0 && profiles.every(({ profile }) => profile.base?.criteria === 'none'))
+      return { status: 'not-executed', reason: 'the profile runs no criteria at the base (base.criteria: none)' }
     const outcome = await (request.checkout ?? prepareBaseCheckout)({
       repoPath: job.repoPath,
       baseRef: job.baseRef,
@@ -1040,7 +1047,7 @@ async function runBaseSide(
     if (limits.nothingToRun)
       return {
         status: 'not-executed',
-        reason: 'the profile limits the base side to the criteria already in the ledger, and the ledger at the base carries none of the criteria this run checks',
+        reason: "the profile's limits leave nothing to run at the base: the ledger at the base carries none of the criteria this run checks",
       }
     const side: SideContext = {
       name: 'base',
