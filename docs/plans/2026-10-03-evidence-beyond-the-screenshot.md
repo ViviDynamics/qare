@@ -94,7 +94,7 @@ Out:
   and crashes. Failing tests against the fake chromium.
 - [x] 5. Electron driver: `frame`, concealed screenshots, a crashed window,
   the shared platform log. Failing tests against the fake application.
-- [ ] 6. The run (`run.ts`): `failure.log` for a check that did not pass,
+- [x] 6. The run (`run.ts`): `failure.log` for a check that did not pass,
   `console.log` for the browser, and the planted secret: a failing flow on a
   fake session that types, logs and shows a secret leaves a recording, a log
   excerpt and a snapshot, and no byte of the secret anywhere in the evidence.

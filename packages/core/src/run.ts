@@ -18,6 +18,7 @@ import { flowDriverFor } from './flow-driver.js'
 import { applicationPathProblem, makeElectronFlowSession } from './flow-electron.js'
 import { reapLiveCells, type CellRecord } from './client-cell.js'
 import { makePlaywrightFlowSession } from './flow-playwright.js'
+import { excerptAround, type PlatformLogEntry } from './platform-log.js'
 import { evidenceOf, judgeRun, toBaseSideResults, toSideResults } from './judge.js'
 import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck, type JobProfileGroup, type JobProfileRef, type JobToolCheck, type SeveralProfilesJob, type SingleProfileJob } from './job.js'
 import type { FlowActionStep } from './plan.js'
@@ -152,6 +153,12 @@ export type FlowSessionFactory = (opts: { masks: string[] }) => Promise<{
    * the application wrote on its way out is in it.
    */
   console?: () => string[]
+  /**
+   * The same output, each line with the moment it was written (#78). A
+   * backend that has it gets a `failure.log` beside the `console.log` of a
+   * check that did not pass: the lines from the window around the failure.
+   */
+  platformLog?: () => PlatformLogEntry[]
   /**
    * What a contained client build reached for, as its cell's gate recorded
    * it (#223). Read once the session is disposed; throws when the record
@@ -2696,6 +2703,9 @@ async function runFlowCheckJob(
   // withheld while a CODE is on the page: a mail link is not a secret, a
   // one-time value is (#64).
   const generatedCodes: string[] = [...mailArtefacts]
+  // When the check stopped, if it did not pass (#78): the moment its
+  // platform log is cut around.
+  let stoppedAt: number | undefined
   const drive = async (): Promise<FlowJobOutcome> => {
     const work = runFlowCheck({
       actions: target === undefined ? check.actions ?? [] : (check.actions ?? []).map((action) => onTarget(action, target.url)),
@@ -2729,7 +2739,9 @@ async function runFlowCheckJob(
       ])
     } catch (error) {
       stopped = (error as Error).message
+      stoppedAt = Date.now()
     }
+    if (outcome?.failedAt !== undefined) stoppedAt = outcome.failedAt
     const evidence = outcome === undefined ? [] : inEvidence(outcome.evidence)
     // The audits the flow made are settled into an outcome and a record
     // (#149), in code. A flow that timed out hands back no audits, and the
@@ -2813,6 +2825,16 @@ async function runFlowCheckJob(
     await writeFile(join(evidenceDir, checkDir, CONSOLE_LOG), `${text}\n`)
     driven = { ...driven, evidence: [...driven.evidence, ...inEvidence([CONSOLE_LOG])] }
   }
+  // The log for the window around the failure (#78), for a check that did
+  // not pass: the part of the output a reader wants first, cut from the
+  // same lines once the session is disposed, and swept the same way.
+  if (started.platformLog !== undefined && stoppedAt !== undefined) {
+    let text = redactText(excerptAround(started.platformLog(), stoppedAt).join('\n'), rules)
+    for (const code of generatedCodes) text = text.split(code).join(REDACTED)
+    await mkdir(join(evidenceDir, checkDir), { recursive: true })
+    await writeFile(join(evidenceDir, checkDir, FAILURE_LOG), `${text}\n`)
+    driven = { ...driven, evidence: [...driven.evidence, ...inEvidence([FAILURE_LOG])] }
+  }
   if (client === undefined) return driven
   // What the build reached (#223), read once it has exited and its cell is
   // gone, so the record holds what it reached for on its way out too, and
@@ -2891,6 +2913,8 @@ function sanitizeLine(text: string): string {
 
 /** The application's console output in a flow check's evidence (#72). */
 const CONSOLE_LOG = 'console.log'
+/** The part of it around a failure (#78). */
+const FAILURE_LOG = 'failure.log'
 
 /**
  * A flow session over the host's own tools (#94): every action becomes the
