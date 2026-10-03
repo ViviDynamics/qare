@@ -1,15 +1,6 @@
-import { createServer } from 'node:net'
-import { connect } from 'node:tls'
 import { expect, test } from 'vitest'
+import { clientHello, dnsQuery } from './cell-sockets.js'
 import { dnsReply, hostName, httpHost, readDnsQuestion, tlsServerName } from '../src/cell-wire.js'
-
-/** A DNS query as a resolver sends it: one question, recursion desired. */
-function dnsQuery(name: string, type: number, id = 0x1234): Buffer {
-  const labels = name.split('.').map((label) => Buffer.concat([Buffer.from([label.length]), Buffer.from(label, 'latin1')]))
-  const question = Buffer.concat([...labels, Buffer.from([0, type >> 8, type & 0xff, 0, 1])])
-  const header = Buffer.from([id >> 8, id & 0xff, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0])
-  return Buffer.concat([header, question])
-}
 
 test('a DNS question is read by name and type, and anything else is not a question (#223)', () => {
   expect(readDnsQuestion(dnsQuery('API.Example.Test', 1))).toMatchObject({ id: 0x1234, name: 'api.example.test', type: 1 })
@@ -46,26 +37,6 @@ test('a DNS reply answers the question it was asked: an address, nothing, or no 
   expect(none.readUInt16BE(6)).toBe(0)
   expect(none[3]! & 0x0f).toBe(3)
 })
-
-/** The first bytes a real TLS client sends, taken off a socket. */
-function clientHello(servername: string | undefined): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const server = createServer((socket) => {
-      socket.once('data', (chunk) => {
-        socket.destroy()
-        server.close()
-        resolve(chunk)
-      })
-    })
-    server.on('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      if (address === null || typeof address === 'string') return reject(new Error('no port'))
-      const client = connect({ host: '127.0.0.1', port: address.port, ...(servername === undefined ? {} : { servername }), rejectUnauthorized: false })
-      client.on('error', () => {})
-    })
-  })
-}
 
 test('the server name is read from a real TLS client hello (#223)', async () => {
   const hello = await clientHello('api.example.test')

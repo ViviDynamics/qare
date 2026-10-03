@@ -3,6 +3,7 @@ import http from 'node:http'
 import https from 'node:https'
 import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve } from 'node:path'
+import { clientCellProblem, type ClientCell } from './client-cell.js'
 import { electronDisplayProblem, type ElectronHost } from './flow-electron.js'
 import { clientExecutableName, type ProfileApp, type ProfileClient, type QaProfile } from './profile.js'
 import { VERSION } from './version.js'
@@ -85,6 +86,14 @@ export interface BootOpts {
   clientEnvironment?: 'inherit' | 'minimal'
   /** The provisioning seams (#75): installers by kind, the command runner, the health check, where installs go. */
   provision?: Pick<ProvisionOpts, 'installers' | 'runCommand' | 'health' | 'installRoot'>
+  /**
+   * How a client build's cell is made (#223): whether this host can make one,
+   * and the making. Docker and the process's own environment by default.
+   */
+  clientCell?: {
+    problem?: () => Promise<string | undefined>
+    start?: (opts: { repoPath: string; hosts: readonly string[] }) => Promise<ClientCell>
+  }
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 500
@@ -321,6 +330,16 @@ async function probeClient(client: ProfileClient, opts: BootOpts): Promise<BootO
       reason: `the client build is not there to launch: client.executable ${client.executable} resolves to ${path}, which is not a file; building it is the project's own step, before the run`,
       logs: '',
     }
+  // Fail closed (#223): a build runs contained or, when its profile says so
+  // in as many words, uncontained. A host that cannot make a cell blocks the
+  // run here, by name; it never runs the build with the step's network
+  // because containing it turned out to be inconvenient.
+  if (client.egress !== 'uncontained') {
+    const cell = await (opts.clientCell?.problem ?? ((): Promise<string | undefined> => clientCellProblem()))()
+    return cell === undefined ? { kind: 'up', logs: '' } : { kind: 'blocked', reason: cell, logs: '' }
+  }
+  // An uncontained build opens its windows on this host; a contained one on
+  // the display its cell starts.
   const display = electronDisplayProblem(opts.clientEnv)
   if (display !== undefined) return { kind: 'blocked', reason: display, logs: '' }
   // The health check a profile asks for (#75): the build is launched once

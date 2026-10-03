@@ -1,12 +1,11 @@
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
-import { GATE_SOCKET } from '../src/cell-gate.js'
 import { launchInCell, runCellCommand } from '../src/cell-launch.js'
+import { askGate } from './cell-sockets.js'
 
 function seams(events: string[]) {
   return {
@@ -124,12 +123,7 @@ test('qare cell gate serves until it is told to stop, then writes its record (#2
   })
   await isReady
   // One refused lookup, asked the way the cell asks.
-  await new Promise<void>((resolve) => {
-    const socket = connect(join(dir, GATE_SOCKET))
-    socket.on('connect', () => socket.write(`${JSON.stringify({ op: 'resolve', host: 'evil.example.test' })}\n`))
-    socket.on('data', () => {})
-    socket.on('close', () => resolve())
-  })
+  expect((await askGate(dir, { op: 'resolve', host: 'evil.example.test' })).reply).toEqual({ ok: false, reason: 'undeclared' })
   signals.emit('SIGTERM')
   expect(await running).toBe(0)
   expect(JSON.parse(lines.at(-1) as string)).toEqual({

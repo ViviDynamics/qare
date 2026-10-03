@@ -1,14 +1,11 @@
-import { createSocket } from 'node:dgram'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { request } from 'node:http'
-import { connect, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { connect as tlsConnect } from 'node:tls'
 import { afterEach, expect, test } from 'vitest'
 import { CDP_SOCKET, startGate, type Gate } from '../src/cell-gate.js'
 import { startShim, type Shim } from '../src/cell-shim.js'
 import { readDnsQuestion } from '../src/cell-wire.js'
+import { dialLoopback, dialUnix, getAs as get, lookup, loopbackServer, tlsTo } from './cell-sockets.js'
 
 const cleanups: Array<() => Promise<unknown>> = []
 afterEach(async () => {
@@ -25,21 +22,19 @@ async function cell(hosts: string[], opts: { gate?: boolean } = {}): Promise<{ s
   const dir = await mkdtemp(join(tmpdir(), 'qare-shim-'))
   cleanups.push(() => rm(dir, { recursive: true, force: true }))
   const received: Buffer[] = []
-  const upstream = createServer((socket) => {
+  const upstream = await loopbackServer((socket) => {
     socket.on('error', () => {})
     socket.on('data', (chunk) => {
       received.push(chunk)
       if (String(chunk).startsWith('GET ')) socket.end('HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nupstream')
     })
   })
-  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve))
-  cleanups.push(() => new Promise((resolve) => upstream.close(resolve)))
-  const upstreamPort = (upstream.address() as { port: number }).port
+  cleanups.push(upstream.close)
+  const upstreamPort = upstream.port
   // What stands in for the build's DevTools endpoint.
-  const devtools = createServer((socket) => socket.on('data', (chunk) => socket.write(`devtools ${String(chunk)}`)))
-  await new Promise<void>((resolve) => devtools.listen(0, '127.0.0.1', resolve))
-  cleanups.push(() => new Promise((resolve) => devtools.close(resolve)))
-  const cdpPort = (devtools.address() as { port: number }).port
+  const devtools = await loopbackServer((socket) => socket.on('data', (chunk) => socket.write(`devtools ${String(chunk)}`)))
+  cleanups.push(devtools.close)
+  const cdpPort = devtools.port
   const dialled: string[] = []
   const gate =
     opts.gate === false
@@ -52,31 +47,13 @@ async function cell(hosts: string[], opts: { gate?: boolean } = {}): Promise<{ s
           write: () => {},
           dial: (host, port) => {
             dialled.push(`${host}:${port}`)
-            return connect({ host: '127.0.0.1', port: upstreamPort })
+            return dialLoopback(upstreamPort)
           },
         })
   if (gate !== undefined) cleanups.push(() => gate.stop())
   const shim = await startShim({ socketDir: dir, dnsPort: 0, httpPort: 0, httpsPort: 0, cdpPort })
   cleanups.push(() => shim.stop())
   return { shim, gate, dir, received, dialled, cdpPort }
-}
-
-function lookup(port: number, name: string, type: number): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const socket = createSocket('udp4')
-    const labels = name.split('.').map((label) => Buffer.concat([Buffer.from([label.length]), Buffer.from(label)]))
-    const query = Buffer.concat([Buffer.from([0xab, 0xcd, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]), ...labels, Buffer.from([0, type >> 8, type & 0xff, 0, 1])])
-    const timer = setTimeout(() => {
-      socket.close()
-      reject(new Error(`no DNS reply for ${name}`))
-    }, 2_000)
-    socket.on('message', (message) => {
-      clearTimeout(timer)
-      socket.close()
-      resolve(message)
-    })
-    socket.send(query, port, '127.0.0.1')
-  })
 }
 
 const rcode = (reply: Buffer): number => reply[3]! & 0x0f
@@ -104,18 +81,6 @@ test('the cell\'s resolver answers a declared name with loopback and nothing els
   expect(summary.reached).toEqual([{ host: 'evil.example.test', port: 53, protocol: 'dns', declared: false, count: 2 }])
 })
 
-function get(port: number, host: string): Promise<{ status?: number; body?: string; error?: string }> {
-  return new Promise((resolve) => {
-    const call = request({ host: '127.0.0.1', port, path: '/hello', headers: { host }, agent: false }, (response) => {
-      let body = ''
-      response.on('data', (chunk) => (body += String(chunk)))
-      response.on('end', () => resolve({ status: response.statusCode ?? 0, body }))
-    })
-    call.on('error', (error) => resolve({ error: (error as NodeJS.ErrnoException).code ?? error.message }))
-    call.end()
-  })
-}
-
 test('a plain request to a declared host is carried by name; one to any other host is cut (#223)', async () => {
   const { shim, gate, dialled, received } = await cell(['api.example.test'])
   expect(await get(shim.ports.http, 'api.example.test')).toEqual({ status: 200, body: 'upstream' })
@@ -133,19 +98,13 @@ test('a plain request to a declared host is carried by name; one to any other ho
 
 test('a TLS connection is carried by the name in its hello, unopened (#223)', async () => {
   const { shim, gate, dialled, received } = await cell(['api.example.test'])
-  const client = tlsConnect({ host: '127.0.0.1', port: shim.ports.https, servername: 'api.example.test', rejectUnauthorized: false })
-  client.on('error', () => {})
+  const client = tlsTo(shim.ports.https, 'api.example.test')
   await until(() => received.length > 0)
   client.destroy()
   expect(dialled).toEqual(['api.example.test:443'])
   // What reached the declared host is the client's own hello: a TLS handshake record.
   expect(Buffer.concat(received)[0]).toBe(0x16)
-  const refused = tlsConnect({ host: '127.0.0.1', port: shim.ports.https, servername: 'evil.example.test', rejectUnauthorized: false })
-  const ended = await new Promise<string>((resolve) => {
-    refused.on('error', (error) => resolve((error as NodeJS.ErrnoException).code ?? error.message))
-    refused.on('close', () => resolve('closed'))
-  })
-  expect(['ECONNRESET', 'closed']).toContain(ended)
+  expect(['ECONNRESET', 'closed']).toContain(await tlsTo(shim.ports.https, 'evil.example.test').ended)
   expect(dialled).toEqual(['api.example.test:443'])
   const summary = await gate!.stop()
   expect(summary.reached.map((entry) => `${entry.host}:${entry.port} ${entry.declared}`)).toEqual(['api.example.test:443 true', 'evil.example.test:443 false'])
@@ -153,7 +112,7 @@ test('a TLS connection is carried by the name in its hello, unopened (#223)', as
 
 test('the build\'s DevTools endpoint is exposed on the socket the gate relays (#223)', async () => {
   const { dir } = await cell([])
-  const client = connect(join(dir, CDP_SOCKET))
+  const client = dialUnix(join(dir, CDP_SOCKET))
   let received = ''
   client.on('data', (chunk) => (received += String(chunk)))
   client.write('attach')

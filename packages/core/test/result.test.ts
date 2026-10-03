@@ -492,3 +492,12 @@ test('a result names the artefacts a client run provisioned, and what it compare
   expect(loadResult(withClient(left)).client?.artefact?.leftover).toBe('the install at /tmp/x could not be removed')
   expect(field({ ...client, artefact: { ...client.artefact, leftover: '' } })).toBe('client.artefact.leftover')
 })
+
+test('a client result says whether the build was contained, and a result from before it could be still loads (#223)', () => {
+  const base = { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [], startedAt: '2026-10-03T00:00:00.000Z', finishedAt: '2026-10-03T00:00:01.000Z' }
+  const client = { driver: 'electron', executable: 'dist/app/app', comparison: 'none' }
+  expect(parseResult({ ...base, client: { ...client, egress: 'contained' } }).client).toEqual({ ...client, egress: 'contained' })
+  expect(parseResult({ ...base, client: { ...client, egress: 'uncontained' } }).client).toEqual({ ...client, egress: 'uncontained' })
+  expect(parseResult({ ...base, client }).client).toEqual(client)
+  expect(resultError(() => parseResult({ ...base, client: { ...client, egress: 'open' } })).message).toContain('unknown client egress "open"')
+})

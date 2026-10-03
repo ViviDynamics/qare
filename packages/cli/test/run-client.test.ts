@@ -44,6 +44,6 @@ test('qare run --plan against a client profile whose build is not there is block
   expect(code).toBe(2)
   const result = JSON.parse(await readFile(join(dir, 'evidence', 'result.json'), 'utf8'))
   expect(result.verdict).toBe('blocked')
-  expect(result.client).toEqual({ driver: 'electron', executable: 'dist/app/app', comparison: 'none' })
+  expect(result.client).toEqual({ driver: 'electron', executable: 'dist/app/app', comparison: 'none', egress: 'contained' })
   expect(result.criteria[0].reason).toContain(`resolves to ${join(dir, 'dist', 'app', 'app')}, which is not a file`)
 })

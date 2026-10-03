@@ -16,6 +16,7 @@ import { runFlowCheck, runSuiteCheck, undeclaredCheckKinds, type FlowCheckResult
 import type { FlowRepairRecord } from './locator.js'
 import { flowDriverFor } from './flow-driver.js'
 import { applicationPathProblem, makeElectronFlowSession } from './flow-electron.js'
+import { startClientCell, type CellRecord } from './client-cell.js'
 import { makePlaywrightFlowSession } from './flow-playwright.js'
 import { evidenceOf, judgeRun, toBaseSideResults, toSideResults } from './judge.js'
 import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck, type JobProfileGroup, type JobProfileRef, type JobToolCheck, type SeveralProfilesJob, type SingleProfileJob } from './job.js'
@@ -25,7 +26,7 @@ import { FileLedgerStore } from './ledger.js'
 import { mailReader, mailSourceOf, type DeclaredMailSource, type MailSource } from './mail-source.js'
 import { extractCode, mailEvidence, runMailCheck, type MailProof, type ReadMail } from './mailbox.js'
 import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCapabilities, mcpDriverServer, type McpToolResult } from './mcp.js'
-import { ProfileMissingError, clientExecutableName, loadProfile, pathOnTarget, validateProfileConfig, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
+import { ProfileMissingError, clientExecutableName, loadProfile, pathOnTarget, validateProfileConfig, type ProfileClient, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, mailEvidenceRules, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
@@ -151,6 +152,12 @@ export type FlowSessionFactory = (opts: { masks: string[] }) => Promise<{
    * the application wrote on its way out is in it.
    */
   console?: () => string[]
+  /**
+   * What a contained client build reached for, as its cell's gate recorded
+   * it (#223). Read once the session is disposed; throws when the record
+   * never came back.
+   */
+  reached?: () => CellRecord
 }>
 
 /**
@@ -162,7 +169,7 @@ export type FlowSessionFactory = (opts: { masks: string[] }) => Promise<{
 function clientSessionFactory(
   profile: QaProfile,
   repoPath: string,
-  clientEnv: BootOpts['clientEnv'],
+  opts: Pick<BootOpts, 'clientEnv' | 'clientCell'>,
   execution: ExecutionKind,
   booted?: BootedClient,
   seam?: (executable: string) => FlowSessionFactory,
@@ -173,12 +180,19 @@ function clientSessionFactory(
   // one the profile names in the checkout is launched in place.
   const executable = booted?.executable ?? clientExecutablePath(client, repoPath)
   if (seam !== undefined) return seam(executable)
+  // Contained unless the profile says otherwise (#223): each launch gets a
+  // cell of its own, made from the image the run is in, holding the hosts
+  // the profile declares.
+  const startCell =
+    opts.clientCell?.start ??
+    ((cell: { repoPath: string; hosts: readonly string[] }) => startClientCell({ ...cell, image: process.env.QARE_IMAGE_REF ?? '' }))
   return ({ masks }) =>
     makeElectronFlowSession({
       executable,
       args: client.args,
       masks,
-      ...clientEnv,
+      ...opts.clientEnv,
+      ...(client.egress === 'uncontained' ? {} : { cell: () => startCell({ repoPath, hosts: client.hosts ?? [] }) }),
       // The build is pull request code: on a host it gets the minimal
       // environment a command step gets there, never the host's own (#91).
       environment: execution === 'native' ? 'minimal' : 'inherit',
@@ -191,6 +205,22 @@ interface FlowTargetContext {
   hosts: string[]
   /** Undeclared connections found so far; any one of them refuses the run. */
   undeclared: string[]
+}
+
+/** What a client run's flow checks record about the build's network (#223). */
+interface FlowClientContext {
+  /** The build, as the profile names it. */
+  executable: string
+  /** The hosts the profile declares; empty when it declares none. */
+  hosts: string[]
+  /** False when the profile opts out with `client.egress: uncontained`. */
+  contained: boolean
+  /** What the build reached for that the gate refused; any one of them refuses the run. */
+  undeclared: string[]
+}
+
+function clientContext(client: ProfileClient): FlowClientContext {
+  return { executable: clientExecutableName(client), hosts: client.hosts ?? [], contained: client.egress !== 'uncontained', undeclared: [] }
 }
 
 /**
@@ -378,7 +408,15 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
       ? { target: { url: profile.target.url, comparison: 'none' as const } }
       : profile.client !== undefined
         ? // A build the run launches has one side too, and the result names it (#72).
-          { client: { driver: profile.client.driver, executable: clientExecutableName(profile.client), comparison: 'none' as const } }
+          {
+            client: {
+              driver: profile.client.driver,
+              executable: clientExecutableName(profile.client),
+              comparison: 'none' as const,
+              // Whether the build ran in a cell or, by its profile's own word, without one (#223).
+              egress: profile.client.egress === 'uncontained' ? ('uncontained' as const) : ('contained' as const),
+            },
+          }
         : {}
   // The seeded second-factor secret and any backup code never reach the
   // evidence either: they sweep alongside the profile's own rules (#64).
@@ -489,6 +527,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     // says nothing about any other run (#69).
     const artefacts = new Artefacts()
     const target = profile.target === undefined ? undefined : targetContext(profile.target)
+    const reaching = profile.client === undefined ? undefined : clientContext(profile.client)
     // The flow types the code the profile's seeded secret generates; the secret
     // itself never crosses into the plan (#64).
     const totp =
@@ -496,10 +535,11 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     if (side !== undefined) side.ran = true
     const visual = visualContextOf(profile, profile.redact?.masks ?? [], opts.visualSession, side)
     const flow = {
-      session: opts.flowSession ?? clientSessionFactory(profile, job.repoPath, opts.clientEnv, execution, boot.client, opts.clientSession),
+      session: opts.flowSession ?? clientSessionFactory(profile, job.repoPath, opts, execution, boot.client, opts.clientSession),
       masks: profile.redact?.masks ?? [],
       suites: profile.suites,
       target,
+      ...(reaching === undefined ? {} : { client: reaching }),
       totp,
       mcp: profile.mcp,
       visual,
@@ -518,7 +558,10 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     // The judge is the verdict decision. Base execution and egress interception
     // of a booted stack land with the orchestrator; a target run records what its
     // browser reached, and a host the profile does not declare refuses the run.
-    const egressVerdict = target !== undefined && target.undeclared.length > 0 ? 'refused' : 'allowed'
+    // A client run records what its build reached through the gate, and holds
+    // it to the same rule (#223).
+    const undeclared = (target?.undeclared.length ?? 0) + (reaching?.undeclared.length ?? 0)
+    const egressVerdict = undeclared > 0 ? 'refused' : 'allowed'
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict })
     const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, startedAt, ...targetNote }, rules, values, execution)
     await feedIfOptedIn(opts, job, finished.result)
@@ -887,7 +930,7 @@ async function runProfileGroup(
     if (side !== undefined) side.ran = true
     const visual = visualContextOf(profile, masks, opts.visualSession, side)
     const flow = {
-      session: opts.flowSession ?? clientSessionFactory(profile, job.repoPath, opts.clientEnv, execution),
+      session: opts.flowSession ?? clientSessionFactory(profile, job.repoPath, opts, execution),
       masks,
       suites: profile.suites,
       target,
@@ -944,6 +987,8 @@ interface FlowContext {
   a11y: A11yContext
   suites: ProfileSuite[]
   target?: FlowTargetContext
+  /** What a client run records about its build's network (#223). */
+  client?: FlowClientContext
   totp?: FlowTotpConfig
   mcp?: ProfileMcpServer[]
   /** Where traces go; beside the evidence directory when the run names none. */
@@ -2208,6 +2253,7 @@ async function runCriterion(
           flow.mcp,
           flow.tracesRoot,
           a11y,
+          flow.client,
         )
         evidence.push(...outcome.evidence)
         if (outcome.transient === true) notCacheable = true
@@ -2567,6 +2613,7 @@ async function runFlowCheckJob(
   mcp?: ProfileMcpServer[],
   tracesRoot?: string,
   a11y?: A11yRun,
+  client?: FlowClientContext,
 ): Promise<FlowJobOutcome> {
   const inEvidence = (names: readonly string[]): string[] => names.map((name) => `${checkDir}/${name}`)
   if (check.suite !== undefined) {
@@ -2624,6 +2671,17 @@ async function runFlowCheckJob(
     return {
       status: 'unverified',
       reason: 'the flow backend does not report the hosts its browser reached, so a run against a target cannot vouch for them',
+      evidence: [],
+    }
+  }
+  if (client?.contained === true && started.reached === undefined) {
+    // Fail closed (#223): a contained run vouches for what its build reached
+    // from the gate's record, and a backend with no record to give is not
+    // read as a build that reached nothing.
+    await started.dispose()
+    return {
+      status: 'unverified',
+      reason: 'the flow backend does not report what the build reached, so a contained client run cannot vouch for it',
       evidence: [],
     }
   }
@@ -2742,12 +2800,82 @@ async function runFlowCheckJob(
   // the action log: swept by the profile's rules and of every value the
   // flow put on the page. However the flow ended, what the application
   // said while it ran is what makes the ending readable.
-  if (started.console === undefined) return driven
-  let text = redactText(started.console().join('\n'), rules)
-  for (const code of generatedCodes) text = text.split(code).join(REDACTED)
-  await mkdir(join(evidenceDir, checkDir), { recursive: true })
-  await writeFile(join(evidenceDir, checkDir, CONSOLE_LOG), `${text}\n`)
-  return { ...driven, evidence: [...driven.evidence, ...inEvidence([CONSOLE_LOG])] }
+  if (started.console !== undefined) {
+    let text = redactText(started.console().join('\n'), rules)
+    for (const code of generatedCodes) text = text.split(code).join(REDACTED)
+    await mkdir(join(evidenceDir, checkDir), { recursive: true })
+    await writeFile(join(evidenceDir, checkDir, CONSOLE_LOG), `${text}\n`)
+    driven = { ...driven, evidence: [...driven.evidence, ...inEvidence([CONSOLE_LOG])] }
+  }
+  if (client === undefined) return driven
+  // What the build reached (#223), read once it has exited and its cell is
+  // gone, so the record holds what it reached for on its way out too, and
+  // written however the flow ended.
+  const outbound = await recordClientOutbound(client, started.reached, join(evidenceDir, checkDir), rules)
+  const evidence = outbound.written ? [...driven.evidence, ...inEvidence(['outbound.json'])] : driven.evidence
+  if (outbound.undeclared.length > 0) {
+    client.undeclared.push(...outbound.undeclared)
+    return {
+      ...driven,
+      status: 'unverified',
+      reason: `refused: undeclared host: ${outbound.undeclared.join(', ')}; the client profile does not list it in client.hosts`,
+      evidence,
+    }
+  }
+  // A record that is missing or cut vouches for nothing: the flow is unverified, whatever it showed.
+  if (outbound.incomplete !== undefined) return { ...driven, status: 'unverified', reason: outbound.incomplete, evidence }
+  return { ...driven, evidence }
+}
+
+/**
+ * Write what a client build reached into the check's `outbound.json` (#223),
+ * and return what the gate refused, one entry per destination. A build whose
+ * profile opted out has no record, and the file says so instead of saying
+ * nothing. A record that never came back is not written as an empty one.
+ */
+async function recordClientOutbound(
+  client: FlowClientContext,
+  reached: (() => CellRecord) | undefined,
+  dir: string,
+  rules: readonly RedactionRule[],
+): Promise<{ written: boolean; undeclared: string[]; incomplete?: string }> {
+  const write = async (record: Record<string, unknown>): Promise<void> => {
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'outbound.json'), `${JSON.stringify(redactValue(record, rules), null, 2)}\n`)
+  }
+  if (!client.contained) {
+    await write({
+      client: client.executable,
+      containment: 'none',
+      reason: 'the profile opts out with client.egress: uncontained, so the build ran with the network its step has and what it reached was not recorded',
+    })
+    return { written: true, undeclared: [] }
+  }
+  let record: CellRecord
+  try {
+    if (reached === undefined) throw new Error('the flow backend does not report what the build reached')
+    record = reached()
+  } catch (error) {
+    return { written: false, undeclared: [], incomplete: sanitizeLine((error as Error).message) }
+  }
+  await write({
+    client: client.executable,
+    containment: 'cell',
+    declared: client.hosts,
+    reached: record.reached,
+    ...(record.incomplete === undefined ? {} : { incomplete: record.incomplete }),
+  })
+  return {
+    written: true,
+    // The gate decided: what it refused is undeclared, whatever the name.
+    undeclared: record.reached.filter((entry) => !entry.declared).map((entry) => sanitizeLine(`${entry.host}:${entry.port} (${entry.protocol})`)),
+    ...(record.incomplete === undefined ? {} : { incomplete: record.incomplete }),
+  }
+}
+
+/** One line of a reason: what a record carries is never allowed to break out of it. */
+function sanitizeLine(text: string): string {
+  return text.replace(/[\r\n]+/g, ' ')
 }
 
 /** The application's console output in a flow check's evidence (#72). */

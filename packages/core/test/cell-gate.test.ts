@@ -1,9 +1,9 @@
 import { mkdtemp, rm } from 'node:fs/promises'
-import { connect, createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, test } from 'vitest'
-import { CDP_SOCKET, GATE_SOCKET, startGate, type Gate, type GateSummary } from '../src/cell-gate.js'
+import { CDP_SOCKET, startGate, type Gate, type GateSummary } from '../src/cell-gate.js'
+import { askGate, dialLoopback, loopbackServer, unixServer } from './cell-sockets.js'
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => {
@@ -11,17 +11,14 @@ afterEach(async () => {
 })
 
 /** An upstream that greets and echoes, standing in for a declared host. */
-async function upstream(): Promise<{ server: Server; port: number }> {
-  const server = createServer((socket) => {
+async function upstream(): Promise<{ port: number }> {
+  const listening = await loopbackServer((socket) => {
     socket.write('hello from upstream\n')
     socket.on('data', (chunk) => socket.write(`echo ${String(chunk)}`))
     socket.on('error', () => {})
   })
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-  cleanups.push(() => new Promise((resolve) => server.close(() => resolve())))
-  const address = server.address()
-  if (address === null || typeof address === 'string') throw new Error('no port')
-  return { server, port: address.port }
+  cleanups.push(listening.close)
+  return { port: listening.port }
 }
 
 async function gate(hosts: string[], extra: { maxEntries?: number; dialPort?: number } = {}): Promise<{ gate: Gate; dir: string; lines: string[]; dialled: string[] }> {
@@ -38,7 +35,7 @@ async function gate(hosts: string[], extra: { maxEntries?: number; dialPort?: nu
     dial: (host, port) => {
       dialled.push(`${host}:${port}`)
       // The declared host is the upstream above, wherever the name would really lead.
-      return connect({ host: '127.0.0.1', port: extra.dialPort ?? 1 })
+      return dialLoopback(extra.dialPort ?? 1)
     },
     ...(extra.maxEntries === undefined ? {} : { maxEntries: extra.maxEntries }),
   })
@@ -46,32 +43,7 @@ async function gate(hosts: string[], extra: { maxEntries?: number; dialPort?: nu
   return { gate: started, dir, lines, dialled }
 }
 
-/** One request to the gate: the line it is sent, the line it answers, and the socket for what follows. */
-function ask(dir: string, request: unknown): Promise<{ reply: Record<string, unknown> | undefined; socket: Socket; rest: () => string }> {
-  return new Promise((resolve, reject) => {
-    const socket = connect(join(dir, GATE_SOCKET))
-    let buffered = ''
-    let answered = false
-    socket.on('error', reject)
-    socket.on('connect', () => socket.write(typeof request === 'string' ? request : `${JSON.stringify(request)}\n`))
-    const settle = (): void => {
-      if (answered) return
-      const end = buffered.indexOf('\n')
-      if (end === -1) return
-      answered = true
-      const line = buffered.slice(0, end)
-      buffered = buffered.slice(end + 1)
-      resolve({ reply: JSON.parse(line) as Record<string, unknown>, socket, rest: () => buffered })
-    }
-    socket.on('data', (chunk) => {
-      buffered += String(chunk)
-      settle()
-    })
-    socket.on('close', () => {
-      if (!answered) resolve({ reply: undefined, socket, rest: () => buffered })
-    })
-  })
-}
+const ask = askGate
 
 const until = async (done: () => boolean): Promise<void> => {
   for (let i = 0; i < 200 && !done(); i += 1) await new Promise((resolve) => setTimeout(resolve, 10))
@@ -185,10 +157,9 @@ test('the record is bounded, and says when it was cut (#223)', async () => {
 
 test('the driver is relayed to the endpoint the cell exposes (#223)', async () => {
   const { gate: started, dir } = await gate([])
-  const endpoint = createServer((socket) => socket.on('data', (chunk) => socket.write(`cdp ${String(chunk)}`)))
-  await new Promise<void>((resolve) => endpoint.listen(join(dir, CDP_SOCKET), resolve))
-  cleanups.push(() => new Promise((resolve) => endpoint.close(() => resolve())))
-  const client = connect({ host: '127.0.0.1', port: started.relayPort })
+  const endpoint = await unixServer(join(dir, CDP_SOCKET), (socket) => socket.on('data', (chunk) => socket.write(`cdp ${String(chunk)}`)))
+  cleanups.push(endpoint.close)
+  const client = dialLoopback(started.relayPort)
   let received = ''
   client.on('data', (chunk) => {
     received += String(chunk)

@@ -131,6 +131,12 @@ export interface RunClient {
   artefact?: RunClientArtefact
   /** What the base side was provisioned from (#75), when the profile names a base artefact. */
   base?: RunClientArtefact
+  /**
+   * Whether the build ran in a cell with no network of its own (#223), or
+   * with the network its step had because its profile opted out. Absent in
+   * a result written before builds were contained, when none was.
+   */
+  egress?: 'contained' | 'uncontained'
 }
 
 /**
@@ -524,7 +530,16 @@ function parseClient(value: unknown): RunClient | undefined {
     fail('client.comparison', 'client.comparison is "base", so client.base must name the artefact the base side was installed from')
   if (value.comparison === 'none' && base !== undefined)
     fail('client.base', 'client.base names a build of the base, but client.comparison is "none": a base build that was checked makes the comparison "base"')
-  return { driver, executable, comparison: value.comparison, ...(artefact === undefined ? {} : { artefact }), ...(base === undefined ? {} : { base }) }
+  if (value.egress !== undefined && value.egress !== 'contained' && value.egress !== 'uncontained')
+    fail('client.egress', `unknown client egress ${JSON.stringify(value.egress)} (a build ran "contained" or "uncontained")`)
+  return {
+    driver,
+    executable,
+    comparison: value.comparison,
+    ...(artefact === undefined ? {} : { artefact }),
+    ...(base === undefined ? {} : { base }),
+    ...(value.egress === undefined ? {} : { egress: value.egress }),
+  }
 }
 
 function parseClientArtefact(value: unknown, field: string): RunClientArtefact | undefined {
