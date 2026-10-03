@@ -701,7 +701,8 @@ function parseMail(value: unknown): ProfileMail {
 const MAIL_DOMAIN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/
 
 function parseMailDomain(value: unknown): string {
-  if (typeof value !== 'string' || !MAIL_DOMAIN.test(value))
+  // The DNS limits too: 63 characters to a label, 253 to the name.
+  if (typeof value !== 'string' || !MAIL_DOMAIN.test(value) || value.length > 253 || value.split('.').some((label) => label.length > 63))
     fail('mail.domain', `mail domain ${JSON.stringify(value)} must be a lower-case host name, such as qa-mail.example.com: it is what follows the @ of every address a run mints`)
   return value
 }

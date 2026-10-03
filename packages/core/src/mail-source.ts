@@ -101,9 +101,11 @@ export function inboxSource(inbox: string, fetchImpl: typeof fetch = fetch): Mai
   }
 }
 
-// One address holds a run's handful of messages; a page this size is the
-// whole inbox for it, and a delete repeats nothing a later run would see.
+// One address holds a run's handful of messages, so one page is nearly always
+// the whole of it. The bound on pages stops a catcher that ignores `start`
+// from being read forever.
 const MAILPIT_PAGE = 200
+const MAILPIT_MAX_PAGES = 50
 
 interface MailpitAddress {
   Name?: unknown
@@ -132,22 +134,30 @@ export function mailpitSource(url: string, fetchImpl: typeof fetch = fetch): Mai
 
   const search = async (address: string, signal: AbortSignal | undefined): Promise<Array<{ id: string; received_at: string }>> => {
     if (/["\\\s]/.test(address)) throw new Error(`the address ${JSON.stringify(address)} cannot be searched for: it carries a quote, a backslash or white space`)
-    const query = new URLSearchParams({ query: `to:"${address}"`, limit: String(MAILPIT_PAGE) })
-    const response = await request(`search?${query.toString()}`, { signal })
-    const parsed = (await response.json()) as { messages?: unknown }
-    if (!Array.isArray(parsed.messages)) throw new Error('mailpit search response carries no messages array')
     const wanted = address.toLowerCase()
-    const found: Array<{ id: string; received_at: string }> = []
-    for (const [index, entry] of parsed.messages.entries()) {
-      if (typeof entry !== 'object' || entry === null) throw new Error(`mailpit message ${index} is not an object`)
-      const record = entry as Record<string, unknown>
-      const recipients = [record.To, record.Cc, record.Bcc].flatMap((list) => (Array.isArray(list) ? (list as MailpitAddress[]) : []))
-      if (!recipients.some((recipient) => typeof recipient?.Address === 'string' && recipient.Address.toLowerCase() === wanted)) continue
-      const created = Date.parse(String(record.Created))
-      if (typeof record.ID !== 'string' || !Number.isFinite(created)) throw new Error(`mailpit message ${index} carries no ID or no parsable Created`)
-      found.push({ id: record.ID, received_at: new Date(created).toISOString() })
+    const found = new Map<string, { id: string; received_at: string }>()
+    // The search answers a page at a time: every page is read, so a message
+    // past the first is still matched, and a delete leaves nothing behind.
+    for (let start = 0, pages = 0; ; pages += 1) {
+      if (pages >= MAILPIT_MAX_PAGES)
+        throw new Error(`mailpit holds more than ${MAILPIT_MAX_PAGES * MAILPIT_PAGE} messages matching ${address}, which is more than one address is read for`)
+      const query = new URLSearchParams({ query: `to:"${address}"`, start: String(start), limit: String(MAILPIT_PAGE) })
+      const response = await request(`search?${query.toString()}`, { signal })
+      const parsed = (await response.json()) as { messages?: unknown }
+      if (!Array.isArray(parsed.messages)) throw new Error('mailpit search response carries no messages array')
+      for (const [index, entry] of parsed.messages.entries()) {
+        if (typeof entry !== 'object' || entry === null) throw new Error(`mailpit message ${start + index} is not an object`)
+        const record = entry as Record<string, unknown>
+        const recipients = [record.To, record.Cc, record.Bcc].flatMap((list) => (Array.isArray(list) ? (list as MailpitAddress[]) : []))
+        if (!recipients.some((recipient) => typeof recipient?.Address === 'string' && recipient.Address.toLowerCase() === wanted)) continue
+        const created = Date.parse(String(record.Created))
+        if (typeof record.ID !== 'string' || !Number.isFinite(created)) throw new Error(`mailpit message ${start + index} carries no ID or no parsable Created`)
+        found.set(record.ID, { id: record.ID, received_at: new Date(created).toISOString() })
+      }
+      if (parsed.messages.length < MAILPIT_PAGE) break
+      start += parsed.messages.length
     }
-    return found
+    return [...found.values()]
   }
 
   return {

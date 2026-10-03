@@ -279,9 +279,17 @@ mail:
   source: { kind: mailpit, url: "http://localhost:{{run.app_port}}/mailpit" }
 ```
 
+The compose fragment starts the catcher; it does not route to it. The profile
+above reads the catcher under `/mailpit` on the app's port, so something on
+that port has to pass `/mailpit` on to `mailpit:8025`: a rule in the reverse
+proxy in front of the app, or a few lines in the app's QA build.
+[`examples/mail-app/server.mjs`](../examples/mail-app/server.mjs) does it in
+one function. Without that rule `/mailpit` reaches the application, and every
+mail check is `unverified`, naming the catcher it could not read.
+
 - **One port per run.** qare mints one host port for a run. Serve the catcher's
-  web interface behind the app's own port (a reverse proxy rule for
-  `/mailpit`), as above, and every run has a catcher of its own. A catcher
+  web interface behind the app's own port, with the proxy rule described
+  above, and every run has a catcher of its own. A catcher
   published on a fixed port of its own is shared by every run on the runner,
   the base side included.
 - **Mint the address.** Sign up, invite and reset with `{{run.mail_address}}`.

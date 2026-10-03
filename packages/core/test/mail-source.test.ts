@@ -114,3 +114,15 @@ test('an inbox polled again names the same message the same way, so a wait holds
   await source.list({ address: 'other@localhost' })
   expect((await source.read(first[0]?.id ?? '')).subject).toBe('Welcome')
 })
+
+test('the Mailpit adapter reads and deletes past one page of results', async () => {
+  const caught = Array.from({ length: 450 }, (_, index) => caughtMessage({ ID: `message-${index}`, subject: `Message ${index}` }))
+  const fake = fakeMailpit(caught)
+  const source = mailpitSource(MAILPIT_URL, fake.transport)
+
+  const listed = await source.list({ address: 'qare-abc@localhost' })
+  expect(listed).toHaveLength(450)
+  expect(new Set(listed.map((ref) => ref.id)).size).toBe(450)
+  expect(await source.delete({ address: 'qare-abc@localhost' })).toBe(450)
+  expect(caught).toEqual([])
+})

@@ -47,7 +47,10 @@ export function fakeMailpit(caught: Caught[]): { transport: Transport; requests:
       const query = /^to:"(.*)"$/.exec(url.searchParams.get('query') ?? '')
       if (query === null) return new Response('bad query', { status: 400 })
       const matched = caught.filter((message) => message.to.toLowerCase().includes((query[1] ?? '').toLowerCase()))
-      return Response.json({ total: caught.length, messages_count: matched.length, messages: matched.map(summary) })
+      // A page of the matches, as the real search answers: `start` and `limit`.
+      const start = Number(url.searchParams.get('start') ?? '0')
+      const limit = Number(url.searchParams.get('limit') ?? '50')
+      return Response.json({ total: caught.length, messages_count: matched.length, start, messages: matched.slice(start, start + limit).map(summary) })
     }
     if (method === 'GET' && path.startsWith('message/')) {
       const message = caught.find((entry) => entry.ID === path.slice('message/'.length))

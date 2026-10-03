@@ -360,6 +360,11 @@ test('a mail section that names no source, two sources, or an unknown kind is re
 test('a mail domain that is not a host name is refused, naming the field (#65)', () => {
   for (const domain of ['', 'has space.test', 'someone@qa.test', '-qa.test', 'QA.Example.test/'])
     expect(profileField({ inbox: INBOX_URL, domain })).toMatch(/^mail\.domain: /)
+  // A label of more than 63 characters, or a name of more than 253, is no
+  // host name: an address minted on it could never be delivered to.
+  expect(profileField({ inbox: INBOX_URL, domain: `${'a'.repeat(64)}.test` })).toMatch(/^mail\.domain: /)
+  expect(profileField({ inbox: INBOX_URL, domain: Array.from({ length: 30 }, () => 'abcdefgh').join('.') })).toMatch(/^mail\.domain: /)
+  expect(validateProfileConfig({ ...INLINE_PROFILE, mail: { inbox: INBOX_URL, domain: `${'a'.repeat(63)}.test` } }).mail?.domain).toHaveLength(68)
 })
 
 const CATCHER_TEMPLATE = ['http:', '//catcher.local/{{run.id}}/mailpit'].join('')
