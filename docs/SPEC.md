@@ -1202,7 +1202,12 @@ The run boots nothing. Before any check runs it holds the build to being
 there and the host to being able to show a window, and a run that fails either
 is `blocked`, naming the path or the display, with no criterion marked
 `failed`. Building the artefact is the project's own step: provisioning it,
-for one side or for both, is not this section's to do (#75).
+for one side or for both, is not this section's to do (#75). The build is the
+repository's own: `executable` is a path inside the repository the run
+checks, an absolute path or one that climbs out is refused when the profile
+loads, and a path that resolves through a link to somewhere outside the
+checkout blocks the run, so a profile can never point the run at another
+binary on the host.
 
 Each flow check launches the build fresh, with a user data directory of its
 own that is removed afterwards, so one check's state never explains
@@ -1240,8 +1245,9 @@ directory: both streams of the main process by line from its first byte,
 every window's console messages and page errors, and each window opening and
 closing, in the order they happened. It is read once the application has
 exited, so what it wrote on the way out is in it, and it is swept by the same
-redaction as the action log. The log keeps the last 5,000 lines and says how
-many it dropped.
+redaction as the action log. The build is pull request code, so its output is
+bounded: the log keeps the last 5,000 lines and says how many it dropped, and
+a line is cut at 8,192 characters and says so, whether or not it ever ends.
 
 What the driver cannot do it declares, and a plan that asks for it is refused
 when it loads and again before a run boots, naming the check and the driver:
@@ -1252,7 +1258,7 @@ when it loads and again before a run boots, naming the check and the driver:
 | Run an `a11y` check | The audit resizes and re-themes the page the same way | The plan is refused; a client profile with an `a11y` section is refused when it loads |
 | Open a full URL | A desktop shell has no address bar | The plan is refused naming the action |
 | Compare with a base revision | Nothing provisions a build of the base (#75) | The run has one side: the result carries `client: { driver, executable, comparison: "none" }` and the comment says so. A run over several apps refuses a client profile, which runs on its own |
-| List the hosts a run reached | The main process reaches the network without a page seeing it | No `outbound.json` is written, and nothing is claimed about egress |
+| List or limit the hosts a run reached | The main process reaches the network without a page seeing it | No `outbound.json` is written, and nothing is claimed about egress. Like a command check or a suite, the build runs with the network its step has: containing it is the step's sandbox's to do, and is not done yet (#223) |
 | Seed a second factor | A client profile has no `app.login` | A flow that types a `totp` or `backupCode` is `unverified` before it runs, naming the gap |
 | Drive a build that turns remote debugging off | The driver attaches over the endpoint `--remote-debugging-port` opens | The flow is `unverified`, naming it, with the application's output |
 | Run where no window can be shown | It opens real windows | The run is `blocked`, naming the display |

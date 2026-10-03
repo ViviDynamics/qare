@@ -37,6 +37,8 @@ const DEFAULT_POLL_INTERVAL_MS = 100
 const DEFAULT_CLOSE_GRACE_MS = 5_000
 /** The lines of output one check keeps; a chatty application drops its oldest, and the log says how many. */
 const MAX_CONSOLE_LINES = 5_000
+/** The characters one line of output keeps; the build is pull request code, and a line with no end must not grow the run. */
+const MAX_LINE_CHARACTERS = 8_192
 /** How much of the output a failed start quotes in its reason. */
 const FAILURE_OUTPUT_LINES = 20
 
@@ -273,8 +275,9 @@ export async function makeElectronFlowSession(opts: {
   // run without limit; what was dropped is counted.
   const lines: string[] = []
   let dropped = 0
-  const record = (line: string): void => {
-    lines.push(line)
+  const cut = (text: string): string => (text.length <= MAX_LINE_CHARACTERS ? text : `${text.slice(0, MAX_LINE_CHARACTERS)} [line cut at ${MAX_LINE_CHARACTERS} characters]`)
+  const record = (label: string, text?: string): void => {
+    lines.push(text === undefined ? `[${label}]` : `[${label}] ${cut(text)}`)
     if (lines.length > MAX_CONSOLE_LINES) {
       lines.shift()
       dropped += 1
@@ -305,6 +308,9 @@ export async function makeElectronFlowSession(opts: {
   const flushers: Array<() => void> = []
   const follow = (stream: ElectronAppProcess['stdout'], label: string): void => {
     let partial = ''
+    // A line that outgrew its bound has been recorded cut; what follows it,
+    // up to the line's end, is the rest of that line and is dropped.
+    let overflowed = false
     const emit = (line: string): void => {
       const text = line.replace(/\r$/, '')
       if (text === '') return
@@ -313,12 +319,22 @@ export async function makeElectronFlowSession(opts: {
         onEndpoint?.(endpoint[1] as string)
         return
       }
-      record(`[${label}] ${text}`)
+      record(label, text)
     }
     stream?.on('data', (chunk) => {
       const parts = (partial + String(chunk)).split('\n')
       partial = parts.pop() ?? ''
-      for (const part of parts) emit(part)
+      for (const [index, part] of parts.entries()) {
+        // The first part ends the line that was already cut.
+        if (index === 0 && overflowed) overflowed = false
+        else emit(part)
+      }
+      if (overflowed) partial = ''
+      else if (partial.length > MAX_LINE_CHARACTERS) {
+        emit(partial)
+        partial = ''
+        overflowed = true
+      }
     })
     flushers.push(() => {
       if (partial !== '') emit(partial)
@@ -331,7 +347,7 @@ export async function makeElectronFlowSession(opts: {
     if (exit !== undefined) return
     for (const flush of flushers) flush()
     exit = how
-    record(`[main exited] ${how}`)
+    record('main exited', how)
     onExit?.()
   }
   child.on('exit', (code, signal) => settle(code === null ? `signal ${signal ?? 'unknown'}` : `code ${code}`))
@@ -403,10 +419,10 @@ export async function makeElectronFlowSession(opts: {
     if (windows.some((window) => window.page === page)) return
     const window = { id: windows.length + 1, page }
     windows.push(window)
-    record(`[window ${window.id} opened] ${page.url()}`)
-    page.on('console', (message) => record(`[window ${window.id} console.${message.type()}] ${message.text()}`))
-    page.on('pageerror', (error) => record(`[window ${window.id} error] ${error.message}`))
-    page.on('close', () => record(`[window ${window.id} closed]`))
+    record(`window ${window.id} opened`, page.url())
+    page.on('console', (message) => record(`window ${window.id} console.${message.type()}`, message.text()))
+    page.on('pageerror', (error) => record(`window ${window.id} error`, error.message))
+    page.on('close', () => record(`window ${window.id} closed`))
   }
   let context: ReturnType<Browser['contexts']>[number]
   try {

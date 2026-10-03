@@ -43,6 +43,10 @@ test('a client section that is malformed is refused by field (#72)', () => {
   expect(() => validateProfileConfig({ client: { ...CLIENT, driver: 'tauri' } })).toThrow(/client\.driver must be one of electron, not "tauri"/)
   expect(fieldOf({ client: { driver: 'electron' } })).toBe('client.executable')
   expect(fieldOf({ client: { ...CLIENT, executable: 'a\nb' } })).toBe('client.executable')
+  // The build is the repository's own: a path that leaves it names some other binary.
+  expect(() => validateProfileConfig({ client: { ...CLIENT, executable: '/usr/bin/env' } })).toThrow(/client\.executable.*must be a path inside the repository the run checks, not an absolute one/)
+  expect(() => validateProfileConfig({ client: { ...CLIENT, executable: 'dist/../../other/app' } })).toThrow(/client\.executable.*climbs out of the repository/)
+  expect(fieldOf({ client: { ...CLIENT, executable: 'C:\\apps\\app.exe' } })).toBe('client.executable')
   expect(fieldOf({ client: { ...CLIENT, args: '--no-sandbox' } })).toBe('client.args')
   expect(fieldOf({ client: { ...CLIENT, args: [1] } })).toBe('client.args[0]')
   expect(fieldOf({ client: { ...CLIENT, binary: 'a' } })).toBe('client.binary')

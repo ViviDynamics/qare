@@ -561,6 +561,13 @@ function parseClient(value: unknown): ProfileClient {
   if (typeof value.driver !== 'string' || !(CLIENT_DRIVERS as readonly string[]).includes(value.driver))
     fail('client.driver', `client.driver must be one of ${CLIENT_DRIVERS.join(', ')}, not ${JSON.stringify(value.driver)}`)
   const executable = nonEmptyString(value.executable, 'client.executable', 'client executable')
+  // The build is the repository's own (#72): a path that leaves the
+  // repository names some other binary on the host, and a profile is a file
+  // a pull request can edit. Provisioning an artefact from elsewhere is #75's.
+  if (executable.startsWith('/') || /^[A-Za-z]:[\\/]/.test(executable) || executable.startsWith('\\'))
+    fail('client.executable', `client executable ${JSON.stringify(executable)} must be a path inside the repository the run checks, not an absolute one`)
+  if (executable.split(/[\\/]/).includes('..'))
+    fail('client.executable', `client executable ${JSON.stringify(executable)} climbs out of the repository (".." is not allowed)`)
   // Evidence is published, and the path is named in it.
   if (/[\x00-\x1f\x7f]/.test(executable)) fail('client.executable', 'client executable carries control characters')
   if (value.args !== undefined && !Array.isArray(value.args)) fail('client.args', 'client.args must be an array of arguments, each a string')

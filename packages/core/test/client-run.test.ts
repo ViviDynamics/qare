@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
@@ -127,6 +127,15 @@ test('a build that is not there, or a host with no display, blocks the run by na
   const dark = await runJob(headless, { clientEnv: { env: {}, platform: 'linux', xvfb: () => undefined }, flowSession: desktopSession(events) })
   expect(dark.result.verdict).toBe('blocked')
   expect(dark.result.criteria[0]?.reason).toMatch(/the electron driver needs a display/)
+  expect(events).toEqual([])
+
+  // A path inside the repository that is a link out of it is not the repository's build.
+  const linked = await clientJob({ build: false })
+  await mkdir(join(linked.repoPath, 'dist', 'app'), { recursive: true })
+  await symlink('/bin/sh', join(linked.repoPath, 'dist', 'app', 'app'))
+  const escaped = await runJob(linked, { ...WITH_DISPLAY, flowSession: desktopSession(events) })
+  expect(escaped.result.verdict).toBe('blocked')
+  expect(escaped.result.criteria[0]?.reason).toMatch(/client\.executable dist\/app\/app resolves outside the repository the run checks/)
   expect(events).toEqual([])
 
   // The boot seam answers the same way for a caller that boots without running.

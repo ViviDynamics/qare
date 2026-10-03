@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import http from 'node:http'
 import https from 'node:https'
-import { stat } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { realpath, stat } from 'node:fs/promises'
+import { isAbsolute, relative, resolve } from 'node:path'
 import { electronDisplayProblem, type ElectronHost } from './flow-electron.js'
 import type { ProfileApp, ProfileClient, QaProfile } from './profile.js'
 import { VERSION } from './version.js'
@@ -256,6 +256,19 @@ async function probeClient(client: ProfileClient, opts: BootOpts): Promise<BootO
     isFile = (await stat(path)).isFile()
   } catch {
     // Absent, or unreadable: either way there is nothing to launch.
+  }
+  // The path is inside the repository as written; what it resolves to must
+  // be too. A link that leads out of the checkout is some other binary, and
+  // the run launches the repository's build or nothing.
+  if (isFile) {
+    const [real, rootReal] = await Promise.all([realpath(path), realpath(opts.root ?? process.cwd())])
+    const inside = relative(rootReal, real)
+    if (inside === '' || inside.startsWith('..') || isAbsolute(inside))
+      return {
+        kind: 'blocked',
+        reason: `client.executable ${client.executable} resolves outside the repository the run checks (${real}): the run launches the repository's own build, never another binary on the host`,
+        logs: '',
+      }
   }
   if (!isFile)
     return {

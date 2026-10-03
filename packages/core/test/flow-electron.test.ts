@@ -301,6 +301,30 @@ test('the vocabulary drives the window that shows the element, with the browser\
   ])
 })
 
+test('output with no line ends, or one enormous line, cannot grow the run: a line is cut at a bound and says so (#72)', async () => {
+  const main = fakeWindow([], 'Greeter', HOME)
+  const { session, process } = harness({ windows: [main] })
+  const started = await session()
+
+  // A megabyte with no newline, in chunks, and then the line finally ends.
+  for (let chunk = 0; chunk < 64; chunk += 1) process.stdout.emit('data', 'x'.repeat(16_384))
+  process.stdout.emit('data', 'tail\nmain: after\n')
+  main.emit('console', { type: () => 'log', text: () => 'y'.repeat(100_000) })
+  await started.dispose()
+
+  const lines = started.console()
+  const long = lines.find((line) => line.startsWith('[main stdout] xxx')) ?? ''
+  expect(long.length).toBeLessThan(9_000)
+  expect(long.endsWith(' [line cut at 8192 characters]')).toBe(true)
+  // The rest of the cut line is dropped, not read as a line of its own.
+  expect(lines.filter((line) => line.includes('xxx'))).toHaveLength(1)
+  expect(lines.some((line) => line.includes('tail'))).toBe(false)
+  expect(lines).toContain('[main stdout] main: after')
+  const message = lines.find((line) => line.startsWith('[window 1 console.log] yyy')) ?? ''
+  expect(message.length).toBeLessThan(9_000)
+  expect(message.endsWith(' [line cut at 8192 characters]')).toBe(true)
+})
+
 test('a harness that exits with a session still open takes the application and its display with it (#72)', async () => {
   const before = process.listeners('exit')
   const { session, process: app, displays } = harness({ windows: [fakeWindow([], 'Greeter', HOME)], env: {}, xvfb: '/usr/bin/Xvfb' })
