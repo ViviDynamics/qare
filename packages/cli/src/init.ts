@@ -26,7 +26,9 @@ const VALUE_FLAGS = ['--target', '--health', '--service', '--model', '--file-iss
 const HELP = `${USAGE}
   onboard a repository: run the readiness inventory, then write a starting .qa/ and the
   workflow that calls the qare pipeline. Never overwrites: an existing .qa/ or workflow is
-  left alone, and init prints what it would have written.
+  left alone, and init prints what it would have written. A desktop build is checked
+  through a client profile, which is written by hand (docs/SPEC.md, Clients): init keeps
+  it and writes only the workflow.
   --target <url>              check an app that is already running, instead of booting one
   --health <path>             the path the health check asks for, which must answer 200
   --service <name>            the compose service that is the application
@@ -134,7 +136,11 @@ export async function initCommand(argv: string[], out: Writer, err: Writer, deps
       ...(branch === undefined ? {} : { defaultBranch: branch }),
     })
 
-    if (await exists(join(repo, '.qa'))) {
+    if (plan.kind === 'client') {
+      // A client profile is written by hand (#75): there is nothing init
+      // would have written in its place.
+      out.write('kept .qa/ (its client profile names the build the run launches, and init writes no profile for a client)\n')
+    } else if (await exists(join(repo, '.qa'))) {
       out.write('kept .qa/ (it exists, and init never overwrites); it would have written:\n')
       for (const file of plan.profile) show(file, out)
     } else {

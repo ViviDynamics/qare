@@ -227,4 +227,30 @@ test('a profile that names a desktop client requires a display, and says how to 
     required: true,
     detail: 'a display is available for the electron driver',
   })
+  // Nothing is installed for a build launched in place, so nothing unpacks.
+  expect(lit.findings.find((finding) => finding.name === 'tar')).toBeUndefined()
+})
+
+test('a profile that installs an archive requires tar, and one that installs a directory does not (#75)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-doctor-artefact-'))
+  await writeFile(join(dir, 'QA.md'), '# QA\n')
+  const config = (kind: string): string =>
+    ['client:', '  driver: electron', '  artefact:', `    kind: ${kind}`, '    executable: greeter/greeter', '    head: { path: artefacts/head }'].join('\n')
+  await writeFile(join(dir, 'config.yml'), config('archive'))
+  const probes = { ...HEALTHY_PROBES, display: () => undefined }
+
+  const bare = await runDoctor({ profilePath: dir, probes: { ...probes, which: (name: string) => (name === 'tar' ? undefined : `/usr/local/bin/${name}`) } })
+  const tar = bare.findings.find((finding) => finding.name === 'tar')
+  expect(bare.ready).toBe(false)
+  expect(tar).toMatchObject({ ok: false, required: true })
+  expect(tar?.detail).toContain('this profile installs an archive (client.artefact.kind), which is unpacked with tar')
+  expect(tar?.install).toContain('install tar')
+
+  const equipped = await runDoctor({ profilePath: dir, probes })
+  expect(equipped.ready).toBe(true)
+  expect(equipped.findings.find((finding) => finding.name === 'tar')).toMatchObject({ ok: true, required: true, detail: 'tar at /usr/local/bin/tar' })
+
+  await writeFile(join(dir, 'config.yml'), config('directory'))
+  const copied = await runDoctor({ profilePath: dir, probes })
+  expect(copied.findings.find((finding) => finding.name === 'tar')).toBeUndefined()
 })
