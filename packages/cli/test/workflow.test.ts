@@ -648,7 +648,10 @@ test('execute takes down the compose projects the run booted, whatever the run e
   expect(step).toContain('if: always()')
   // Exactly the projects the run named in its evidence: reap refuses a name
   // that is not qare's, and another run's stack on the same runner stays up.
-  expect(step).toContain(`find evidence -name isolation.json -exec jq -r '.project // empty' {} +`)
+  // Every boot's record is read: isolation.json, and the isolation-<app>.json
+  // and isolation-<criterion>.json a run over several apps or an isolated
+  // criterion writes.
+  expect(step).toContain(`find evidence -name 'isolation*.json' -exec jq -r '.project // empty' {} +`)
   expect(step).toContain('qare reap "${projects[@]}"')
   // The verdict is already recorded: a failed teardown is said, not gating.
   expect(step).toContain('::warning::qare reap failed')

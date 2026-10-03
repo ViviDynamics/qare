@@ -44,13 +44,14 @@ PR_NUMBER=0 \
 PROFILE=examples/compose-app/.qa \
   step 'Run the plan' || code=$?
 
-if [ ! -f evidence/result.json ]; then
-  echo "the execute step exited $code and recorded no evidence/result.json" >&2
-  exit 1
-fi
 # Every project the run named: the head's, and the base's when the base
-# commit carries the example too.
-project="$(find evidence -name isolation.json -exec jq -r '.project // empty' {} + | sort -u | tr '\n' ' ')"
+# commit carries the example too. A run that crashed may have left no
+# evidence at all, and the teardown still runs first, as it does in the
+# workflow, so nothing it booted outlives a failure here.
+project=""
+if [ -d evidence ]; then
+  project="$(find evidence -name 'isolation*.json' -exec jq -r '.project // empty' {} + | sort -u | tr '\n' ' ')"
+fi
 running() {
   local name
   for name in $project; do
@@ -60,6 +61,11 @@ running() {
 # The head's stack outlives the run: taking it down is the pipeline's step.
 up_after_run="$(running)"
 IMAGE_REF="$image" step 'Tear down what the run booted'
+
+if [ ! -f evidence/result.json ]; then
+  echo "the execute step exited $code and recorded no evidence/result.json" >&2
+  exit 1
+fi
 
 jq '{verdict, base: .base.status, criteria: [.criteria[] | {id, outcome, reason}]}' evidence/result.json
 # Passed, with every criterion proven by a check that really ran: a blocked

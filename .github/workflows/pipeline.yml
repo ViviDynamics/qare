@@ -635,7 +635,10 @@ jobs:
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
       # The run leaves the head's stack up, because teardown is its caller's
       # job (#53), and this pipeline is the caller: the compose projects the
-      # run named in its evidence are taken down, volumes and all. On a
+      # run named in its evidence are taken down, volumes and all. The run
+      # names one per boot: isolation.json, isolation-<app>.json for a plan
+      # over several apps, isolation-<criterion>.json for a criterion that
+      # boots an app of its own. On a
       # runner that outlives the job, a stack left behind would hold its
       # memory and its port until someone noticed. The verdict is already
       # recorded, so a teardown that fails is said and does not change it.
@@ -650,7 +653,7 @@ jobs:
             echo "no run evidence: nothing was booted, so there is nothing to tear down"
             exit 0
           fi
-          mapfile -t projects < <(find evidence -name isolation.json -exec jq -r '.project // empty' {} + | sort -u)
+          mapfile -t projects < <(find evidence -name 'isolation*.json' -exec jq -r '.project // empty' {} + | sort -u)
           if [ "${#projects[@]}" -eq 0 ]; then
             echo "the run booted no compose project"
             exit 0
