@@ -48,9 +48,14 @@ if [ ! -f evidence/result.json ]; then
   echo "the execute step exited $code and recorded no evidence/result.json" >&2
   exit 1
 fi
-project="$(find evidence -name isolation.json -exec jq -r '.project // empty' {} + | sort -u)"
+# Every project the run named: the head's, and the base's when the base
+# commit carries the example too.
+project="$(find evidence -name isolation.json -exec jq -r '.project // empty' {} + | sort -u | tr '\n' ' ')"
 running() {
-  docker ps -q --filter "label=com.docker.compose.project=$project"
+  local name
+  for name in $project; do
+    docker ps -q --filter "label=com.docker.compose.project=$name"
+  done
 }
 # The head's stack outlives the run: taking it down is the pipeline's step.
 up_after_run="$(running)"
@@ -67,13 +72,13 @@ if [ "$code" -ne 0 ] || ! jq -e '
   echo "the execute step exited $code: the compose app did not boot, or a check against it did not pass" >&2
   exit 1
 fi
-if [ -z "$project" ] || [ -z "$up_after_run" ]; then
+if [ -z "${project// /}" ] || [ -z "$up_after_run" ]; then
   echo "the run named no compose project that was up when it finished, so the teardown step had nothing to prove" >&2
   exit 1
 fi
 left="$(running)"
 if [ -n "$left" ]; then
-  echo "the teardown step left the run's compose project $project running: $left" >&2
+  echo "the teardown step left a compose project of the run ($project) running: $left" >&2
   exit 1
 fi
 echo "compose boot: the execute step booted the app, both checks reached it, and the teardown step took the stack down"
