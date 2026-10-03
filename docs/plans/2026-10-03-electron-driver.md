@@ -89,6 +89,9 @@ Out:
   host with no display but an Xvfb has one: the driver starts a virtual
   display for each launch and stops it afterwards, so the pipeline's execute
   step runs a client profile without being changed.
+- **The build is pull request code.** On a host it is launched with the
+  minimal environment a command step gets there (#91), plus the display;
+  inside an image it inherits the image's.
 - **Egress is not recorded.** The main process can reach the network without
   a page ever seeing it, so the driver does not claim to list the hosts a run
   reached. A client profile has no target hosts to hold them against.

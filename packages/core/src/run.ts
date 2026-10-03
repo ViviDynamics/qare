@@ -158,7 +158,7 @@ export type FlowSessionFactory = (opts: { masks: string[] }) => Promise<{
  * every flow check. Undefined for a profile with no client, which takes the
  * MCP mapping or the browser.
  */
-function clientSessionFactory(profile: QaProfile, repoPath: string, clientEnv: BootOpts['clientEnv']): FlowSessionFactory | undefined {
+function clientSessionFactory(profile: QaProfile, repoPath: string, clientEnv: BootOpts['clientEnv'], execution: ExecutionKind): FlowSessionFactory | undefined {
   const client = profile.client
   if (client === undefined) return undefined
   return ({ masks }) =>
@@ -167,6 +167,9 @@ function clientSessionFactory(profile: QaProfile, repoPath: string, clientEnv: B
       args: client.args,
       masks,
       ...clientEnv,
+      // The build is pull request code: on a host it gets the minimal
+      // environment a command step gets there, never the host's own (#91).
+      environment: execution === 'native' ? 'minimal' : 'inherit',
     })
 }
 
@@ -427,7 +430,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     if (side !== undefined) side.ran = true
     const visual = visualContextOf(profile, profile.redact?.masks ?? [], opts.visualSession, side)
     const flow = {
-      session: opts.flowSession ?? clientSessionFactory(profile, job.repoPath, opts.clientEnv),
+      session: opts.flowSession ?? clientSessionFactory(profile, job.repoPath, opts.clientEnv, execution),
       masks: profile.redact?.masks ?? [],
       suites: profile.suites,
       target,
@@ -763,7 +766,7 @@ async function runProfileGroup(
     if (side !== undefined) side.ran = true
     const visual = visualContextOf(profile, masks, opts.visualSession, side)
     const flow = {
-      session: opts.flowSession ?? clientSessionFactory(profile, job.repoPath, opts.clientEnv),
+      session: opts.flowSession ?? clientSessionFactory(profile, job.repoPath, opts.clientEnv, execution),
       masks,
       suites: profile.suites,
       target,

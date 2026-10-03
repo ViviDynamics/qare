@@ -100,6 +100,19 @@ export function electronDisplayProblem(host: ElectronHost = {}): string | undefi
   return 'the electron driver needs a display: neither DISPLAY nor WAYLAND_DISPLAY is set, and no Xvfb is on PATH to start a virtual one (the web image ships it)'
 }
 
+/** What a window needs from the environment to open, beside PATH and HOME. */
+const DISPLAY_VARIABLES = ['DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR']
+
+/** The minimal deterministic environment a command step gets on a host (#91), with the display a desktop build needs. */
+function minimalEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const minimal: NodeJS.ProcessEnv = { PATH: env.PATH ?? '/usr/bin:/bin', HOME: env.HOME ?? '' }
+  for (const name of DISPLAY_VARIABLES) {
+    const value = env[name]
+    if (value !== undefined && value !== '') minimal[name] = value
+  }
+  return minimal
+}
+
 /** How long Xvfb is given to say which display it took. */
 const DISPLAY_START_TIMEOUT_MS = 10_000
 
@@ -204,6 +217,14 @@ export async function makeElectronFlowSession(opts: {
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   xvfb?: () => string | undefined
+  /**
+   * What the build is launched with. `inherit` (the default) hands it the
+   * harness environment, which inside an image the image controls. `minimal`
+   * hands it PATH, HOME and what a window needs to open, and nothing else:
+   * the build is pull request code, and on a host it never inherits the
+   * host's tokens (#91).
+   */
+  environment?: 'inherit' | 'minimal'
   /** Starts the virtual display a host with none gets; an Xvfb by default. */
   startDisplay?: (xvfb: string) => Promise<{ display: string; stop: () => Promise<void> }>
   launchTimeoutMs?: number
@@ -242,7 +263,10 @@ export async function makeElectronFlowSession(opts: {
     const xvfb = (opts.xvfb ?? ((): string | undefined => xvfbOnPath(hostEnv)))()
     if (xvfb !== undefined) virtual = await (opts.startDisplay ?? startVirtualDisplay)(xvfb)
   }
-  const appEnv: NodeJS.ProcessEnv = { ...process.env, ...opts.env, ...(virtual === undefined ? {} : { DISPLAY: virtual.display }) }
+  const appEnv: NodeJS.ProcessEnv = {
+    ...(opts.environment === 'minimal' ? minimalEnvironment(hostEnv) : { ...process.env, ...opts.env }),
+    ...(virtual === undefined ? {} : { DISPLAY: virtual.display }),
+  }
 
   // The application's own output and its windows' lifecycle, in the order
   // they happened. Bounded, so a build that logs in a loop cannot grow the

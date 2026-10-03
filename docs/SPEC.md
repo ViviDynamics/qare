@@ -1212,7 +1212,10 @@ the snapshot, the masked screenshots and the trace are the browser driver's
 own. It owns `--remote-debugging-port` and `--user-data-dir`, and a profile
 that passes either is refused. On a Linux host with no display the driver
 starts a virtual one (Xvfb, which the `web` image ships) for the launch and
-stops it afterwards, so a pipeline's execute step needs nothing added.
+stops it afterwards, so a pipeline's execute step needs nothing added. The
+build is pull request code, so on a host it is launched with the minimal
+environment a command step gets there (PATH, HOME, and the display), never
+the host's own; inside an image it inherits the image's.
 
 An application has windows where a browser flow has one page, and the
 vocabulary names no window. An element reference is looked for in every open

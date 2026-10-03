@@ -165,6 +165,23 @@ test('without an injected session the run launches the build itself, and a build
   expect(existsSync(join(job.evidenceDir, 'result.json'))).toBe(true)
 })
 
+test('a run on a host launches the build without the host\'s environment; a run in an image inherits the image\'s (#72, #91)', async () => {
+  // The build reports whether it can see a variable the harness holds.
+  const script = '#!/bin/sh\nif [ -n "$QARE_TEST_HOST_TOKEN" ]; then echo "sees the token" >&2; else echo "sees no token" >&2; fi\nexit 3\n'
+  process.env.QARE_TEST_HOST_TOKEN = 'held-by-the-harness'
+  try {
+    const native = await runJob(await clientJob({ script }), { ...WITH_DISPLAY, execution: 'native' })
+    const contained = await runJob(await clientJob({ script }), { ...WITH_DISPLAY, execution: 'containerised' })
+    const reason = (result: typeof native): string => result.result.criteria[0]?.reason ?? ''
+    if (!reason(native).includes('playwright-core is not installed')) {
+      expect(reason(native)).toContain('[main stderr] sees no token')
+      expect(reason(contained)).toContain('[main stderr] sees the token')
+    }
+  } finally {
+    delete process.env.QARE_TEST_HOST_TOKEN
+  }
+})
+
 test('a run over several apps refuses a client profile, which has one side and one build (#72)', async () => {
   const events: string[] = []
   const single = await clientJob()

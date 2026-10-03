@@ -81,6 +81,7 @@ function harness(
     launchTimeoutMs?: number
     findTimeoutMs?: number
     xvfb?: string
+    environment?: 'inherit' | 'minimal'
   } = {},
 ) {
   const events: string[] = []
@@ -128,6 +129,7 @@ function harness(
         return process as never
       },
       env: opts.env ?? WITH_DISPLAY,
+      ...(opts.environment === undefined ? {} : { environment: opts.environment }),
       platform: opts.platform ?? 'linux',
       xvfb: () => opts.xvfb,
       startDisplay: async (xvfb) => {
@@ -226,6 +228,24 @@ test('a host with no display but an Xvfb gets a virtual one for the launch, stop
   const crashed = harness({ announce: 'crash', env: {}, xvfb: '/usr/bin/Xvfb' })
   await expect(crashed.session()).rejects.toThrow(/exited with code 1/)
   expect(crashed.displays).toEqual(['start /usr/bin/Xvfb', 'stop'])
+})
+
+test('on a host the build is pull request code, so it is launched with the minimal environment and never the host\'s (#72, #91)', async () => {
+  const host = { DISPLAY: ':99', XAUTHORITY: '/run/user/1000/xauth', PATH: '/usr/bin', HOME: '/home/dev', HOST_TOKEN: 'ghp_host_secret' }
+  const minimal = harness({ windows: [fakeWindow([], 'Greeter', HOME)], env: host, environment: 'minimal' })
+  await (await minimal.session()).dispose()
+  // What a window needs to open, and nothing a host happens to hold.
+  expect(minimal.spawned[0]?.env).toEqual({ PATH: '/usr/bin', HOME: '/home/dev', DISPLAY: ':99', XAUTHORITY: '/run/user/1000/xauth' })
+
+  // A virtual display the driver started is the one the build is told about.
+  const virtual = harness({ windows: [fakeWindow([], 'Greeter', HOME)], env: { PATH: '/usr/bin', HOME: '/home/dev', HOST_TOKEN: 'x' }, environment: 'minimal', xvfb: '/usr/bin/Xvfb' })
+  await (await virtual.session()).dispose()
+  expect(virtual.spawned[0]?.env).toEqual({ PATH: '/usr/bin', HOME: '/home/dev', DISPLAY: ':42' })
+
+  // Inside an image the environment is the image's to control, and is inherited.
+  const inherited = harness({ windows: [fakeWindow([], 'Greeter', HOME)], env: host })
+  await (await inherited.session()).dispose()
+  expect(inherited.spawned[0]?.env.HOST_TOKEN).toBe('ghp_host_secret')
 })
 
 test('the virtual display is an Xvfb on a number of its own choosing, and one that will not start is named (#72)', async () => {
