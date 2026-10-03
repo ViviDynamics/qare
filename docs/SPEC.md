@@ -123,6 +123,8 @@ and the artifacts execute uploaded.
 | **judge** | model key, GitHub token | yes | Computes verdicts in code from raw results, runs the verifier model on the evidence, posts the comment and check. The plan is loaded with the same flow action kinds the plan step was given. Runs whenever execute recorded a verdict, including a failed or blocked one that left execute red (#203). |
 | **report** | GitHub token | yes | Runs only when the pipeline failed and no verdict reached the pull request. Reads the run's jobs from the Actions API and posts the not-evaluated comment and check naming the job and step that failed (#203). Builds qare from the base commit. Never executes PR code. |
 
+Before either side starts, the run settles whether it may execute where it landed (#76): a host that lacks what the profile requires, or a self-hosted runner a public repository did not opt in to, ends the run `refused`, by name, with nothing provisioned. See [Requirements and placement](#requirements-and-placement).
+
 Execute stages, per side (base, head):
 
 1. Provision the application under test from the `.qa/` profile (#75): boot a server from its compose recipe, install a client build from the artefact the profile names for this side, or reach a preview URL. Then prove it is up with a health check the harness runs: an HTTP probe for a server, a launch that opens its first window for a desktop build. A provisioning that fails is `blocked`, with its log attached as `provision.log`, and no criterion is `failed`. See [Provisioning](#provisioning).
@@ -206,6 +208,10 @@ ux:                              # optional: the advisory UX review (#150), whic
 findings:                        # optional: who a finding on main reaches (#154)
   fallback: acme/qa-leads        # a person or a team, mentioned when no change can be blamed
   bots: [release-robot]          # logins whose pull requests are a bot's, beyond the ones GitHub marks
+requires:                        # optional: what the profile requires of the host a run lands on (#76)
+  os: linux                      # linux, macos or windows
+  virtualisation: true           # hardware virtualisation, which an emulator needs
+  devices: [android]             # an attached device of each kind
 redact:                          # optional: fixture data that must not be published
   values: ["jane@pilot.example"] # literal strings
   patterns: ['CUST-\d{6}']       # regular expressions
@@ -1273,6 +1279,91 @@ and a driver that can only record natively (a video file from the platform)
 has no seam here, because nothing here can mask or sweep one. Both belong to
 the issues that build those drivers.
 
+### Requirements and placement
+
+A run knows where it can execute before it starts, rather than discovering it
+in a failure (#76). What a profile requires of the host is one table, held in
+code (`placement.ts`), with two sources.
+
+What the profile declares, in a top-level `requires` section that any profile
+may carry:
+
+```yaml
+requires:
+  os: macos              # linux, macos or windows
+  virtualisation: true   # hardware virtualisation, which an emulator needs
+  devices: [android]     # an attached device of each kind
+```
+
+And what its shape already implies:
+
+| The profile | Requires of the host |
+| --- | --- |
+| boots a server (`app`), or names a `target` | nothing: the browser runs headless anywhere |
+| launches a contained client build (the default) | a **cell**: a docker daemon on the machine that holds the image the run is in (#223) |
+| launches an uncontained client build (`client.egress: uncontained`) | a **display**, or an Xvfb the driver can start one with (#72) |
+| drives a device (#73, #74) | adds its row when the driver lands |
+
+A profile is a file a pull request can edit, so `requires` takes only those
+three keys and only values the run can hold a host to, and a section that
+contradicts the profile is refused when it loads: a contained build is
+launched in a cell, which is a Linux container, so it cannot require macOS or
+Windows.
+
+The run holds the host to the table before anything is provisioned: before a
+base checkout, a build command, an install, a compose boot or a health probe.
+A host that is short ends the run `refused`, with every criterion
+`unverified` and one reason that names everything missing at once:
+
+```
+refused: unmet requirement: a macos host (requires.os): this host is linux; hardware virtualisation (requires.virtualisation): /dev/kvm is not there, so this host offers no hardware virtualisation. Nothing was provisioned.
+```
+
+`refused`, not `blocked`: nothing was faulted and nothing was tried, so the
+check run is neutral, as for a repository with no profile. In a run over
+several apps, the app whose host is short is refused for that app alone and
+the others still run.
+
+How each requirement is detected:
+
+- **Operating system**: the platform the run's process is on. In the
+  pipeline that is the qare image, so it is Linux whatever the runner is.
+- **Hardware virtualisation**: on Linux, a `/dev/kvm` the run's user can open
+  for reading and writing. On any other host it is not detected, and a run
+  that requires it is refused saying so.
+- **Attached devices**: `android` is a device `adb devices` lists in the
+  `device` state. An emulator is not an attached device: it is what
+  `virtualisation` is for. `ios` is refused when the profile loads until its
+  driver exists (#74).
+- **Cell** and **display**: the probes the boot already had (#223, #72), now
+  asked once, up front.
+
+Claiming a device, giving a run its own, and resetting it are not part of
+this (#77), and neither is preparing a macOS or Windows host (#90).
+
+The evidence says where a verdict came from. Every `result.json`, each side's
+included, records the kind of host that produced it under
+`environment.host`: its operating system, its architecture, whether hardware
+virtualisation is usable, and the runner it is (`github-hosted` or
+`self-hosted`) when the run was placed on one. A profile that requires
+anything has it recorded under `requirements`, met or not, and the comment
+names both.
+
+**Public repositories stay on hosted runners.** A run that finds itself on a
+self-hosted runner for a public repository is refused the same way, before
+anything runs (`refused: placement: ...`): a runner that outlives its job
+keeps whatever a pull request left on it (rule 7). Self-hosted capacity is
+opt in, with the pipeline's `self-hosted: allow` input. `qare run` decides
+it, in code, from three facts the pipeline's execute job hands it: the
+runner's kind as GitHub Actions names it, the repository's visibility, and
+the opt in. A refusal there comes after the workflow's checkout, though, and
+a checkout is already the pull request's files on the machine. So the
+pipeline holds the same rule, in the same words, as the first step of
+collect, plan and execute, before any checkout: there the job fails by name
+and the report job says the run was not evaluated. A private repository is
+asked nothing. See
+[the pipeline guide](./pipeline.md#a-public-repository-stays-on-hosted-runners).
+
 ### Provisioning
 
 Getting the application in front of its driver is one lifecycle whatever the
@@ -1669,11 +1760,14 @@ for a profile that boots an app, and the chromium driver for a profile whose
 suites drive a browser. While nare is missing it also checks that `python3` is
 new enough to install it, so a too-old interpreter is named before pip refuses
 the wheel; once nare is installed the interpreter is only reported, because
-nare may run under its own. A display is required only by a profile that names
-a desktop client (#72), which opens real windows: a running one, or an Xvfb
-the driver can start. A profile that installs an archive (`client.artefact`,
-#75) requires `tar`, which unpacks it. The browser driver runs headless. Devices are reported
-but never required: they arrive through the profile's registered MCP servers. A profile that is there but broken is a caller
+nare may run under its own. It reports the kind of host this is, and holds it
+to the table a run refuses on ([Requirements and placement](#requirements-and-placement),
+#76): the operating system, hardware virtualisation and attached devices a
+profile declares in `requires`, a cell for a contained client build (#223),
+and a display for one launched on the host itself (#72): a running one, or an
+Xvfb the driver can start. A profile that installs an archive (`client.artefact`,
+#75) requires `tar`, which unpacks it. The browser driver runs headless. Devices
+a profile reaches through its registered MCP servers are not checked. A profile that is there but broken is a caller
 mistake, named on the error stream.
 
 A run on a host obeys the same rules a container run does, and the one rule
@@ -1685,7 +1779,7 @@ step keeps the inherit contract, because the image controls that environment.
 Either way the result and its evidence are the same shape, and the result
 records where the run executed: `environment.execution` is `native` or
 `containerised`, with the qare version, the node version and the nare contract
-it ran with. A containerised run adds the image that produced it: the ref and
+it ran with, and `environment.host` is the kind of host it ran on (#76). A containerised run adds the image that produced it: the ref and
 digest the runner that pulled the image passed, the flavour the image sets,
 the driver versions it ships, and the pinned versions the image stamps (#88).
 

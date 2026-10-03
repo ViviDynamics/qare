@@ -134,6 +134,33 @@ export function clientExecutableName(client: ProfileClient): string {
  */
 const CLIENT_HOST = /^(\*\.)?[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?(\.[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?)*$/i
 
+/** The operating systems a profile may require of the host a run lands on (#76). */
+export const HOST_OPERATING_SYSTEMS = ['linux', 'macos', 'windows'] as const
+
+export type HostOperatingSystem = (typeof HOST_OPERATING_SYSTEMS)[number]
+
+/**
+ * The kinds of attached device a profile may require (#76): the ones a run
+ * can detect. A kind is added with the driver that can use it (#74 for iOS).
+ */
+export const DEVICE_KINDS = ['android'] as const
+
+export type DeviceKind = (typeof DEVICE_KINDS)[number]
+
+/**
+ * What a profile requires of the host a run lands on (#76): some clients can
+ * only run in certain places, and a run must know that before it starts. A
+ * run on a host that does not meet it is refused before anything is
+ * provisioned, naming what is missing.
+ */
+export interface ProfileRequires {
+  os?: HostOperatingSystem
+  /** Hardware virtualisation, which an emulator needs. */
+  virtualisation?: true
+  /** Attached devices, by kind: at least one of each. */
+  devices?: DeviceKind[]
+}
+
 export interface ProfileStub {
   service: string
   hosts: string[]
@@ -285,6 +312,8 @@ export interface QaProfile {
    * issue with nobody to blame mentions nobody and says so.
    */
   findings?: ProfileFindings
+  /** What the profile requires of the host a run lands on (#76). Absent means nothing beyond what its shape implies. */
+  requires?: ProfileRequires
 }
 
 /**
@@ -542,6 +571,7 @@ export function validateProfileConfig(config: unknown): QaProfile {
     ...(config.a11y === undefined ? {} : { a11y: parseA11y(config.a11y) }),
     ...(config.ux === undefined ? {} : { ux: parseUx(config.ux) }),
     ...(config.findings === undefined ? {} : { findings: parseFindings(config.findings) }),
+    ...requiresOf(config.requires),
   }
 }
 
@@ -573,6 +603,7 @@ function validateTargetConfig(config: Record<string, unknown>): QaProfile {
     ...(config.a11y === undefined ? {} : { a11y: parseA11y(config.a11y) }),
     ...(config.ux === undefined ? {} : { ux: parseUx(config.ux) }),
     ...(config.findings === undefined ? {} : { findings: parseFindings(config.findings) }),
+    ...requiresOf(config.requires),
   }
 }
 
@@ -625,7 +656,55 @@ function validateClientConfig(config: Record<string, unknown>): QaProfile {
     ...(base === undefined ? {} : { base }),
     ...(config.ux === undefined ? {} : { ux: parseUx(config.ux) }),
     ...(config.findings === undefined ? {} : { findings: parseFindings(config.findings) }),
+    ...requiresOf(config.requires, client),
   }
+}
+
+const REQUIRES_KEYS = ['os', 'virtualisation', 'devices']
+
+/**
+ * The profile's `requires` section (#76), as the key a loaded profile
+ * carries: nothing when the section is absent or requires nothing. A profile
+ * is a file a pull request can edit, so every value is held to the short
+ * lists the run can check a host against. A contained client build is
+ * launched in a cell, which is a Linux container (#223), so a section that
+ * requires another operating system for one contradicts the profile itself.
+ */
+function requiresOf(value: unknown, client?: ProfileClient): { requires?: ProfileRequires } {
+  if (value === undefined) return {}
+  if (!isRecord(value)) fail('requires', 'requires must be a YAML object with os, virtualisation and devices')
+  for (const key of Object.keys(value))
+    if (!REQUIRES_KEYS.includes(key)) fail(`requires.${key}`, `requires takes os, virtualisation and devices, not ${JSON.stringify(key)}`)
+  const requires: ProfileRequires = {}
+  if (value.os !== undefined) {
+    if (typeof value.os !== 'string' || !(HOST_OPERATING_SYSTEMS as readonly string[]).includes(value.os))
+      fail('requires.os', `requires.os must be one of ${HOST_OPERATING_SYSTEMS.join(', ')}, not ${JSON.stringify(value.os)}`)
+    const os = value.os as HostOperatingSystem
+    if (client !== undefined && client.egress !== 'uncontained' && os !== 'linux')
+      fail(
+        'requires.os',
+        `a contained build is launched in a cell, which is a Linux container, so it cannot require ${os}: a build for ${os} says client.egress: uncontained`,
+      )
+    requires.os = os
+  }
+  if (value.virtualisation !== undefined) {
+    if (typeof value.virtualisation !== 'boolean') fail('requires.virtualisation', 'requires.virtualisation must be true or false')
+    if (value.virtualisation) requires.virtualisation = true
+  }
+  if (value.devices !== undefined) {
+    if (!Array.isArray(value.devices)) fail('requires.devices', `requires.devices must be an array of device kinds (${DEVICE_KINDS.join(', ')})`)
+    const devices: DeviceKind[] = []
+    for (const [index, kind] of value.devices.entries()) {
+      const field = `requires.devices[${index}]`
+      if (kind === 'ios') fail(field, 'an attached ios device is not something this qare can detect yet: the kind arrives with the iOS driver (#74)')
+      if (typeof kind !== 'string' || !(DEVICE_KINDS as readonly string[]).includes(kind))
+        fail(field, `${field} must be one of ${DEVICE_KINDS.join(', ')}, not ${JSON.stringify(kind)}`)
+      if (devices.includes(kind as DeviceKind)) fail(field, `${field} names ${kind} twice: a kind is required once`)
+      devices.push(kind as DeviceKind)
+    }
+    if (devices.length > 0) requires.devices = devices
+  }
+  return Object.keys(requires).length === 0 ? {} : { requires }
 }
 
 /**

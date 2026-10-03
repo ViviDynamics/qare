@@ -38,12 +38,38 @@ test('qare run --plan against a client profile whose build is not there is block
   ])
   const out = capture()
 
-  const code = await main(args, out.writer, capture().writer, {})
+  // On a host that can make a cell: whether it can is settled first (#76).
+  const code = await main(args, out.writer, capture().writer, { clientCell: { problem: async () => undefined } })
 
   // Exit 2 is the blocked verdict: the harness ran and decided.
   expect(code).toBe(2)
   const result = JSON.parse(await readFile(join(dir, 'evidence', 'result.json'), 'utf8'))
   expect(result.verdict).toBe('blocked')
   expect(result.client).toEqual({ driver: 'electron', executable: 'dist/app/app', comparison: 'none', egress: 'contained' })
+  expect(result.requirements).toEqual({ cell: true })
   expect(result.criteria[0].reason).toContain(`resolves to ${join(dir, 'dist', 'app', 'app')}, which is not a file`)
+})
+
+test('qare run --plan against a contained client profile on a host that cannot make a cell is refused before the build is looked for (#76)', async () => {
+  const { dir, args } = await clientRepo([
+    { id: 'c1', text: 'the application greets', checks: [{ kind: 'flow', name: 'greets', actions: [{ action: 'open', url: '/' }, { action: 'assertText', text: 'Greeter' }] }] },
+  ])
+  const err = capture()
+  // The host itself is asked: one that names no image to make a cell from.
+  const saved = process.env.QARE_IMAGE_REF
+  delete process.env.QARE_IMAGE_REF
+  let code: number
+  try {
+    code = await main(args, capture().writer, err.writer, {})
+  } finally {
+    if (saved !== undefined) process.env.QARE_IMAGE_REF = saved
+  }
+
+  // Exit 3 is the refused verdict: this host cannot run it, and nothing was faulted.
+  expect(code).toBe(3)
+  const result = JSON.parse(await readFile(join(dir, 'evidence', 'result.json'), 'utf8'))
+  expect(result.verdict).toBe('refused')
+  expect(result.requirements).toEqual({ cell: true })
+  expect(result.criteria[0].reason).toMatch(/^refused: unmet requirement: a client build runs contained, .*QARE_IMAGE_REF names none.*Nothing was provisioned\.$/)
+  expect(err.lines.join('')).toContain('refused: unmet requirement: a client build runs contained')
 })

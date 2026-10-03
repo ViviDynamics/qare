@@ -1,0 +1,20 @@
+# The compose-app profile (../.qa/config.yml), with one thing added: it says
+# it requires macOS. qare's CI runs the pipeline's execute step against it on
+# a Linux runner and holds the run to refusing by name before the app is
+# booted (#76). Everything else is the profile next door, so what is refused
+# is a run that would otherwise have passed.
+requires:
+  os: macos
+app:
+  boot: { compose: examples/compose-app/compose.yaml, service: web }
+  health: { http: "http://localhost:{{run.app_port}}/up", timeout: 180s }
+  seed: { command: "true" }
+  login: { fixture: fixtures/users.yml, role: reader }
+stubs: []
+visual:
+  widths: [1440]
+  themes: [light]
+suites:
+  - name: in-service
+    command: "docker compose -p qare-{{run.id}} -f examples/compose-app/compose.yaml exec -T web grep -q Hello-from-compose /site/index.html"
+    kind: flow

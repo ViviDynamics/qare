@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
+import type { HostKind } from './placement.js'
 import { NARE_CONTRACT } from './runner.js'
 import { VERSION } from './version.js'
 
@@ -41,6 +42,13 @@ export interface RunEnvironment {
     nareContract: number
   }
   image?: RunImage
+  /**
+   * The kind of host that produced the result (#76): its operating system and
+   * architecture, whether it offers hardware virtualisation, and the runner
+   * it is when the run was placed on one. Absent in a result written before
+   * the host was recorded.
+   */
+  host?: HostKind
 }
 
 /**
@@ -94,10 +102,16 @@ export function readRunImage(env: NodeJS.ProcessEnv = process.env, imageFile = '
 }
 
 /** The environment record a run writes into its evidence (issue #91). */
-export function runEnvironment(execution: ExecutionKind, env: NodeJS.ProcessEnv = process.env, imageFile = '/opt/qare/config/IMAGE.json'): RunEnvironment {
+export function runEnvironment(
+  execution: ExecutionKind,
+  env: NodeJS.ProcessEnv = process.env,
+  imageFile = '/opt/qare/config/IMAGE.json',
+  host?: HostKind,
+): RunEnvironment {
   const image = execution === 'containerised' ? readRunImage(env, imageFile) : undefined
   return {
     execution,
+    ...(host === undefined ? {} : { host }),
     versions: {
       qare: VERSION,
       node: process.versions.node,

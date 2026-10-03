@@ -173,7 +173,9 @@ network their step has.
 
 - A client run needs a docker daemon and `QARE_IMAGE_REF`. The pipeline's
   execute step provides both. A run on a developer's machine either has
-  them, or opts out, or is blocked by name.
+  them, or opts out, or is refused by name before anything is provisioned
+  (since #76 the cell is one of the requirements a run holds its host to;
+  it was `blocked` when this was written).
 - The build runs in the image, not beside the run: it sees the image's
   libraries and environment, a read-only copy of its own directory, and a
   `/tmp` of its own. A build that writes beside its own executable, or reads

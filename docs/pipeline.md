@@ -95,6 +95,7 @@ UX review".
 | `profile` | `.qa` | The directory that holds the QA profile. |
 | `runs-on` | `"ubuntu-latest"` | Where every job runs, as JSON: one label, or a list of labels for your own runners. |
 | `execute-runs-on` | empty | Where execute runs, in the same JSON form, when it should not share runners with the jobs that hold secrets. Empty means `runs-on`. See "Your own runners". |
+| `self-hosted` | empty | `allow` lets a public repository's pipeline run on self-hosted runners. Empty, collect, plan and execute stop there by name, before any checkout. It changes nothing for a private repository or on hosted runners. See "Your own runners". |
 | `planner-diff-exclude` | empty | Space-separated git pathspecs left out of the planner's copy of the diff, for a diff too large to plan from whole. execute and judge still read the full diff. |
 | `artefacts` | empty | The name of a workflow artifact that holds the builds a client profile installs, uploaded by an earlier job of your workflow. execute downloads it into `qare-artefacts/` at the repository root before the run. See "Profiles that install a build". |
 | `qare-ref` | the release | The qare revision the pipeline runs. It defaults to the release the workflow file ships in. Leave it alone and pin the release in `uses:`. |
@@ -446,6 +447,101 @@ Inside each job the boundary holds either way: execute's checkout leaves no
 token on disk, plan's checkout leaves none either, and the model key is
 handed to the planner and the verifier in a file outside the workspace that
 is removed when the step ends.
+
+### A public repository stays on hosted runners
+
+A public repository's pull requests are written by people you have not met,
+and a runner that outlives its job keeps whatever one of them left on it. So
+for a public repository the pipeline does not run on a self-hosted runner:
+collect, plan and execute each stop at their first step, before anything of
+the pull request is checked out onto the machine. The job fails, its summary
+gives the reason, and the report job posts that the run was not evaluated,
+naming the step:
+
+> this repository is public and the run landed on a self-hosted runner: a
+> public repository keeps its runs on GitHub-hosted runners, because a runner
+> that outlives its job keeps whatever a pull request left on it; to use your
+> own capacity anyway, opt in with the pipeline input self-hosted: allow
+
+Self-hosted capacity is opt in. If your runners are made for one job and
+destroyed after it, or you accept the risk, say so beside the labels:
+
+```yaml
+    with:
+      runs-on: '["self-hosted", "linux", "x64"]'
+      self-hosted: allow
+```
+
+The rule reads three facts: what GitHub Actions says the runner is
+(`RUNNER_ENVIRONMENT`), the repository's visibility, and this input. A
+private repository chooses its own runners and is asked nothing.
+
+`qare run` holds the same rule itself, in the same words, and execute hands
+it the same three facts. So a `qare run` you start in a workflow of your own
+is covered when you tell it them: `QARE_REPOSITORY_VISIBILITY=public` on a
+self-hosted runner ends `refused` (`refused: placement: ...`), with nothing
+provisioned, unless `QARE_SELF_HOSTED=allow`. By then your workflow has
+already checked the pull request out, which is why the pipeline's own guard
+comes before its checkout.
+
+## Where a run can execute
+
+Some applications cannot run anywhere. A simulator needs macOS, an emulator
+needs hardware virtualisation, a phone needs to be attached. A profile says
+what it requires of the host, and a run on a host that does not have it is
+refused before anything is provisioned, naming what is missing:
+
+```yaml
+# .qa/config.yml
+requires:
+  os: macos              # linux, macos or windows
+  virtualisation: true   # hardware virtualisation, which an emulator needs
+  devices: [android]     # an attached device of each kind
+```
+
+Every key is optional, and a profile that says nothing requires nothing
+beyond what its shape implies: a client build that runs contained requires a
+host that can make its cell, and one that opts out
+(`client.egress: uncontained`) requires a display. Those two are the same
+requirement table, so they are refused the same way.
+
+On a host that is short, the run's verdict is `refused` and every criterion
+is `unverified` with the reason, for example:
+
+> refused: unmet requirement: a macos host (requires.os): this host is linux.
+> Nothing was provisioned.
+
+Everything that is missing is named at once. `refused` is not a fault in the
+change, so the check run is neutral and execute stays green; the fix is where
+the run is placed. `qare doctor --profile .qa` holds a host to the same table
+before a run does.
+
+What this does and does not cover today:
+
+- The pipeline's execute job runs in the qare image, which is a Linux
+  container. Inside it the host is Linux whatever the runner is, so in the
+  pipeline a profile that requires macOS or Windows is always refused, by
+  name, and no choice of `runs-on` changes that yet. Such a profile runs
+  where `qare run` is started on that host itself. Prepared macOS and Windows
+  hosts for the pipeline are their own work (#90).
+- Hardware virtualisation is detected on Linux, as a `/dev/kvm` the run's
+  user can open. The pipeline does not hand `/dev/kvm` to the run's container
+  yet, because no driver uses it (#73), so `requires.virtualisation` is unmet
+  there.
+- An attached device is a physical Android device that `adb devices` lists as
+  `device`. An emulator is not counted: it is what `virtualisation` is for.
+  iOS devices arrive with their driver (#74), and until then `ios` is refused
+  when the profile loads.
+- Nothing here claims, resets or shares a device between runs (#77).
+
+The evidence says where a result came from. `result.json` records the host
+kind under `environment.host` (operating system, architecture, whether
+hardware virtualisation is usable, and `github-hosted` or `self-hosted` when
+the run was on a runner), on each side of a two-sided run, and what the
+profile required under `requirements`. The comment says both:
+
+> Executed in a container on a linux x64 host, a GitHub-hosted runner, with
+> qare (its version), node (its version), nare contract 1.
 
 ## Advisory UX review
 

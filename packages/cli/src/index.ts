@@ -2191,6 +2191,15 @@ async function runCommand(
     if (result.base?.status === 'not-executed') err.write(`base ${result.base.ref} not checked, so nothing was compared: ${result.base.reason ?? ''}\n`)
     for (const criterion of result.criteria)
       if (criterion.regression === true) out.write(`regression ${criterion.id}: proven at the base, failed at the head\n`)
+    // A run refused for where it landed (#76) says why where the person who
+    // started it reads it: nothing ran, so the reason is the whole outcome,
+    // and it is one reason however many criteria carry it.
+    if (result.verdict === 'refused') {
+      const placed = result.criteria.flatMap((criterion) =>
+        criterion.outcome === 'unverified' && /^refused: (unmet requirement|placement): /.test(criterion.reason) ? [criterion.reason] : [],
+      )
+      for (const reason of new Set(placed)) err.write(`${reason}\n`)
+    }
     out.write(`verdict ${result.verdict}; evidence ${job.evidenceDir}\n`)
     return code
   } catch (error) {

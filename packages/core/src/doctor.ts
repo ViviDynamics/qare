@@ -3,6 +3,7 @@ import { accessSync, constants, existsSync } from 'node:fs'
 import { delimiter, join, resolve } from 'node:path'
 import { detectExecution, type ExecutionKind } from './environment.js'
 import { electronDisplayProblem } from './flow-electron.js'
+import { describeHost, detectHost, requirementsOf, unmetRequirements, virtualisationProblem, type HostKind, type HostProbes, type Requirements } from './placement.js'
 import { ProfileMissingError, loadProfile, type QaProfile } from './profile.js'
 import { VERSION } from './version.js'
 
@@ -22,6 +23,8 @@ export interface DoctorFinding {
 
 export interface DoctorReport {
   execution: ExecutionKind
+  /** The kind of host this is (#76): what a run here would record in its evidence. */
+  host: HostKind
   /** Every required finding is ok. Informational findings cannot fail it. */
   ready: boolean
   findings: DoctorFinding[]
@@ -40,6 +43,8 @@ export interface DoctorProbes {
   python?: () => Promise<{ version?: string; detail: string }>
   /** Why a desktop window cannot be shown on this host, or undefined when it can (#72). */
   display?: () => string | undefined
+  /** The host a profile's requirements are held to (#76): its kind, its virtualisation, its devices, its cell. */
+  host?: HostProbes
 }
 
 export interface DoctorOpts {
@@ -66,10 +71,12 @@ const NARE_INSTALL = `install the pinned nare beside qare (needs python ${NARE_P
  * install what is missing (issue #91). The same host runs a containerised qare
  * or a native one, and the checks are the checks a native install needs:
  * node, the pinned nare, the docker daemon for a profile that boots an app,
- * and the chromium driver for a profile whose suites drive a browser. A
- * display is required only by a profile that names a desktop client (#72):
- * the browser driver runs headless. Devices are reported but never required:
- * they arrive through the profile's registered MCP servers.
+ * and the chromium driver for a profile whose suites drive a browser. What
+ * the profile requires of the host itself is the table a run refuses on
+ * (#76): the operating system, hardware virtualisation and attached devices
+ * it declares in `requires`, a cell for a contained client build (#223), and
+ * a display for one launched on the host (#72). The host kind is reported
+ * either way.
  */
 export async function runDoctor(opts: DoctorOpts = {}): Promise<DoctorReport> {
   const probes = opts.probes ?? {}
@@ -136,16 +143,71 @@ export async function runDoctor(opts: DoctorOpts = {}): Promise<DoctorReport> {
     install: browser.ok ? undefined : 'install playwright-core beside qare and run npx playwright install chromium',
   })
 
-  // A desktop build opens real windows (#72): a profile that names a client
-  // needs a display, where the browser driver needs none.
-  const displayProblem = profile?.client === undefined ? undefined : (probes.display ?? ((): string | undefined => electronDisplayProblem()))()
+  // What the profile requires of the host (#76), from the one table a run
+  // holds its host to: what it declares in `requires`, and what its shape
+  // implies. The run refuses on exactly these, so this is where a host
+  // learns it before a run does.
+  const host = detectHost(probes.host)
+  const unvirtualised = virtualisationProblem(host, probes.host)
+  findings.push({
+    name: 'host',
+    ok: true,
+    required: false,
+    detail: `${describeHost(host)}; hardware virtualisation is ${unvirtualised === undefined ? 'usable' : `not usable (${unvirtualised})`}`,
+  })
+  const requirements: Requirements = profile === undefined ? {} : requirementsOf(profile)
+  const held = async (requirement: Requirements, met: string, install: string): Promise<Omit<DoctorFinding, 'name'>> => {
+    const [missing] = await unmetRequirements(requirement, host, probes.host)
+    return missing === undefined ? { ok: true, required: true, detail: met } : { ok: false, required: true, detail: `this profile requires ${missing}`, install }
+  }
+  if (requirements.os !== undefined)
+    findings.push({
+      name: 'os',
+      ...(await held(
+        { os: requirements.os },
+        `this host is ${host.os}, which the profile requires`,
+        `run it on a ${requirements.os} host: an operating system is not something to install`,
+      )),
+    })
+  if (requirements.virtualisation === true)
+    findings.push({
+      name: 'virtualisation',
+      ...(await held(
+        { virtualisation: true },
+        'this host offers hardware virtualisation, which the profile requires',
+        'use a Linux host whose /dev/kvm this user can open (enable KVM, and add the user to the kvm group)',
+      )),
+    })
+  // A contained build is launched in a cell the docker daemon makes (#223).
+  if (requirements.cell === true) {
+    const [problem] = await unmetRequirements({ cell: true }, host, probes.host)
+    findings.push(
+      problem === undefined
+        ? { name: 'cell', ok: true, required: true, detail: 'this host can make a cell for the build' }
+        : {
+            name: 'cell',
+            ok: false,
+            required: true,
+            detail: problem,
+            install: 'run it where a docker daemon holds the qare image the run is in (the pipeline does), or say client.egress: uncontained in the profile',
+          },
+    )
+  }
+
+  // A desktop build launched on the host opens real windows there (#72), so
+  // it needs a display; the browser driver needs none, and a contained
+  // build's windows open on its cell's display (#223).
+  const displayProblem = requirements.display !== true ? undefined : (probes.display ?? ((): string | undefined => electronDisplayProblem()))()
   findings.push(
-    profile?.client === undefined
+    requirements.display !== true
       ? {
           name: 'display',
           ok: true,
           required: false,
-          detail: 'no display is needed: the browser driver runs headless',
+          detail:
+            profile?.client === undefined
+              ? 'no display is needed: the browser driver runs headless'
+              : "no display is needed on this host: a contained build opens its windows on its cell's display",
         }
       : {
           name: 'display',
@@ -153,7 +215,7 @@ export async function runDoctor(opts: DoctorOpts = {}): Promise<DoctorReport> {
           required: true,
           detail:
             displayProblem === undefined
-              ? `a display is available for the ${profile.client.driver} driver`
+              ? `a display is available for the ${profile?.client?.driver ?? 'client'} driver`
               : `${displayProblem} (this profile launches a desktop build, so a display is required)`,
           install: displayProblem === undefined ? undefined : 'install Xvfb, which the driver starts for each launch, or name a running display in DISPLAY',
         },
@@ -176,16 +238,29 @@ export async function runDoctor(opts: DoctorOpts = {}): Promise<DoctorReport> {
             }
           })(),
         ]),
-    {
+  )
+  // Attached devices are required only by a profile that says so (#76);
+  // otherwise they arrive through the MCP servers a profile registers.
+  if (requirements.devices === undefined)
+    findings.push({
       name: 'devices',
       ok: true,
       required: false,
-      detail: 'devices arrive through the MCP servers a profile registers, so none are checked here',
-    },
-  )
+      detail: 'no attached device is required (requires.devices declares none); devices a profile reaches through its MCP servers are not checked here',
+    })
+  for (const kind of requirements.devices ?? [])
+    findings.push({
+      name: 'devices',
+      ...(await held(
+        { devices: [kind] },
+        `an attached ${kind} device is there, which the profile requires`,
+        `attach an ${kind} device with USB debugging allowed, and install adb (the Android platform tools) on PATH`,
+      )),
+    })
 
   return {
     execution,
+    host,
     ready: findings.every((finding) => !finding.required || finding.ok),
     findings,
   }
