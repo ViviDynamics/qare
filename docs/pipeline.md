@@ -95,7 +95,7 @@ UX review".
 | `profile` | `.qa` | The directory that holds the QA profile. |
 | `runs-on` | `"ubuntu-latest"` | Where every job runs, as JSON: one label, or a list of labels for your own runners. |
 | `execute-runs-on` | empty | Where execute runs, in the same JSON form, when it should not share runners with the jobs that hold secrets. Empty means `runs-on`. See "Your own runners". |
-| `self-hosted` | empty | `allow` lets a public repository's execute job run on a self-hosted runner. Empty, it is refused there by name. It changes nothing for a private repository or on hosted runners. See "Your own runners". |
+| `self-hosted` | empty | `allow` lets a public repository's pipeline run on self-hosted runners. Empty, collect, plan and execute stop there by name, before any checkout. It changes nothing for a private repository or on hosted runners. See "Your own runners". |
 | `planner-diff-exclude` | empty | Space-separated git pathspecs left out of the planner's copy of the diff, for a diff too large to plan from whole. execute and judge still read the full diff. |
 | `artefacts` | empty | The name of a workflow artifact that holds the builds a client profile installs, uploaded by an earlier job of your workflow. execute downloads it into `qare-artefacts/` at the repository root before the run. See "Profiles that install a build". |
 | `qare-ref` | the release | The qare revision the pipeline runs. It defaults to the release the workflow file ships in. Leave it alone and pin the release in `uses:`. |
@@ -452,15 +452,16 @@ is removed when the step ends.
 
 A public repository's pull requests are written by people you have not met,
 and a runner that outlives its job keeps whatever one of them left on it. So
-for a public repository the run refuses to execute on a self-hosted runner:
-the verdict is `refused`, nothing is provisioned, no pull request code runs,
-and the comment says why:
+for a public repository the pipeline does not run on a self-hosted runner:
+collect, plan and execute each stop at their first step, before anything of
+the pull request is checked out onto the machine. The job fails, its summary
+gives the reason, and the report job posts that the run was not evaluated,
+naming the step:
 
-> refused: placement: this repository is public and the run landed on a
-> self-hosted runner: a public repository keeps its runs on GitHub-hosted
-> runners, because a runner that outlives its job keeps whatever a pull
-> request left on it; to use your own capacity anyway, opt in with the
-> pipeline input self-hosted: allow
+> this repository is public and the run landed on a self-hosted runner: a
+> public repository keeps its runs on GitHub-hosted runners, because a runner
+> that outlives its job keeps whatever a pull request left on it; to use your
+> own capacity anyway, opt in with the pipeline input self-hosted: allow
 
 Self-hosted capacity is opt in. If your runners are made for one job and
 destroyed after it, or you accept the risk, say so beside the labels:
@@ -471,14 +472,17 @@ destroyed after it, or you accept the risk, say so beside the labels:
       self-hosted: allow
 ```
 
-The rule is decided by `qare run`, not by the workflow: execute hands the run
-what GitHub Actions says the runner is (`RUNNER_ENVIRONMENT`), the
-repository's visibility and this input, and the run refuses or goes ahead.
-It is about execute, the job that runs pull request code. A private
-repository chooses its own runners and is asked nothing. The same rule holds
-for a `qare run` you start in a workflow of your own, when you tell it the
-same facts: `QARE_REPOSITORY_VISIBILITY=public` on a self-hosted runner is
-refused unless `QARE_SELF_HOSTED=allow`.
+The rule reads three facts: what GitHub Actions says the runner is
+(`RUNNER_ENVIRONMENT`), the repository's visibility, and this input. A
+private repository chooses its own runners and is asked nothing.
+
+`qare run` holds the same rule itself, in the same words, and execute hands
+it the same three facts. So a `qare run` you start in a workflow of your own
+is covered when you tell it them: `QARE_REPOSITORY_VISIBILITY=public` on a
+self-hosted runner ends `refused` (`refused: placement: ...`), with nothing
+provisioned, unless `QARE_SELF_HOSTED=allow`. By then your workflow has
+already checked the pull request out, which is why the pipeline's own guard
+comes before its checkout.
 
 ## Where a run can execute
 

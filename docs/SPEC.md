@@ -1353,10 +1353,15 @@ names both.
 self-hosted runner for a public repository is refused the same way, before
 anything runs (`refused: placement: ...`): a runner that outlives its job
 keeps whatever a pull request left on it (rule 7). Self-hosted capacity is
-opt in, with the pipeline's `self-hosted: allow` input. The decision is
-`qare run`'s, in code, from three facts the pipeline's execute job hands it:
-the runner's kind as GitHub Actions names it, the repository's visibility,
-and the opt in. A private repository is asked nothing. See
+opt in, with the pipeline's `self-hosted: allow` input. `qare run` decides
+it, in code, from three facts the pipeline's execute job hands it: the
+runner's kind as GitHub Actions names it, the repository's visibility, and
+the opt in. A refusal there comes after the workflow's checkout, though, and
+a checkout is already the pull request's files on the machine. So the
+pipeline holds the same rule, in the same words, as the first step of
+collect, plan and execute, before any checkout: there the job fails by name
+and the report job says the run was not evaluated. A private repository is
+asked nothing. See
 [the pipeline guide](./pipeline.md#a-public-repository-stays-on-hosted-runners).
 
 ### Provisioning

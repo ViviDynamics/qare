@@ -77,13 +77,36 @@ test('execute tells the run where it was placed, and self-hosted capacity for a 
   expect(run).toContain('-e QARE_RUNNER_ENVIRONMENT="${RUNNER_ENVIRONMENT:-}" \\\n')
   expect(run).toContain('-e QARE_REPOSITORY_VISIBILITY="${QARE_REPOSITORY_VISIBILITY:-}" \\\n')
   expect(run).toContain('-e QARE_SELF_HOSTED="${QARE_SELF_HOSTED:-}" \\\n')
-  // The decision is the run's, in code: the workflow carries no rule of its own about runners.
-  expect(workflow).not.toContain("runner.environment == 'self-hosted'")
   // A refusal says its own reason in the job summary, whatever it was refused for.
   expect(run).toContain('qare refused this run: ${reason:-it recorded no reason}')
   expect(run).not.toContain('qare refused this run (no profile or stubs yet)')
-  // Only the job that runs pull request code is placed by this rule.
-  for (const job of ['collect', 'plan', 'judge', 'report']) expect(section(job)).not.toContain('QARE_SELF_HOSTED')
+})
+
+test('no job puts a public repository\'s pull request on a self-hosted runner: the guard is its first step, before any checkout (#76)', () => {
+  const guard = "- name: Keep a public repository's run off a self-hosted runner"
+  const scripts: string[] = []
+  // The three jobs that check out the pull request's tree. collect is first,
+  // so on one pool of runners it stops the whole pipeline; plan and execute
+  // carry the guard themselves, because execute may be on a pool of its own.
+  for (const job of ['collect', 'plan', 'execute']) {
+    const body = section(job)
+    const steps = body.slice(body.indexOf('    steps:\n'))
+    const first = steps.split('\n').find((line) => /^ {6}- /.test(line))
+    expect(first, `${job}: the guard must be the first step`).toBe(`      ${guard}`)
+    const at = steps.indexOf(guard)
+    expect(at).toBeLessThan(steps.indexOf('actions/checkout@'))
+    const step = steps.slice(at, steps.indexOf('\n          fi\n', at) + '\n          fi\n'.length)
+    // The two facts are the workflow's own; the runner's kind is the runner's.
+    expect(step).toContain('QARE_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}\n')
+    expect(step).toContain('QARE_SELF_HOSTED: ${{ inputs.self-hosted }}\n')
+    expect(step).toContain('"${RUNNER_ENVIRONMENT:-}" = "self-hosted"')
+    expect(step).toContain('exit 1')
+    scripts.push(step.slice(step.indexOf('run: |')))
+  }
+  // One guard, three times: the same script in each job.
+  expect(new Set(scripts).size).toBe(1)
+  // judge and report never check the pull request's tree out, and say what happened.
+  for (const job of ['judge', 'report']) expect(section(job)).not.toContain(guard)
 })
 
 test('secret hygiene: the model-key job never holds a GitHub token', () => {

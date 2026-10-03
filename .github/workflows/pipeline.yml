@@ -133,9 +133,10 @@ on:
       self-hosted:
         description: >-
           A public repository keeps its runs on GitHub-hosted runners: on a
-          self-hosted runner, execute refuses the run by name, because a
-          runner that outlives its job keeps whatever a pull request left on
-          it. Set this to 'allow' to use your own capacity anyway. It changes
+          self-hosted runner, collect, plan and execute stop by name before
+          any checkout, because a runner that outlives its job keeps whatever
+          a pull request left on it. Set this to 'allow' to use your own
+          capacity anyway. It changes
           nothing for a private repository, or on hosted runners.
         type: string
         default: ''
@@ -210,6 +211,26 @@ jobs:
       # caller pinned. plan, execute and judge pull the images it names.
       qare-version: ${{ steps.qare.outputs.version }}
     steps:
+      # A public repository keeps its runs on GitHub-hosted runners (#76): a
+      # runner that outlives its job keeps whatever a pull request left on
+      # it, so this stops before anything of the pull request reaches the
+      # machine, unless the caller opted in with `self-hosted: allow`. It is
+      # the first step of collect, plan and execute, and collect gates the
+      # rest. The same rule, in the same words, is `qare run`'s own
+      # (placementProblem), which refuses a run started any other way.
+      - name: Keep a public repository's run off a self-hosted runner
+        shell: bash
+        env:
+          QARE_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          QARE_SELF_HOSTED: ${{ inputs.self-hosted }}
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ "${QARE_REPOSITORY_VISIBILITY:-}" = "public" ] && [ "${QARE_SELF_HOSTED:-}" != "allow" ]; then
+            reason="this repository is public and the run landed on a self-hosted runner: a public repository keeps its runs on GitHub-hosted runners, because a runner that outlives its job keeps whatever a pull request left on it; to use your own capacity anyway, opt in with the pipeline input self-hosted: allow"
+            echo "$reason" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$reason"
+            exit 1
+          fi
       # The base commit: the pull request contributes data only, and the head
       # arrives below as an object, never as a working tree.
       - uses: actions/checkout@v4
@@ -337,6 +358,20 @@ jobs:
       needs.collect.outputs.criteria == 'present' &&
       github.event.pull_request.head.repo.full_name == github.repository
     steps:
+      # The placement guard (#76), as in collect: before any checkout.
+      - name: Keep a public repository's run off a self-hosted runner
+        shell: bash
+        env:
+          QARE_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          QARE_SELF_HOSTED: ${{ inputs.self-hosted }}
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ "${QARE_REPOSITORY_VISIBILITY:-}" = "public" ] && [ "${QARE_SELF_HOSTED:-}" != "allow" ]; then
+            reason="this repository is public and the run landed on a self-hosted runner: a public repository keeps its runs on GitHub-hosted runners, because a runner that outlives its job keeps whatever a pull request left on it; to use your own capacity anyway, opt in with the pipeline input self-hosted: allow"
+            echo "$reason" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$reason"
+            exit 1
+          fi
       # The base revision: the pull request contributes data only, and this
       # job holds the model key. The tree supplies the profile the planner
       # reads; the image is the published core for the pinned qare's version
@@ -472,6 +507,24 @@ jobs:
       # evaluated, judge is skipped, and the report job says why.
       verdict: ${{ steps.recorded.outputs.verdict }}
     steps:
+      # The placement guard (#76), as in collect. This is the job that checks
+      # the pull request's tree out and runs it, and it may be on a pool of
+      # its own (execute-runs-on), so it holds the rule itself: nothing of
+      # the pull request reaches a self-hosted runner a public repository did
+      # not opt in to.
+      - name: Keep a public repository's run off a self-hosted runner
+        shell: bash
+        env:
+          QARE_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          QARE_SELF_HOSTED: ${{ inputs.self-hosted }}
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ "${QARE_REPOSITORY_VISIBILITY:-}" = "public" ] && [ "${QARE_SELF_HOSTED:-}" != "allow" ]; then
+            reason="this repository is public and the run landed on a self-hosted runner: a public repository keeps its runs on GitHub-hosted runners, because a runner that outlives its job keeps whatever a pull request left on it; to use your own capacity anyway, opt in with the pipeline input self-hosted: allow"
+            echo "$reason" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$reason"
+            exit 1
+          fi
       # actions/checkout checks out the PR merge ref on pull_request events.
       # No token is left in .git/config (rule 7): the run's container is
       # handed this workspace and executes pull request code, so the job
