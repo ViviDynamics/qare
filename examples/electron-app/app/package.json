@@ -1,0 +1,9 @@
+{
+  "name": "qare-example",
+  "productName": "qare-example",
+  "version": "1.0.0",
+  "private": true,
+  "license": "Elastic-2.0",
+  "type": "module",
+  "main": "main.js"
+}

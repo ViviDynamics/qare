@@ -2,8 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { BootOpts } from './boot.js'
-import { BROWSER_FLOW_DRIVER } from './flow-playwright.js'
-import { mcpDriverCapabilities } from './mcp.js'
+import { flowDriverFor } from './flow-driver.js'
 import { jobFromPlan } from './job-from-plan.js'
 import { judgeExecuted } from './judge.js'
 import type { ReadMail } from './mailbox.js'
@@ -206,7 +205,8 @@ async function planOrReport(
       // The profile's MCP mapping is the driver when it declares one (#94):
       // the mapping is the capability declaration, so plan time rejects an
       // action the mapped tools cannot perform, before anything runs.
-      driver: mcpDriverCapabilities(profile.mcp) ?? BROWSER_FLOW_DRIVER,
+      driver: flowDriverFor(profile),
+      ...(profile.client === undefined ? {} : { client: profile.client.driver }),
       ...(profile.target === undefined ? {} : { target: profile.target.url }),
       ...(server === undefined
         ? {}

@@ -1,7 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import http from 'node:http'
 import https from 'node:https'
-import type { ProfileApp, QaProfile } from './profile.js'
+import { realpath, stat } from 'node:fs/promises'
+import { isAbsolute, relative, resolve } from 'node:path'
+import { electronDisplayProblem, type ElectronHost } from './flow-electron.js'
+import type { ProfileApp, ProfileClient, QaProfile } from './profile.js'
 import { VERSION } from './version.js'
 import { parseDurationMs } from './duration.js'
 import { composeEnv, hasMintedProject, mintIsolation, type RunIsolation } from './isolation.js'
@@ -47,6 +50,13 @@ export interface BootOpts {
    * boot only carries it, because every run-level option rides in here.
    */
   cacheDir?: string
+  /**
+   * Where a client profile's executable resolves from (#72): the repository
+   * the run checks. The working directory when the caller names none.
+   */
+  root?: string
+  /** The environment a client build is launched into (#72); the process's own by default. */
+  clientEnv?: ElectronHost
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 500
@@ -226,7 +236,53 @@ async function probeTarget(profile: QaProfile, opts: BootOpts): Promise<BootOutc
   }
 }
 
+/** Where a client profile's executable is, resolved from the repository the run checks (#72). */
+export function clientExecutablePath(client: ProfileClient, root: string = process.cwd()): string {
+  return resolve(root, client.executable)
+}
+
+/**
+ * A client profile names a build the run launches (#72): nothing boots, and
+ * each flow check starts the build for itself. What the launch needs is
+ * checked once, here, so a build that is not there or a host that cannot show
+ * a window blocks the run by name instead of leaving every check to find out.
+ * Building, fetching or installing the artefact is provisioning (#75), which
+ * is the project's own step until that lands.
+ */
+async function probeClient(client: ProfileClient, opts: BootOpts): Promise<BootOutcome> {
+  const path = clientExecutablePath(client, opts.root)
+  let isFile = false
+  try {
+    isFile = (await stat(path)).isFile()
+  } catch {
+    // Absent, or unreadable: either way there is nothing to launch.
+  }
+  // The path is inside the repository as written; what it resolves to must
+  // be too. A link that leads out of the checkout is some other binary, and
+  // the run launches the repository's build or nothing.
+  if (isFile) {
+    const [real, rootReal] = await Promise.all([realpath(path), realpath(opts.root ?? process.cwd())])
+    const inside = relative(rootReal, real)
+    if (inside === '' || inside.startsWith('..') || isAbsolute(inside))
+      return {
+        kind: 'blocked',
+        reason: `client.executable ${client.executable} resolves outside the repository the run checks (${real}): the run launches the repository's own build, never another binary on the host`,
+        logs: '',
+      }
+  }
+  if (!isFile)
+    return {
+      kind: 'blocked',
+      reason: `the client build is not there to launch: client.executable ${client.executable} resolves to ${path}, which is not a file; building it is the project's own step, before the run`,
+      logs: '',
+    }
+  const display = electronDisplayProblem(opts.clientEnv)
+  if (display !== undefined) return { kind: 'blocked', reason: display, logs: '' }
+  return { kind: 'up', logs: '' }
+}
+
 export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<BootOutcome> {
+  if (profile.client !== undefined) return probeClient(profile.client, opts)
   if (profile.app === undefined) return probeTarget(profile, opts)
   const app = profile.app
   const runCompose = opts.runCompose ?? defaultRunCompose

@@ -1,5 +1,5 @@
 import type { AgentRunner, AgentToolChannel } from './runner.js'
-import type { FlowDriverCapabilities } from './flow.js'
+import { undeclaredCheckKinds, type FlowDriverCapabilities } from './flow.js'
 import { EXPLORATION_TOOLS, isExplorableUrl, type ExplorationTool } from './explore.js'
 import { channelToolName } from './mcp.js'
 import { isUnsafeProfileName, type ProfileCommand } from './profile.js'
@@ -46,6 +46,8 @@ export interface PlanInputs {
   suites?: string[]
   /** The URL of a running target the profile names (#122), which checks reach it at. */
   target?: string
+  /** The client driver of a profile that names a build to launch (#72), so the planner knows there is no URL. */
+  client?: string
   /**
    * The checkout root, when the caller has one (#201): a plan filling a
    * path placeholder is checked against the checkout, and a path that does
@@ -281,6 +283,9 @@ const SYSTEM = [
 export function planOutputSchema(extraFlowActions: readonly string[] = [], driver?: FlowDriverCapabilities) {
   const base = driver === undefined ? FLOW_ACTION_KINDS : FLOW_ACTION_KINDS.filter((kind) => driver.actions.includes(kind))
   const kinds = [...new Set([...base, ...extraFlowActions])]
+  // A check kind the driver does not serve is not offered at all (#72).
+  const unserved = undeclaredCheckKinds(driver)
+  const checkKinds = ['command', 'flow', 'visual', 'mail', 'a11y'].filter((kind) => !unserved.includes(kind))
   return {
   type: 'object',
   properties: {
@@ -298,7 +303,7 @@ export function planOutputSchema(extraFlowActions: readonly string[] = [], drive
             items: {
               type: 'object',
               properties: {
-                kind: { type: 'string', enum: ['command', 'flow', 'visual', 'mail', 'a11y'] },
+                kind: { type: 'string', enum: checkKinds },
                 name: { type: 'string' },
                 command: { type: 'string' },
                 suite: { type: 'string' },
@@ -362,6 +367,7 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     .map((criterion) => `- ${criterion.id}: ${criterion.text}`)
     .join('\n')
   const flowActionKinds = offeredKinds(inputs)
+  const unserved = undeclaredCheckKinds(inputs.driver)
   const suites = inputs.suites?.length
     ? `Suites this repository declares, which a check may name:\n${inputs.suites.map((suite) => `- ${suite}`).join('\n')}`
     : 'This repository declares no suites, so every check must stand on its own.'
@@ -393,21 +399,33 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     'A check is one of:',
     '- command: {"kind":"command","name":...,"command":"an executable followed by its arguments"}',
     '- flow: {"kind":"flow","name":...,"suite":"an existing suite"} or {"kind":"flow","name":...,"actions":[{"action":"open","url":"the url to open first"},{"action":"type","element":{"role":"searchbox","name":"Search"},"value":"Ada Lovelace"},{"action":"click","element":{"role":"button","name":"Search"}},{"action":"assertText","text":"the text that must be visible"}]}',
-    '- visual: {"kind":"visual","name":...,"screenshot":"name","url":"/the/page","widths":[390],"themes":["light"]}',
+    ...(unserved.includes('visual') ? [] : ['- visual: {"kind":"visual","name":...,"screenshot":"name","url":"/the/page","widths":[390],"themes":["light"]}']),
     '- mail: {"kind":"mail","name":...,"address":"{{run.mail_address}}","subject":"a substring to match", "timeoutMs":60000}',
-    '- a11y: {"kind":"a11y","name":...,"url":"/the/page"}',
+    ...(unserved.includes('a11y') ? [] : ['- a11y: {"kind":"a11y","name":...,"url":"/the/page"}']),
     '',
-    'A visual check captures the page at url, a path on the app, once at each width and theme, and each capture is',
-    'compared with the same page at the base revision: any difference in the pixels fails the criterion, and a page that',
-    'cannot be captured leaves it unverified. Plan one for how a page looks, never for what a page says, which a flow asserts.',
-    'Name only the widths and themes the criterion names; leave either out to take the ones the profile declares.',
-    '',
-    'An a11y check audits pages against accessibility rules, in code: it names its page by url, a path on the app, or',
-    'reaches it with the same actions a flow takes ({"kind":"a11y","name":...,"actions":[...]}), never both. Every page the',
-    'check visits is audited, and only violations the base revision did not already have fail the criterion; older ones are',
-    'reported. You may add an a11y check to any criterion about a user interface, beside the checks that prove it, and mark',
-    'it "inferred": true unless the criterion itself asks for accessibility. It proves nothing about what a page says or does.',
-    '',
+    ...(unserved.includes('visual')
+      ? []
+      : [
+          'A visual check captures the page at url, a path on the app, once at each width and theme, and each capture is',
+          'compared with the same page at the base revision: any difference in the pixels fails the criterion, and a page that',
+          'cannot be captured leaves it unverified. Plan one for how a page looks, never for what a page says, which a flow asserts.',
+          'Name only the widths and themes the criterion names; leave either out to take the ones the profile declares.',
+          '',
+        ]),
+    ...(unserved.includes('a11y')
+      ? []
+      : [
+          'An a11y check audits pages against accessibility rules, in code: it names its page by url, a path on the app, or',
+          'reaches it with the same actions a flow takes ({"kind":"a11y","name":...,"actions":[...]}), never both. Every page the',
+          'check visits is audited, and only violations the base revision did not already have fail the criterion; older ones are',
+          'reported. You may add an a11y check to any criterion about a user interface, beside the checks that prove it, and mark',
+          'it "inferred": true unless the criterion itself asks for accessibility. It proves nothing about what a page says or does.',
+          '',
+        ]),
+    // What the driver cannot do is said, so the planner does not reach for it (#72).
+    ...(unserved.length === 0
+      ? []
+      : [`The checks run against the ${inputs.driver?.name} driver, which declares ${unserved.map((kind) => `no ${kind} check`).join(' and ')}: plan ${unserved.length === 1 ? 'none' : 'neither'}.`, '']),
     'A command check is spawned with no shell: its command is split on whitespace and each token',
     'becomes one argument. Write one executable followed by its arguments, and never cd, &&, ||,',
     'pipes, semicolons, redirection, quotes, $, backticks, parentheses or backslashes; command',
@@ -484,6 +502,15 @@ function prompt(inputs: PlanInputs, correction?: string): string {
           'A visual check names its page by path the same way. A running app has no base revision, so its captures are',
           'evidence of what the page looks like and are compared with nothing. An a11y check names its page by path too, and',
           'with no base revision to excuse a violation, every one it finds fails the criterion.',
+          '',
+        ]),
+    ...(inputs.client === undefined
+      ? []
+      : [
+          `The app is a desktop build launched by the run through the ${inputs.client} driver. It has no URL: a flow opens its pages by path,`,
+          'such as {"action":"open","url":"/"}, which is the page its first window loads, and a path below it resolves beside that page.',
+          'A full URL in an open action is refused. An element is looked for in every window the application has open, newest first,',
+          'so a flow follows the application into a window it opens.',
           '',
         ]),
     'Mark a check "inferred": true when the criterion did not state how it should be proven.',

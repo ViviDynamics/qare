@@ -64,7 +64,7 @@ except where a driver's hardware says otherwise:
 | Image | What it adds to the base |
 | --- | --- |
 | `ghcr.io/vividynamics/qare-core` | The smallest thing that runs QARE at all: the CLI, the ledger, the judge, command and mail checks, the exploration tool servers, and a pinned nare. No client driver. |
-| `ghcr.io/vividynamics/qare-web` | Built `FROM core`: the browser engine, its browsers, and a virtual display for headed runs. |
+| `ghcr.io/vividynamics/qare-web` | Built `FROM core`: the browser engine, its browsers, a virtual display for headed runs, and GTK 3, which an Electron build needs beside the browser's libraries (#72). The Electron driver runs here and starts the display itself. |
 | `ghcr.io/vividynamics/qare-android` | Built `FROM core` (amd64 only: the emulator's system image is an x86_64 build): the android sdk, an emulator, an avd, and the preboot check that names what the host must provide before anything boots. |
 | `ghcr.io/vividynamics/qare-desktop-linux` | Built `FROM core`: a virtual display, the accessibility bus, and the at-spi tree bridge as a separate process. |
 

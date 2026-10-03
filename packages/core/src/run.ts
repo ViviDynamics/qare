@@ -8,12 +8,14 @@ import { prepareBaseCheckout, type BaseCheckout, type BaseCheckoutInput, type Ba
 import { collectCriterionFiles, criterionCacheKey, FileCheckCache, planFingerprint, profileFingerprint, resolveRefSha } from './cache.js'
 import { Artefacts, type ArtefactField } from './artefacts.js'
 import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
-import { bootApp, CANCEL_DOWN_TIMEOUT_MS, killActiveCompose, stopApp, type BootOpts } from './boot.js'
+import { bootApp, CANCEL_DOWN_TIMEOUT_MS, clientExecutablePath, killActiveCompose, stopApp, type BootOpts } from './boot.js'
 import { hasMintedProject, isolatedHealthUrl, isolateRun, type RunIsolation } from './isolation.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
-import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
+import { runFlowCheck, runSuiteCheck, undeclaredCheckKinds, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
 import type { FlowRepairRecord } from './locator.js'
-import { BROWSER_FLOW_DRIVER, makePlaywrightFlowSession } from './flow-playwright.js'
+import { flowDriverFor } from './flow-driver.js'
+import { applicationPathProblem, makeElectronFlowSession } from './flow-electron.js'
+import { makePlaywrightFlowSession } from './flow-playwright.js'
 import { evidenceOf, judgeRun, toBaseSideResults, toSideResults } from './judge.js'
 import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck, type JobProfileGroup, type JobProfileRef, type JobToolCheck, type SeveralProfilesJob, type SingleProfileJob } from './job.js'
 import type { FlowActionStep } from './plan.js'
@@ -141,7 +143,35 @@ export type FlowSessionFactory = (opts: { masks: string[] }) => Promise<{
   trace?: FlowTrace
   dispose: () => Promise<void>
   outbound?: () => EgressAttempt[]
+  /**
+   * What the application under test wrote, and which windows it opened and
+   * closed, in order (#72). A backend that has it gets a `console.log` in
+   * each flow check's evidence, read once the session is disposed so what
+   * the application wrote on its way out is in it.
+   */
+  console?: () => string[]
 }>
+
+/**
+ * The session a client profile's flows run in (#72): the build the profile
+ * names, resolved from the repository the run checks, launched fresh for
+ * every flow check. Undefined for a profile with no client, which takes the
+ * MCP mapping or the browser.
+ */
+function clientSessionFactory(profile: QaProfile, repoPath: string, clientEnv: BootOpts['clientEnv'], execution: ExecutionKind): FlowSessionFactory | undefined {
+  const client = profile.client
+  if (client === undefined) return undefined
+  return ({ masks }) =>
+    makeElectronFlowSession({
+      executable: clientExecutablePath(client, repoPath),
+      args: client.args,
+      masks,
+      ...clientEnv,
+      // The build is pull request code: on a host it gets the minimal
+      // environment a command step gets there, never the host's own (#91).
+      environment: execution === 'native' ? 'minimal' : 'inherit',
+    })
+}
 
 /** What a target run's flow checks need: where relative URLs point, and which hosts they may reach. */
 interface FlowTargetContext {
@@ -325,7 +355,13 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
   })
   // A run against a target has one side only, and the result says so rather
   // than implying a base comparison it never made (#122).
-  const targetNote = profile.target === undefined ? {} : { target: { url: profile.target.url, comparison: 'none' as const } }
+  const targetNote: Pick<RunResult, 'target' | 'client'> =
+    profile.target !== undefined
+      ? { target: { url: profile.target.url, comparison: 'none' as const } }
+      : profile.client !== undefined
+        ? // A build the run launches has one side too, and the result names it (#72).
+          { client: { driver: profile.client.driver, executable: profile.client.executable, comparison: 'none' as const } }
+        : {}
   // The seeded second-factor secret and any backup code never reach the
   // evidence either: they sweep alongside the profile's own rules (#64).
   // The rules are built before the plan is validated, so a refusal that
@@ -333,7 +369,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
   const login = profile.app?.login
   const rules = [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value]), ...(side?.extraRules ?? [])]
   try {
-    validatePlanValues(job.criteria, profile, values, opts.flowDriver ?? mcpDriverCapabilities(profile.mcp) ?? BROWSER_FLOW_DRIVER)
+    validatePlanValues(job.criteria, profile, values, opts.flowDriver ?? flowDriverFor(profile))
   } catch (error) {
     if (!(error instanceof JobValidationError)) throw error
     return refuseRun(job, opts, rules, error.message, targetNote, isolation, execution, startedAt)
@@ -370,7 +406,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
   const cancelCleanup = isolation === undefined ? undefined : installCancelCleanup(bootedProfile, { ...opts, isolation })
   try {
     if (isolation !== undefined) side?.booted.push({ profile: bootedProfile, isolation })
-    const boot = await bootApp(bootedProfile, { ...opts, isolation })
+    const boot = await bootApp(bootedProfile, { ...opts, isolation, root: job.repoPath })
     if (boot.kind === 'blocked') {
       const criteria: CriterionResult[] = job.criteria.map((criterion) => ({
         id: criterion.id,
@@ -394,7 +430,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     if (side !== undefined) side.ran = true
     const visual = visualContextOf(profile, profile.redact?.masks ?? [], opts.visualSession, side)
     const flow = {
-      session: opts.flowSession,
+      session: opts.flowSession ?? clientSessionFactory(profile, job.repoPath, opts.clientEnv, execution),
       masks: profile.redact?.masks ?? [],
       suites: profile.suites,
       target,
@@ -563,6 +599,17 @@ async function runSeveralProfiles(
         'the profile declares a hosted target, and a run over several apps reports no target of its own; check this app in its own single run so the result can name what it was checked against',
     }
   }
+  // A client build is launched for one side only, and nothing provisions one
+  // for the base side a several-app run compares against (#72): the app is
+  // refused for this run, named, and the other apps still run.
+  for (const [index, entry] of planned.entries()) {
+    if (entry.profile?.client === undefined) continue
+    planned[index] = {
+      group: entry.group,
+      refusal:
+        'the profile names a client build, which a run launches for one side only; check this app in its own single run so the result can name the build it drove',
+    }
+  }
   const criteria: CriterionResult[] = []
   const profiles: Array<{ name: string; verdict: RunVerdict; criteria: string[]; profile: JobProfileRef }> = []
   const recorded: Array<{ name: string; values: RunValues }> = []
@@ -680,7 +727,7 @@ async function runProfileGroup(
     )
   }
   try {
-    validatePlanValues(group.criteria, profile, values, opts.flowDriver ?? mcpDriverCapabilities(profile.mcp) ?? BROWSER_FLOW_DRIVER)
+    validatePlanValues(group.criteria, profile, values, opts.flowDriver ?? flowDriverFor(profile))
   } catch (error) {
     if (!(error instanceof JobValidationError)) throw error
     // The rules sweep the values the refusal publishes: they are the union of
@@ -698,7 +745,7 @@ async function runProfileGroup(
   const cancelCleanup = isolation === undefined ? undefined : installCancelCleanup(bootedProfile, { ...opts, isolation })
   try {
     if (isolation !== undefined) side?.booted.push({ profile: bootedProfile, isolation })
-    const boot = await bootApp(bootedProfile, { ...opts, isolation })
+    const boot = await bootApp(bootedProfile, { ...opts, isolation, root: job.repoPath })
     if (boot.kind === 'blocked') {
       return {
         criteria: unverifiedAll(boot.reason ?? 'boot did not come up'),
@@ -719,7 +766,7 @@ async function runProfileGroup(
     if (side !== undefined) side.ran = true
     const visual = visualContextOf(profile, masks, opts.visualSession, side)
     const flow = {
-      session: opts.flowSession,
+      session: opts.flowSession ?? clientSessionFactory(profile, job.repoPath, opts.clientEnv, execution),
       masks,
       suites: profile.suites,
       target,
@@ -1349,7 +1396,7 @@ async function refuseRun(
   opts: BootOpts & { ledgerFeed?: { dir: string } },
   rules: readonly RedactionRule[],
   reason: string,
-  targetNote: Pick<RunResult, 'target'> = {},
+  targetNote: Pick<RunResult, 'target' | 'client'> = {},
   isolation?: RunIsolation,
   execution: ExecutionKind = detectExecution(),
   startedAt: string = new Date().toISOString(),
@@ -1443,9 +1490,14 @@ function validatePlanValues(criteria: JobCriterion[], profile: QaProfile, values
   // artefact from a mail check that has already waited for its message (#69),
   // and only for the fields that check actually exposes (#64).
   const mailChecks = new Map<string, { count: number; code: boolean }>()
+  const unserved = undeclaredCheckKinds(flowDriver)
   for (const [criterionIndex, criterion] of criteria.entries()) {
     for (const [checkIndex, check] of (criterion.checks ?? []).entries()) {
       const base = `criteria[${criterionIndex}].checks[${checkIndex}]`
+      // A check kind the driver serves with a seam it does not have is
+      // refused like an action it lacks (#72), before anything boots.
+      if (unserved.includes(check.kind))
+        throw new JobValidationError(`${base}.kind`, `a ${check.kind} check is not one the ${flowDriver.name} driver declares, so the plan cannot run against it`)
       if (check.kind === 'mail') {
         validateValueReferences(check.address, values, `${base}.address`)
         for (const field of ['from', 'subject', 'body'] as const) {
@@ -1488,6 +1540,14 @@ function validatePlanValues(criteria: JobCriterion[], profile: QaProfile, values
           })
           if (profile.target !== undefined && action.action === 'open' && action.url.startsWith('/') && pathOnTarget(profile.target.url, action.url) === undefined)
             throw new JobValidationError(`${base}.actions[${actionIndex}].url`, `the path ${JSON.stringify(action.url)} climbs out of the target ${profile.target.url}; a path on the target stays below its URL`)
+          // A desktop build is opened by a path inside it (#72): a full URL
+          // is something its driver cannot open, so the plan is refused here
+          // rather than the action failing once the build is up. A value the
+          // run fills in is held to the same rule when the action runs.
+          if (profile.client !== undefined && action.action === 'open' && !action.url.includes('{{')) {
+            const problem = applicationPathProblem(action.url)
+            if (problem !== undefined) throw new JobValidationError(`${base}.actions[${actionIndex}].url`, problem)
+          }
         }
         if (check.kind === 'a11y') continue
         const suiteIndex = check.suite === undefined ? -1 : profile.suites.findIndex((suite) => suite.name === check.suite)
@@ -2354,7 +2414,7 @@ async function runFlowCheckJob(
   // When the profile maps an MCP driver, the run drives the host's own tools
   // by default; an injected session still wins, so tests and callers keep
   // their seam (#94).
-  const factory =
+  const factory: FlowSessionFactory =
     session ?? (mcpDriverServer(mcp) !== undefined ? makeMcpFlowSession(mcpDriverServer(mcp)!, join(evidenceDir, checkDir), rules) : makePlaywrightFlowSession)
   const timeoutMs = check.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
   let started
@@ -2375,12 +2435,12 @@ async function runFlowCheckJob(
       evidence: [],
     }
   }
-  try {
-    // Every artefact the flow lays on the page, generated or read from mail,
-    // is swept from the action log at write time (#64). Screenshots are
-    // withheld while a CODE is on the page: a mail link is not a secret, a
-    // one-time value is (#64).
-    const generatedCodes: string[] = [...mailArtefacts]
+  // Every artefact the flow lays on the page, generated or read from mail,
+  // is swept from the action log at write time (#64). Screenshots are
+  // withheld while a CODE is on the page: a mail link is not a secret, a
+  // one-time value is (#64).
+  const generatedCodes: string[] = [...mailArtefacts]
+  const drive = async (): Promise<FlowJobOutcome> => {
     const work = runFlowCheck({
       actions: target === undefined ? check.actions ?? [] : (check.actions ?? []).map((action) => onTarget(action, target.url)),
       page: started.page,
@@ -2478,10 +2538,28 @@ async function runFlowCheckJob(
       evidence,
       ...audited,
     }
+  }
+  let driven: FlowJobOutcome
+  try {
+    driven = await drive()
   } finally {
     await started.dispose()
   }
+  // The application's own console output (#72), read once the session is
+  // disposed so what it wrote on its way out is in it, and published like
+  // the action log: swept by the profile's rules and of every value the
+  // flow put on the page. However the flow ended, what the application
+  // said while it ran is what makes the ending readable.
+  if (started.console === undefined) return driven
+  let text = redactText(started.console().join('\n'), rules)
+  for (const code of generatedCodes) text = text.split(code).join(REDACTED)
+  await mkdir(join(evidenceDir, checkDir), { recursive: true })
+  await writeFile(join(evidenceDir, checkDir, CONSOLE_LOG), `${text}\n`)
+  return { ...driven, evidence: [...driven.evidence, ...inEvidence([CONSOLE_LOG])] }
 }
+
+/** The application's console output in a flow check's evidence (#72). */
+const CONSOLE_LOG = 'console.log'
 
 /**
  * A flow session over the host's own tools (#94): every action becomes the

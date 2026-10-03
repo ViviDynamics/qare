@@ -1,7 +1,7 @@
 // The flow vocabulary is the runner's (flow.ts); the plan loader accepts it
 // verbatim and rejects anything else. Type-only import: the loader adds no
 // runtime dependency on the runner.
-import type { FlowAction, FlowDriverCapabilities, FlowElement } from './flow.js'
+import { undeclaredCheckKinds, type FlowAction, type FlowDriverCapabilities, type FlowElement } from './flow.js'
 import { identityOfPath, isSnapshotPath } from './locator.js'
 import type { ModelUsage } from './metrics.js'
 import { isUnsafeProfileName } from './profile.js'
@@ -541,11 +541,16 @@ export const FLOW_ACTION_KINDS = [
  * to boot and fail halfway through.
  */
 function rejectUndeclaredActions(plan: Plan, driver: FlowDriverCapabilities): void {
+  const unserved = undeclaredCheckKinds(driver)
   for (const [criterionIndex, criterion] of plan.criteria.entries()) {
     if ('unplannable' in criterion) continue
     for (const [checkIndex, check] of criterion.checks.entries()) {
-      if ((check.kind !== 'flow' && check.kind !== 'a11y') || check.actions === undefined) continue
       const base = `criteria[${criterionIndex}].checks[${checkIndex}]`
+      // A check kind that needs a seam the driver does not have is refused
+      // the same way an action is (#72): here, not halfway through a run.
+      if (unserved.includes(check.kind))
+        fail(`${base}.kind`, `a ${check.kind} check is not one the ${driver.name} driver declares, so the plan cannot run against it`)
+      if ((check.kind !== 'flow' && check.kind !== 'a11y') || check.actions === undefined) continue
       for (const [actionIndex, action] of check.actions.entries()) {
         if (!driver.actions.includes(action.action)) {
           fail(

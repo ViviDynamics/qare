@@ -235,6 +235,11 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
     ...(result.target === undefined
       ? []
       : [`Checked against the running target ${codeSpan(result.target.url)}. Nothing ran at a base revision, so there is no base comparison and no regression was looked for.`, '']),
+    // A build the run launched has one side too (#72): the driver and the
+    // executable are named, so a reader knows what the checks drove.
+    ...(result.client === undefined
+      ? []
+      : [`Checked against the ${result.client.driver} build ${codeSpan(result.client.executable)}, launched by the run. Nothing ran at a base revision, so there is no base comparison and no regression was looked for.`, '']),
     ...baseLines,
     // Where the run executed and what it ran with (issue #91): a host run and
     // an image run are readable side by side.

@@ -1,0 +1,14 @@
+{
+  "name": "qare-example-electron-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A tiny Electron application the example drives with the same flow the browser runs (#72)",
+  "license": "Elastic-2.0",
+  "type": "module",
+  "scripts": {
+    "package": "node package.mjs"
+  },
+  "devDependencies": {
+    "electron": "44.5.1"
+  }
+}

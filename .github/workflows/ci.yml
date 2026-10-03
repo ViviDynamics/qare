@@ -102,6 +102,43 @@ jobs:
           path: evidence/
           if-no-files-found: ignore
 
+  # A real desktop build (#72): one plan, written for the browser, runs
+  # against the example's page in the browser and then against the packaged
+  # Electron build of the same page, through the pipeline's execute step as
+  # compose-boot runs it, in the web image built from this tree. The job
+  # fails unless both runs pass on the same actions, the desktop evidence
+  # carries screenshots and the application's own console output, and a
+  # second window the application opens is driven and closed. The Electron
+  # runtime is the example's own pinned dev dependency, installed here and
+  # nowhere else. Same checkout as compose-boot, for the same reasons.
+  electron-driver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      # The step reader parses the workflow with the workspace's yaml.
+      - run: pnpm install --frozen-lockfile
+      - name: Build the core image
+        run: docker build -f images/core/Dockerfile -t qare-core:ci .
+      - name: Build the web flavour from it
+        run: docker build -f images/web/Dockerfile --build-arg QARE_IMAGE=qare-core:ci -t qare-web:ci .
+      - name: Drive the example desktop build with the browser's flow
+        run: scripts/electron-driver.sh qare-web:ci
+      - name: Upload the run's evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-driver-evidence
+          path: evidence/
+          if-no-files-found: ignore
+
   # The image family (#88): CI builds the flavours it can, holds the core
   # image to its size budget, and checks that a derived image reinstalls
   # nothing the base already ships. Publication is the release workflow's

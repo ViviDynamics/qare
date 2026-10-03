@@ -1,0 +1,8 @@
+# The browser target (#72): the same renderer, served over HTTP by
+# `node examples/electron-app/serve.mjs`, and driven by the browser driver.
+# The plan this profile runs is the plan the desktop profile runs: the target
+# is the only thing that differs.
+target:
+  url: http://127.0.0.1:4173
+  health: { http: /, timeout: 20s }
+flavour: web

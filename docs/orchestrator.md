@@ -101,6 +101,7 @@ The evidence directory holds everything a run produced:
     command.json                   # a command check: the command as run, its outcome and exit code
     selected.txt                   # a filtered command whose report was read: the tests the filter selected (#157)
     outbound.json                  # a flow on a target run: every host its browser reached
+    console.log                    # a flow on a client run (#72): what the application wrote, and its windows
 ```
 
 A run against a target (a profile naming `target` rather than `app`) carries

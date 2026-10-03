@@ -32,7 +32,7 @@ import {
   BUILTIN_REDACTION_RULES,
   BROWSER_FLOW_DRIVER,
   loadProfile,
-  mcpDriverCapabilities,
+  flowDriverFor,
   redactEvidenceDir,
   redactText,
   redactionRules,
@@ -738,11 +738,12 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
     // extend it, so a plan may name them even though the browser lacks them.
     // A profile that maps an MCP driver plans against that mapping instead:
     // it is the driver's capability declaration (#94).
+    // A profile that names a client plans against that client's driver (#72).
+    const declared = flowDriverFor(profile)
     const driver: FlowDriverCapabilities =
-      mcpDriverCapabilities(profile?.mcp) ??
-      (flowActions.length === 0
-        ? BROWSER_FLOW_DRIVER
-        : { ...BROWSER_FLOW_DRIVER, actions: [...BROWSER_FLOW_DRIVER.actions, ...flowActions] })
+      declared !== BROWSER_FLOW_DRIVER || flowActions.length === 0
+        ? declared
+        : { ...BROWSER_FLOW_DRIVER, actions: [...BROWSER_FLOW_DRIVER.actions, ...flowActions] }
     await mkdir(dirname(outPath), { recursive: true })
     let plan: Plan
     // The profile's registered MCP servers the plan step may look through (#93):
@@ -767,6 +768,7 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         runInputs: { paths: declaredRunPaths(outPath, profilePath, diff) },
         ...(suites === undefined ? {} : { suites }),
         ...(flowActions.length === 0 ? {} : { flowActions }),
+        ...(profile?.client === undefined ? {} : { client: profile.client.driver }),
         ...(profile?.instructions ? { qaMd: profile.instructions } : {}),
         ...(profile?.redact === undefined ? {} : { redact: profile.redact }),
         ...(profile?.commands === undefined ? {} : { commands: profile.commands }),
@@ -2237,7 +2239,7 @@ async function driverForPlan(profilePath: string | undefined): Promise<FlowDrive
     if (!(error instanceof ProfileMissingError)) throw error
     return BROWSER_FLOW_DRIVER
   }
-  return mcpDriverCapabilities(profile.mcp) ?? BROWSER_FLOW_DRIVER
+  return flowDriverFor(profile)
 }
 
 export function exitCodeFor(verdict: RunVerdict): number {

@@ -45,6 +45,27 @@ export interface ProfileTarget {
   hosts: string[]
 }
 
+/**
+ * The client drivers a profile may name (#72). The browser is the default and
+ * is not named; a driver a host maps onto its own tools is an MCP mapping.
+ */
+export const CLIENT_DRIVERS = ['electron'] as const
+
+export type ClientDriver = (typeof CLIENT_DRIVERS)[number]
+
+/**
+ * A build qare launches rather than a server it boots or a URL it reaches
+ * (#72): a desktop application, driven through its own windows. `executable`
+ * resolves from the repository the run checks. Naming the binary is the
+ * minimum a driver needs; building, fetching and installing it is
+ * provisioning (#75), which is not this section's to do.
+ */
+export interface ProfileClient {
+  driver: ClientDriver
+  executable: string
+  args: string[]
+}
+
 export interface ProfileStub {
   service: string
   hosts: string[]
@@ -146,6 +167,8 @@ export interface QaProfile {
   app?: ProfileApp
   /** A running app to check in place of booting one (#122); exclusive with app. */
   target?: ProfileTarget
+  /** A build the run launches and drives through a client driver (#72); exclusive with app and target. */
+  client?: ProfileClient
   stubs: ProfileStub[]
   visual: ProfileVisual
   suites: ProfileSuite[]
@@ -433,7 +456,8 @@ export async function loadProfile(dir: string, shared?: { resources?: string }):
 
 export function validateProfileConfig(config: unknown): QaProfile {
   if (!isRecord(config))
-    fail('config.yml', 'config.yml must be a YAML object with app, stubs, visual and suites, or with target')
+    fail('config.yml', 'config.yml must be a YAML object with app, stubs, visual and suites, or with target, or with client')
+  if (config.client !== undefined) return validateClientConfig(config)
   if (config.target !== undefined) return validateTargetConfig(config)
   return {
     app: parseApp(config.app),
@@ -482,6 +506,78 @@ function validateTargetConfig(config: Record<string, unknown>): QaProfile {
     ...(config.ux === undefined ? {} : { ux: parseUx(config.ux) }),
     ...(config.findings === undefined ? {} : { findings: parseFindings(config.findings) }),
   }
+}
+
+/**
+ * The arguments a client driver sets for itself (#72): the endpoint it
+ * attaches over and the user data directory each launch gets for its own. A
+ * profile that passed either would be arguing with the driver.
+ */
+const DRIVER_OWNED_ARGS = ['--remote-debugging-port', '--remote-debugging-pipe', '--user-data-dir']
+
+/**
+ * A profile that names a build to launch (#72). Like a target profile it
+ * boots nothing, so it has no boot recipe, no stubs and no base side. What
+ * its driver cannot do is refused here, when the profile loads, rather than
+ * found out by a check halfway through a run: the electron driver declares
+ * no visual check and no a11y check, and a flow is driven by one driver.
+ */
+function validateClientConfig(config: Record<string, unknown>): QaProfile {
+  if (config.app !== undefined || config.target !== undefined)
+    fail('client', 'a profile names one of app (a stack qare boots), target (an app already running) or client (a build qare launches), not two')
+  if (config.stubs !== undefined && !(Array.isArray(config.stubs) && config.stubs.length === 0))
+    fail('stubs', 'a client profile boots no stack, so it has no stubs')
+  if (config.base !== undefined)
+    fail('base', 'a client profile has one side only, so it has no base side to bound; remove the base section')
+  const client = parseClient(config.client)
+  const visual = config.visual === undefined ? { widths: [], themes: [] } : parseVisual(config.visual)
+  if (visual.widths.length > 0 || visual.themes.length > 0)
+    fail('visual', `the ${client.driver} driver declares no visual check, so a client profile names no widths and no themes to capture at`)
+  if (config.a11y !== undefined)
+    fail('a11y', `the ${client.driver} driver declares no a11y check, so a client profile has no audit to configure; remove the a11y section`)
+  const mcp = config.mcp === undefined ? undefined : parseMcp(config.mcp)
+  if (mcp?.some((server) => server.driver !== undefined))
+    fail('mcp', `a flow is driven by one driver: this profile names the ${client.driver} client, so no MCP server may carry a driver mapping`)
+  return {
+    client,
+    stubs: [],
+    visual,
+    suites: config.suites === undefined ? [] : parseSuites(config.suites),
+    ...(config.flavour === undefined ? {} : { flavour: parseFlavour(config.flavour) }),
+    ...(config.mail === undefined ? {} : { mail: parseMail(config.mail) }),
+    ...(mcp === undefined ? {} : { mcp }),
+    ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
+    ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
+    ...(config.commands === undefined ? {} : { commands: parseCommands(config.commands) }),
+    ...(config.ux === undefined ? {} : { ux: parseUx(config.ux) }),
+    ...(config.findings === undefined ? {} : { findings: parseFindings(config.findings) }),
+  }
+}
+
+function parseClient(value: unknown): ProfileClient {
+  if (!isRecord(value)) fail('client', 'client must be a YAML object with driver, executable and args')
+  for (const key of Object.keys(value))
+    if (!['driver', 'executable', 'args'].includes(key)) fail(`client.${key}`, `client takes driver, executable and args, not ${JSON.stringify(key)}`)
+  if (typeof value.driver !== 'string' || !(CLIENT_DRIVERS as readonly string[]).includes(value.driver))
+    fail('client.driver', `client.driver must be one of ${CLIENT_DRIVERS.join(', ')}, not ${JSON.stringify(value.driver)}`)
+  const executable = nonEmptyString(value.executable, 'client.executable', 'client executable')
+  // The build is the repository's own (#72): a path that leaves the
+  // repository names some other binary on the host, and a profile is a file
+  // a pull request can edit. Provisioning an artefact from elsewhere is #75's.
+  if (executable.startsWith('/') || /^[A-Za-z]:[\\/]/.test(executable) || executable.startsWith('\\'))
+    fail('client.executable', `client executable ${JSON.stringify(executable)} must be a path inside the repository the run checks, not an absolute one`)
+  if (executable.split(/[\\/]/).includes('..'))
+    fail('client.executable', `client executable ${JSON.stringify(executable)} climbs out of the repository (".." is not allowed)`)
+  // Evidence is published, and the path is named in it.
+  if (/[\x00-\x1f\x7f]/.test(executable)) fail('client.executable', 'client executable carries control characters')
+  if (value.args !== undefined && !Array.isArray(value.args)) fail('client.args', 'client.args must be an array of arguments, each a string')
+  const args = value.args === undefined ? [] : stringArray(value.args, 'client.args', 'client argument')
+  for (const [index, arg] of args.entries()) {
+    const owned = DRIVER_OWNED_ARGS.find((name) => arg === name || arg.startsWith(`${name}=`))
+    if (owned !== undefined)
+      fail(`client.args[${index}]`, `${owned} is not the profile's to pass: the ${value.driver} driver sets it for every launch`)
+  }
+  return { driver: value.driver as ClientDriver, executable, args }
 }
 
 /**

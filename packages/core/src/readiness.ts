@@ -34,6 +34,8 @@ export interface ReadinessProfileInfo {
   healthUrl?: string
   /** The running app a target profile checks (#122); such a profile boots nothing. */
   target?: { url: string; hosts: string[] }
+  /** The build a client profile launches (#72); such a profile boots nothing either. */
+  client?: { driver: string; executable: string }
   /** The compose file and service a booted profile names (#146). */
   boot?: { compose: string; service: string }
   stubs: Array<{ service: string; hosts: string[]; composeService?: string }>
@@ -164,7 +166,7 @@ function isLoopback(host: string): boolean {
 
 function stubGapsOf(origins: ReadinessOriginHit[], profile: ReadinessProfileInfo, profileBoot: ProfileBoot): ReadinessStubGap[] {
   // Only a booted profile that loads has stubs to be missing.
-  if (!profile.present || profile.loadError !== undefined || profile.target !== undefined) return []
+  if (!profile.present || profile.loadError !== undefined || profile.target !== undefined || profile.client !== undefined) return []
   const byHost = new Map<string, ReadinessStubGap>()
   for (const hit of origins) {
     const host = originHost(hit.origin)
@@ -371,6 +373,7 @@ async function loadProfileInfo(repo: string): Promise<ReadinessProfileInfo> {
       present: true,
       healthUrl: typeof healthUrl === 'string' ? healthUrl : undefined,
       ...(profile.target === undefined ? {} : { target: { url: profile.target.url, hosts: [...profile.target.hosts] } }),
+      ...(profile.client === undefined ? {} : { client: { driver: profile.client.driver, executable: profile.client.executable } }),
       ...(profile.app === undefined ? {} : { boot: { compose: profile.app.boot.compose, service: profile.app.boot.service } }),
       stubs: (profile.stubs ?? []).map((stub) => ({
         service: stub.service,
@@ -412,6 +415,9 @@ function gapsOf(
   // nothing and stubs nothing, so neither a compose file nor stub coverage is
   // a gap (#122). What the profile itself needs, loading already checked.
   if (profile.present && profile.loadError === undefined && profile.target !== undefined) return gaps
+  // A client profile launches a build the project made (#72): nothing boots
+  // and nothing is stubbed there either.
+  if (profile.present && profile.loadError === undefined && profile.client !== undefined) return gaps
   if (boot.length === 0) gaps.push('no compose file found: qare cannot boot this repo for a QA run')
   for (const file of boot) {
     for (const service of file.services) {
@@ -464,6 +470,8 @@ export function buildReadinessReport(inventory: ReadinessInventory): string {
   if (target !== undefined) {
     lines.push(`- target ${target.url}: already running, so qare boots nothing`)
     lines.push(target.hosts.length === 0 ? '- other hosts its checks may reach: none' : `- other hosts its checks may reach: ${target.hosts.join(', ')}`)
+  } else if (inventory.profile.client !== undefined) {
+    lines.push(`- ${inventory.profile.client.driver} build ${inventory.profile.client.executable}: launched by the run, so qare boots nothing`)
   } else if (inventory.boot.length === 0) {
     lines.push('- no compose file found')
   } else {

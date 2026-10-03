@@ -51,6 +51,23 @@ export interface FlowDriverCapabilities {
   name: string
   actions: readonly string[]
   evidence: readonly string[]
+  /**
+   * The check kinds beyond a flow that need a seam of the driver's own and
+   * that it serves (#72): a `visual` capture, an `a11y` audit. A plan naming
+   * one the driver leaves out is refused before anything runs, naming the
+   * kind and the driver. Absent, the driver does not say, and such a check
+   * finds out when it runs.
+   */
+  checks?: readonly string[]
+}
+
+/** The check kinds a driver has to serve with a seam of its own (#72). */
+export const DRIVER_CHECK_KINDS = ['visual', 'a11y'] as const
+
+/** The driver-served check kinds this driver declares it cannot run; none when it does not say. */
+export function undeclaredCheckKinds(driver: FlowDriverCapabilities | undefined): string[] {
+  const checks = driver?.checks
+  return checks === undefined ? [] : DRIVER_CHECK_KINDS.filter((kind) => !checks.includes(kind))
 }
 
 /** The profile's `login.totp` section, carried to the flow that types its codes. */

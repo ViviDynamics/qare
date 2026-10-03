@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "1",
+  "criteria": [
+    {
+      "id": "details-window",
+      "text": "The details open in a window of their own, and closing it leaves the greeter",
+      "checks": [
+        {
+          "kind": "flow",
+          "name": "details",
+          "actions": [
+            { "action": "open", "url": "/" },
+            { "action": "click", "element": { "role": "button", "name": "Open details" } },
+            { "action": "waitFor", "element": { "role": "button", "name": "Close details" } },
+            { "action": "assertText", "text": "This greeter runs in a window of its own." },
+            { "action": "capture" },
+            { "action": "click", "element": { "role": "button", "name": "Close details" } },
+            { "action": "waitFor", "element": { "role": "button", "name": "Greet" } },
+            { "action": "assertElement", "element": { "role": "heading", "name": "Greeter" } },
+            { "action": "capture" }
+          ]
+        }
+      ]
+    }
+  ]
+}

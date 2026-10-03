@@ -5,3 +5,6 @@
 .agents
 **/node_modules
 packages/*/dist
+# A packaged example build is a runtime of a few hundred megabytes that no
+# image recipe copies.
+examples/*/dist
