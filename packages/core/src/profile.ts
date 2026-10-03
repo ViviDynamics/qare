@@ -167,6 +167,41 @@ export interface QaProfile {
    * covers the whole repository and is selected without them.
    */
   paths?: string[]
+  /**
+   * What the base side of a run costs (#147). A run of a booted profile
+   * executes the plan at the base revision too, so regressions are found
+   * against it; this section bounds that: which criteria run there, and for
+   * how long. Whatever it leaves out is reported as not compared.
+   */
+  base?: ProfileBase
+}
+
+export interface ProfileBase {
+  /** `all` (the default) runs the whole plan at the base; `ledger` only the criteria the ledger at the base already carries. */
+  criteria?: 'all' | 'ledger'
+  /** The base side's wall clock bound, as a duration like `10m`. */
+  budget?: string
+}
+
+function parseProfileBase(value: unknown): ProfileBase {
+  if (!isRecord(value)) fail('base', 'base must be a YAML object with criteria and budget')
+  for (const key of Object.keys(value))
+    if (key !== 'criteria' && key !== 'budget') fail(`base.${key}`, `base takes criteria and budget, not ${JSON.stringify(key)}`)
+  if (value.criteria !== undefined && value.criteria !== 'all' && value.criteria !== 'ledger')
+    fail('base.criteria', `base.criteria must be "all" or "ledger", not ${JSON.stringify(value.criteria)}`)
+  let budget: string | undefined
+  if (value.budget !== undefined) {
+    budget = nonEmptyString(value.budget, 'base.budget', 'base budget')
+    try {
+      parseDurationMs(budget)
+    } catch (error) {
+      fail('base.budget', `base.budget ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  return {
+    ...(value.criteria === undefined ? {} : { criteria: value.criteria }),
+    ...(budget === undefined ? {} : { budget }),
+  }
 }
 
 /**
@@ -357,6 +392,7 @@ export function validateProfileConfig(config: unknown): QaProfile {
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
     ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
     ...(config.commands === undefined ? {} : { commands: parseCommands(config.commands) }),
+    ...(config.base === undefined ? {} : { base: parseProfileBase(config.base) }),
   }
 }
 
@@ -372,6 +408,8 @@ function validateTargetConfig(config: Record<string, unknown>): QaProfile {
   // carries, so a profile passed on inline validates again.
   if (config.stubs !== undefined && !(Array.isArray(config.stubs) && config.stubs.length === 0))
     fail('stubs', 'a target profile boots no stack, so it has no stubs; list the hosts its checks may reach in target.hosts')
+  if (config.base !== undefined)
+    fail('base', 'a target profile has one side only, so it has no base side to bound; remove the base section')
   return {
     target: parseTarget(config.target),
     stubs: [],
