@@ -32,6 +32,12 @@ export class InitError extends Error {
 export interface InitOptions {
   /** A running app to check; makes a target profile whatever compose files exist. */
   target?: string
+  /**
+   * The path the health check asks for, which must answer 200. Without it a
+   * booted profile takes the path of the service's own healthcheck, and a
+   * target profile takes "/" and asks a person to confirm it.
+   */
+  health?: string
   /** The compose service that is the application, when init's choice is wrong. */
   service?: string
   /** The model the pipeline asks, as the provider names it. */
@@ -68,12 +74,17 @@ export async function planInit(repoPath: string, opts: InitOptions = {}): Promis
   const inventory = await readinessInventory(repoPath)
   const suites = await recogniseSuites(inventory.repoPath)
   const model = opts.model ?? INIT_DEFAULT_MODEL
+  if (opts.health !== undefined && !/^\/[^\s"\\]*$/.test(opts.health))
+    throw new InitError(`--health ${JSON.stringify(opts.health)} is not a path: it starts with "/" and carries no space or quote`)
 
   let kind: InitPlan['kind']
   let config: string
-  if (opts.target !== undefined) {
+  // A target profile that is already there says where the app runs, so a
+  // repository that only lacks the workflow needs no flag.
+  const target = opts.target ?? (inventory.boot.length === 0 ? inventory.profile.target?.url : undefined)
+  if (target !== undefined) {
     kind = 'target'
-    config = targetConfig(opts.target, suites)
+    config = targetConfig(target, opts.health, suites)
   } else {
     const compose = inventory.boot[0]
     if (compose === undefined)
@@ -81,7 +92,8 @@ export async function planInit(repoPath: string, opts: InitOptions = {}): Promis
         'no compose file found, so there is nothing for qare to boot: name the running app to check with --target <url>',
       )
     kind = 'app'
-    config = appConfig(await chooseService(inventory.repoPath, compose.file, opts.service), compose.file, inventory, suites)
+    const service = await chooseService(inventory.repoPath, compose.file, opts.service)
+    config = appConfig({ ...service, ...(opts.health === undefined ? {} : { healthPath: opts.health }) }, compose.file, inventory, suites)
   }
 
   // Fail closed: a profile init would write is one the loader accepts.
@@ -152,7 +164,7 @@ const HEADER = [
   '# something only you know; `qare readiness` lists the ones still open.',
 ]
 
-function targetConfig(url: string, suites: Suite[]): string {
+function targetConfig(url: string, health: string | undefined, suites: Suite[]): string {
   return [
     ...HEADER,
     '#',
@@ -161,7 +173,11 @@ function targetConfig(url: string, suites: Suite[]): string {
     "# target's own or listed in hosts; anything else refuses the run.",
     'target:',
     `  url: ${JSON.stringify(url)}`,
-    '  health: { http: /, timeout: 30s }',
+    // The probe passes on 200 alone, and many roots answer with a redirect.
+    ...(health === undefined
+      ? [`  # ${INIT_PLACEHOLDER} confirm the health path answers 200 when the app is up (a redirect does not pass), then remove this line`]
+      : []),
+    `  health: { http: ${JSON.stringify(health ?? '/')}, timeout: 30s }`,
     '  hosts: []',
     '# The image the checks run in: web carries the browser the flows drive.',
     'flavour: web',

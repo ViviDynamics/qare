@@ -12,6 +12,11 @@ import { deliverIngest, IngestDeliveryError } from './ingest-deliver.js'
 import { loadQuestions, postQuestions } from './post-questions.js'
 import { parseSweepPayload, publishSweep } from './sweep-report.js'
 import { reportPipelineFailure } from './report-failure.js'
+// The GitHub client and the stub issue poster, for `qare init --file-issues`
+// (#146): the CLI files a stub issue the way the pipeline does.
+export { GitHubClient, GitHubClientError } from './github.js'
+export { GitHubStubIssuePoster } from './stub-issues.js'
+
 export interface Writer {
   write(chunk: string): void
 }

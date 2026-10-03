@@ -194,6 +194,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@qare/action':
+        specifier: workspace:*
+        version: link:../action
       '@qare/core':
         specifier: workspace:*
         version: link:../core

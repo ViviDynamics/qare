@@ -137,9 +137,25 @@ test('a repository with no compose file gets a target profile from the URL it is
   expect(profile.stubs).toEqual([])
   expect(profile.flavour).toBe('web')
   expect(profile.suites).toEqual([{ name: 'playwright', command: 'npx playwright test', kind: 'command' }])
+  // The health probe passes on 200 alone, and "/" is a guess: a person confirms it.
   const inventory = await readinessInventory(repo)
-  expect(inventory.gaps.every((gap) => gap.startsWith('.qa/QA.md is not filled in: '))).toBe(true)
-  expect(inventory.gaps).toHaveLength(4)
+  expect(inventory.gaps).toHaveLength(5)
+  expect(inventory.gaps[4]).toBe(
+    '.qa/config.yml is not filled in: confirm the health path answers 200 when the app is up (a redirect does not pass), then remove this line',
+  )
+})
+
+test('a health path that is named is written, and is not left for a person to confirm', async () => {
+  const target = url('https', 'staging.example.test')
+  const repo = await repoWith({ 'README.md': 'hello' })
+  await write(repo, await planInit(repo, { target, health: '/wiki/Main_Page' }))
+  expect((await loadProfile(join(repo, '.qa'))).target?.health.http).toBe(`${target}/wiki/Main_Page`)
+  expect((await readinessInventory(repo)).gaps.filter((gap) => gap.startsWith('.qa/config.yml'))).toEqual([])
+
+  const booted = await composeRepo()
+  await write(booted, await planInit(booted, { health: '/healthz' }))
+  expect((await loadProfile(join(booted, '.qa'))).app?.health.http).toBe(url('http', 'localhost:8080/healthz'))
+  await expect(planInit(booted, { health: 'healthz' })).rejects.toThrow(/--health "healthz" is not a path/)
 })
 
 test('with no compose file and no target there is nothing to write, and init says which flag is missing', async () => {
