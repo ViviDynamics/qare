@@ -522,8 +522,8 @@ delete is named in the record and the verdict stands.
 
 Adapters for a real provider on a deployed environment (a hosted inbound
 endpoint with a credential, IMAP or a mailbox API) are not built yet, and
-neither are assertions on a message's authentication results; #65 tracks
-both. Until then a profile declares a sink.
+neither are assertions on a message's authentication results; #217 and #218 track
+them. Until then a profile declares a sink.
 
 A message that matches is proven, and the evidence records what the harness
 actually observed: the sender, the subject, an excerpt of the body, the wait,

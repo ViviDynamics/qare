@@ -304,7 +304,7 @@ against it, reads the message from a real Mailpit, and then runs two waits at
 once on one catcher.
 
 Reading a real provider's mailbox on a deployed environment is not built yet
-(#65). Its credentials could not live in execute, which runs pull request
+(#217). Its credentials could not live in execute, which runs pull request
 code and holds no secret.
 
 ## Your own runners

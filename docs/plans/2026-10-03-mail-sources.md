@@ -44,12 +44,12 @@ Out, and why:
   credential exists to verify one against, and where such a credential may
   live is a decision rule 7 makes hard: execute runs pull request code and
   holds no secret, and a target run's command checks are still model
-  written from the pull request. That needs its own design. Follow-up issue.
+  written from the pull request. That needs its own design. Issue #217.
 - The refusal of a real-provider check from the sandboxed step: it belongs
   with the adapters it refuses. Same follow-up.
 - Authentication assertions (SPF, DKIM, DMARC alignment, sending domain,
   placement). A sink adds no `Authentication-Results` header, so nothing
-  here could prove one. Follow-up issue.
+  here could prove one. Issue #218.
 - Version bump. Nothing a caller's pipeline pins changes.
 
 ## Assumptions
