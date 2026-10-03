@@ -1,6 +1,7 @@
 import type { A11yCounts } from './a11y.js'
 import type { RunEnvironment, RunImage } from './environment.js'
 import { parseProfileRef, type JobProfileRef } from './job.js'
+import type { MailProof } from './mailbox.js'
 import type { ModelUsage } from './metrics.js'
 import { isUnsafeProfileName } from './profile.js'
 
@@ -43,6 +44,12 @@ interface CriterionComparison {
    * be compared with. Absent when nothing was audited.
    */
   a11y?: A11yCounts
+  /**
+   * The messages this criterion's mail checks read (#65): sender, subject, an
+   * excerpt and its links, swept of addresses and codes. Harness-produced
+   * data, never a model's claim. Absent when no mail check read a message.
+   */
+  mail?: MailProof[]
 }
 
 export interface ProvenCriterionResult extends CriterionComparison {
@@ -464,7 +471,8 @@ function parseCriterionResult(value: unknown, index: number): CriterionResult {
   const cached = value.cached === undefined ? undefined : ({ cached: true } as const)
   const comparison = parseComparison(value, base, outcome as CriterionOutcome)
   const a11y = value.a11y === undefined ? undefined : parseA11yCounts(value.a11y, `${base}.a11y`)
-  const withCached = <T>(record: T): T => ({ ...record, ...(cached ?? {}), ...comparison, ...(a11y === undefined ? {} : { a11y }) })
+  const mail = value.mail === undefined ? undefined : parseMailProofs(value.mail, `${base}.mail`)
+  const withCached = <T>(record: T): T => ({ ...record, ...(cached ?? {}), ...comparison, ...(a11y === undefined ? {} : { a11y }), ...(mail === undefined ? {} : { mail }) })
 
   switch (outcome as CriterionOutcome) {
     case 'proven':
@@ -506,6 +514,24 @@ function parseA11yCounts(value: unknown, base: string): A11yCounts {
     return entry
   }
   return { new: count('new'), existing: count('existing'), accepted: count('accepted'), reported: count('reported'), uncompared: count('uncompared') }
+}
+
+/** The messages a criterion's mail checks read (#65): text fields and a list of links. */
+function parseMailProofs(value: unknown, base: string): MailProof[] {
+  if (!Array.isArray(value)) fail(base, 'mail must be an array of the messages the mail checks read')
+  return value.map((entry, index) => {
+    const at = `${base}[${index}]`
+    if (!isRecord(entry)) fail(at, 'a mail message must be a JSON object with check, from, subject, excerpt and links')
+    const text = (key: 'check' | 'from' | 'subject' | 'excerpt'): string => {
+      const field = entry[key]
+      if (typeof field !== 'string') fail(`${at}.${key}`, `mail.${key} must be a string`)
+      return field
+    }
+    const record = { check: text('check'), from: text('from'), subject: text('subject'), excerpt: text('excerpt') }
+    const links = entry.links
+    if (!Array.isArray(links) || !links.every((link): link is string => typeof link === 'string')) fail(`${at}.links`, 'mail.links must be an array of strings')
+    return { ...record, links }
+  })
 }
 
 /** The repairs a criterion result may carry (#83), each named for its check and action. */

@@ -15,6 +15,20 @@ export interface MailEvidenceMessage {
   polls: number
 }
 
+/**
+ * The message a mail check read, as a result carries it and the comment
+ * shows it (#65): the sender, the subject, an excerpt and its links, with
+ * addresses and one-time codes already swept. Never the whole body.
+ */
+export interface MailProof {
+  /** The mail check's name, or its position in the criterion when it has none. */
+  check: string
+  from: string
+  subject: string
+  excerpt: string
+  links: string[]
+}
+
 export type ReadMail = (address: string, after: string, signal?: AbortSignal) => Promise<MailMessage[]>
 
 export type MailOutcome =
@@ -64,9 +78,13 @@ function parseMessage(value: unknown, index: number): MailMessage {
 }
 
 /**
- * Wait for one message at an address. Only messages the sink reports after the
- * check's own start are considered, so a rerun waits for a new message instead
- * of matching the previous run's mail. A message that never arrives, and a
+ * Wait for one message at an address. Only messages the source received after
+ * the wait's window opened are considered, so a rerun waits for a new message
+ * instead of matching the previous run's mail. The window opens when the
+ * check starts, unless the caller names an earlier moment: a run opens it
+ * when the criterion starts, because the check that makes an app send runs
+ * before the mail check, and a message sent while it ran has already arrived
+ * by the time the wait begins (#65). A message that never arrives, and a
  * mailbox that cannot be reached, are both `unverified` with the reason named:
  * neither is a product failure, and neither may be reported as one.
  */
@@ -76,15 +94,17 @@ export async function runMailCheck(
   readMail: ReadMail | undefined,
   timeoutMs: number,
   pollIntervalMs = MAIL_POLL_INTERVAL_MS,
+  windowOpenedAt?: number,
 ): Promise<MailOutcome> {
   if (readMail === undefined) {
     return {
       status: 'unverified',
-      reason: `no mail source: the profile declares no mail.inbox, so the mailbox for ${check.address} is unreachable`,
+      reason: `no mail source: the profile declares no mail.source and no mail.inbox, so the mailbox for ${check.address} is unreachable`,
     }
   }
   const startedAt = Date.now()
-  const after = new Date(startedAt).toISOString()
+  const opened = windowOpenedAt === undefined ? startedAt : Math.min(windowOpenedAt, startedAt)
+  const after = new Date(opened).toISOString()
   const deadline = startedAt + timeoutMs
   let polls = 0
   for (;;) {
@@ -104,7 +124,7 @@ export async function runMailCheck(
     const fresh = messages
       .filter((message) => {
         const received = Date.parse(message.received_at)
-        return Number.isFinite(received) && received > startedAt
+        return Number.isFinite(received) && received > opened
       })
       .filter((message) => matches(message, check))
     const message = fresh[0]

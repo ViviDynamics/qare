@@ -68,6 +68,40 @@ jobs:
           path: evidence/
           if-no-files-found: ignore
 
+  # A real mail catcher (#65): the pipeline's execute steps run against
+  # examples/mail-app, whose stack carries an app that sends over SMTP and a
+  # Mailpit that receives it. The job fails unless a mail check read the
+  # message from the catcher, a later check followed the link in it, the
+  # evidence was swept, and the run deleted what it was sent. It then runs
+  # two waits at once on one catcher and holds them to no crosstalk. Same
+  # checkout as compose-boot, for the same reasons. The workspace is built
+  # because the second part runs qare's mail adapter from it.
+  mail-sink:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Build the core image
+        run: docker build -f images/core/Dockerfile -t qare-core:ci .
+      - name: Prove mail checks against a real mail catcher
+        run: scripts/mail-sink.sh qare-core:ci
+      - name: Upload the run's evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mail-sink-evidence
+          path: evidence/
+          if-no-files-found: ignore
+
   # The image family (#88): CI builds the flavours it can, holds the core
   # image to its size budget, and checks that a derived image reinstalls
   # nothing the base already ships. Publication is the release workflow's

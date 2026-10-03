@@ -257,6 +257,64 @@ included. Images the stack built stay in the runner's cache.
 shape. qare's CI runs the pipeline's own execute steps against it on every
 change, so this path is exercised and not only described.
 
+## Profiles whose application sends mail
+
+A mail check reads from the source the profile declares, and locally that is
+a catcher in the stack. The stack provides it, like any other stub:
+
+```yaml
+# compose.qa.yaml
+services:
+  web:
+    ports: ["127.0.0.1:${QARE_APP_PORT:-3000}:3000"]
+    environment: { SMTP_HOST: mailpit, SMTP_PORT: "1025" }
+  mailpit:
+    image: axllent/mailpit:v1.27
+    environment: { MP_WEBROOT: mailpit }
+```
+
+```yaml
+# .qa/config.yml
+mail:
+  source: { kind: mailpit, url: "http://localhost:{{run.app_port}}/mailpit" }
+```
+
+The compose fragment starts the catcher; it does not route to it. The profile
+above reads the catcher under `/mailpit` on the app's port, so something on
+that port has to pass `/mailpit` on to `mailpit:8025`: a rule in the reverse
+proxy in front of the app, or a few lines in the app's QA build.
+[`examples/mail-app/server.mjs`](../examples/mail-app/server.mjs) does it in
+one function. Without that rule `/mailpit` reaches the application, and every
+mail check is `unverified`, naming the catcher it could not read.
+
+- **One port per run.** qare mints one host port for a run. Serve the catcher's
+  web interface behind the app's own port, with the proxy rule described
+  above, and every run has a catcher of its own. A catcher
+  published on a fixed port of its own is shared by every run on the runner,
+  the base side included.
+- **Mint the address.** Sign up, invite and reset with `{{run.mail_address}}`.
+  Each run waits at its own address, so runs that do share a source never read
+  each other's mail, and the run deletes what it was sent when it finishes.
+  One shared inbox cannot offer either.
+- **A domain for test mail.** A source that only receives for a real domain
+  takes `mail.domain`, and addresses are minted on it. Give test mail a
+  subdomain of its own (`qa-mail.example.com`), apart from the mail people
+  read.
+- **Never a person's mailbox.** A mail source is read, searched and deleted
+  from by a machine. Point it at nothing a person depends on.
+- **The sending check goes first.** In a criterion, the check that makes the
+  app send comes before the mail check. Only a message that arrives after the
+  criterion started is read.
+
+[`examples/mail-app`](../examples/mail-app) is a profile of this shape, with
+an app that sends over SMTP. qare's CI runs the pipeline's own execute steps
+against it, reads the message from a real Mailpit, and then runs two waits at
+once on one catcher.
+
+Reading a real provider's mailbox on a deployed environment is not built yet
+(#217). Its credentials could not live in execute, which runs pull request
+code and holds no secret.
+
 ## Your own runners
 
 qare's rule is that secrets never share a machine with pull request code.

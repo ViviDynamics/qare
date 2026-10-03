@@ -38,6 +38,7 @@ export {
   BUILTIN_REDACTION_RULES,
   REDACTED,
   RedactionError,
+  mailEvidenceRules,
   redactEvidenceDir,
   redactResult,
   redactText,
@@ -147,7 +148,9 @@ export type { DeclaredRunInputs, PlanCriterionInput, PlanInputs } from './plan-s
 export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'
 export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobVisualCheck, JobA11yCheck, JobCheck, JobPostTarget, JobProfileGroup, SingleProfileJob, SeveralProfilesJob } from './job.js'
 export { httpMailbox, mailEvidence, runMailCheck, extractCode, DEFAULT_CODE_PATTERN } from './mailbox.js'
-export type { MailMessage, MailEvidenceMessage, MailOutcome, ReadMail } from './mailbox.js'
+export type { MailMessage, MailEvidenceMessage, MailOutcome, MailProof, ReadMail } from './mailbox.js'
+export { inboxSource, mailpitSource, mailReader, mailSourceOf, MAIL_SOURCE_KINDS } from './mail-source.js'
+export type { MailSource, MailFilter, MailRef, DeclaredMailSource, MailSourceKind } from './mail-source.js'
 export { Artefacts } from './artefacts.js'
 export type { ArtefactField } from './artefacts.js'
 export { bootApp, stopApp } from './boot.js'
@@ -159,7 +162,7 @@ export type { ReapOutcome, ReapOpts } from './reap.js'
 export { installCancelCleanup, runJob } from './run.js'
 export { prepareBaseCheckout } from './base-checkout.js'
 export type { BaseCheckout, BaseCheckoutInput, BaseCheckoutOutcome } from './base-checkout.js'
-export type { BaseSideRequest, FlowSessionFactory, RunJobOpts, RunJobOutcome } from './run.js'
+export type { BaseSideRequest, FlowSessionFactory, MailSourceFactory, RunJobOpts, RunJobOutcome } from './run.js'
 export {
   collectCriterionFiles,
   criterionCacheKey,

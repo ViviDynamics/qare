@@ -195,6 +195,9 @@ a11y:                            # optional: what an accessibility audit holds a
   standing: true                 # audit every action flow, without a planned a11y check
   accept:                        # known violations, each carried with its reason
     - { rule: color-contrast, page: /legacy, reason: "brand grey, replaced in the redesign" }
+mail:                            # optional: where mail checks read from (#65)
+  source: { kind: mailpit, url: "http://localhost:8025" }  # the catcher in the stack
+  # domain: qa-mail.example.com  # what follows the @ of the address a run mints
 redact:                          # optional: fixture data that must not be published
   values: ["jane@pilot.example"] # literal strings
   patterns: ['CUST-\d{6}']       # regular expressions
@@ -286,8 +289,9 @@ from the app's name alone.
 Strings in the profile, the seed step, commands, flows and checks may carry
 `{{run.<name>}}` references, which the harness substitutes with values minted
 fresh for each run. The first minted value is a per-run mail address
-(`{{run.mail_address}}`), and a run id and started-at timestamp come free with
-it (`{{run.id}}`, `{{run.started_at}}`). A run against a target also mints
+(`{{run.mail_address}}`, the run's id on the profile's `mail.domain`, or on
+`localhost` when it names none), and a run id and started-at timestamp come
+free with it (`{{run.id}}`, `{{run.started_at}}`). A run against a target also mints
 `{{run.target_url}}`, the URL its checks point at, and a run that boots its own
 app mints `{{run.app_port}}`, the host port its compose project publishes the
 app on (#53). Checks may also carry
@@ -467,8 +471,13 @@ still reported where the verdict is read.
 A `mail` check waits for one message at an address and reads it. The address
 and every matcher (`from`, `subject`, `body`) are literal substrings, may carry
 `{{run.<name>}}` values, and all matchers must match the same message. The
-harness considers only messages the source reports after the check's own start,
-so a rerun waits for a new message instead of matching the previous run's mail.
+harness considers only messages the source received after the criterion's
+checks began, so a rerun waits for a new message instead of matching the
+previous run's mail. The window opens with the criterion, not with the mail
+check, because the check that makes an app send runs before the mail check: a
+message sent while it ran has already arrived by the time the wait begins. So
+the check that causes a message sits before the mail check, in the same
+criterion.
 
 A mail check may declare `code: {}` when its message carries a one-time code
 (#64): the harness extracts the code from the body — by default the first run
@@ -477,17 +486,56 @@ of six to eight digits, or the first capture group of a declared `code.pattern`
 the evidence like any other secret. A message with no code in it is
 `unverified`, naming the mail check and the pattern it looked for.
 
-Where the messages come from is the profile's business, not the plan's: the
-optional `mail.inbox` setting names a sink that lists what it caught — a GET of
-the inbox URL with `address` and `after` query parameters answers with the
-messages sent to that address, along with what it observed (`from`, `subject`,
-`body`, `received_at`). The runner polls until a message matches or the check's
-timeout passes.
+Where the messages come from is the profile's business, not the plan's, so the
+same check text reads from whatever source the profile declares (#65). Every
+source sits behind one interface with four reads: list by address, list by
+arrival time, read a message, delete an address's messages. The profile's
+optional `mail` section names one source:
+
+- `mail.source: { kind: mailpit, url }` reads a Mailpit catcher in the stack
+  over its HTTP API. `url` is where its web interface answers, webroot
+  included. Mailpit's search matches a substring of an address, so the adapter
+  filters recipients exactly and deletes by message id.
+- `mail.source: { kind: inbox, url }`, or the older `mail.inbox: <url>`, is the
+  listing contract any sink can implement: a GET of the URL with `address` and
+  `after` query parameters answers `{ "messages": [...] }`, each with `from`,
+  `subject`, `body` and `received_at`; a DELETE of it with `address` removes
+  that address's messages and answers `{ "deleted": <count> }`.
+
+A source URL may carry `{{run.<name>}}` values, so a stack can serve its
+catcher behind the one port a run mints. The runner polls until a message
+matches or the check's timeout passes.
+
+`mail.domain` is the domain the run's address is minted on, for a source that
+only receives mail for a domain the project controls. Use the minted address
+wherever the app is asked to send: one address per run means two concurrent
+runs never read each other's mail, whatever source they share. A dedicated
+subdomain for test mail keeps it apart from mail people read, and a person's
+mailbox is never a mail source.
+
+When a run finishes it deletes the mail at the address it minted, so an address
+is never found again with stale mail behind it, and writes what it deleted to
+`mail-cleanup.json` in the evidence. Only the minted address is cleaned: a
+literal address may be shared with a run still waiting at it, so it is left
+alone and the record says so. Cleanup decides nothing: a source that cannot
+delete is named in the record and the verdict stands.
+
+Adapters for a real provider on a deployed environment (a hosted inbound
+endpoint with a credential, IMAP or a mailbox API) are not built yet, and
+neither are assertions on a message's authentication results; #217 and #218 track
+them. Until then a profile declares a sink.
 
 A message that matches is proven, and the evidence records what the harness
 actually observed: the sender, the subject, an excerpt of the body, the wait,
 and links extracted from the body, marked as harness-produced data rather than
-claims. A message that never arrives, and a mailbox that cannot be reached, are
+claims. The criterion's result carries the same record (`mail`), and the
+comment shows it under "Mail", so the message that proved a criterion is read
+where the verdict is. Before any of it is written, every mail address and
+every run of digits shaped like a one-time code is swept from the subject and
+the body, whether or not the check declared a code; the sender stays, because
+it is the app's own sending identity; and the body is never stored whole, only
+the excerpt. The first link, which a later check may follow, is swept as the
+secret it is (single-use artefacts, below). A message that never arrives, and a mailbox that cannot be reached, are
 both `unverified` with the reason naming the mailbox — neither is a product
 failure, and neither may be reported as one.
 
