@@ -199,14 +199,32 @@ async function reportFailureCommand(argv: string[], out: Writer): Promise<number
     apiRoot: flags.string('api-root'),
     tokenEnv: flags.string('token-env'),
   })
-  const poster = new GitHubEvidencePoster(client, pr, headSha, flags.string('author') || undefined)
-  const failure = await reportPipelineFailure(client, poster, { id: runId, attempt, url: runUrl, recordedVerdict })
-  if (failure === undefined) {
+  const author = flags.string('author') || undefined
+  const poster = new GitHubEvidencePoster(client, pr, headSha, author)
+  const outcome = await reportPipelineFailure(client, poster, {
+    id: runId,
+    attempt,
+    pr,
+    headSha,
+    author,
+    url: runUrl,
+    recordedVerdict,
+    // The workflow's pipeline job ids: jobs outside them (one gated on push,
+    // the report job itself) are neither the failure nor skipped by it.
+    pipeline: flags.list('pipeline'),
+  })
+  if (outcome.kind === 'nothing-failed') {
     out.write(`no job in run ${runId} failed: nothing to report\n`)
     return 0
   }
+  if (outcome.kind === 'verdict-kept') {
+    out.write(`a verdict for ${headSha.slice(0, 12)} is already on pull request #${pr}; left it in place\n`)
+    return 0
+  }
+  const { failure } = outcome
   const where = failure.step === undefined ? failure.job : `${failure.job} failing at ${failure.step}`
-  out.write(`reported ${where} on pull request #${pr} at ${headSha.slice(0, 12)}: not evaluated, qare or environment failure\n`)
+  const side = recordedVerdict === undefined ? 'not evaluated' : `verdict ${recordedVerdict} not published`
+  out.write(`reported ${where} on pull request #${pr} at ${headSha.slice(0, 12)}: ${side}, qare or environment failure\n`)
   return 0
 }
 

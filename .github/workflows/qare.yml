@@ -692,6 +692,7 @@ jobs:
             --run-id "$RUN_ID" --attempt "$RUN_ATTEMPT" \
             --pr "$PR_NUMBER" --sha "$HEAD_SHA" --run-url "$RUN_URL" \
             --recorded-verdict "$RECORDED_VERDICT" \
+            --pipeline collect,plan,execute,judge \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
   # label: requeue (GitHub token only)

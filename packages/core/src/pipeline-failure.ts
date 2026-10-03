@@ -52,9 +52,17 @@ const FAILED_JOB = new Set(['failure', 'timed_out'])
  * named is the last one: the step that kept the verdict from being published.
  */
 export function classifyPipelineFailure(
-  jobs: PipelineJob[],
-  opts: { verdictRecorded?: boolean } = {},
+  allJobs: PipelineJob[],
+  opts: { verdictRecorded?: boolean; pipeline?: string[] } = {},
 ): PipelineFailure | undefined {
+  // A workflow carries jobs that are not the pipeline (one gated on push, the
+  // report job itself). A job is in the pipeline when its name is a listed
+  // job id, or that id followed by its label: `plan (model key only)`.
+  const pipeline = opts.pipeline
+  const jobs =
+    pipeline === undefined
+      ? allJobs
+      : allJobs.filter((job) => pipeline.some((id) => job.name === id || job.name.startsWith(`${id} (`)))
   const failures = jobs.filter((job) => job.conclusion !== null && FAILED_JOB.has(job.conclusion))
   const failed = opts.verdictRecorded === true ? failures.at(-1) : failures[0]
   if (failed === undefined) return undefined
@@ -118,12 +126,16 @@ export function renderPipelineFailureComment(failure: PipelineFailure, opts: Pip
  * keeps it apart from a `failed` verdict at a glance.
  */
 export function renderPipelineFailureCheckRun(failure: PipelineFailure, opts: PipelineFailureReport = {}): CheckRunPayload {
-  const where = failure.step === undefined ? `${failure.job} failed` : `${failure.job} failed at ${failure.step}`
+  // A check run summary renders Markdown too, so names stay in code spans.
+  const where =
+    failure.step === undefined
+      ? `${codeSpan(failure.job)} failed`
+      : `${codeSpan(failure.job)} failed at ${codeSpan(failure.step)}`
   const recorded = opts.recordedVerdict === undefined || opts.recordedVerdict === '' ? undefined : opts.recordedVerdict
   if (recorded !== undefined)
     return {
       title: 'QARE: verdict not published (qare failure)',
-      summary: `qare recorded the verdict ${recorded} but did not publish it: ${where}. The verdict is in the run's evidence artifact.`,
+      summary: `qare recorded the verdict ${codeSpan(recorded)} but did not publish it: ${where}. The verdict is in the run's evidence artifact.`,
       conclusion: 'failure',
     }
   return {

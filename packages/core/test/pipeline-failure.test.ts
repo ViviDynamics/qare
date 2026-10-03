@@ -34,6 +34,31 @@ test('a failed setup step is named with its job and the jobs it left skipped', (
   })
 })
 
+// requeue runs only on push, so it is skipped on every pull request whatever
+// happened; it, and the report job itself, are not part of the pipeline the
+// report describes.
+test('a pipeline scope keeps jobs outside it out of the failure and the skipped list', () => {
+  const jobs: PipelineJob[] = [
+    { name: 'requeue (GitHub token only)', conclusion: 'skipped', steps: [] },
+    ...nareInstallFailed,
+    { name: 'report (GitHub token only)', conclusion: 'failure', steps: [] },
+  ]
+  expect(classifyPipelineFailure(jobs, { pipeline: ['collect', 'plan', 'execute', 'judge'] })).toEqual({
+    job: 'plan (model key + GitHub token only)',
+    step: 'Install nare at the pinned release',
+    skipped: ['execute (no secrets)', 'judge (GitHub token only)'],
+  })
+  // A name matches its job id exactly, or as the id followed by its label.
+  expect(classifyPipelineFailure([{ name: 'planner', conclusion: 'failure', steps: [] }], { pipeline: ['plan'] })).toBeUndefined()
+  expect(classifyPipelineFailure([{ name: 'plan', conclusion: 'failure', steps: [] }], { pipeline: ['plan'] })?.job).toBe('plan')
+})
+
+test('the check run summary keeps job and step names inert', () => {
+  const summary = renderPipelineFailureCheckRun({ job: 'plan [x](javascript:alert(1))', step: '<b>step</b>', skipped: [] }).summary
+  expect(summary).toContain('`plan [x](javascript:alert(1))`')
+  expect(summary).toContain('`<b>step</b>`')
+})
+
 test('a run with no failed job has nothing to report', () => {
   const green: PipelineJob[] = [
     { name: 'plan', conclusion: 'success', steps: [] },
@@ -105,7 +130,7 @@ test('the check run fails closed and names the failed job and step', () => {
   expect(renderPipelineFailureCheckRun(failure)).toEqual({
     title: 'QARE: not evaluated (qare or environment failure)',
     summary:
-      'No acceptance criterion was evaluated: plan (model key + GitHub token only) failed at Install nare at the pinned release. This is not a verdict on the pull request.',
+      'No acceptance criterion was evaluated: `plan (model key + GitHub token only)` failed at `Install nare at the pinned release`. This is not a verdict on the pull request.',
     conclusion: 'failure',
   })
 })
@@ -141,7 +166,7 @@ test('a verdict execute recorded but nobody published is reported as unpublished
   expect(renderPipelineFailureCheckRun(failure, { recordedVerdict: 'failed' })).toEqual({
     title: 'QARE: verdict not published (qare failure)',
     summary:
-      "qare recorded the verdict failed but did not publish it: judge (model key + GitHub token only) failed at Judge the result. The verdict is in the run's evidence artifact.",
+      "qare recorded the verdict `failed` but did not publish it: `judge (model key + GitHub token only)` failed at `Judge the result`. The verdict is in the run's evidence artifact.",
     conclusion: 'failure',
   })
 })

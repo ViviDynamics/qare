@@ -468,6 +468,8 @@ test('a report job explains a pipeline that published no verdict', () => {
   expect(report).toContain('report-failure')
   for (const flag of ['--run-id "$RUN_ID"', '--attempt "$RUN_ATTEMPT"', '--pr "$PR_NUMBER"', '--sha "$HEAD_SHA"', '--run-url "$RUN_URL"', '--recorded-verdict "$RECORDED_VERDICT"'])
     expect(report).toContain(flag)
+  // requeue (push only) and report itself are not the pipeline it describes.
+  expect(report).toContain('--pipeline collect,plan,execute,judge')
   // Checked but unpublished is told apart from never evaluated.
   expect(report).toContain('RECORDED_VERDICT: ${{ needs.execute.outputs.verdict }}')
 })

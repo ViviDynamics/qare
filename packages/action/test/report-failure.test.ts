@@ -84,7 +84,7 @@ test('a pipeline that failed before a verdict posts a not-evaluated comment and 
       output: {
         title: 'QARE: not evaluated (qare or environment failure)',
         summary:
-          'No acceptance criterion was evaluated: plan (model key only) failed at Install nare at the pinned release. This is not a verdict on the pull request.',
+          'No acceptance criterion was evaluated: `plan (model key only)` failed at `Install nare at the pinned release`. This is not a verdict on the pull request.',
       },
     },
   ])
@@ -127,6 +127,59 @@ test('a recorded verdict qare does not know is refused', async () => {
   process.env.QARE_TEST_TOKEN = FAKE_TOKEN
   expect(await run(['report-failure', '--run-id', '77', '--pr', '12', '--sha', SHA, '--recorded-verdict', 'green`<b>', '--token-env', 'QARE_TEST_TOKEN'])).toBe(1)
   expect(err.join('')).toContain('--recorded-verdict must be a run verdict')
+})
+
+test('--pipeline keeps jobs outside the pipeline out of the report', async () => {
+  fake.runJobs.set('77/1', [{ name: 'requeue (GitHub token only)', conclusion: 'skipped', steps: [] }, ...nareInstallFailed])
+  process.env.QARE_TEST_TOKEN = FAKE_TOKEN
+
+  const code = await run([
+    'report-failure', '--run-id', '77', '--pr', '12', '--sha', SHA,
+    '--pipeline', 'collect,plan,execute,judge', '--token-env', 'QARE_TEST_TOKEN',
+  ])
+
+  expect(code).toBe(0)
+  const comment = fake.issues.get(12)?.comments[0] ?? ''
+  expect(comment).toContain('`execute (no secrets)`, `judge (model key + GitHub token only)`.')
+  expect(comment).not.toContain('requeue')
+})
+
+// judge posts the comment before the check run, so a check run that failed
+// leaves the verdict on the pull request with posted unset. The report must
+// not replace a verdict already posted for this very head.
+test('a verdict already posted for this head is left in place', async () => {
+  fake.runJobs.set('77/1', [
+    { name: 'judge (model key + GitHub token only)', conclusion: 'failure', steps: [{ name: 'Post the evidence on the pull request', conclusion: 'failure' }] },
+  ])
+  process.env.QARE_TEST_TOKEN = FAKE_TOKEN
+  const client = new GitHubClient({ repository: 'octocat/qare', token: FAKE_TOKEN, apiRoot: fake.url })
+  const verdict = `${EVIDENCE_MARKER}\n## QARE run: failed\n\n| criterion | outcome | reason |\n\n<sub>qare checked ${SHA}</sub>`
+  await client.postIssueComment(12, verdict)
+
+  const code = await run([
+    'report-failure', '--run-id', '77', '--pr', '12', '--sha', SHA, '--recorded-verdict', 'failed', '--token-env', 'QARE_TEST_TOKEN',
+  ])
+
+  expect(code).toBe(0)
+  expect(fake.issues.get(12)?.comments).toEqual([verdict])
+  expect(fake.checkRuns).toEqual([])
+  expect(out.join('')).toContain(`a verdict for ${SHA.slice(0, 12)} is already on pull request #12; left it in place`)
+})
+
+test('a verdict for an older head, or an earlier not-evaluated report, is replaced', async () => {
+  fake.runJobs.set('77/1', nareInstallFailed)
+  process.env.QARE_TEST_TOKEN = FAKE_TOKEN
+  const client = new GitHubClient({ repository: 'octocat/qare', token: FAKE_TOKEN, apiRoot: fake.url })
+  await client.postIssueComment(12, `${EVIDENCE_MARKER}\n## QARE run: passed\n\n<sub>qare checked ${'c'.repeat(40)}</sub>`)
+
+  expect(await run(['report-failure', '--run-id', '77', '--pr', '12', '--sha', SHA, '--token-env', 'QARE_TEST_TOKEN'])).toBe(0)
+  expect(fake.issues.get(12)?.comments).toHaveLength(1)
+  expect(fake.issues.get(12)?.comments[0]).toContain('## QARE run: not evaluated')
+
+  // A re-run of the same head that fails again refreshes its own report.
+  expect(await run(['report-failure', '--run-id', '77', '--pr', '12', '--sha', SHA, '--token-env', 'QARE_TEST_TOKEN'])).toBe(0)
+  expect(fake.issues.get(12)?.comments).toHaveLength(1)
+  expect(fake.checkRuns).toHaveLength(2)
 })
 
 test('a run with no failed job posts nothing', async () => {

@@ -64,7 +64,9 @@ passes. A failed or blocked verdict is never reported this way. It is in
 execute recorded a verdict and judge then failed before posting it, the report
 says so instead: the comment is headed `QARE run: verdict not published (qare
 failed after checking)`, names the recorded verdict and the step that kept it
-from the pull request, and points to the evidence artifact that holds it. A run
+from the pull request, and points to the evidence artifact that holds it. A
+verdict already in the sticky comment for the same head (judge posted it, then
+failed creating its check run) is never replaced by a report. A run
 whose execute step recorded no readable verdict fails execute, so it can never
 leave the pipeline green with nothing posted.
 
