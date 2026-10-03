@@ -14,6 +14,10 @@ import {
 const URL_API = ['http:', '//api.example.com/v1'].join('')
 const url = (host: string, path = '') => ['http:', `//${host}${path}`].join('')
 
+// The compose file the fixture profile boots from (#146): readiness checks
+// that the file, the app service and every stub's service are really there.
+const QA_COMPOSE = 'services:\n  admin: {}\n  billing-stub: {}\n  mailpit: {}\n  cdn-stub: {}\n'
+
 async function repoWith(files: Record<string, string>): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qare-readiness-'))
   for (const [name, content] of Object.entries(files)) {
@@ -146,6 +150,7 @@ test('present but broken profile is a named gap', async () => {
 test('stub coverage compares reached origins against profile stub hosts', async () => {
   const dir = await repoWith({
     'docker-compose.yml': 'services:\n  admin:\n    image: admin\n    healthcheck: {}\n',
+    'compose.qa.yaml': QA_COMPOSE,
     'a.md': `calls ${url('api.billing-vendor.example', '/v1')}`,
   })
   await withProfile(dir)
@@ -159,6 +164,7 @@ test('stub coverage compares reached origins against profile stub hosts', async 
 test('stub matching strips ports from reached origins', async () => {
   const dir = await repoWith({
     'docker-compose.yml': 'services:\n  admin:\n    image: admin\n    healthcheck: {}\n',
+    'compose.qa.yaml': QA_COMPOSE,
     'a.md': `calls ${url('api.billing-vendor.example', ':8443/v1')}`,
   })
   await withProfile(dir)
@@ -186,6 +192,7 @@ test('wildcard stub hosts match observed origins in both directions', async () =
   ].join('\n')
   const dir = await repoWith({
     'docker-compose.yml': 'services:\n  admin:\n    image: admin\n    healthcheck: {}\n',
+    'compose.qa.yaml': QA_COMPOSE,
     'a.md': `calls ${url('a.cdn.example', '/static')}`,
   })
   await withProfile(dir, config)
@@ -250,6 +257,7 @@ test('normalizeOrigin trims trailing punctuation and lowercases scheme and host'
 test('report is deterministic markdown with no verdict', async () => {
   const dir = await repoWith({
     'docker-compose.yml': 'services:\n  admin:\n    image: admin\n    healthcheck: {}\n',
+    'compose.qa.yaml': QA_COMPOSE,
     'a.md': `calls ${url('api.billing-vendor.example', '/v1')}`,
   })
   await withProfile(dir)
@@ -265,4 +273,96 @@ test('report is deterministic markdown with no verdict', async () => {
   expect(first).toContain('covered by stub billing')
   expect(first.toLowerCase()).not.toContain('verdict')
   expect(first).not.toContain('result.json')
+})
+
+// #146: `qare init` writes a starting profile, and readiness is what says
+// how far it is from ready. So readiness names everything init leaves open.
+
+test('a placeholder qare init wrote and nobody filled in is a gap, by file and by what to do', async () => {
+  const dir = await repoWith({ 'compose.qa.yaml': QA_COMPOSE })
+  await withProfile(dir)
+  await writeFile(join(dir, '.qa', 'QA.md'), '# QA\n\nTODO(qare init): say what this app is\nIt has payouts.\n', 'utf8')
+  const inventory = await readinessInventory(dir)
+  expect(inventory.gaps).toContain('.qa/QA.md is not filled in: say what this app is')
+})
+
+test('a target profile still names its placeholders, though it has no boot or stub gaps', async () => {
+  const dir = await repoWith({
+    '.qa/QA.md': 'TODO(qare init): say what this app is\n',
+    '.qa/config.yml': [
+      '# TODO(qare init): confirm the health path',
+      'target:',
+      `  url: ${url('app.example.test')}`,
+      '  health: { http: /, timeout: 30s }',
+    ].join('\n'),
+  })
+  const inventory = await readinessInventory(dir)
+  expect(inventory.gaps).toEqual([
+    '.qa/QA.md is not filled in: say what this app is',
+    '.qa/config.yml is not filled in: confirm the health path',
+  ])
+})
+
+test('a profile that boots from a compose file the repository does not have is a gap', async () => {
+  const dir = await repoWith({ 'docker-compose.yml': 'services:\n  admin:\n    healthcheck: {}\n' })
+  await withProfile(dir)
+  const inventory = await readinessInventory(dir)
+  expect(inventory.gaps).toContain('the profile boots from "compose.qa.yaml", which the repository does not have')
+  expect(inventory.stubGaps).toEqual([])
+})
+
+test('a boot service or a stub service the compose file does not define is a gap', async () => {
+  const secure = (path: string) => ['https:', `//api.billing-vendor.example${path}`].join('')
+  const dir = await repoWith({
+    'compose.qa.yaml': 'services:\n  web: {}\n  mailpit: {}\n',
+    'a.md': `calls ${secure('/v1')} twice: ${secure('/v2')}`,
+  })
+  await withProfile(dir)
+  const inventory = await readinessInventory(dir)
+  expect(inventory.gaps).toContain('the profile boots the service "admin", which compose.qa.yaml does not define')
+  expect(inventory.gaps).toContain(
+    'stub "billing" is provided by the compose service "billing-stub", which compose.qa.yaml does not define',
+  )
+  expect(inventory.gaps.join('\n')).not.toContain('"mailpit", which')
+  // The same gap, in the shape a stub issue is drafted from.
+  expect(inventory.stubGaps).toEqual([
+    {
+      host: 'api.billing-vendor.example',
+      port: '443',
+      protocol: 'https',
+      hits: 2,
+      files: ['./a.md'],
+      service: 'billing',
+      composeService: 'billing-stub',
+    },
+  ])
+})
+
+test('an origin no stub covers is a stub gap with the port it was reached on', async () => {
+  const dir = await repoWith({
+    'compose.qa.yaml': QA_COMPOSE,
+    'a.md': `calls ${url('uncovered.example.net', ':8080/v1')}`,
+    'b.md': `calls ${url('uncovered.example.net', ':8080/v2')}`,
+  })
+  await withProfile(dir)
+  const inventory = await readinessInventory(dir)
+  expect(inventory.stubGaps).toEqual([
+    { host: 'uncovered.example.net', port: '8080', protocol: 'http', hits: 2, files: ['./a.md', './b.md'] },
+  ])
+})
+
+test('loopback hosts and the compose services themselves are not outbound origins', async () => {
+  const dir = await repoWith({
+    'docker-compose.yml': 'services:\n  web:\n    healthcheck: {}\n  search:\n    healthcheck: {}\n',
+    'a.md': [
+      url('localhost', ':3000/up'),
+      url('127.0.0.1', ':8080'),
+      url('0.0.0.0', ':9000'),
+      url('app.localhost'),
+      url('search', ':9200/_health'),
+      url('search.example.com'),
+    ].join(' '),
+  })
+  const inventory = await readinessInventory(dir)
+  expect(inventory.origins.map((hit) => hit.origin)).toEqual([url('search.example.com')])
 })

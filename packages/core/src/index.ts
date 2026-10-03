@@ -355,13 +355,15 @@ export type {
 } from './selection.js'
 export { resolveCriteriaSubset, criteriaSubsetPlan, CriteriaSubsetError } from './subset.js'
 export type { ResolvedCriterion } from './subset.js'
-export { readinessInventory, buildReadinessReport, normalizeOrigin, parseComposeServices, READINESS_MAX_FILES } from './readiness.js'
+export { readinessInventory, buildReadinessReport, normalizeOrigin, parseComposeServices, READINESS_MAX_FILES, INIT_PLACEHOLDER } from './readiness.js'
 export type {
   ReadinessInventory,
   ReadinessComposeFile,
   ReadinessOriginHit,
   ReadinessProfileInfo,
   ReadinessScanStats,
+  ReadinessStubGap,
+  ReadinessComposeService,
 } from './readiness.js'
 export {
   missingStubs,
@@ -373,7 +375,7 @@ export {
   parseRefusedRegistry,
   requeueTargets,
 } from './stub-issues.js'
-export type { MissingStub, StubIssueDraft, StubIssueRefusedEntry, StubIssuePoster } from './stub-issues.js'
+export type { MissingStub, StubIssueDraft, StubIssueScan, StubIssueRefusedEntry, StubIssuePoster } from './stub-issues.js'
 export { CheckInputError, checkCriteria, defaultCheckEvidenceDir, nareRunners } from './check.js'
 export type { CheckOptions, CheckOutcome } from './check.js'
 export { detectExecution, runEnvironment } from './environment.js'

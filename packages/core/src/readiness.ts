@@ -34,8 +34,29 @@ export interface ReadinessProfileInfo {
   healthUrl?: string
   /** The running app a target profile checks (#122); such a profile boots nothing. */
   target?: { url: string; hosts: string[] }
-  stubs: Array<{ service: string; hosts: string[] }>
+  /** The compose file and service a booted profile names (#146). */
+  boot?: { compose: string; service: string }
+  stubs: Array<{ service: string; hosts: string[]; composeService?: string }>
 }
+
+/**
+ * A reached host with no working stub (#146), in the shape a stub issue is
+ * drafted from: either no stub covers it, or the stub that does names a
+ * compose service nothing defines (then `service` and `composeService` say
+ * which).
+ */
+export interface ReadinessStubGap {
+  host: string
+  port: string
+  protocol: string
+  hits: number
+  files: string[]
+  service?: string
+  composeService?: string
+}
+
+/** The marker `qare init` leaves where a person has to write something. */
+export const INIT_PLACEHOLDER = 'TODO(qare init):'
 
 export interface ReadinessScanStats {
   filesScanned: number
@@ -54,6 +75,8 @@ export interface ReadinessInventory {
   coverage: Array<{ origin: string; coveredBy?: string }>
   scan: ReadinessScanStats
   gaps: string[]
+  /** The gaps that are a missing stub, one per host (#146). */
+  stubGaps: ReadinessStubGap[]
 }
 
 export async function readinessInventory(
@@ -75,9 +98,14 @@ export async function readinessInventory(
     capped: false,
     maxFiles,
   }
-  const origins = await scanOrigins(repo, maxFiles, scan)
   const profile = await loadProfileInfo(repo)
+  const profileBoot = await inspectProfileBoot(repo, profile)
+  // A compose service reaches its neighbours by name: `http://search:9200`
+  // is the stack talking to itself, not something a stub has to answer.
+  const internal = new Set([...boot.flatMap((file) => file.services.map((service) => service.name)), ...(profileBoot.services ?? [])])
+  const origins = await scanOrigins(repo, maxFiles, scan, internal)
   const coverage = coverageOf(origins, profile)
+  const placeholders = profile.present ? await placeholdersIn(repo) : []
 
   return {
     repoPath: repo,
@@ -86,8 +114,83 @@ export async function readinessInventory(
     profile,
     coverage,
     scan,
-    gaps: gapsOf(boot, profile, coverage),
+    gaps: gapsOf(boot, profile, coverage, placeholders, profileBoot),
+    stubGaps: stubGapsOf(origins, profile, profileBoot),
   }
+}
+
+/** What the compose file a booted profile names really holds. */
+interface ProfileBoot {
+  /** The services the file defines; absent when there is no file to read. */
+  services?: string[]
+  /** Why the file could not be used, as a gap. */
+  problem?: string
+}
+
+async function inspectProfileBoot(repo: string, profile: ReadinessProfileInfo): Promise<ProfileBoot> {
+  if (profile.boot === undefined) return {}
+  // The run hands the path to `docker compose -f` from the repository root.
+  const path = join(repo, profile.boot.compose)
+  if (!(await isFile(path)))
+    return { problem: `the profile boots from ${JSON.stringify(profile.boot.compose)}, which the repository does not have` }
+  try {
+    return { services: parseComposeServices(path, await readFile(path, 'utf8')).map((service) => service.name) }
+  } catch (error) {
+    return { problem: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * The placeholders `qare init` wrote that are still there (#146). A profile
+ * loads with them in place, so nothing else would say the profile is a
+ * skeleton: each one is a gap until a person replaces it.
+ */
+async function placeholdersIn(repo: string): Promise<string[]> {
+  const found: string[] = []
+  for (const name of ['QA.md', 'config.yml']) {
+    const text = await readFile(join(repo, '.qa', name), 'utf8').catch(() => '')
+    for (const line of text.split('\n')) {
+      const at = line.indexOf(INIT_PLACEHOLDER)
+      if (at === -1) continue
+      found.push(`.qa/${name} is not filled in: ${line.slice(at + INIT_PLACEHOLDER.length).trim()}`)
+    }
+  }
+  return found
+}
+
+function isLoopback(host: string): boolean {
+  return host === 'localhost' || host.endsWith('.localhost') || host === '0.0.0.0' || /^127(?:\.\d{1,3}){3}$/.test(host)
+}
+
+function stubGapsOf(origins: ReadinessOriginHit[], profile: ReadinessProfileInfo, profileBoot: ProfileBoot): ReadinessStubGap[] {
+  // Only a booted profile that loads has stubs to be missing.
+  if (!profile.present || profile.loadError !== undefined || profile.target !== undefined) return []
+  const byHost = new Map<string, ReadinessStubGap>()
+  for (const hit of origins) {
+    const host = originHost(hit.origin)
+    const stub = profile.stubs.find((candidate) => matchesStub(host, [{ hosts: candidate.hosts }]))
+    const unprovided =
+      stub !== undefined && stub.composeService !== undefined && profileBoot.services !== undefined && !profileBoot.services.includes(stub.composeService)
+    if (stub !== undefined && !unprovided) continue
+    const protocol = hit.origin.slice(0, hit.origin.indexOf('://'))
+    const port = /:(\d+)$/.exec(hit.origin)?.[1] ?? (protocol === 'https' ? '443' : '80')
+    const files = hit.files.map((file) => file.file)
+    const existing = byHost.get(host)
+    if (existing !== undefined) {
+      existing.hits += hit.totalHits
+      existing.files = [...new Set([...existing.files, ...files])].sort(compareStrings)
+      continue
+    }
+    byHost.set(host, {
+      host,
+      port,
+      protocol,
+      hits: hit.totalHits,
+      files,
+      ...(stub === undefined ? {} : { service: stub.service, composeService: stub.composeService }),
+    })
+  }
+  return [...byHost.values()].sort((a, b) => compareStrings(a.host, b.host))
 }
 
 function originHost(origin: string): string {
@@ -172,7 +275,12 @@ function commandOf(record: Record<string, unknown>): string | undefined {
   return undefined
 }
 
-async function scanOrigins(repo: string, maxFiles: number, scan: ReadinessScanStats): Promise<ReadinessOriginHit[]> {
+async function scanOrigins(
+  repo: string,
+  maxFiles: number,
+  scan: ReadinessScanStats,
+  internal: ReadonlySet<string>,
+): Promise<ReadinessOriginHit[]> {
   const byOrigin = new Map<string, Map<string, number>>()
   await walk(repo, repo, async (path, rel) => {
     if (scan.filesScanned >= maxFiles) {
@@ -198,6 +306,9 @@ async function scanOrigins(repo: string, maxFiles: number, scan: ReadinessScanSt
     for (const match of text.matchAll(ORIGIN_PATTERN)) {
       const origin = normalizeOrigin(match[0])
       if (origin === '') continue
+      // The machine itself and the stack's own services are not outbound.
+      const host = originHost(origin)
+      if (isLoopback(host) || internal.has(host)) continue
       const perFile = byOrigin.get(origin) ?? new Map<string, number>()
       perFile.set(rel, (perFile.get(rel) ?? 0) + 1)
       byOrigin.set(origin, perFile)
@@ -260,7 +371,12 @@ async function loadProfileInfo(repo: string): Promise<ReadinessProfileInfo> {
       present: true,
       healthUrl: typeof healthUrl === 'string' ? healthUrl : undefined,
       ...(profile.target === undefined ? {} : { target: { url: profile.target.url, hosts: [...profile.target.hosts] } }),
-      stubs: (profile.stubs ?? []).map((stub) => ({ service: stub.service, hosts: [...stub.hosts] })),
+      ...(profile.app === undefined ? {} : { boot: { compose: profile.app.boot.compose, service: profile.app.boot.service } }),
+      stubs: (profile.stubs ?? []).map((stub) => ({
+        service: stub.service,
+        hosts: [...stub.hosts],
+        composeService: stub.provided_by.compose_service,
+      })),
     }
   } catch (error) {
     return {
@@ -288,8 +404,10 @@ function gapsOf(
   boot: ReadinessComposeFile[],
   profile: ReadinessProfileInfo,
   coverage: Array<{ origin: string; coveredBy?: string }>,
+  placeholders: string[],
+  profileBoot: ProfileBoot,
 ): string[] {
-  const gaps: string[] = []
+  const gaps: string[] = [...placeholders]
   // A target profile checks an app that is already running: qare boots
   // nothing and stubs nothing, so neither a compose file nor stub coverage is
   // a gap (#122). What the profile itself needs, loading already checked.
@@ -310,6 +428,17 @@ function gapsOf(
     for (const entry of coverage) {
       if (!entry.coveredBy) {
         gaps.push(`outbound origin ${entry.origin} is reached but not stubbed by the .qa/ profile`)
+      }
+    }
+    if (profileBoot.problem !== undefined) gaps.push(profileBoot.problem)
+    if (profileBoot.services !== undefined && profile.boot !== undefined) {
+      if (!profileBoot.services.includes(profile.boot.service))
+        gaps.push(`the profile boots the service ${JSON.stringify(profile.boot.service)}, which ${profile.boot.compose} does not define`)
+      for (const stub of profile.stubs) {
+        if (stub.composeService !== undefined && !profileBoot.services.includes(stub.composeService))
+          gaps.push(
+            `stub ${JSON.stringify(stub.service)} is provided by the compose service ${JSON.stringify(stub.composeService)}, which ${profile.boot.compose} does not define`,
+          )
       }
     }
     for (const stub of profile.stubs) {
