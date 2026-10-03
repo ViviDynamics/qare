@@ -85,4 +85,16 @@ Out, and why:
 - [x] 10. `examples/mail-app` loads and the CI step is the pipeline's own:
       `examples/test/mail-app.test.mjs`; a real boot in the `compose-boot`
       job with `scripts/mail-sink.sh`.
-- [x] 11. Spec, schemas and guidance.
+- [x] 11. The planner is told where a mail check waits and what comes before
+      it: `plan-step.test.ts`.
+- [x] 12. Spec, schemas and guidance.
+
+## What the real catcher showed
+
+- A message sent synchronously arrives before the mail check starts (the
+  example's wait was 20ms, one poll). With the window at the check's start it
+  was never read. Task 5 came from this.
+- The link a later check follows is swept as a secret wherever it appears
+  (#64), so the example's evidence shows `[redacted]` where the confirmation
+  link was, and an empty `links`. The other links of a message are shown.
+  Whether a link that is not single-use should be shown is left to a person.
