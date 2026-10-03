@@ -10,12 +10,13 @@ import { Artefacts, type ArtefactField } from './artefacts.js'
 import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
 import { bootApp, CANCEL_DOWN_TIMEOUT_MS, clientCellStarter, clientExecutablePath, inPlaceBuild, killActiveCompose, stopApp, type BootOpts, type BootedClient } from './boot.js'
 import { removeLiveInstalls } from './provision.js'
+import { detectHost, placementProblem, requirementsOf, unmetReason, unmetRequirements, type HostProbes, type Requirements } from './placement.js'
 import { hasMintedProject, isolatedHealthUrl, isolateRun, type RunIsolation } from './isolation.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
 import { runFlowCheck, runSuiteCheck, undeclaredCheckKinds, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
 import type { FlowRepairRecord } from './locator.js'
 import { flowDriverFor } from './flow-driver.js'
-import { applicationPathProblem, makeElectronFlowSession } from './flow-electron.js'
+import { applicationPathProblem, electronDisplayProblem, makeElectronFlowSession } from './flow-electron.js'
 import { reapLiveCells, type CellRecord } from './client-cell.js'
 import { makePlaywrightFlowSession } from './flow-playwright.js'
 import { excerptAround, type PlatformLogEntry } from './platform-log.js'
@@ -29,7 +30,7 @@ import { extractCode, mailEvidence, runMailCheck, type MailProof, type ReadMail 
 import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCapabilities, mcpDriverServer, type McpToolResult } from './mcp.js'
 import { ProfileMissingError, clientExecutableName, loadProfile, pathOnTarget, validateProfileConfig, type ProfileClient, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, mailEvidenceRules, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
-import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
+import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunProfileSummary, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
 import { runVisualCheckJob, visualPageUrl, type VisualComparison, type VisualContext, type VisualSessionFactory } from './visual-run.js'
 import { mintRunValues, mintedMailAddress, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
@@ -283,6 +284,12 @@ export type RunJobOpts = BootOpts & {
   /** Where the run executes; detected from the process when not pinned (issue #91). */
   execution?: ExecutionKind
   /**
+   * The host the run is held to (#76): its operating system, whether it
+   * offers hardware virtualisation, the devices attached to it, and the
+   * runner it is. The machine the run is on by default.
+   */
+  host?: HostProbes
+  /**
    * How many workers the run shards its independent criteria across (#48).
    * One is the serial run: plan order against the one booted app, which is
    * what every run did before sharding existed.
@@ -321,9 +328,90 @@ export interface RunJobOutcome {
  * way whatever the caller asked for.
  */
 export async function runJob(job: Job, opts: RunJobOpts = {}): Promise<RunJobOutcome> {
-  const { base: request, ...sideOpts } = opts
+  const { base: request, ...asked } = opts
+  // Where the run can execute is settled first (#76), before either side
+  // starts: no base checkout, no build, no install and no boot happens on a
+  // host the run then turns out not to be able to use.
+  const placed = await placeRun(job, asked)
+  if ('refused' in placed) return placed.refused
+  const sideOpts = placed.opts
   if (request === undefined || !(await hasSecondSide(job))) return runSide(job, sideOpts)
   return runBothSides(job, sideOpts, request)
+}
+
+/** What a result says about the profile it ran under: the target or the build, and what the profile required of the host. */
+type ProfileNote = Pick<RunResult, 'target' | 'client' | 'requirements'>
+
+function profileNote(profile: QaProfile): ProfileNote {
+  const requirements = requirementsOf(profile)
+  return {
+    // A run against a target has one side only, and the result says so rather
+    // than implying a base comparison it never made (#122).
+    ...(profile.target !== undefined
+      ? { target: { url: profile.target.url, comparison: 'none' as const } }
+      : profile.client !== undefined
+        ? // A build the run launches has one side too, and the result names it (#72).
+          {
+            client: {
+              driver: profile.client.driver,
+              executable: clientExecutableName(profile.client),
+              comparison: 'none' as const,
+              // Whether the build ran in a cell or, by its profile's own word, without one (#223).
+              egress: profile.client.egress === 'uncontained' ? ('uncontained' as const) : ('contained' as const),
+            },
+          }
+        : {}),
+    // What the profile required of the host (#76), whether or not it was met.
+    ...(Object.keys(requirements).length === 0 ? {} : { requirements }),
+  }
+}
+
+/** The rules a single profile's evidence is swept with: its own, and the second-factor secrets it seeds (#52, #64). */
+function profileRules(profile: QaProfile): RedactionRule[] {
+  const login = profile.app?.login
+  return [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value])]
+}
+
+/**
+ * Decide whether the run may execute here (#76), before anything is
+ * provisioned. Two things can refuse it, each by name: the runner it landed
+ * on (a public repository on a self-hosted runner that nobody opted into),
+ * and a host that does not have what the profile requires. The cell and the
+ * display a client profile implies are held to the host here, through the
+ * seams the boot already had, so each is asked about once. A run over
+ * several apps holds each app to its own profile where it plans them.
+ */
+async function placeRun(job: Job, opts: SideOpts): Promise<{ refused: RunJobOutcome } | { opts: SideOpts }> {
+  const startedAt = new Date().toISOString()
+  const execution = opts.execution ?? detectExecution()
+  const host = detectHost(opts.host)
+  const misplaced = placementProblem(host, opts.host?.env)
+  if (misplaced !== undefined) {
+    const reason = `refused: placement: ${misplaced}`
+    if ('profiles' in job) return { refused: await refuseEveryApp(job, opts, () => reason, execution, startedAt) }
+    return { refused: await refuseRun(job, opts, BUILTIN_REDACTION_RULES, reason, undefined, undefined, execution, startedAt) }
+  }
+  if ('profiles' in job) return { opts }
+  let profile: QaProfile
+  try {
+    profile = await resolveProfileRef(job.repoPath, job.profile)
+  } catch {
+    // A profile that cannot be read requires nothing anyone can name: the
+    // side refuses the run for it, or throws, exactly as it did.
+    return { opts }
+  }
+  const requirements = requirementsOf(profile)
+  const cell = opts.clientCell?.problem
+  const missing = await unmetRequirements(requirements, host, {
+    ...(cell === undefined ? {} : { cell }),
+    display: () => electronDisplayProblem(opts.clientEnv),
+    ...opts.host,
+  })
+  if (missing.length > 0)
+    return { refused: await refuseRun(job, opts, profileRules(profile), unmetReason(missing), profileNote(profile), undefined, execution, startedAt) }
+  // The host can make a cell, and the boot is not asked a second time.
+  if (requirements.cell !== true) return { opts }
+  return { opts: { ...opts, clientCell: { ...opts.clientCell, problem: async () => undefined } } }
 }
 
 async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promise<RunJobOutcome> {
@@ -410,29 +498,13 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     ...(isolation?.port === undefined ? {} : { appPort: String(isolation.port) }),
     ...(profile.mail?.domain === undefined ? {} : { mailDomain: profile.mail.domain }),
   })
-  // A run against a target has one side only, and the result says so rather
-  // than implying a base comparison it never made (#122).
-  const targetNote: Pick<RunResult, 'target' | 'client'> =
-    profile.target !== undefined
-      ? { target: { url: profile.target.url, comparison: 'none' as const } }
-      : profile.client !== undefined
-        ? // A build the run launches has one side too, and the result names it (#72).
-          {
-            client: {
-              driver: profile.client.driver,
-              executable: clientExecutableName(profile.client),
-              comparison: 'none' as const,
-              // Whether the build ran in a cell or, by its profile's own word, without one (#223).
-              egress: profile.client.egress === 'uncontained' ? ('uncontained' as const) : ('contained' as const),
-            },
-          }
-        : {}
+  const targetNote: ProfileNote = profileNote(profile)
   // The seeded second-factor secret and any backup code never reach the
   // evidence either: they sweep alongside the profile's own rules (#64).
   // The rules are built before the plan is validated, so a refusal that
   // publishes minted values still sweeps them with the profile's own (#55).
   const login = profile.app?.login
-  const rules = [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value]), ...(side?.extraRules ?? [])]
+  const rules = [...profileRules(profile), ...(side?.extraRules ?? [])]
   try {
     validatePlanValues(job.criteria, profile, values, opts.flowDriver ?? flowDriverFor(profile))
   } catch (error) {
@@ -526,7 +598,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
         reason: boot.reason ?? 'boot did not come up',
         ...(attached ? { evidence: [PROVISION_LOG] } : {}),
       }))
-      const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria, startedAt, ...targetNote }, rules, values, execution)
+      const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria, startedAt, ...targetNote }, rules, values, execution, opts.host)
       await feedIfOptedIn(opts, job, finished.result)
       return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
     }
@@ -575,7 +647,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     const undeclared = (target?.undeclared.length ?? 0) + (reaching?.undeclared.length ?? 0)
     const egressVerdict = undeclared > 0 ? 'refused' : 'allowed'
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict })
-    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, startedAt, ...targetNote }, rules, values, execution)
+    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, startedAt, ...targetNote }, rules, values, execution, opts.host)
     await feedIfOptedIn(opts, job, finished.result)
     return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
   } finally {
@@ -672,6 +744,8 @@ async function runSeveralProfiles(
     flakeAttempts?: number
     /** Where the run's quarantine store lives; the ledger directory in the pipeline (#50). */
     quarantineDir?: string
+    /** The host the run is held to (#76); the machine it is on by default. */
+    host?: HostProbes
   },
   execution: ExecutionKind = detectExecution(),
   startedAt: string = new Date().toISOString(),
@@ -682,7 +756,7 @@ async function runSeveralProfiles(
   // any app runs: a malformed profile fails closed wherever the run stops, so
   // a refusal about the caller's isolation cannot carry it past validation,
   // and evidence is swept with the union of every app's rules (#55).
-  const planned: Array<{ group: JobProfileGroup; profile?: QaProfile; refusal?: string }> = []
+  const planned: Array<{ group: JobProfileGroup; profile?: QaProfile; refusal?: string; requirements?: Requirements }> = []
   for (const group of groups) {
     try {
       const profile = atBaseTree(await resolveProfileRef(job.repoPath, group.profile), side)
@@ -728,35 +802,15 @@ async function runSeveralProfiles(
   // A caller-carried isolation belongs to a single-profile run: one isolation
   // cannot be several apps' own, so a several-profile run that was handed one
   // refuses instead of quietly sharing it (#55).
-  if (opts.isolation !== undefined) {
-    const criteria = groups.flatMap((group) =>
-      group.criteria.map((criterion) => ({
-        id: criterion.id,
-        outcome: 'unverified' as const,
-        reason: `the run was given an isolation of its own, but a run over several apps gives each app an isolation of its own, so nothing can attach to the one the caller carried; check ${group.name} on its own to reuse an isolation`,
-      })),
-    )
-    const finished = await finishRun(
+  if (opts.isolation !== undefined)
+    return refuseEveryApp(
       job,
-      {
-        schemaVersion: RESULT_SCHEMA_VERSION,
-        verdict: 'refused',
-        criteria,
-        startedAt,
-        profiles: groups.map((group) => ({
-          name: group.name,
-          verdict: 'refused' as const,
-          criteria: group.criteria.map((criterion) => criterion.id),
-          profile: group.profile,
-        })),
-      },
-      BUILTIN_REDACTION_RULES,
-      undefined,
+      opts,
+      (group) =>
+        `the run was given an isolation of its own, but a run over several apps gives each app an isolation of its own, so nothing can attach to the one the caller carried; check ${group.name} on its own to reuse an isolation`,
       execution,
+      startedAt,
     )
-    await feedIfOptedIn(opts, job, finished.result)
-    return { result: finished.result }
-  }
   // Flow masks are swept the same way, before any app runs: a screenshot one
   // app captures must carry every app's mask regions, or one app's pixels can
   // publish another app's secret (#55).
@@ -784,8 +838,20 @@ async function runSeveralProfiles(
         'the profile names a client build, which a run launches for one side only; check this app in its own single run so the result can name the build it drove',
     }
   }
+  // What each app's profile requires of the host (#76), held to the host
+  // before any app boots: an app this host cannot run is refused for this
+  // run, named, and the other apps still run. An app already refused above
+  // is asked nothing.
+  const host = detectHost(opts.host)
+  for (const [index, entry] of planned.entries()) {
+    if (entry.profile === undefined || entry.refusal !== undefined) continue
+    const requirements = requirementsOf(entry.profile)
+    if (Object.keys(requirements).length === 0) continue
+    const missing = await unmetRequirements(requirements, host, opts.host)
+    planned[index] = { ...entry, requirements, ...(missing.length === 0 ? {} : { refusal: unmetReason(missing) }) }
+  }
   const criteria: CriterionResult[] = []
-  const profiles: Array<{ name: string; verdict: RunVerdict; criteria: string[]; profile: JobProfileRef }> = []
+  const profiles: RunProfileSummary[] = []
   const recorded: Array<{ name: string; values: RunValues }> = []
   const isolations: Array<{ name: string; isolation: RunIsolation }> = []
   const cacheHits: RunCacheContext['hits'] = []
@@ -804,7 +870,13 @@ async function runSeveralProfiles(
           ? { criteria: entry.group.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified' as const, reason: entry.refusal! })), verdict: 'refused' }
           : await runProfileGroup(job, entry.group, entry.profile!, rules, masks, opts, cleanups, execution, policy, side)
       criteria.push(...outcome.criteria)
-      profiles.push({ name: entry.group.name, verdict: outcome.verdict, criteria: outcome.criteria.map((criterion) => criterion.id), profile: entry.group.profile })
+      profiles.push({
+        name: entry.group.name,
+        verdict: outcome.verdict,
+        criteria: outcome.criteria.map((criterion) => criterion.id),
+        profile: entry.group.profile,
+        ...(entry.requirements === undefined ? {} : { requirements: entry.requirements }),
+      })
       if (outcome.values !== undefined) recorded.push({ name: entry.group.name, values: outcome.values })
       if (outcome.isolation !== undefined) isolations.push({ name: entry.group.name, isolation: outcome.isolation })
       if (outcome.egressRefused === true) egressRefused = true
@@ -826,9 +898,43 @@ async function runSeveralProfiles(
   }
   const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
   await writeCacheHits(job.evidenceDir, cacheHits)
-  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, startedAt, profiles }, rules, undefined, execution)
+  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, startedAt, profiles }, rules, undefined, execution, opts.host)
   await feedIfOptedIn(opts, job, finished.result)
   return { result: finished.result, ...(isolations.length > 0 ? { isolations } : {}) }
+}
+
+/** Refuse a run over several apps whole, before any app runs: every app is refused, each criterion naming why. */
+async function refuseEveryApp(
+  job: SeveralProfilesJob,
+  opts: { ledgerFeed?: { dir: string }; host?: HostProbes },
+  reasonFor: (group: JobProfileGroup) => string,
+  execution: ExecutionKind,
+  startedAt: string,
+): Promise<RunJobOutcome> {
+  const criteria = job.profiles.flatMap((group) =>
+    group.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified' as const, reason: reasonFor(group) })),
+  )
+  const finished = await finishRun(
+    job,
+    {
+      schemaVersion: RESULT_SCHEMA_VERSION,
+      verdict: 'refused',
+      criteria,
+      startedAt,
+      profiles: job.profiles.map((group) => ({
+        name: group.name,
+        verdict: 'refused' as const,
+        criteria: group.criteria.map((criterion) => criterion.id),
+        profile: group.profile,
+      })),
+    },
+    BUILTIN_REDACTION_RULES,
+    undefined,
+    execution,
+    opts.host,
+  )
+  await feedIfOptedIn(opts, job, finished.result)
+  return { result: finished.result }
 }
 
 async function runProfileGroup(
@@ -1643,10 +1749,10 @@ function compareSides(job: Job, head: RunResult, base: BaseSideOutcome, startedA
 /** Refuse the whole run without booting: every criterion is reported unverified, naming the gap. */
 async function refuseRun(
   job: SingleProfileJob,
-  opts: BootOpts & { ledgerFeed?: { dir: string } },
+  opts: BootOpts & { ledgerFeed?: { dir: string }; host?: HostProbes },
   rules: readonly RedactionRule[],
   reason: string,
-  targetNote: Pick<RunResult, 'target' | 'client'> = {},
+  targetNote: ProfileNote = {},
   isolation?: RunIsolation,
   execution: ExecutionKind = detectExecution(),
   startedAt: string = new Date().toISOString(),
@@ -1659,7 +1765,7 @@ async function refuseRun(
   // The wall clock starts when the run did, not when the refusal did: work
   // done before the refusal (profile resolution, isolation) is time the run
   // spent (#51).
-  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria, startedAt, ...targetNote }, rules, undefined, execution)
+  const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'refused', criteria, startedAt, ...targetNote }, rules, undefined, execution, opts.host)
   await feedIfOptedIn(opts, job, finished.result)
   return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
 }
@@ -1935,14 +2041,16 @@ async function finishRun(
   rules: readonly RedactionRule[],
   values?: RunValues,
   execution: ExecutionKind = detectExecution(),
+  host?: HostProbes,
 ): Promise<{ result: RunResult }> {
   // The run records where and with which versions it executed (issue #91):
   // the same fact the evidence comment states, written before redaction so
-  // the version set is part of the published result itself.
+  // the version set is part of the published result itself. The kind of host
+  // is part of where (#76): every result names the one that produced it.
   // The wall clock (#51) rides the result: the caller names when the run
   // started, and the result names when it was written.
   const full: RunResult = redactResult(
-    { ...result, job: { id: job.id }, environment: runEnvironment(execution), finishedAt: new Date().toISOString() },
+    { ...result, job: { id: job.id }, environment: runEnvironment(execution, undefined, undefined, detectHost(host)), finishedAt: new Date().toISOString() },
     rules,
   )
   await mkdir(job.evidenceDir, { recursive: true })

@@ -476,7 +476,7 @@ test('an install is removed even when a check throws out of the run (#75)', asyn
   expect(readdirSync(installRoot)).toEqual([])
 })
 
-test('a host that cannot contain the build blocks an artefact profile before anything is built or installed (#223)', async () => {
+test('a host that cannot contain the build refuses an artefact profile before anything is built or installed (#223, #76)', async () => {
   const { job, installRoot } = await workspace()
   const ran: string[] = []
   const { result } = await runJob(job, {
@@ -492,8 +492,11 @@ test('a host that cannot contain the build blocks an artefact profile before any
     },
     clientSession: installedSession([], []),
   })
-  expect(result.verdict).toBe('blocked')
-  expect(result.criteria[0]?.reason).toBe('a client build runs contained, in a cell the docker daemon makes, and no daemon answered (docker exited 127)')
+  // The cell is a requirement of the host (#76): unmet, the run is refused before either side is provisioned.
+  expect(result.verdict).toBe('refused')
+  expect(result.criteria[0]?.reason).toBe(
+    'refused: unmet requirement: a client build runs contained, in a cell the docker daemon makes, and no daemon answered (docker exited 127). Nothing was provisioned.',
+  )
   expect(ran).toEqual([])
   expect(readdirSync(installRoot)).toEqual([])
 })

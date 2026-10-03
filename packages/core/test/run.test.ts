@@ -459,11 +459,13 @@ test('the result records the environment the run executed in', async () => {
     profile: { inline: INLINE_PROFILE },
   })
 
-  const { result } = await runJob(job, { ...HEALTHY_BOOT, execution: 'native' })
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, execution: 'native', host: { platform: 'darwin', arch: 'arm64', env: {} } })
 
   expect(result.environment).toEqual({
     execution: 'native',
     versions: { qare: VERSION, node: process.versions.node, nareContract: NARE_CONTRACT },
+    // The kind of host that produced the result (#76).
+    host: { os: 'macos', arch: 'arm64', virtualisation: false },
   })
   // The same finishRun writes the record into the evidence, so result.json
   // carries it without the caller passing anything.

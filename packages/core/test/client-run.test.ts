@@ -120,7 +120,7 @@ test('a client profile runs its flows against the build, one side only, and publ
   )
 })
 
-test('a build that is not there, or a host with no display, blocks the run by name before any check runs (#72)', async () => {
+test('a build that is not there blocks the run, and a host with no display refuses it, by name before any check runs (#72, #76)', async () => {
   const events: string[] = []
   const missing = await clientJob({ build: false })
   const blocked = await runJob(missing, { ...WITH_CELL, flowSession: desktopSession(events) })
@@ -131,10 +131,14 @@ test('a build that is not there, or a host with no display, blocks the run by na
   )
 
   // The display is this host's to have only when the build runs on it: a contained build's is its cell's.
+  // A display is a requirement like any other (#76): a host without one is refused, not found out by a launch.
   const headless = await clientJob({ profile: UNCONTAINED_PROFILE })
   const dark = await runJob(headless, { clientEnv: { env: {}, platform: 'linux', xvfb: () => undefined }, flowSession: desktopSession(events) })
-  expect(dark.result.verdict).toBe('blocked')
-  expect(dark.result.criteria[0]?.reason).toMatch(/the electron driver needs a display/)
+  expect(dark.result.verdict).toBe('refused')
+  expect(dark.result.criteria[0]?.reason).toBe(
+    'refused: unmet requirement: the electron driver needs a display: neither DISPLAY nor WAYLAND_DISPLAY is set, and no Xvfb is on PATH to start a virtual one (the web image ships it). Nothing was provisioned.',
+  )
+  expect(dark.result.requirements).toEqual({ display: true })
   expect(events).toEqual([])
 
   // A path inside the repository that is a link out of it is not the repository's build.
@@ -261,21 +265,23 @@ test('what a build reached is recorded however its flow ended, a timeout include
   expect(await outboundOf(job)).toMatchObject({ containment: 'cell' })
 })
 
-test('a host that cannot contain a client build blocks the run by name, and launches nothing (#223)', async () => {
+test('a host that cannot contain a client build refuses the run by name, and launches nothing (#223, #76)', async () => {
   const events: string[] = []
   const job = await clientJob()
   const reason = 'a client build runs contained, in a cell the docker daemon makes, and no daemon answered (docker exited 127)'
   const { result } = await runJob(job, { ...WITH_DISPLAY, clientCell: { problem: async () => reason }, flowSession: desktopSession(events, () => ({ reached: [] })) })
-  expect(result.verdict).toBe('blocked')
-  expect(result.criteria[0]).toMatchObject({ outcome: 'unverified', reason })
+  // The cell is a requirement of the host like any other (#76): unmet, the run is refused before anything is provisioned.
+  expect(result.verdict).toBe('refused')
+  expect(result.criteria[0]).toMatchObject({ outcome: 'unverified', reason: `refused: unmet requirement: ${reason}. Nothing was provisioned.` })
+  expect(result.requirements).toEqual({ cell: true })
   expect(events).toEqual([])
   // With nothing stood in, the run asks the host itself: this one names no image to make a cell from.
   const saved = process.env.QARE_IMAGE_REF
   delete process.env.QARE_IMAGE_REF
   try {
     const asked = await runJob(await clientJob(), { ...WITH_DISPLAY, flowSession: desktopSession(events, () => ({ reached: [] })) })
-    expect(asked.result.verdict).toBe('blocked')
-    expect(asked.result.criteria[0]?.reason).toMatch(/QARE_IMAGE_REF names none.*client\.egress: uncontained/)
+    expect(asked.result.verdict).toBe('refused')
+    expect(asked.result.criteria[0]?.reason).toMatch(/^refused: unmet requirement: .*QARE_IMAGE_REF names none.*client\.egress: uncontained/)
   } finally {
     if (saved !== undefined) process.env.QARE_IMAGE_REF = saved
   }
