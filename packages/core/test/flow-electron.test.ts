@@ -301,6 +301,23 @@ test('the vocabulary drives the window that shows the element, with the browser\
   ])
 })
 
+test('a window that goes away while an assertion asks it is a window that does not show the element, not a failed assertion (#72)', async () => {
+  const main = fakeWindow([], 'Greeter', HOME, ['text=Greeter', 'heading=Greeter'])
+  const closing = fakeWindow([], 'Details', 'file:///opt/app/details.html')
+  // Asked mid-close, the page answers with an error rather than with no.
+  const gone = (): never => {
+    throw new Error('Target page, context or browser has been closed')
+  }
+  closing.page.getByText = gone
+  closing.page.getByRole = gone
+  const { session } = harness({ windows: [main, closing] })
+  const started = await session()
+
+  await expect(started.page.assertText('Greeter')).resolves.toBeUndefined()
+  await expect(started.page.assertElement({ role: 'heading', name: 'Greeter' })).resolves.toBeUndefined()
+  await started.dispose()
+})
+
 test('an element is looked for in every open window, newest first, so a flow follows the application into a window it opens and back (#72)', async () => {
   const events: string[] = []
   const main = fakeWindow(events, 'Greeter', HOME, ['button=Open details', 'button=Shared', 'text=Greeter'])

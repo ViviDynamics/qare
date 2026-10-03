@@ -438,6 +438,16 @@ export async function makeElectronFlowSession(opts: {
     const named = await Promise.all(open().map(async (window) => `${window.id} ${JSON.stringify(await window.page.title().catch(() => ''))}`))
     return named.length === 0 ? 'no window is open' : `open windows: ${named.join(', ')}`
   }
+  // Whether a window shows what a locator names. A window that goes away
+  // while it is asked answers with an error, and a window that is gone shows
+  // nothing: it is passed over, never read as the application's fault.
+  const shows = async (window: AppWindow, locate: (page: Page) => Locator): Promise<boolean> => {
+    try {
+      return await locate(window.page).isVisible()
+    } catch {
+      return false
+    }
+  }
   // The window an action lands in: the newest one that shows the element.
   // A window that is still opening is waited for, like an element that is
   // still rendering, until the time an action is given runs out.
@@ -445,7 +455,7 @@ export async function makeElectronFlowSession(opts: {
     const deadline = Date.now() + findTimeoutMs
     for (;;) {
       for (const window of newestFirst()) {
-        if (await locate(window.page).first().isVisible().catch(() => false)) {
+        if (await shows(window, (page) => locate(page).first())) {
           current = window
           return window.page
         }
@@ -477,7 +487,7 @@ export async function makeElectronFlowSession(opts: {
     // asked once, and nothing is waited for.
     assertText: async (text) => {
       for (const window of newestFirst()) {
-        if (await window.page.getByText(text).first().isVisible()) {
+        if (await shows(window, (page) => page.getByText(text).first())) {
           current = window
           return
         }
@@ -486,7 +496,7 @@ export async function makeElectronFlowSession(opts: {
     },
     assertElement: async (element) => {
       for (const window of newestFirst()) {
-        if (await resolveFlowElement(window.page, element).isVisible()) {
+        if (await shows(window, (page) => resolveFlowElement(page, element))) {
           current = window
           return
         }
