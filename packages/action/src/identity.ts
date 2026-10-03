@@ -70,7 +70,8 @@ export function resolveIdentity(options: IdentityOptions): GitHubIdentity {
   }
 
   if (options.token !== undefined && options.token !== '') return new TokenIdentity(options.token, set(ACTIONS_TOKEN_ENV), transport)
-  if (options.tokenEnv !== undefined) {
+  // Naming the Actions token's own variable is no choice: it is the default.
+  if (options.tokenEnv !== undefined && options.tokenEnv !== ACTIONS_TOKEN_ENV) {
     const named = set(options.tokenEnv)
     if (named === undefined)
       throw new GitHubClientError(`qare-action needs a GitHub token: set ${options.tokenEnv} in the environment (or pass { token } to GitHubClient)`)
@@ -151,13 +152,18 @@ export class TokenIdentity implements GitHubIdentity {
       method: 'GET',
       headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${this.value}` },
     })
-    if (response.status === 403) {
+    if (!response.ok) {
+      const text = await response.text()
       // Not a user: a token handed over by name that belongs to an
-      // installation. The one a pipeline hands qare is the Actions token.
-      this.known = ACTIONS_LOGIN
-      return this.known
+      // installation, which GitHub refuses this question in these words.
+      // The one a pipeline hands qare is the Actions token. Any other
+      // refusal, a rate limit say, is an error and never a guess.
+      if (response.status === 403 && /not accessible by integration/i.test(text)) {
+        this.known = ACTIONS_LOGIN
+        return this.known
+      }
+      throw new GitHubApiError(response.status, 'GET /user', text)
     }
-    if (!response.ok) throw new GitHubApiError(response.status, 'GET /user', await response.text())
     const login = ((await response.json()) as { login?: unknown }).login
     if (typeof login !== 'string' || login === '')
       throw new GitHubClientError('GitHub did not say which user the token belongs to, so qare cannot find its own comments')

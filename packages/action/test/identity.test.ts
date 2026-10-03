@@ -210,3 +210,18 @@ test('a client built with no identity resolves one from the environment it runs 
     Object.assign(process.env, saved)
   }
 })
+
+test('naming the Actions token on the command line is no choice of identity', () => {
+  // `--token-env GITHUB_TOKEN` says nothing the default does not: the App
+  // still wins, and alone it is still the Actions token, which a proposal
+  // is refused under.
+  expect(resolve({ ...APP_ENV, GITHUB_TOKEN: FAKE_TOKEN }, { tokenEnv: 'GITHUB_TOKEN' }).kind).toBe('app')
+  expect(resolve({ GITHUB_TOKEN: FAKE_TOKEN }, { tokenEnv: 'GITHUB_TOKEN' }).kind).toBe('actions')
+})
+
+test('a token whose user cannot be read for another reason is an error, never a guess', async () => {
+  const limited: typeof fetch = () =>
+    Promise.resolve(new Response(JSON.stringify({ message: 'API rate limit exceeded for user ID 1.' }), { status: 403 }))
+  const identity = resolveIdentity({ repository: REPOSITORY, apiRoot: fake.url, env: { QARE_GITHUB_TOKEN: PAT }, fetchImpl: limited })
+  await expect(identity.login()).rejects.toThrow(/rate limit/)
+})
