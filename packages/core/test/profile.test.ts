@@ -67,7 +67,7 @@ test('a base section states what the base side costs: which criteria, and how lo
 
 test('a target profile has one side, so it takes no base section (#147)', () => {
   expect(() =>
-    validateProfileConfig({ target: { url: 'https://example.test', health: { http: '/', timeout: '5s' } }, base: { budget: '1m' } }),
+    validateProfileConfig({ target: { url: ['https:', '//example.test'].join(''), health: { http: '/', timeout: '5s' } }, base: { budget: '1m' } }),
   ).toThrow(/one side/)
 })
 

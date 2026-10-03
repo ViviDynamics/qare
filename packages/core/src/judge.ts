@@ -162,6 +162,18 @@ export function toSideResults(result: Pick<RunResult, 'criteria'>): SideResult[]
 }
 
 /**
+ * The base side as the judge reads it out of a result (#147): the criteria
+ * the base's executed checks decided, proven or failed. A criterion that was
+ * not compared is left out, so it can never be read as having worked at the
+ * base, and a one-sided result yields an empty base, as it always did.
+ */
+export function toBaseSideResults(result: Pick<RunResult, 'criteria'>): SideResult[] {
+  return (result.criteria ?? []).flatMap((criterion) =>
+    criterion.base === undefined || criterion.base.outcome === 'not-compared' ? [] : [{ criterionId: criterion.id, outcome: criterion.base.outcome }],
+  )
+}
+
+/**
  * Model findings are problems only. There is deliberately no "looks good"
  * finding: structurally, no model output can upgrade a verdict.
  */

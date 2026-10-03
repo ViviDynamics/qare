@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { lstat, mkdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { shellCharacter } from './duration.js'
+import { parseDurationMs, shellCharacter } from './duration.js'
+import { prepareBaseCheckout, type BaseCheckout, type BaseCheckoutInput, type BaseCheckoutOutcome } from './base-checkout.js'
 import { collectCriterionFiles, criterionCacheKey, FileCheckCache, planFingerprint, profileFingerprint, resolveRefSha } from './cache.js'
 import { Artefacts, type ArtefactField } from './artefacts.js'
 import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
@@ -11,15 +12,16 @@ import { matchesStub, type EgressAttempt } from './egress.js'
 import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
 import type { FlowRepairRecord } from './locator.js'
 import { BROWSER_FLOW_DRIVER, makePlaywrightFlowSession } from './flow-playwright.js'
-import { judgeRun, toSideResults } from './judge.js'
+import { evidenceOf, judgeRun, toBaseSideResults, toSideResults } from './judge.js'
 import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck, type JobProfileGroup, type JobProfileRef, type JobToolCheck, type SeveralProfilesJob, type SingleProfileJob } from './job.js'
 import type { FlowActionStep } from './plan.js'
 import { feedRunLedger } from './ledger-feed.js'
+import { FileLedgerStore } from './ledger.js'
 import { extractCode, httpMailbox, mailEvidence, runMailCheck, type ReadMail } from './mailbox.js'
 import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCapabilities, mcpDriverServer, type McpToolResult } from './mcp.js'
 import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
-import { RESULT_SCHEMA_VERSION, type CriterionResult, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
+import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
 import { mintRunValues, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
 import {
@@ -177,28 +179,59 @@ interface FlowTargetContext {
  * redacted with the profile's rules and the built-in ones (#52): evidence is
  * published, and output from the app under test can carry its secrets.
  */
-export async function runJob(
-  job: Job,
-  opts: BootOpts & {
-    ledgerFeed?: { dir: string }
-    readMail?: ReadMail
-    flowSession?: FlowSessionFactory
-    /** What the driver behind this run's flows declares (#70); the browser driver by default. */
-    flowDriver?: FlowDriverCapabilities
-    /** Where the run executes; detected from the process when not pinned (issue #91). */
-    execution?: ExecutionKind
-    /**
-     * How many workers the run shards its independent criteria across (#48).
-     * One is the serial run: plan order against the one booted app, which is
-     * what every run did before sharding existed.
-     */
-    workers?: number
-    /** How many times a failing check repeats before it is judged (#50). */
-    flakeAttempts?: number
-    /** Where the run's quarantine store lives; the ledger directory in the pipeline (#50). */
-    quarantineDir?: string
-  } = {},
-): Promise<{ result: RunResult; isolation?: RunIsolation; isolations?: Array<{ name: string; isolation: RunIsolation }> }> {
+export type RunJobOpts = BootOpts & {
+  ledgerFeed?: { dir: string }
+  readMail?: ReadMail
+  flowSession?: FlowSessionFactory
+  /** What the driver behind this run's flows declares (#70); the browser driver by default. */
+  flowDriver?: FlowDriverCapabilities
+  /** Where the run executes; detected from the process when not pinned (issue #91). */
+  execution?: ExecutionKind
+  /**
+   * How many workers the run shards its independent criteria across (#48).
+   * One is the serial run: plan order against the one booted app, which is
+   * what every run did before sharding existed.
+   */
+  workers?: number
+  /** How many times a failing check repeats before it is judged (#50). */
+  flakeAttempts?: number
+  /** Where the run's quarantine store lives; the ledger directory in the pipeline (#50). */
+  quarantineDir?: string
+  /**
+   * Ask for the base side (#147): the same plan, run against the app booted
+   * from `baseRef`, so a criterion that worked there and fails at the head is
+   * named a regression. Absent, the run has one side, as it always had.
+   */
+  base?: BaseSideRequest
+}
+
+type SideOpts = Omit<RunJobOpts, 'base'>
+
+export interface RunJobOutcome {
+  result: RunResult
+  isolation?: RunIsolation
+  isolations?: Array<{ name: string; isolation: RunIsolation }>
+}
+
+/**
+ * Run a job. With `opts.base`, a job whose profile boots an app runs both
+ * sides (#147): the base first, under an isolation of its own and torn down
+ * when its checks are done, then the head. Base evidence lands under `base/`,
+ * head evidence under `head/`, and the top-level result.json is the
+ * comparison: the head's outcomes and verdict, what the base showed for each
+ * criterion, and the regressions the judge computed from the two.
+ *
+ * A profile that names a target has one side only (#122), and a repository
+ * with no profile is refused before anything runs, so both go the one-sided
+ * way whatever the caller asked for.
+ */
+export async function runJob(job: Job, opts: RunJobOpts = {}): Promise<RunJobOutcome> {
+  const { base: request, ...sideOpts } = opts
+  if (request === undefined || !(await hasSecondSide(job))) return runSide(job, sideOpts)
+  return runBothSides(job, sideOpts, request)
+}
+
+async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promise<RunJobOutcome> {
   // The run's wall clock (#51): when it started, so the metrics record can
   // say what a run cost in time as well as in model tokens.
   const startedAt = new Date().toISOString()
@@ -206,17 +239,25 @@ export async function runJob(
   // result.json with the version set, so a host run and an image run are
   // readable side by side (issue #91).
   const execution = opts.execution ?? detectExecution()
-  if ('profiles' in job) return runSeveralProfiles(job, opts, execution, startedAt)
+  if ('profiles' in job) return runSeveralProfiles(job, opts, execution, startedAt, side)
   let profile: QaProfile
   try {
-    profile = await resolveProfileRef(job.repoPath, job.profile)
+    profile = atBaseTree(await resolveProfileRef(job.repoPath, job.profile), side)
   } catch (error) {
     if (!(error instanceof ProfileMissingError)) throw error
+    // The base revision may predate the profile: nothing boots there, and
+    // the comparison says so (#147).
+    if (side?.name === 'base')
+      return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `the base revision has no usable .qa/ profile, so nothing boots at the base: ${error.message}`, undefined, undefined, execution, startedAt)
     // A repository that has not onboarded is refused, not a caller mistake
     // (#107). Every criterion is still reported, unverified, naming the gap,
     // so the evidence says what nobody checked and what onboarding needs.
     return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `this repository has no usable .qa/ profile yet, so qare will not claim to have checked it: ${error.message}`, undefined, undefined, execution, startedAt)
   }
+  // A base whose profile names a running target has no app of its own to
+  // boot: checking the live target would compare the head with itself (#147).
+  if (side?.name === 'base' && profile.target !== undefined)
+    return refuseRun(job, opts, BUILTIN_REDACTION_RULES, 'the profile at the base revision names a running target, which has one side only, so nothing boots at the base', undefined, undefined, execution, startedAt)
   // One compose project per run (#53), minted before anything boots. A run
   // against a target boots nothing, so it needs no isolation, and a run that
   // cannot mint one is refused with the reason named: a run that cannot say
@@ -281,7 +322,7 @@ export async function runJob(
   // The rules are built before the plan is validated, so a refusal that
   // publishes minted values still sweeps them with the profile's own (#55).
   const login = profile.app?.login
-  const rules = [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value])]
+  const rules = [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value]), ...(side?.extraRules ?? [])]
   try {
     validatePlanValues(job.criteria, profile, values, opts.flowDriver ?? mcpDriverCapabilities(profile.mcp) ?? BROWSER_FLOW_DRIVER)
   } catch (error) {
@@ -319,6 +360,7 @@ export async function runJob(
   // and the disposer is released when the run finishes either way.
   const cancelCleanup = isolation === undefined ? undefined : installCancelCleanup(bootedProfile, { ...opts, isolation })
   try {
+    if (isolation !== undefined) side?.booted.push({ profile: bootedProfile, isolation })
     const boot = await bootApp(bootedProfile, { ...opts, isolation })
     if (boot.kind === 'blocked') {
       const criteria: CriterionResult[] = job.criteria.map((criterion) => ({
@@ -343,11 +385,12 @@ export async function runJob(
     // itself never crosses into the plan (#64).
     const totp =
       login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
-    const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target, totp, mcp: profile.mcp }
+    if (side !== undefined) side.ran = true
+    const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target, totp, mcp: profile.mcp, ...(side === undefined ? {} : { tracesRoot: side.tracesRoot }) }
     const criteria = await runCriteriaAcrossLanes(
       job.criteria,
       shardCriteria(job.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
-      { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy, opts },
+      { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy, opts, ...(side?.gate === undefined ? {} : { gate: side.gate }) },
     )
     await persistQuarantine(policy)
     await writeCacheHits(job.evidenceDir, cache?.hits ?? [])
@@ -402,7 +445,8 @@ async function runSeveralProfiles(
   },
   execution: ExecutionKind = detectExecution(),
   startedAt: string = new Date().toISOString(),
-): Promise<{ result: RunResult; isolation?: RunIsolation; isolations?: Array<{ name: string; isolation: RunIsolation }> }> {
+  side?: SideContext,
+): Promise<RunJobOutcome> {
   const groups = job.profiles
   // Every profile is resolved before any other refusal is decided, and before
   // any app runs: a malformed profile fails closed wherever the run stops, so
@@ -411,7 +455,7 @@ async function runSeveralProfiles(
   const planned: Array<{ group: JobProfileGroup; profile?: QaProfile; refusal?: string }> = []
   for (const group of groups) {
     try {
-      const profile = await resolveProfileRef(job.repoPath, group.profile)
+      const profile = atBaseTree(await resolveProfileRef(job.repoPath, group.profile), side)
       // The driver mapping is preflighted before anything runs (#94): an
       // action the mapping does not bind refuses this app's group here,
       // wherever the plan came from, so no group runs while a later one's
@@ -450,6 +494,7 @@ async function runSeveralProfiles(
     const login = entry.profile?.app?.login
     rules.push(...redactionRules(entry.profile?.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value]))
   }
+  rules.push(...(side?.extraRules ?? []))
   // A caller-carried isolation belongs to a single-profile run: one isolation
   // cannot be several apps' own, so a several-profile run that was handed one
   // refuses instead of quietly sharing it (#55).
@@ -516,7 +561,7 @@ async function runSeveralProfiles(
       const outcome: ProfileGroupOutcome =
         entry.refusal !== undefined
           ? { criteria: entry.group.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified' as const, reason: entry.refusal! })), verdict: 'refused' }
-          : await runProfileGroup(job, entry.group, entry.profile!, rules, masks, opts, cleanups, execution, policy)
+          : await runProfileGroup(job, entry.group, entry.profile!, rules, masks, opts, cleanups, execution, policy, side)
       criteria.push(...outcome.criteria)
       profiles.push({ name: entry.group.name, verdict: outcome.verdict, criteria: outcome.criteria.map((criterion) => criterion.id), profile: entry.group.profile })
       if (outcome.values !== undefined) recorded.push({ name: entry.group.name, values: outcome.values })
@@ -565,6 +610,7 @@ async function runProfileGroup(
   cleanups: Array<() => void>,
   execution: ExecutionKind = detectExecution(),
   policy: FlakePolicy = { attempts: 1 },
+  side?: SideContext,
 ): Promise<ProfileGroupOutcome> {
   const unverifiedAll = (reason: string): CriterionResult[] =>
     group.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified' as const, reason }))
@@ -628,6 +674,7 @@ async function runProfileGroup(
       : { ...profile, app: { ...profile.app, health: { ...profile.app.health, http: isolatedHealthUrl(substituteValues(profile.app.health.http, values), isolation.port) } } }
   const cancelCleanup = isolation === undefined ? undefined : installCancelCleanup(bootedProfile, { ...opts, isolation })
   try {
+    if (isolation !== undefined) side?.booted.push({ profile: bootedProfile, isolation })
     const boot = await bootApp(bootedProfile, { ...opts, isolation })
     if (boot.kind === 'blocked') {
       return {
@@ -649,11 +696,12 @@ async function runProfileGroup(
       login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
     // The masks are the union of every app's, built before any app ran, so
     // one app's screenshots cannot publish another app's secret region (#55).
-    const flow = { session: opts.flowSession, masks, suites: profile.suites, target, totp, mcp: profile.mcp }
+    if (side !== undefined) side.ran = true
+    const flow = { session: opts.flowSession, masks, suites: profile.suites, target, totp, mcp: profile.mcp, ...(side === undefined ? {} : { tracesRoot: side.tracesRoot }) }
     const criteria = await runCriteriaAcrossLanes(
       group.criteria,
       shardCriteria(group.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
-      { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy, opts },
+      { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy, opts, ...(side?.gate === undefined ? {} : { gate: side.gate }) },
     )
     const egressRefused = target !== undefined && target.undeclared.length > 0
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
@@ -683,6 +731,18 @@ function isolatedSuitesOf(profile: QaProfile): Set<string> {
  * detected execution, the run's cache) plus the boot options a shard boots
  * its own app with (#48).
  */
+/** What a criterion's flow checks run with: the session seam, the masks, the suites, and where a trace is kept. */
+interface FlowContext {
+  session?: FlowSessionFactory
+  masks: string[]
+  suites: ProfileSuite[]
+  target?: FlowTargetContext
+  totp?: FlowTotpConfig
+  mcp?: ProfileMcpServer[]
+  /** Where traces go; beside the evidence directory when the run names none. */
+  tracesRoot?: string
+}
+
 interface LaneContext {
   job: Job
   profile: QaProfile
@@ -690,12 +750,18 @@ interface LaneContext {
   values: RunValues
   mail: { inbox?: string; readMail?: ReadMail }
   artefacts: Artefacts
-  flow: { session?: FlowSessionFactory; masks: string[]; suites: ProfileSuite[]; target?: FlowTargetContext; totp?: FlowTotpConfig; mcp?: ProfileMcpServer[] }
+  flow: FlowContext
   execution: ExecutionKind
   cache: RunCacheContext | undefined
   /** The run's flake policy (#50): every criterion in every lane consults the same one. */
   policy: FlakePolicy
   opts: BootOpts & { ledgerFeed?: { dir: string }; readMail?: ReadMail; flowSession?: FlowSessionFactory; flowDriver?: FlowDriverCapabilities; workers?: number }
+  /**
+   * The base side's limits (#147): a reason a criterion does not run at all,
+   * asked just before it would. A gated criterion is unverified with that
+   * reason, and the comparison reports it as not compared.
+   */
+  gate?: (criterion: JobCriterion) => string | undefined
 }
 
 /**
@@ -774,6 +840,10 @@ async function runCriteriaAcrossLanes(criteria: JobCriterion[], lanes: LanePlan,
     if (criterion === undefined) throw new Error('sharding: the plan named an index that names no criterion')
     return criterion
   }
+  const gated = (criterion: JobCriterion): CriterionResult | undefined => {
+    const reason = ctx.gate?.(criterion)
+    return reason === undefined ? undefined : { id: criterion.id, outcome: 'unverified', reason }
+  }
   await Promise.all([
     ...lanes.shared.map((slice) =>
       (async () => {
@@ -782,7 +852,7 @@ async function runCriteriaAcrossLanes(criteria: JobCriterion[], lanes: LanePlan,
           // A criterion the workers run beside others shares nothing with
           // them: its artefact ledger starts empty, so its flow checks
           // cannot spend or publish what another criterion's do (#69).
-          results[index] = await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands)
+          results[index] = gated(criterion) ?? (await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands))
         }
       })(),
     ),
@@ -792,13 +862,299 @@ async function runCriteriaAcrossLanes(criteria: JobCriterion[], lanes: LanePlan,
         // The sequential criteria share the run's artefact ledger, in plan
         // order: a mail message's link published by one criterion is what
         // the next one consumes, exactly as a serial run hands it over.
-        results[index] = ownBoot
-          ? await runOwnBootCriterion(criterion, ctx)
-          : await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, ctx.artefacts, ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands)
+        results[index] =
+          gated(criterion) ??
+          (ownBoot
+            ? await runOwnBootCriterion(criterion, ctx)
+            : await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, ctx.artefacts, ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands))
       }
     })(),
   ])
   return results
+}
+
+/**
+ * What a caller asks of the base side (#147). A checkout of the base revision
+ * the caller already has is used as it is; without one the run makes a git
+ * worktree of `baseRef` and removes it when the base side is done.
+ */
+export interface BaseSideRequest {
+  repoPath?: string
+  /** How the base tree is obtained; `prepareBaseCheckout` by default. */
+  checkout?: (input: BaseCheckoutInput) => Promise<BaseCheckoutOutcome>
+}
+
+/** An app a side booted, with what stopping it takes. */
+interface BootedApp {
+  profile: QaProfile
+  isolation: RunIsolation
+}
+
+/**
+ * What makes one side of a two-sided run its own (#147). The side reports
+ * back through it: every app it booted, so the base's can be torn down
+ * whatever happened, and whether it got as far as running checks.
+ */
+interface SideContext {
+  name: 'base' | 'head'
+  /** Traces stay beside the evidence directory, never inside what is published (#52). */
+  tracesRoot: string
+  booted: BootedApp[]
+  ran: boolean
+  /** The other side's redaction rules, swept over this side's evidence too. */
+  extraRules?: readonly RedactionRule[]
+  /** The base boots from the base tree: where a compose path of the profile lands there. */
+  composePath?: (path: string) => string
+  gate?: (criterion: JobCriterion) => string | undefined
+}
+
+/** The base side as the comparison reads it: the raw result of a base that ran, or why none did. */
+type BaseSideOutcome = { status: 'executed'; result: RunResult } | { status: 'not-executed'; reason: string }
+
+const NOT_RUN_AT_BASE = 'not run at the base: '
+
+/**
+ * A job has a second side when it boots an app (#147). A target profile is
+ * one side by definition (#122), and a profile that cannot be read is the
+ * one-sided run's to refuse or to throw on, exactly as before.
+ */
+async function hasSecondSide(job: Job): Promise<boolean> {
+  if ('profiles' in job) return true
+  try {
+    return (await resolveProfileRef(job.repoPath, job.profile)).app !== undefined
+  } catch {
+    return false
+  }
+}
+
+/** The base side boots the base tree's own recipe: its compose file resolves there. */
+function atBaseTree(profile: QaProfile, side: SideContext | undefined): QaProfile {
+  if (side?.composePath === undefined || profile.app === undefined) return profile
+  return { ...profile, app: { ...profile.app, boot: { ...profile.app.boot, compose: side.composePath(profile.app.boot.compose) } } }
+}
+
+/** Where a path inside the head checkout lands in the base checkout; undefined for a path outside it. */
+function intoBaseTree(headRepo: string, baseRepo: string, absolute: string): string | undefined {
+  const rel = relative(headRepo, absolute)
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return undefined
+  return join(baseRepo, rel)
+}
+
+/** The job the base side runs: the same plan, against the base tree, writing under `base/`. */
+function baseJobOf(job: Job, basePath: string): Job {
+  // A relative profile path resolves against the repo path, so it follows the
+  // base tree by itself; an absolute one inside the head checkout is moved.
+  const ref = (profile: JobProfileRef): JobProfileRef =>
+    'inline' in profile || !isAbsolute(profile.path) ? profile : { path: intoBaseTree(job.repoPath, basePath, profile.path) ?? profile.path }
+  const evidenceDir = join(job.evidenceDir, 'base')
+  if ('profiles' in job)
+    return { ...job, repoPath: basePath, evidenceDir, profiles: job.profiles.map((group) => ({ ...group, profile: ref(group.profile) })) }
+  return { ...job, repoPath: basePath, evidenceDir, profile: ref(job.profile) }
+}
+
+/** The head's profiles with the criteria each one checks: where the base side's limits and the head's redaction rules are read from. */
+async function headProfilesOf(job: Job): Promise<Array<{ profile: QaProfile; criteria: JobCriterion[] }>> {
+  const groups = 'profiles' in job ? job.profiles : [{ profile: job.profile, criteria: job.criteria }]
+  const loaded: Array<{ profile: QaProfile; criteria: JobCriterion[] }> = []
+  for (const group of groups) {
+    try {
+      loaded.push({ profile: await resolveProfileRef(job.repoPath, group.profile), criteria: group.criteria })
+    } catch {
+      // A profile the head cannot read sets no limits; the head side says what is wrong with it.
+    }
+  }
+  return loaded
+}
+
+/**
+ * The base side's limits, from the profile the run was configured with
+ * (#147): `base.criteria: ledger` runs only the criteria the ledger at the
+ * base already carries as active, and `base.budget` bounds the side's wall
+ * clock from the moment it starts. Both are read as a reason a criterion
+ * does not run, so what the limits leave out is reported, not dropped.
+ */
+async function baseLimits(
+  profiles: Array<{ profile: QaProfile; criteria: JobCriterion[] }>,
+  basePath: string,
+): Promise<{ nothingToRun: boolean; gate: (criterion: JobCriterion) => string | undefined }> {
+  const ledgerOnly = new Set<string>()
+  const budgets = new Map<string, { ms: number; label: string }>()
+  for (const { profile, criteria } of profiles) {
+    for (const criterion of criteria) {
+      if (profile.base?.criteria === 'ledger') ledgerOnly.add(criterion.id)
+      if (profile.base?.budget !== undefined) budgets.set(criterion.id, { ms: parseDurationMs(profile.base.budget), label: profile.base.budget })
+    }
+  }
+  let carried = new Set<string>()
+  if (ledgerOnly.size > 0) {
+    try {
+      const entries = await new FileLedgerStore(join(basePath, '.qa')).load()
+      carried = new Set(entries.filter((entry) => entry.status === 'active').map((entry) => entry.criterion))
+    } catch {
+      // A ledger that cannot be read carries nothing: nothing runs at the base on its word.
+    }
+  }
+  const leftOut = (id: string): boolean => ledgerOnly.has(id) && !carried.has(id)
+  const all = profiles.flatMap((entry) => entry.criteria)
+  const startedMs = Date.now()
+  return {
+    nothingToRun: all.length > 0 && all.every((criterion) => leftOut(criterion.id)),
+    gate: (criterion) => {
+      if (leftOut(criterion.id))
+        return `${NOT_RUN_AT_BASE}the profile limits the base side to the criteria already in the ledger, and the ledger at the base does not carry ${criterion.id}`
+      const budget = budgets.get(criterion.id)
+      if (budget !== undefined && Date.now() - startedMs >= budget.ms)
+        return `${NOT_RUN_AT_BASE}the base side's time budget of ${budget.label} was spent before this criterion ran`
+      return undefined
+    },
+  }
+}
+
+/**
+ * Run the plan against the base revision (#147). Nothing here throws into the
+ * run: a base that cannot be checked out, will not boot, or stops half way is
+ * a named reason, and the head is checked regardless. Every app the base
+ * booted is stopped, and a checkout the run made is removed, before the head
+ * starts, so the two sides never contend for the machine.
+ */
+async function runBaseSide(
+  job: Job,
+  opts: SideOpts,
+  request: BaseSideRequest,
+  profiles: Array<{ profile: QaProfile; criteria: JobCriterion[] }>,
+  headRules: readonly RedactionRule[],
+): Promise<BaseSideOutcome> {
+  const booted: BootedApp[] = []
+  let checkout: BaseCheckout | undefined
+  try {
+    const outcome = await (request.checkout ?? prepareBaseCheckout)({
+      repoPath: job.repoPath,
+      baseRef: job.baseRef,
+      headRef: job.headRef,
+      ...(request.repoPath === undefined ? {} : { given: request.repoPath }),
+    })
+    if (!outcome.ok) return { status: 'not-executed', reason: outcome.reason }
+    checkout = outcome.checkout
+    const basePath = checkout.path
+    const limits = await baseLimits(profiles, basePath)
+    if (limits.nothingToRun)
+      return {
+        status: 'not-executed',
+        reason: 'the profile limits the base side to the criteria already in the ledger, and the ledger at the base carries none of the criteria this run checks',
+      }
+    const side: SideContext = {
+      name: 'base',
+      tracesRoot: resolve(job.evidenceDir, '..', 'traces', 'base'),
+      booted,
+      ran: false,
+      extraRules: headRules,
+      composePath: (path) => intoBaseTree(job.repoPath, basePath, resolve(path)) ?? (isAbsolute(path) ? path : resolve(basePath, path)),
+      gate: limits.gate,
+    }
+    // The base side is a comparison, not a record: it feeds no ledger and
+    // quarantines nothing, it boots under isolations of its own whatever the
+    // caller carried for the head, and its cache is its own, because both
+    // sides resolve the same two revisions and would otherwise share keys.
+    const baseOpts: SideOpts = { ...opts }
+    delete baseOpts.isolation
+    delete baseOpts.ledgerFeed
+    delete baseOpts.quarantineDir
+    if (opts.cacheDir !== undefined) baseOpts.cacheDir = join(opts.cacheDir, 'base')
+    const { result } = await runSide(baseJobOf(job, basePath), baseOpts, side)
+    if (!side.ran) {
+      const first = result.criteria.find((criterion) => criterion.outcome === 'unverified')
+      return { status: 'not-executed', reason: first?.outcome === 'unverified' ? first.reason : `the base side reached no check (verdict ${result.verdict})` }
+    }
+    return { status: 'executed', result }
+  } catch (error) {
+    return { status: 'not-executed', reason: `the base side stopped before it finished: ${error instanceof Error ? error.message : String(error)}` }
+  } finally {
+    const downTimeoutMs = opts.downTimeoutMs !== undefined && opts.downTimeoutMs > 0 ? opts.downTimeoutMs : CANCEL_DOWN_TIMEOUT_MS
+    for (const app of booted) await stopApp(app.profile, { ...opts, isolation: app.isolation, downTimeoutMs })
+    try {
+      await checkout?.dispose()
+    } catch (error) {
+      console.error(`the base checkout could not be removed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+}
+
+/**
+ * Both sides of a run (#147): the base, then the head, then the comparison.
+ * The head is the verdict source, as it always was. The base only says which
+ * head failures are regressions, so nothing the base does can turn a
+ * criterion green, and what was not run there is "not compared".
+ */
+async function runBothSides(job: Job, opts: SideOpts, request: BaseSideRequest): Promise<RunJobOutcome> {
+  const startedAt = new Date().toISOString()
+  const profiles = await headProfilesOf(job)
+  const headRules = profiles.flatMap(({ profile }) => [
+    ...redactionRules(profile.redact),
+    ...valueRules([profile.app?.login?.totp?.secret, profile.app?.login?.backupCode?.value]),
+  ])
+  const base = await runBaseSide(job, opts, request, profiles, headRules)
+  // The comparison is what the ledger hears about, once, so the head side
+  // feeds nothing itself.
+  const headOpts: SideOpts = { ...opts }
+  delete headOpts.ledgerFeed
+  const headSide: SideContext = { name: 'head', tracesRoot: resolve(job.evidenceDir, '..', 'traces', 'head'), booted: [], ran: false }
+  const head = await runSide({ ...job, evidenceDir: join(job.evidenceDir, 'head') }, headOpts, headSide)
+  const compared = redactResult(compareSides(job, head.result, base, startedAt), [...BUILTIN_REDACTION_RULES, ...headRules])
+  await mkdir(job.evidenceDir, { recursive: true })
+  await writeFile(join(job.evidenceDir, 'result.json'), `${JSON.stringify(compared, null, 2)}\n`)
+  await feedIfOptedIn(opts, job, compared)
+  return {
+    result: compared,
+    ...(head.isolation === undefined ? {} : { isolation: head.isolation }),
+    ...(head.isolations === undefined ? {} : { isolations: head.isolations }),
+  }
+}
+
+/**
+ * The comparison of the two sides, decided in code (rule 3). Each head
+ * criterion carries what the base showed for it, and the judge computes the
+ * regressions from the executed outcomes of both: proven at the base, failed
+ * at the head. A base outcome that is not an executed pass or failure is
+ * `not-compared`, with its reason, and takes no part in that.
+ */
+function compareSides(job: Job, head: RunResult, base: BaseSideOutcome, startedAt: string): RunResult {
+  const under = (side: 'base' | 'head', paths: string[]): string[] => paths.map((path) => `${side}/${path}`)
+  const atBase = new Map((base.status === 'executed' ? base.result.criteria : []).map((criterion) => [criterion.id, criterion]))
+  const baseOf = (id: string): CriterionBase => {
+    if (base.status === 'not-executed') return { outcome: 'not-compared', reason: `the base side did not run: ${base.reason}` }
+    const criterion = atBase.get(id)
+    if (criterion === undefined) return { outcome: 'not-compared', reason: 'the base side reported nothing for this criterion' }
+    const evidence = under('base', evidenceOf(criterion))
+    const saved = evidence.length === 0 ? {} : { evidence }
+    if (criterion.outcome !== 'unverified') return { outcome: criterion.outcome, ...saved }
+    return {
+      outcome: 'not-compared',
+      reason: criterion.reason.startsWith(NOT_RUN_AT_BASE) ? criterion.reason : `unverified at the base: ${criterion.reason}`,
+      ...saved,
+    }
+  }
+  const criteria: CriterionResult[] = head.criteria.map((criterion) => ({
+    ...criterion,
+    ...('evidence' in criterion && criterion.evidence !== undefined ? { evidence: under('head', criterion.evidence) } : {}),
+    base: baseOf(criterion.id),
+  }))
+  // The judge is handed both sides, and it alone says what regressed.
+  const regressed = new Set(
+    judgeRun({ base: toBaseSideResults({ criteria }), head: toSideResults({ criteria }) }).regressions.map((regression) => regression.criterionId),
+  )
+  const status: RunBase =
+    base.status === 'executed' ? { ref: job.baseRef, status: 'executed' } : { ref: job.baseRef, status: 'not-executed', reason: base.reason }
+  return {
+    ...head,
+    criteria: criteria.map((criterion) => {
+      if (criterion.outcome !== 'failed') return criterion
+      if (regressed.has(criterion.id)) return { ...criterion, regression: true }
+      return criterion.base?.outcome === 'failed' ? { ...criterion, regression: false } : criterion
+    }),
+    base: status,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+  }
 }
 
 /** Refuse the whole run without booting: every criterion is reported unverified, naming the gap. */
@@ -1161,7 +1517,7 @@ async function runCriterion(
   values: RunValues,
   mail: { inbox?: string; readMail?: ReadMail },
   artefacts: Artefacts,
-  flow: { session?: FlowSessionFactory; masks: string[]; suites: ProfileSuite[]; target?: FlowTargetContext; totp?: FlowTotpConfig; mcp?: ProfileMcpServer[] },
+  flow: FlowContext,
   execution: ExecutionKind,
   cache: RunCacheContext | undefined,
   policy: FlakePolicy,
@@ -1322,6 +1678,7 @@ async function runCriterion(
           flow.masks,
           execution,
           flow.mcp,
+          flow.tracesRoot,
         )
         evidence.push(...outcome.evidence)
         // A repair is recorded with the criterion and check it happened in (#83),
@@ -1593,6 +1950,7 @@ async function runFlowCheckJob(
   masks: string[],
   execution: ExecutionKind,
   mcp?: ProfileMcpServer[],
+  tracesRoot?: string,
 ): Promise<{ status: 'passed' | 'failed' | 'unverified'; reason?: string; evidence: string[]; repairs?: FlowRepairRecord[] }> {
   const inEvidence = (names: readonly string[]): string[] => names.map((name) => `${checkDir}/${name}`)
   if (check.suite !== undefined) {
@@ -1664,7 +2022,7 @@ async function runFlowCheckJob(
       page: started.page,
       trace: started.trace,
       outDir: join(evidenceDir, checkDir),
-      tracesDir: resolve(evidenceDir, '..', 'traces', checkDir),
+      tracesDir: join(tracesRoot ?? resolve(evidenceDir, '..', 'traces'), checkDir),
       redactLog: (text) => {
         let out = redactText(text, rules)
         for (const code of generatedCodes) out = out.split(code).join(REDACTED)

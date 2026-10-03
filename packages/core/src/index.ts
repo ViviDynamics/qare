@@ -79,6 +79,8 @@ export type {
   CriterionResult,
   RunResult,
   RunTarget,
+  RunBase,
+  CriterionBase,
 } from './result.js'
 export {
   FakeAgentRunner,
@@ -157,7 +159,7 @@ export type { ReapOutcome, ReapOpts } from './reap.js'
 export { installCancelCleanup, runJob } from './run.js'
 export { prepareBaseCheckout } from './base-checkout.js'
 export type { BaseCheckout, BaseCheckoutInput, BaseCheckoutOutcome } from './base-checkout.js'
-export type { FlowSessionFactory } from './run.js'
+export type { BaseSideRequest, FlowSessionFactory, RunJobOpts, RunJobOutcome } from './run.js'
 export {
   collectCriterionFiles,
   criterionCacheKey,
@@ -215,6 +217,7 @@ export {
   judgeRun,
   judgedResult,
   judgeExecuted,
+  toBaseSideResults,
   evidenceOf,
   prepareVerifierInputs,
   runVerifier,
