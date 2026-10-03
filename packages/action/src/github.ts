@@ -1,26 +1,9 @@
-const DEFAULT_API_ROOT = ['https:', '//api.github.com'].join('')
-const DEFAULT_TOKEN_ENV = 'GITHUB_TOKEN'
+import { GitHubApiError, GitHubClientError } from './errors.js'
+import { DEFAULT_API_ROOT, resolveIdentity, type GitHubIdentity } from './identity.js'
+
+export { GitHubApiError, GitHubClientError } from './errors.js'
+
 const DEFAULT_REPOSITORY_ENV = 'GITHUB_REPOSITORY'
-
-export class GitHubApiError extends Error {
-  readonly status: number
-  readonly endpoint: string
-
-  constructor(status: number, endpoint: string, bodyText: string) {
-    const snippet = bodyText.replace(/\s+/g, ' ').trim().slice(0, 200)
-    super(`GitHub API request failed: ${endpoint} responded ${status}${snippet === '' ? '' : `: ${snippet}`}`)
-    this.name = 'GitHubApiError'
-    this.status = status
-    this.endpoint = endpoint
-  }
-}
-
-export class GitHubClientError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'GitHubClientError'
-  }
-}
 
 export interface GitHubIssue {
   number: number
@@ -68,15 +51,23 @@ export interface GithubTreeEntry {
 export interface GitHubClientOptions {
   repository?: string
   apiRoot?: string
+  /** A token handed over directly: an explicit choice, above the environment. */
   token?: string
+  /** The variable that holds the token, when the command line names one (`--token-env`). */
   tokenEnv?: string
+  /**
+   * Who the client posts as. Left out, it is resolved from the environment
+   * (#61): the App, then a personal access token, then the Actions token.
+   */
+  identity?: GitHubIdentity
   fetchImpl?: typeof fetch
 }
 
 export class GitHubClient {
   readonly repository: string
+  /** Who this client posts as. The posting code asks it nothing but its login. */
+  readonly identity: GitHubIdentity
   private readonly root: string
-  private readonly token: string | undefined
   private readonly doFetch: typeof fetch
 
   constructor(options: GitHubClientOptions = {}) {
@@ -88,14 +79,16 @@ export class GitHubClient {
     }
     this.repository = repository
     this.root = (options.apiRoot ?? DEFAULT_API_ROOT).replace(/\/+$/, '')
-    const tokenEnv = options.tokenEnv ?? DEFAULT_TOKEN_ENV
-    this.token = options.token ?? process.env[tokenEnv] ?? undefined
-    if (this.token === undefined || this.token === '') {
-      throw new GitHubClientError(
-        `qare-action needs a GitHub token: set ${tokenEnv} in the environment (or pass { token } to GitHubClient)`,
-      )
-    }
     this.doFetch = options.fetchImpl ?? globalThis.fetch
+    this.identity =
+      options.identity ??
+      resolveIdentity({
+        repository,
+        apiRoot: this.root,
+        fetchImpl: this.doFetch,
+        token: options.token,
+        tokenEnv: options.tokenEnv,
+      })
   }
 
   async searchIssues(query: string): Promise<GitHubIssue[]> {
@@ -149,8 +142,21 @@ export class GitHubClient {
     await this.request('PATCH', `/repos/${this.repository}/issues/comments/${id}`, undefined, { body })
   }
 
+  /**
+   * GitHub lets only an App write a check run, so this one request is made
+   * with the identity's checks token: the App's own, or, for a personal
+   * access token, the Actions token of the run it is used in.
+   */
   async createCheckRun(run: GitHubCheckRun): Promise<void> {
-    await this.request('POST', `/repos/${this.repository}/check-runs`, undefined, run)
+    try {
+      await this.request('POST', `/repos/${this.repository}/check-runs`, undefined, run, await this.identity.checksToken())
+    } catch (error) {
+      if (this.identity.kind === 'token' && error instanceof GitHubApiError && error.status === 403)
+        throw new GitHubClientError(
+          'GitHub refused the check run: only a GitHub App may write a check run, and a personal access token is not one. Keep GITHUB_TOKEN, the Actions token, in the environment beside it (the pipeline does), or post as the App',
+        )
+      throw error
+    }
   }
 
   /** Every job of one attempt of a workflow run, in the order the API lists them. */
@@ -256,14 +262,15 @@ export class GitHubClient {
     return { number: pull.number, htmlUrl: pull.html_url }
   }
 
-
-  private async request<T>(method: string, path: string, query?: URLSearchParams, payload?: unknown): Promise<T> {
+  private async request<T>(method: string, path: string, query?: URLSearchParams, payload?: unknown, token?: string): Promise<T> {
     const url = new URL(`${this.root}${path}`)
     if (query !== undefined) {
       for (const [key, value] of query) url.searchParams.append(key, value)
     }
-    const headers: Record<string, string> = { Accept: 'application/vnd.github+json' }
-    if (this.token !== undefined) headers.Authorization = `Bearer ${this.token}`
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${token ?? (await this.identity.token())}`,
+    }
     let bodyText: string | undefined
     if (payload !== undefined) {
       headers['Content-Type'] = 'application/json'

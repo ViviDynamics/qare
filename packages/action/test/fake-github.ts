@@ -1,3 +1,4 @@
+import { createVerify } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
@@ -13,6 +14,29 @@ export interface FakeCall {
   path: string
   query: string
   body: unknown
+  /** The Authorization header the request carried, to tell which credential made it. */
+  authorization?: string
+}
+
+/**
+ * A credential the fake accepts, and what GitHub lets its kind do: a user's
+ * token answers GET /user and may not write check runs, the Actions token
+ * and an App installation's token are the reverse.
+ */
+export interface FakeToken {
+  login: string
+  kind: 'actions' | 'user' | 'installation'
+}
+
+/** The App the fake knows: its id, the public half of its key, and where it is installed. */
+export interface FakeApp {
+  id: string
+  /** PEM. A JSON web token must verify against it. */
+  publicKey: string
+  slug: string
+  installationId: number
+  /** False: the App exists and is not installed on the repository. */
+  installed: boolean
 }
 
 export interface FakeComment {
@@ -31,6 +55,14 @@ export interface FakeGithub {
   issues: Map<number, FakeIssue>
   /** Every comment with its id, in the order written; issue.comments mirrors the bodies. */
   commentRecords: FakeComment[]
+  /** Every token the fake accepts. FAKE_TOKEN, the Actions token, is there from the start. */
+  tokens: Map<string, FakeToken>
+  /** The App a JSON web token may authenticate as; undefined means there is none. */
+  app: FakeApp | undefined
+  /** What each installation token was asked for: the request body, in order. */
+  minted: Array<{ token: string; body: unknown }>
+  /** The fake's clock, in milliseconds, for a test that moves time; undefined means the real one. */
+  nowMs: number | undefined
   checkRuns: unknown[]
   /**
    * The jobs of each workflow run attempt, keyed "<run id>/<attempt>", as the
@@ -75,7 +107,6 @@ export interface FakePull {
 
 const TOKEN = 'qa-test-token'
 const TOKEN_LOGIN = 'github-actions[bot]'
-const AUTH_HEADER = `Bearer ${TOKEN}`
 
 interface FakeCommit {
   tree: string
@@ -93,10 +124,15 @@ export function startFakeGithub(): Promise<FakeGithub> {
   const pulls: FakePull[] = []
   const blobs = new Map<string, Buffer>()
   const trees = new Map<string, FakeTreeEntry[]>()
+  const tokens = new Map<string, FakeToken>([[TOKEN, { login: TOKEN_LOGIN, kind: 'actions' }]])
+  const minted: Array<{ token: string; body: unknown }> = []
   const state = {
     status: undefined as number | undefined,
     failRefPatches: 0,
+    app: undefined as FakeApp | undefined,
+    nowMs: undefined as number | undefined,
   }
+  const clock = () => state.nowMs ?? Date.now()
   let nextNumber = 100
   let nextCommentId = 5000
   let nextObject = 1
@@ -112,18 +148,67 @@ export function startFakeGithub(): Promise<FakeGithub> {
     for await (const chunk of request) chunks.push(chunk as Buffer)
     const rawBody = Buffer.concat(chunks).toString('utf8')
     const body: unknown = rawBody === '' ? undefined : JSON.parse(rawBody)
-    calls.push({ method: request.method ?? '', path: url.pathname, query: url.searchParams.toString(), body })
+    const authorization = request.headers.authorization
+    calls.push({
+      method: request.method ?? '',
+      path: url.pathname,
+      query: url.searchParams.toString(),
+      body,
+      ...(authorization === undefined ? {} : { authorization }),
+    })
 
     const fail = () => {
       respond(response, state.status ?? 500, { message: 'fake error' })
     }
     if (state.status !== undefined) return fail()
-    if (request.headers.authorization !== AUTH_HEADER) {
-      respond(response, 401, { message: 'Bad credentials: Authorization: Bearer <token> required' })
+    const parts = url.pathname.split('/').filter((part) => part !== '')
+    const bearer = /^Bearer (.+)$/.exec(authorization ?? '')?.[1] ?? ''
+
+    // The App's own endpoints: authenticated by a JSON web token the App
+    // signed with its private key, never by a token.
+    const asApp =
+      url.pathname === '/app' ||
+      (parts[0] === 'repos' && parts[3] === 'installation' && parts.length === 4) ||
+      (parts[0] === 'app' && parts[1] === 'installations')
+    if (asApp) {
+      const app = state.app
+      if (app === undefined || !jwtIsFrom(bearer, app)) {
+        respond(response, 401, { message: 'A JSON web token could not be decoded' })
+        return
+      }
+      if (url.pathname === '/app' && request.method === 'GET') {
+        respond(response, 200, { id: 1, slug: app.slug, name: app.slug })
+        return
+      }
+      if (parts[0] === 'repos' && request.method === 'GET') {
+        if (!app.installed) return respond(response, 404, { message: 'Not Found' })
+        respond(response, 200, { id: app.installationId, app_slug: app.slug })
+        return
+      }
+      if (parts[3] === 'access_tokens' && parts.length === 4 && request.method === 'POST') {
+        if (!app.installed || Number(parts[2]) !== app.installationId) return respond(response, 404, { message: 'Not Found' })
+        const token = `ghs_fake_installation_${minted.length + 1}`
+        minted.push({ token, body })
+        tokens.set(token, { login: `${app.slug}[bot]`, kind: 'installation' })
+        respond(response, 201, { token, expires_at: new Date(clock() + 60 * 60 * 1000).toISOString() })
+        return
+      }
+      respond(response, 404, { message: `fake github has no App route for ${request.method} ${url.pathname}` })
       return
     }
 
-    const parts = url.pathname.split('/').filter((part) => part !== '')
+    const caller = tokens.get(bearer)
+    if (caller === undefined) {
+      respond(response, 401, { message: 'Bad credentials: Authorization: Bearer <token> required' })
+      return
+    }
+    if (url.pathname === '/user' && request.method === 'GET') {
+      // Only a user's token is a user; an installation's is refused, as GitHub refuses it.
+      if (caller.kind !== 'user') return respond(response, 403, { message: 'Resource not accessible by integration' })
+      respond(response, 200, { login: caller.login })
+      return
+    }
+
     if (url.pathname === '/search/issues' && request.method === 'GET') {
       const q = url.searchParams.get('q') ?? ''
       const phrase = /"([^"]+)"/.exec(q)?.[1] ?? ''
@@ -170,7 +255,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
       if (request.method === 'POST') {
         const text = (body as { body: string }).body
         issue.comments.push(text)
-        const record = { id: nextCommentId, issue: issue.number, body: text, author: TOKEN_LOGIN }
+        const record = { id: nextCommentId, issue: issue.number, body: text, author: caller.login }
         nextCommentId += 1
         commentRecords.push(record)
         respond(response, 201, { id: record.id, body: text })
@@ -213,6 +298,8 @@ export function startFakeGithub(): Promise<FakeGithub> {
       return
     }
     if (parts[0] === 'repos' && parts[3] === 'check-runs' && parts.length === 4 && request.method === 'POST') {
+      // GitHub lets only an App write a check run: a user's token is refused.
+      if (caller.kind === 'user') return respond(response, 403, { message: 'You must authenticate via a GitHub App.' })
       checkRuns.push(body)
       respond(response, 201, { id: checkRuns.length, ...(body as object) })
       return
@@ -326,6 +413,24 @@ export function startFakeGithub(): Promise<FakeGithub> {
     respond(response, 404, { message: `fake github has no route for ${request.method} ${url.pathname}` })
   }
 
+  /** A JSON web token as GitHub accepts one: RS256, signed by the App, issued by it, and short. */
+  function jwtIsFrom(jwt: string, app: FakeApp): boolean {
+    const [header, payload, signature] = jwt.split('.')
+    if (header === undefined || payload === undefined || signature === undefined) return false
+    try {
+      const head = JSON.parse(Buffer.from(header, 'base64url').toString('utf8')) as { alg?: string }
+      const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { iss?: unknown; iat?: unknown; exp?: unknown }
+      if (head.alg !== 'RS256' || String(claims.iss) !== app.id) return false
+      if (typeof claims.iat !== 'number' || typeof claims.exp !== 'number') return false
+      const now = Math.floor(clock() / 1000)
+      // No longer than ten minutes, not yet expired, and not issued in the future.
+      if (claims.exp - claims.iat > 600 || claims.exp <= now || claims.iat > now) return false
+      return createVerify('RSA-SHA256').update(`${header}.${payload}`).verify(app.publicKey, Buffer.from(signature, 'base64url'))
+    } catch {
+      return false
+    }
+  }
+
   function respond(response: ServerResponse, status: number, payload: unknown): void {
     response.statusCode = status
     response.setHeader('Content-Type', 'application/json')
@@ -341,6 +446,20 @@ export function startFakeGithub(): Promise<FakeGithub> {
         calls,
         issues,
         commentRecords,
+        tokens,
+        minted,
+        get app(): FakeApp | undefined {
+          return state.app
+        },
+        set app(value: FakeApp | undefined) {
+          state.app = value
+        },
+        get nowMs(): number | undefined {
+          return state.nowMs
+        },
+        set nowMs(value: number | undefined) {
+          state.nowMs = value
+        },
         checkRuns,
         runJobs,
         refs,

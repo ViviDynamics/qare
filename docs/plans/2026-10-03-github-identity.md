@@ -62,14 +62,14 @@ Out:
 
 ## Tasks
 
-- [ ] 1. The identity interface and its resolution: App, then token, then the
+- [x] 1. The identity interface and its resolution: App, then token, then the
   Actions token; a half-configured App and no credential at all stop by name.
   (`packages/action/test/identity.test.ts`)
-- [ ] 2. The App installation identity: JWT signed with the private key, the
+- [x] 2. The App installation identity: JWT signed with the private key, the
   repository's installation, a token scoped to the repository, cached until it
   nears expiry; not installed and a wrong key are named. (same file, against
   the fake's App endpoints)
-- [ ] 3. `GitHubClient` asks its identity for the token of each request, and
+- [x] 3. `GitHubClient` asks its identity for the token of each request, and
   writes check runs with the token that may. (`github.test.ts`,
   `identity.test.ts`)
 - [ ] 4. Posting commands find their own sticky comment under any identity,
