@@ -795,6 +795,11 @@ the family exists to remove.
 The host install is the same package the image ships: `@qare/cli` at a pinned
 version, with the pinned nare installed beside it (the wheel from nare's
 release, `python3 -m pip install --user`), and nothing else added by hand.
+The pinned nare needs Python 3.12 or newer, the python the core image is built
+on, so a host whose `python3` is older (a self-hosted CI runner, say) installs
+a newer one first: on GitHub Actions, `actions/setup-python` with
+`python-version: '3.12'` before the step that installs nare. Otherwise pip
+refuses the wheel with "requires a different Python".
 Drivers are added on demand, one per client family the profile's suites
 actually target: `playwright-core` and `npx playwright install chromium` for a
 suite that drives a browser, a container runtime only for a profile that boots
@@ -803,7 +808,10 @@ an app.
 `qare doctor` names what the host has, what the profile needs, and how to
 install what is missing. It checks node, the pinned nare, the docker daemon
 for a profile that boots an app, and the chromium driver for a profile whose
-suites drive a browser. Display and devices are reported but never required:
+suites drive a browser. While nare is missing it also checks that `python3` is
+new enough to install it, so a too-old interpreter is named before pip refuses
+the wheel; once nare is installed the interpreter is only reported, because
+nare may run under its own. Display and devices are reported but never required:
 the browser driver runs headless, and devices arrive through the profile's
 registered MCP servers. A profile that is there but broken is a caller
 mistake, named on the error stream.

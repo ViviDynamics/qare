@@ -366,7 +366,7 @@ export { CheckInputError, checkCriteria, defaultCheckEvidenceDir, nareRunners } 
 export type { CheckOptions, CheckOutcome } from './check.js'
 export { detectExecution, runEnvironment } from './environment.js'
 export type { ExecutionKind, RunEnvironment } from './environment.js'
-export { runDoctor } from './doctor.js'
+export { NARE_PYTHON_MINIMUM, runDoctor } from './doctor.js'
 export type { DoctorFinding, DoctorProbes, DoctorReport } from './doctor.js'
 export {
   SWEEP_STATUS_KEY,
