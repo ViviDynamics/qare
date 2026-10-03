@@ -51,40 +51,99 @@ test('an unplannable criterion is carried, so it is reported rather than forgott
   expect(notes.join(' ')).toContain('needs a mailbox')
 })
 
-test('a check kind the runner cannot execute is named, not silently dropped', () => {
+/**
+ * A plan as a newer planner might write it, with a check kind this runner has
+ * never heard of. The loader refuses one, so it is built by hand: every kind
+ * a plan can carry today is one the runner executes (#143).
+ */
+function planWith(criteria: unknown[]): Plan {
+  return { schemaVersion: '1', criteria } as unknown as Plan
+}
+
+const UNKNOWN_KIND = { kind: 'telepathy', name: 'home' }
+
+test('a visual check is carried to the job with its page, widths and themes (#143)', () => {
   const { job, notes } = jobFromPlan(
     plan([
       {
         id: 'c1',
         text: 'looks right',
-        checks: [{ kind: 'visual', name: 'home', screenshot: 'home' }],
+        checks: [
+          { kind: 'visual', name: 'home', screenshot: 'home' },
+          { kind: 'visual', name: 'article on a phone', screenshot: 'ada', url: '/wiki/Ada_Lovelace', widths: [390, 1440], themes: ['dark'] },
+        ],
       },
     ]),
     CONTEXT,
   )
 
+  expect(job.criteria[0]).toEqual({
+    id: 'c1',
+    text: 'looks right',
+    checks: [
+      // Nothing chosen: the run takes the profile's widths and themes.
+      { kind: 'visual', name: 'home', screenshot: 'home' },
+      { kind: 'visual', name: 'article on a phone', screenshot: 'ada', url: '/wiki/Ada_Lovelace', widths: [390, 1440], themes: ['dark'] },
+    ],
+  })
+  expect(notes).toEqual([])
+})
+
+test('a visual check that chose no width or theme takes the profile\'s, like one that named none (#143)', () => {
+  const { job } = jobFromPlan(
+    plan([{ id: 'c1', text: 'looks right', checks: [{ kind: 'visual', name: 'home', screenshot: 'home', widths: [], themes: [] }] }]),
+    CONTEXT,
+  )
+
+  expect(job.criteria[0]?.checks).toEqual([{ kind: 'visual', name: 'home', screenshot: 'home' }])
+})
+
+test('the job loader validates a visual check, naming the field (#143)', async () => {
+  const { parseJob, JobValidationError } = await import('../src/index.js')
+  const jobWith = (check: Record<string, unknown>): unknown => ({
+    id: 'j', repoPath: '/work', baseRef: 'a', headRef: 'b', profile: { path: '.qa' }, evidenceDir: 'e', post: 'none',
+    criteria: [{ id: 'c1', text: 'x', checks: [{ kind: 'visual', screenshot: 'home', ...check }] }],
+  })
+  const fieldOf = (check: Record<string, unknown>): string => {
+    try {
+      parseJob(jobWith(check))
+    } catch (error) {
+      if (error instanceof JobValidationError) return error.field
+      throw error
+    }
+    return 'accepted'
+  }
+
+  expect(fieldOf({})).toBe('accepted')
+  expect(fieldOf({ name: 'home', url: '/dashboard', widths: [390, 1440], themes: ['light', 'dark'], timeoutMs: 5000 })).toBe('accepted')
+  expect(fieldOf({ screenshot: '' })).toBe('criteria[0].checks[0].screenshot')
+  expect(fieldOf({ url: '' })).toBe('criteria[0].checks[0].url')
+  expect(fieldOf({ widths: 390 })).toBe('criteria[0].checks[0].widths')
+  expect(fieldOf({ widths: [] })).toBe('criteria[0].checks[0].widths')
+  // A width is a viewport, in whole pixels.
+  for (const width of [0, -390, 390.5, '390', 100001]) expect(fieldOf({ widths: [width] })).toBe('criteria[0].checks[0].widths[0]')
+  expect(fieldOf({ themes: [] })).toBe('criteria[0].checks[0].themes')
+  // Themes become evidence file names.
+  for (const theme of ['', '../escape', 'a/b', 'dark\u0000']) expect(fieldOf({ themes: [theme] })).toBe('criteria[0].checks[0].themes[0]')
+  expect(fieldOf({ timeoutMs: 0 })).toBe('criteria[0].checks[0].timeoutMs')
+})
+
+test('a check kind the runner cannot execute is named, not silently dropped', () => {
+  const { job, notes } = jobFromPlan(planWith([{ id: 'c1', text: 'looks right', checks: [UNKNOWN_KIND] }]), CONTEXT)
+
   expect(job.criteria[0]?.checks).toBeUndefined()
   // The result says why nothing ran, not only the notes on stderr.
-  expect(job.criteria[0]?.unrunnable).toBe('the plan checks it only with visual checks, which the runner does not execute yet')
-  expect(notes.join(' ')).toMatch(/visual/)
+  expect(job.criteria[0]?.unrunnable).toBe('the plan checks it only with telepathy checks, which the runner does not execute')
+  expect(notes.join(' ')).toMatch(/telepathy/)
   expect(notes.join(' ')).toContain('c1')
 })
 
 test('a criterion mixing runnable and unrunnable checks keeps the runnable ones', () => {
-  const { job, notes } = jobFromPlan(
-    plan([
-      {
-        id: 'c1',
-        text: 'logs in',
-        checks: [COMMAND, { kind: 'visual', name: 'home', screenshot: 'home' }],
-      },
-    ]),
-    CONTEXT,
-  )
+  const { job, notes } = jobFromPlan(planWith([{ id: 'c1', text: 'logs in', checks: [COMMAND, UNKNOWN_KIND] }]), CONTEXT)
 
   expect(job.criteria[0]?.checks).toEqual([{ kind: 'command', run: 'npm test -- login' }])
-  expect(job.criteria[0]?.skipped).toBe('1 of its planned checks did not run (visual), which the runner does not execute yet')
-  expect(notes.join(' ')).toMatch(/visual/)
+  expect(job.criteria[0]?.skipped).toBe('1 of its planned checks did not run (telepathy), which the runner does not execute')
+  expect(notes.join(' ')).toMatch(/telepathy/)
   expect(notes.join(' ')).toContain('c1')
 })
 
@@ -116,26 +175,18 @@ test('flow checks are carried to the job, with suites and typed actions', () => 
   expect(notes.join(' ')).not.toMatch(/flow/)
 })
 
-test('the drop note names flow among the kinds the runner executes', () => {
-  const { notes } = jobFromPlan(
-    plan([
-      {
-        id: 'c1',
-        text: 'x',
-        checks: [{ kind: 'visual', name: 'home', screenshot: 'home' }],
-      },
-    ]),
-    CONTEXT,
-  )
+test('the drop note names every kind the runner executes, visual among them (#143)', () => {
+  const { notes } = jobFromPlan(planWith([{ id: 'c1', text: 'x', checks: [UNKNOWN_KIND] }]), CONTEXT)
 
-  expect(notes.join(' ')).toMatch(/command, mail, flow and tool checks only/)
+  expect(notes.join(' ')).toMatch(/command, mail, flow, tool and visual checks only/)
+  expect(notes.join(' ')).not.toMatch(/yet/)
 })
 
 test('a plan whose criteria are all unrunnable says so', () => {
   const { job, notes } = jobFromPlan(
-    plan([
+    planWith([
       { id: 'c1', text: 'one', unplannable: 'no way to check it' },
-      { id: 'c2', text: 'two', checks: [{ kind: 'visual', name: 'x', screenshot: 'x' }] },
+      { id: 'c2', text: 'two', checks: [UNKNOWN_KIND] },
     ]),
     CONTEXT,
   )

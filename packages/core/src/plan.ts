@@ -147,6 +147,9 @@ export interface Plan {
 
 const CHECK_KINDS: CheckKind[] = ['command', 'flow', 'visual', 'mail', 'tool']
 
+/** The widest viewport a visual check captures at (#143): wider is a typo, not a screen. */
+export const MAX_VISUAL_WIDTH = 10000
+
 export class PlanValidationError extends Error {
   readonly field: string
 
@@ -365,6 +368,10 @@ function parseCheck(value: unknown, base: string, extraFlowActions: readonly str
       const url = value.url === undefined ? undefined : nonEmptyString(value.url, `${base}.url`, 'url')
       const widths = value.widths === undefined ? undefined : numberArray(value.widths, `${base}.widths`, 'widths')
       const themes = value.themes === undefined ? undefined : stringArray(value.themes, `${base}.themes`, 'themes')
+      if (widths !== undefined)
+        for (const [index, width] of widths.entries())
+          if (!Number.isInteger(width) || width < 1 || width > MAX_VISUAL_WIDTH)
+            fail(`${base}.widths[${index}]`, `width ${JSON.stringify(width)} must be a whole number of pixels between 1 and ${MAX_VISUAL_WIDTH}; a width is the viewport a screenshot is taken at`)
       if (themes !== undefined)
         for (const [index, theme] of themes.entries())
           if (/[/\\]|\.\.|[\x00-\x1f\x7f]/.test(theme))

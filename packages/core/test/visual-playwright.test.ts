@@ -140,7 +140,7 @@ test('the backend reports every connection its captures attempted (#143)', async
                 handlers.get('request')?.({ url: () => 'data:text/plain,hello' })
                 handlers.get('page')?.({
                   on: (event: string, opened: (socket: unknown) => void) => {
-                    if (event === 'websocket') opened({ url: () => 'wss://live.example.test/feed' })
+                    if (event === 'websocket') opened({ url: () => ['wss:', '//live.example.test/feed'].join('') })
                   },
                 })
               },

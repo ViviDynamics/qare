@@ -47,7 +47,7 @@ test('qare run --plan needs the run context the plan does not carry', async () =
 
 test('qare run --plan reports what the plan asked for that nothing can run', async () => {
   const { planPath, dir } = await planFile([
-    { id: 'c1', text: 'looks right', checks: [{ kind: 'visual', name: 'home', screenshot: 'home' }] },
+    { id: 'c1', text: 'looks right', unplannable: 'right is not something a check can show' },
   ])
   const err = capture()
 
@@ -62,7 +62,8 @@ test('qare run --plan reports what the plan asked for that nothing can run', asy
     BOOT,
   )
 
-  expect(err.lines.join('')).toMatch(/visual/)
+  expect(err.lines.join('')).toMatch(/nothing to run, the plan called it unplannable/)
+  expect(err.lines.join('')).toMatch(/nothing in this plan can be run/)
   expect(err.lines.join('')).toContain('c1')
 })
 

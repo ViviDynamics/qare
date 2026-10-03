@@ -145,7 +145,7 @@ export type { RunContext } from './job-from-plan.js'
 export { EXECUTE_PATH_TOOLS, NO_DIFF, PLAN_OUTPUT_SCHEMA, PlanStepError, planRun } from './plan-step.js'
 export type { DeclaredRunInputs, PlanCriterionInput, PlanInputs } from './plan-step.js'
 export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'
-export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobCheck, JobPostTarget, JobProfileGroup, SingleProfileJob, SeveralProfilesJob } from './job.js'
+export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobVisualCheck, JobCheck, JobPostTarget, JobProfileGroup, SingleProfileJob, SeveralProfilesJob } from './job.js'
 export { httpMailbox, mailEvidence, runMailCheck, extractCode, DEFAULT_CODE_PATTERN } from './mailbox.js'
 export type { MailMessage, MailEvidenceMessage, MailOutcome, ReadMail } from './mailbox.js'
 export { Artefacts } from './artefacts.js'
@@ -183,6 +183,9 @@ export {
 } from './quarantine.js'
 export type { QuarantineContext, QuarantineRecord } from './quarantine.js'
 export { runVisualCheck, type VisualRevision, type VisualCheckOpts, type VisualScreenshot, type VisualDiff, type VisualCheckResult } from './visual.js'
+export { decodePng, diffPngs, encodePng, PngError, type PngImage } from './png.js'
+export { playwrightVisualSession, runVisualCheckJob, visualPageUrl, VISUAL_RECORD } from './visual-run.js'
+export type { VisualCheckJobInput, VisualCheckJobOutcome, VisualComparison, VisualContext, VisualSessionFactory } from './visual-run.js'
 export { runFlowCheck, runSuiteCheck } from './flow.js'
 export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult, FlowTotpConfig, FlowDriverCapabilities } from './flow.js'
 export { SNAPSHOT_SCHEMA_VERSION, nameFindings, normaliseAriaSnapshot, trimToSubtree } from './snapshot.js'
@@ -204,6 +207,7 @@ export { decodeBase32, totpCode, totpWindow, windowRemaining } from './totp.js'
 export {
   makePlaywrightScreenshot,
   disposeBrowser,
+  outboundOf,
   PlaywrightScreenshotBackendError,
 } from './visual-playwright.js'
 export { BROWSER_FLOW_DRIVER, makePlaywrightFlowSession, PlaywrightFlowSessionError } from './flow-playwright.js'

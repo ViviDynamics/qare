@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { parse as parseYaml } from 'yaml'
 import { isUnsafeProfileName, type QaProfile } from './profile.js'
-import { PlanValidationError, parseFlowActions, parseToolAssertions, parseToolArgs, type FlowActionStep, type ToolAssertion } from './plan.js'
+import { MAX_VISUAL_WIDTH, PlanValidationError, parseFlowActions, parseToolAssertions, parseToolArgs, type FlowActionStep, type ToolAssertion } from './plan.js'
 import { DEFAULT_PROFILE_NAME } from './monorepo.js'
 
 export type JobProfileRef = { path: string } | { inline: QaProfile }
@@ -46,7 +46,27 @@ export interface JobToolCheck {
   timeoutMs?: number
 }
 
-export type JobCheck = JobCommandCheck | JobMailCheck | JobFlowCheck | JobToolCheck
+/**
+ * Captures a page at each width and theme (#143). On a run with two sides the
+ * captures of the head are compared with the captures the base side took of
+ * the same page; on a run with one side they are evidence by themselves.
+ */
+export interface JobVisualCheck {
+  kind: 'visual'
+  name?: string
+  /** What the screenshot is called in the evidence record. */
+  screenshot: string
+  /** The page: a path on the app, or a URL. The app's root when absent. */
+  url?: string
+  /** The viewport widths to capture at; the profile's `visual.widths` when absent. */
+  widths?: number[]
+  /** The colour schemes to capture in; the profile's `visual.themes` when absent. */
+  themes?: string[]
+  /** How long one capture may take. */
+  timeoutMs?: number
+}
+
+export type JobCheck = JobCommandCheck | JobMailCheck | JobFlowCheck | JobToolCheck | JobVisualCheck
 
 export interface JobCriterion {
   id: string
@@ -348,12 +368,13 @@ function parseFlowCheck(value: Record<string, unknown>, base: string): JobFlowCh
 }
 
 function parseCheck(value: unknown, base: string): JobCheck {
-  if (!isRecord(value)) fail(base, 'check must be a YAML object with kind and run')
+  if (!isRecord(value)) fail(base, 'check must be a YAML object with a kind and the fields of that kind')
   if (value.kind === 'mail') return parseMailCheck(value, base)
   if (value.kind === 'flow') return parseFlowCheck(value, base)
   if (value.kind === 'tool') return parseToolCheck(value, base)
+  if (value.kind === 'visual') return parseVisualCheck(value, base)
   if (value.kind !== 'command')
-    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(value.kind)} (job checks are command, mail, flow or tool checks, expected "command", "mail", "flow" or "tool")`)
+    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(value.kind)} (job checks are command, mail, flow, tool or visual checks, expected "command", "mail", "flow", "tool" or "visual")`)
   const run = nonEmptyString(value.run, `${base}.run`, 'run command')
   const cwd = value.cwd === undefined ? undefined : nonEmptyString(value.cwd, `${base}.cwd`, 'working directory')
   const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
@@ -364,6 +385,49 @@ function parseCheck(value: unknown, base: string): JobCheck {
     ...(cwd !== undefined ? { cwd } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(env !== undefined ? { env } : {}),
+  }
+}
+
+/**
+ * A visual check (#143). Widths and themes become evidence file names
+ * (`<width>x<theme>.png`), so both are held to what a file name may carry,
+ * and an empty list is refused: a check that names no width says nothing a
+ * check that leaves the field out does not.
+ */
+function parseVisualCheck(value: Record<string, unknown>, base: string): JobVisualCheck {
+  const name = value.name === undefined ? undefined : nonEmptyString(value.name, `${base}.name`, 'name')
+  const screenshot = nonEmptyString(value.screenshot, `${base}.screenshot`, 'screenshot name')
+  const url = value.url === undefined ? undefined : nonEmptyString(value.url, `${base}.url`, 'url')
+  let widths: number[] | undefined
+  if (value.widths !== undefined) {
+    if (!Array.isArray(value.widths) || value.widths.length === 0)
+      fail(`${base}.widths`, 'widths must be a non-empty array of viewport widths; leave it out to take the profile\'s visual.widths')
+    widths = value.widths.map((width: unknown, index) => {
+      if (typeof width !== 'number' || !Number.isInteger(width) || width < 1 || width > MAX_VISUAL_WIDTH)
+        fail(`${base}.widths[${index}]`, `width ${JSON.stringify(width)} must be a whole number of pixels between 1 and ${MAX_VISUAL_WIDTH}`)
+      return width
+    })
+  }
+  let themes: string[] | undefined
+  if (value.themes !== undefined) {
+    if (!Array.isArray(value.themes) || value.themes.length === 0)
+      fail(`${base}.themes`, 'themes must be a non-empty array of theme names; leave it out to take the profile\'s visual.themes')
+    themes = value.themes.map((theme: unknown, index) => {
+      const text = nonEmptyString(theme, `${base}.themes[${index}]`, 'theme')
+      if (/[/\\]|\.\.|[\x00-\x1f\x7f]/.test(text))
+        fail(`${base}.themes[${index}]`, `theme ${JSON.stringify(text)} must not contain path separators, ".." or control characters; themes become evidence file names`)
+      return text
+    })
+  }
+  const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
+  return {
+    kind: 'visual',
+    ...(name !== undefined ? { name } : {}),
+    screenshot,
+    ...(url !== undefined ? { url } : {}),
+    ...(widths !== undefined ? { widths } : {}),
+    ...(themes !== undefined ? { themes } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   }
 }
 

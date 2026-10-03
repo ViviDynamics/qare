@@ -164,6 +164,12 @@ test('a visual check names the page it captures, and the page is a string (#143)
     const error = planError(() => parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ ...check, url }] }] }))
     expect(error.field).toBe('criteria[0].checks[0].url')
   }
+  // A width is a viewport in whole pixels: the planner hears about anything else in its correction round.
+  for (const width of [0, -390, 390.5]) {
+    const error = planError(() => parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ ...check, widths: [width] }] }] }))
+    expect(error.field).toBe('criteria[0].checks[0].widths[0]')
+    expect(error.message).toContain('whole number of pixels')
+  }
 })
 
 test('visual check themes become evidence file names, so they cannot escape the evidence dir', () => {
