@@ -104,7 +104,10 @@ test('the pinned nare\'s python floor is the one the core image is built on', ()
   // One floor, two places: the image recipe pins the base python the pinned
   // nare requires, and doctor checks a host against the same floor (#204).
   const recipe = readFileSync(fileURLToPath(new URL('../../../images/core/Dockerfile', import.meta.url)), 'utf8')
-  expect(recipe).toContain(`FROM python:${NARE_PYTHON_MINIMUM}-`)
+  // nare is installed in the runtime stage, the last FROM, so that is the one
+  // held to the floor; the builder stage alone could not satisfy this.
+  const stages = recipe.split('\n').filter((line) => line.startsWith('FROM '))
+  expect(stages.at(-1)).toMatch(new RegExp(`^FROM python:${NARE_PYTHON_MINIMUM.replace('.', '\\.')}-`))
 })
 
 test('a host without nare whose python is too old to install it names the python, not just nare (#204)', async () => {

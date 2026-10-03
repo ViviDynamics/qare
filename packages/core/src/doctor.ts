@@ -91,7 +91,7 @@ export async function runDoctor(opts: DoctorOpts = {}): Promise<DoctorReport> {
       install: nodeMajor() >= NODE_MINIMUM ? undefined : 'install Node.js 22 or newer',
     },
     nare,
-    await pythonFinding(await python(), !nare.ok),
+    pythonFinding(await python(), !nare.ok),
   ]
 
   let profile: QaProfile | undefined
@@ -220,7 +220,7 @@ function python3Version(): Promise<{ version?: string; detail: string }> {
     execFile('python3', ['--version'], { timeout: 10000 }, (error, stdout, stderr) => {
       // Python 2 and some older 3.x print the version on stderr.
       const version = /Python (\d+(?:\.\d+)*)/.exec(`${String(stdout)} ${String(stderr)}`)?.[1]
-      if (error !== null || version === undefined) resolvePromise({ detail: 'python3 is not on PATH' })
+      if (error !== null || version === undefined) resolvePromise({ detail: 'no python3 on PATH answered python3 --version' })
       else resolvePromise({ version, detail: `python3 ${version}` })
     })
   })
