@@ -1,0 +1,178 @@
+import { EventEmitter } from 'node:events'
+import { expect, test } from 'vitest'
+import { clientCellProblem, startClientCell, type CellDocker, type CellProcess } from '../src/client-cell.js'
+
+/** A docker that records every call and plays the gate's and the build's containers. */
+function fakeDocker(script: { gateLines?: string[]; gateExit?: number; fail?: Record<string, string>; port?: string } = {}) {
+  const calls: string[][] = []
+  const spawned: Array<{ args: string[]; process: FakeProcess }> = []
+  class FakeProcess extends EventEmitter implements CellProcess {
+    stdout = new EventEmitter()
+    stderr = new EventEmitter()
+    killed: string[] = []
+    kill(signal?: NodeJS.Signals): boolean {
+      this.killed.push(signal ?? 'SIGTERM')
+      return true
+    }
+  }
+  const docker: CellDocker = {
+    run: async (args) => {
+      calls.push(args)
+      const verb = args[0] as string
+      const failure = script.fail?.[verb]
+      if (failure !== undefined) return { code: 1, stdout: '', stderr: failure }
+      if (verb === 'port') return { code: 0, stdout: `${script.port ?? '127.0.0.1:49222'}\n`, stderr: '' }
+      if (verb === 'stop') {
+        // The gate writes its record as it stops.
+        const gate = spawned.find((entry) => entry.args.includes('gate'))?.process
+        for (const line of script.gateLines ?? [JSON.stringify({ event: 'summary', capped: false, reached: [] })]) gate?.stdout.emit('data', `${line}\n`)
+        gate?.emit('close', script.gateExit ?? 0, null)
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    },
+    spawn: (args) => {
+      const process = new FakeProcess()
+      spawned.push({ args, process })
+      if (args.includes('gate') && script.fail?.gate === undefined) setImmediate(() => process.stdout.emit('data', '{"event":"ready","relayPort":9222}\n'))
+      if (args.includes('gate') && script.fail?.gate !== undefined)
+        setImmediate(() => {
+          process.stderr.emit('data', script.fail?.gate as string)
+          process.emit('close', 125, null)
+        })
+      return process
+    },
+    runSync: (args) => {
+      calls.push(['sync', ...args])
+    },
+  }
+  return { docker, calls, spawned }
+}
+
+const OPTS = { image: 'qare-web:test', repoPath: '/work/repo', hosts: ['api.example.test', '*.cdn.example.test'], uid: 1001, gid: 118, id: 'abc123' }
+
+test('a cell is a volume, a gate on the default network, and a build with no network at all (#223)', async () => {
+  const { docker, calls, spawned } = fakeDocker()
+  const cell = await startClientCell({ ...OPTS, docker })
+
+  // The volume the two share: memory only, and the run's own user's.
+  expect(calls[0]).toEqual(['volume', 'create', '--driver', 'local', '--opt', 'type=tmpfs', '--opt', 'device=tmpfs', '--opt', 'o=size=1m,uid=1001,gid=118,mode=0700', 'qare-cell-abc123'])
+  // The gate: no capability, the declared hosts, the relay published on loopback only.
+  expect(spawned[0]?.args).toEqual([
+    'run', '--rm', '--name', 'qare-cell-abc123-gate',
+    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+    '-u', '1001:118', '-e', 'HOME=/tmp',
+    '-v', 'qare-cell-abc123:/run/qare-cell',
+    '-p', '127.0.0.1::9222',
+    'qare-web:test', 'qare', 'cell', 'gate', '--socket-dir', '/run/qare-cell', '--host', 'api.example.test', '--host', '*.cdn.example.test',
+  ])
+  expect(calls[1]).toEqual(['port', 'qare-cell-abc123-gate', '9222/tcp'])
+
+  const child = cell.spawn('/work/repo/dist/app/app', ['--no-sandbox', '--remote-debugging-port=9222'])
+  // The build: no network, a resolver on its own loopback, no capability, the checkout read-only, no docker socket.
+  expect(spawned[1]?.args).toEqual([
+    'run', '--rm', '--name', 'qare-cell-abc123-app',
+    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+    '-u', '1001:118', '-e', 'HOME=/tmp',
+    '-v', 'qare-cell-abc123:/run/qare-cell',
+    '--network', 'none', '--dns', '127.0.0.1',
+    '-v', '/work/repo:/work/repo:ro', '-w', '/work/repo',
+    'qare-web:test', 'qare', 'cell', 'launch', '--socket-dir', '/run/qare-cell', '--cdp-port', '9222', '--',
+    '/work/repo/dist/app/app', '--no-sandbox', '--remote-debugging-port=9222',
+  ])
+  expect(spawned[1]?.args.join(' ')).not.toContain('docker.sock')
+  expect(child).toBe(spawned[1]?.process)
+
+  // What the driver is told: the port the build listens on in its cell, a
+  // user data directory inside it, and the endpoint as the runner reaches it.
+  expect(cell.debuggingPort).toBe(9222)
+  expect(cell.userDataDir).toBe('/tmp/qare-electron-abc123')
+  expect(cell.endpoint('ws://127.0.0.1:9222/devtools/browser/7f3a')).toBe('ws://127.0.0.1:49222/devtools/browser/7f3a')
+  await cell.dispose()
+})
+
+test('disposing a cell stops the build, reads the gate\'s record, and removes everything it made (#223)', async () => {
+  const reached = [
+    { host: 'api.example.test', port: 443, protocol: 'https', declared: true, count: 3 },
+    { host: 'evil.example.test', port: 53, protocol: 'dns', declared: false, count: 1 },
+  ]
+  const { docker, calls } = fakeDocker({ gateLines: ['not json', JSON.stringify({ event: 'summary', capped: false, reached })] })
+  const cell = await startClientCell({ ...OPTS, docker })
+  // The record is the gate's last word: before the cell is disposed there is none to read.
+  expect(() => cell.record()).toThrow(/has not been disposed/)
+  await cell.dispose()
+  expect(calls.slice(2)).toEqual([
+    ['rm', '-f', 'qare-cell-abc123-app'],
+    ['stop', '-t', '10', 'qare-cell-abc123-gate'],
+    ['rm', '-f', 'qare-cell-abc123-gate'],
+    ['volume', 'rm', '-f', 'qare-cell-abc123'],
+  ])
+  expect(cell.record()).toEqual({ reached })
+  // Twice is once.
+  await cell.dispose()
+  expect(calls).toHaveLength(6)
+})
+
+test('a record that was cut says so, and one that never arrived is not read as empty (#223)', async () => {
+  const cut = fakeDocker({ gateLines: [JSON.stringify({ event: 'summary', capped: true, reached: [] })] })
+  const capped = await startClientCell({ ...OPTS, docker: cut.docker })
+  await capped.dispose()
+  expect(capped.record()).toEqual({ reached: [], incomplete: 'the build reached for more distinct destinations than the gate records, so the record was cut' })
+
+  const silent = fakeDocker({ gateLines: [], gateExit: 137 })
+  const lost = await startClientCell({ ...OPTS, docker: silent.docker })
+  await lost.dispose()
+  expect(() => lost.record()).toThrow('the gate stopped (code 137) without writing its record, so what the build reached is not known')
+
+  // A summary that is not the gate's shape is not a record either.
+  const odd = fakeDocker({ gateLines: [JSON.stringify({ event: 'summary', reached: [{ host: 7 }] })] })
+  const malformed = await startClientCell({ ...OPTS, docker: odd.docker })
+  await malformed.dispose()
+  expect(() => malformed.record()).toThrow(/without writing its record/)
+})
+
+test('a cell that cannot be made is not half made: what was started is removed, and the reason is the daemon\'s (#223)', async () => {
+  const noVolume = fakeDocker({ fail: { volume: 'Error response from daemon: tmpfs volumes are not supported' } })
+  await expect(startClientCell({ ...OPTS, docker: noVolume.docker })).rejects.toThrow(
+    'the cell could not be made: docker volume create failed: Error response from daemon: tmpfs volumes are not supported',
+  )
+  expect(noVolume.spawned).toHaveLength(0)
+
+  const noGate = fakeDocker({ fail: { gate: 'docker: Error response from daemon: pull access denied for qare-web' } })
+  await expect(startClientCell({ ...OPTS, docker: noGate.docker })).rejects.toThrow(
+    /the cell could not be made: the gate exited with code 125 before it was ready: docker: Error response from daemon: pull access denied/,
+  )
+  expect(noGate.calls.slice(-2)).toEqual([['rm', '-f', 'qare-cell-abc123-gate'], ['volume', 'rm', '-f', 'qare-cell-abc123']])
+
+  const noPort = fakeDocker({ port: '' })
+  await expect(startClientCell({ ...OPTS, docker: noPort.docker })).rejects.toThrow(/the gate published no port for the driver/)
+})
+
+test('a harness that is going away takes the cell with it, without waiting (#223)', async () => {
+  const { docker, calls } = fakeDocker()
+  const cell = await startClientCell({ ...OPTS, docker })
+  cell.reap()
+  expect(calls.slice(2)).toEqual([
+    ['sync', 'rm', '-f', 'qare-cell-abc123-app', 'qare-cell-abc123-gate'],
+    ['sync', 'volume', 'rm', '-f', 'qare-cell-abc123'],
+  ])
+})
+
+test('what a cell needs is checked by name: the image the run is in, and a daemon that has it (#223)', async () => {
+  const { docker, calls } = fakeDocker()
+  expect(await clientCellProblem({ QARE_IMAGE_REF: 'qare-web:test' }, docker)).toBeUndefined()
+  expect(calls).toEqual([['version', '--format', '{{.Server.Version}}'], ['image', 'inspect', '--format', '{{.Id}}', 'qare-web:test']])
+
+  expect(await clientCellProblem({}, docker)).toBe(
+    'a client build runs contained, in a cell made from the image the run is in, and QARE_IMAGE_REF names none (the pipeline\'s execute step sets it); a profile that must run its build uncontained says so with client.egress: uncontained, and the evidence then says it too',
+  )
+  const noDaemon = fakeDocker({ fail: { version: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock.\nIs the docker daemon running?' } })
+  expect(await clientCellProblem({ QARE_IMAGE_REF: 'qare-web:test' }, noDaemon.docker)).toBe(
+    'a client build runs contained, in a cell the docker daemon makes, and no daemon answered (Cannot connect to the Docker daemon at unix:///var/run/docker.sock.); a profile that must run its build uncontained says so with client.egress: uncontained, and the evidence then says it too',
+  )
+  const noImage = fakeDocker({ fail: { image: 'Error: No such image: qare-web:test' } })
+  expect(await clientCellProblem({ QARE_IMAGE_REF: 'qare-web:test' }, noImage.docker)).toMatch(
+    /^a client build runs contained, in a cell made from the image the run is in, and the docker daemon does not have qare-web:test; /,
+  )
+  // An image reference is handed to docker as an argument, so it is held to being one.
+  expect(await clientCellProblem({ QARE_IMAGE_REF: '--privileged' }, docker)).toMatch(/QARE_IMAGE_REF is not an image reference/)
+})

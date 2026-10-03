@@ -1,0 +1,266 @@
+import { spawn, spawnSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import { GATE_RELAY_PORT, type GateSummary, type ReachedHost } from './cell-gate.js'
+
+/**
+ * The cell a client build runs in (#223, ADR-0006), made through the docker
+ * daemon the run already holds: a volume in memory, a gate, and the build's
+ * own container with no network at all. This module is the run's side of
+ * it: the docker calls that make a cell, the record read back when it is
+ * disposed, and its removal. The gate and the launcher run in the two
+ * containers (cell-gate.ts, cell-launch.ts).
+ */
+
+/** Where the shared volume is mounted in both containers. */
+const SOCKET_DIR = '/run/qare-cell'
+const GATE_READY_TIMEOUT_MS = 60_000
+/** How long the gate is given to write its record once asked to stop. */
+const GATE_STOP_SECONDS = 10
+const OPT_OUT = 'a profile that must run its build uncontained says so with client.egress: uncontained, and the evidence then says it too'
+
+/** The part of a child process a cell uses: what the Electron driver reads its application through. */
+export interface CellProcess {
+  stdout: { on(event: 'data', listener: (chunk: Buffer | string) => void): unknown } | null
+  stderr: { on(event: 'data', listener: (chunk: Buffer | string) => void): unknown } | null
+  /** `close` is `exit` once both streams have been read to their end. */
+  on(event: 'exit' | 'close', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown
+  on(event: 'error', listener: (error: Error) => void): unknown
+  kill(signal?: NodeJS.Signals): boolean
+}
+
+/** The docker CLI, as far as a cell uses it, so a test can stand one in. */
+export interface CellDocker {
+  /** Run one docker command to its end. */
+  run(args: string[]): Promise<{ code: number; stdout: string; stderr: string }>
+  /** Start a docker command that stays attached to its container. */
+  spawn(args: string[]): CellProcess
+  /** Run one docker command without waiting on the event loop: the harness is exiting. */
+  runSync(args: string[]): void
+}
+
+const DOCKER_CALL_TIMEOUT_MS = 60_000
+
+export const defaultCellDocker: CellDocker = {
+  run: (args) =>
+    new Promise((resolve) => {
+      const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      let stdout = ''
+      let stderr = ''
+      const timer = setTimeout(() => child.kill('SIGKILL'), DOCKER_CALL_TIMEOUT_MS)
+      child.stdout.on('data', (chunk) => (stdout += String(chunk)))
+      child.stderr.on('data', (chunk) => (stderr += String(chunk)))
+      child.on('error', (error) => {
+        clearTimeout(timer)
+        resolve({ code: 127, stdout, stderr: error.message })
+      })
+      child.on('close', (code) => {
+        clearTimeout(timer)
+        resolve({ code: code ?? 1, stdout, stderr })
+      })
+    }),
+  spawn: (args) => spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] }),
+  runSync: (args) => {
+    spawnSync('docker', args, { stdio: 'ignore', timeout: 20_000 })
+  },
+}
+
+const firstLine = (text: string): string => text.trim().split('\n')[0]?.trim() ?? ''
+
+/** An image reference is an argument to docker, so it is held to looking like one. */
+const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/
+
+/**
+ * Why a cell cannot be made here, or undefined when it can (#223). Checked
+ * once, before any check runs, so a host that cannot contain a client build
+ * blocks the run by name instead of running the build uncontained.
+ */
+export async function clientCellProblem(env: NodeJS.ProcessEnv = process.env, docker: CellDocker = defaultCellDocker): Promise<string | undefined> {
+  const image = env.QARE_IMAGE_REF ?? ''
+  if (image === '')
+    return `a client build runs contained, in a cell made from the image the run is in, and QARE_IMAGE_REF names none (the pipeline's execute step sets it); ${OPT_OUT}`
+  if (!IMAGE_REFERENCE.test(image)) return `a client build runs contained, in a cell made from the image the run is in, and QARE_IMAGE_REF is not an image reference; ${OPT_OUT}`
+  const daemon = await docker.run(['version', '--format', '{{.Server.Version}}'])
+  if (daemon.code !== 0)
+    return `a client build runs contained, in a cell the docker daemon makes, and no daemon answered (${firstLine(daemon.stderr) || `docker exited ${daemon.code}`}); ${OPT_OUT}`
+  const present = await docker.run(['image', 'inspect', '--format', '{{.Id}}', image])
+  if (present.code !== 0)
+    return `a client build runs contained, in a cell made from the image the run is in, and the docker daemon does not have ${image}; ${OPT_OUT}`
+  return undefined
+}
+
+/** What the gate recorded for one launch. `incomplete` says why the list is not the whole of it. */
+export interface CellRecord {
+  reached: ReachedHost[]
+  incomplete?: string
+}
+
+/** A started cell, as the Electron driver uses it. */
+export interface ClientCell {
+  /** The port the build's DevTools endpoint listens on, inside the cell. */
+  debuggingPort: number
+  /** The user data directory the build is given, inside the cell and gone with it. */
+  userDataDir: string
+  /** Start the build inside the cell. */
+  spawn(command: string, args: string[]): CellProcess
+  /** The endpoint the build printed, as the address the driver reaches it at. */
+  endpoint(printed: string): string
+  /** What the gate recorded. Only after `dispose`; throws when the record never arrived. */
+  record(): CellRecord
+  dispose(): Promise<void>
+  /** Remove the cell at once, from a harness that is exiting. */
+  reap(): void
+}
+
+export interface ClientCellOptions {
+  /** The image both containers run: the one the run itself is in. */
+  image: string
+  /** The repository the build is in, mounted read-only at its own path. */
+  repoPath: string
+  hosts: readonly string[]
+  docker?: CellDocker
+  uid?: number
+  gid?: number
+  id?: string
+  readyTimeoutMs?: number
+}
+
+function isReached(value: unknown): value is ReachedHost {
+  if (typeof value !== 'object' || value === null) return false
+  const entry = value as Record<string, unknown>
+  return typeof entry.host === 'string' && typeof entry.port === 'number' && typeof entry.protocol === 'string' && typeof entry.declared === 'boolean' && typeof entry.count === 'number'
+}
+
+function summaryIn(line: string): GateSummary | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(line)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  const summary = parsed as Record<string, unknown>
+  if (summary.event !== 'summary' || !Array.isArray(summary.reached) || !summary.reached.every(isReached)) return undefined
+  return { event: 'summary', reached: summary.reached, capped: summary.capped === true }
+}
+
+export async function startClientCell(opts: ClientCellOptions): Promise<ClientCell> {
+  const docker = opts.docker ?? defaultCellDocker
+  const id = opts.id ?? randomBytes(6).toString('hex')
+  const uid = opts.uid ?? process.getuid?.() ?? 1000
+  const gid = opts.gid ?? process.getgid?.() ?? 1000
+  const volume = `qare-cell-${id}`
+  const gateName = `${volume}-gate`
+  const appName = `${volume}-app`
+  // What both containers share: no capability, no way to gain one, the
+  // run's own user, and the volume that holds the two sockets.
+  const common = ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '-u', `${uid}:${gid}`, '-e', 'HOME=/tmp', '-v', `${volume}:${SOCKET_DIR}`]
+
+  const made = await docker.run(['volume', 'create', '--driver', 'local', '--opt', 'type=tmpfs', '--opt', 'device=tmpfs', '--opt', `o=size=1m,uid=${uid},gid=${gid},mode=0700`, volume])
+  if (made.code !== 0) throw new Error(`the cell could not be made: docker volume create failed: ${firstLine(made.stderr) || `exit ${made.code}`}`)
+
+  const gate = docker.spawn([
+    'run', '--rm', '--name', gateName, ...common,
+    // The driver's relay, published on the machine's loopback and nowhere else.
+    '-p', `127.0.0.1::${GATE_RELAY_PORT}`,
+    opts.image, 'qare', 'cell', 'gate', '--socket-dir', SOCKET_DIR, ...opts.hosts.flatMap((host) => ['--host', host]),
+  ]) // prettier-ignore
+  let gateExit: string | undefined
+  let gateErrors = ''
+  let summary: GateSummary | undefined
+  let onGateLine: ((line: string) => void) | undefined
+  let partial = ''
+  gate.stdout?.on('data', (chunk) => {
+    const parts = (partial + String(chunk)).split('\n')
+    partial = parts.pop() ?? ''
+    for (const line of parts) {
+      summary = summaryIn(line) ?? summary
+      onGateLine?.(line)
+    }
+  })
+  gate.stderr?.on('data', (chunk) => {
+    gateErrors = `${gateErrors}${String(chunk)}`.slice(-2_000)
+  })
+  const gateGone = new Promise<void>((resolve) => {
+    // Closed, not merely exited: the record is the last line the gate writes.
+    gate.on('close', (code, signal) => {
+      gateExit = code === null ? `signal ${signal ?? 'unknown'}` : `code ${code}`
+      resolve()
+    })
+    gate.on('error', (error) => {
+      gateExit = `could not be started: ${error.message}`
+      resolve()
+    })
+  })
+
+  const remove = async (): Promise<void> => {
+    await docker.run(['rm', '-f', gateName])
+    await docker.run(['volume', 'rm', '-f', volume])
+  }
+  const unmade = async (why: string): Promise<never> => {
+    await remove()
+    throw new Error(`the cell could not be made: ${why}`)
+  }
+
+  const ready = await new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), opts.readyTimeoutMs ?? GATE_READY_TIMEOUT_MS)
+    onGateLine = (line) => {
+      if (!line.includes('"ready"')) return
+      clearTimeout(timer)
+      resolve(true)
+    }
+    void gateGone.then(() => {
+      clearTimeout(timer)
+      resolve(false)
+    })
+  })
+  onGateLine = undefined
+  if (!ready) {
+    const said = firstLine(gateErrors)
+    return unmade(gateExit === undefined ? 'the gate was not ready in time' : `the gate exited with ${gateExit} before it was ready${said === '' ? '' : `: ${said}`}`)
+  }
+  const published = await docker.run(['port', gateName, `${GATE_RELAY_PORT}/tcp`])
+  const port = /^127\.0\.0\.1:(\d+)$/m.exec(published.stdout)?.[1]
+  if (published.code !== 0 || port === undefined) return unmade(`the gate published no port for the driver on this machine's loopback${firstLine(published.stderr) === '' ? '' : `: ${firstLine(published.stderr)}`}`)
+
+  let disposed: Promise<void> | undefined
+  return {
+    debuggingPort: GATE_RELAY_PORT,
+    userDataDir: `/tmp/qare-electron-${id}`,
+    spawn: (command, args) =>
+      docker.spawn([
+        'run', '--rm', '--name', appName, ...common,
+        // The whole of the containment: no interface but loopback, and a resolver on it.
+        '--network', 'none', '--dns', '127.0.0.1',
+        '-v', `${opts.repoPath}:${opts.repoPath}:ro`, '-w', opts.repoPath,
+        opts.image, 'qare', 'cell', 'launch', '--socket-dir', SOCKET_DIR, '--cdp-port', String(GATE_RELAY_PORT), '--',
+        command, ...args,
+      ]), // prettier-ignore
+    endpoint: (printed) => printed.replace(/^ws:\/\/[^/]+/, `ws://127.0.0.1:${port}`),
+    record: () => {
+      if (disposed === undefined || gateExit === undefined) throw new Error('the cell has not been disposed, so its gate has not written its record')
+      if (summary === undefined) throw new Error(`the gate stopped (${gateExit}) without writing its record, so what the build reached is not known`)
+      return {
+        reached: summary.reached,
+        ...(summary.capped ? { incomplete: 'the build reached for more distinct destinations than the gate records, so the record was cut' } : {}),
+      }
+    },
+    dispose: () => {
+      disposed ??= (async () => {
+        // The build first: what it reaches for while it dies is still recorded.
+        await docker.run(['rm', '-f', appName])
+        await docker.run(['stop', '-t', String(GATE_STOP_SECONDS), gateName])
+        await Promise.race([gateGone, new Promise((resolve) => setTimeout(resolve, 5_000))])
+        if (gateExit === undefined) {
+          gate.kill('SIGKILL')
+          gateExit = 'killed: it did not stop'
+        }
+        await remove()
+      })()
+      return disposed
+    },
+    reap: () => {
+      docker.runSync(['rm', '-f', appName, gateName])
+      docker.runSync(['volume', 'rm', '-f', volume])
+    },
+  }
+}
