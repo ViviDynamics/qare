@@ -35,6 +35,8 @@ export interface DoctorProbes {
   which?: (name: string) => string | undefined
   dockerInfo?: () => Promise<{ ok: boolean; detail: string }>
   chromium?: () => Promise<{ ok: boolean; detail: string }>
+  /** The python3 on PATH: its version when one answered, and what was seen. */
+  python?: () => Promise<{ version?: string; detail: string }>
 }
 
 export interface DoctorOpts {
@@ -46,6 +48,15 @@ export interface DoctorOpts {
 }
 
 const NODE_MINIMUM = 22
+
+/**
+ * The oldest python the pinned nare installs under. The core image is built
+ * on this python (images/core/Dockerfile), and a host installing nare needs it
+ * too: an older interpreter makes pip refuse the wheel (#204).
+ */
+export const NARE_PYTHON_MINIMUM = '3.12'
+
+const NARE_INSTALL = `install the pinned nare beside qare (needs python ${NARE_PYTHON_MINIMUM} or newer: python3 -m pip install --user <pinned nare wheel>)`
 
 /**
  * `qare doctor`: what this host has, what the profile needs, and how to
@@ -61,7 +72,9 @@ export async function runDoctor(opts: DoctorOpts = {}): Promise<DoctorReport> {
   const which = probes.which ?? whichOnPath
   const dockerInfo = probes.dockerInfo ?? dockerDaemon
   const chromium = probes.chromium ?? chromiumDriver
+  const python = probes.python ?? python3Version
   const execution = detectExecution()
+  const nare = await nareFinding(opts.nare, which)
 
   const findings: DoctorFinding[] = [
     {
@@ -77,7 +90,8 @@ export async function runDoctor(opts: DoctorOpts = {}): Promise<DoctorReport> {
       detail: `node ${process.versions.node} (qare needs node ${NODE_MINIMUM} or newer)`,
       install: nodeMajor() >= NODE_MINIMUM ? undefined : 'install Node.js 22 or newer',
     },
-    await nareFinding(opts.nare, which),
+    nare,
+    await pythonFinding(await python(), !nare.ok),
   ]
 
   let profile: QaProfile | undefined
@@ -155,7 +169,7 @@ async function nareFinding(
       ok: usable,
       required: true,
       detail: usable ? `nare at ${explicit}` : `the --nare binary ${explicit} is not an executable file`,
-      install: usable ? undefined : 'install the pinned nare beside qare (python3 -m pip install --user <pinned nare wheel>)',
+      install: usable ? undefined : NARE_INSTALL,
     }
   }
   const found = which('nare')
@@ -164,8 +178,52 @@ async function nareFinding(
     ok: found !== undefined,
     required: true,
     detail: found === undefined ? 'nare is not on PATH' : `nare at ${found}`,
-    install: found === undefined ? 'install the pinned nare beside qare (python3 -m pip install --user <pinned nare wheel>)' : undefined,
+    install: found === undefined ? NARE_INSTALL : undefined,
   }
+}
+
+/**
+ * The python3 that would install nare. It is required only while nare is
+ * missing: an installed nare may run under its own interpreter (pipx, a venv),
+ * so an older python3 on PATH says nothing about it. While nare is missing, an
+ * interpreter below the floor is the reason the install would fail, so it is
+ * named before pip refuses the wheel (#204).
+ */
+function pythonFinding(found: { version?: string; detail: string }, nareMissing: boolean): DoctorFinding {
+  const ok = found.version !== undefined && atLeast(found.version, NARE_PYTHON_MINIMUM)
+  return {
+    name: 'python',
+    ok,
+    required: nareMissing,
+    detail: `${found.detail} (the pinned nare needs python ${NARE_PYTHON_MINIMUM} or newer)`,
+    install:
+      ok || !nareMissing
+        ? undefined
+        : `install Python ${NARE_PYTHON_MINIMUM} or newer and put it first on PATH as python3 (on a GitHub Actions runner, actions/setup-python with python-version '${NARE_PYTHON_MINIMUM}')`,
+  }
+}
+
+/** Whether a dotted version is at or above a dotted floor, compared numerically. */
+function atLeast(version: string, floor: string): boolean {
+  const have = version.split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const need = floor.split('.').map((part) => Number.parseInt(part, 10) || 0)
+  for (let i = 0; i < need.length; i += 1) {
+    const a = have[i] ?? 0
+    const b = need[i] ?? 0
+    if (a !== b) return a > b
+  }
+  return true
+}
+
+function python3Version(): Promise<{ version?: string; detail: string }> {
+  return new Promise((resolvePromise) => {
+    execFile('python3', ['--version'], { timeout: 10000 }, (error, stdout, stderr) => {
+      // Python 2 and some older 3.x print the version on stderr.
+      const version = /Python (\d+(?:\.\d+)*)/.exec(`${String(stdout)} ${String(stderr)}`)?.[1]
+      if (error !== null || version === undefined) resolvePromise({ detail: 'python3 is not on PATH' })
+      else resolvePromise({ version, detail: `python3 ${version}` })
+    })
+  })
 }
 
 function nodeMajor(): number {
