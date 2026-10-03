@@ -88,7 +88,7 @@ function expectCallFits(job: Job, where: string): void {
 
 test('the pipeline is a reusable workflow and nothing else triggers it', () => {
   expect(Object.keys(pipeline.on)).toEqual(['workflow_call'])
-  for (const job of ['collect', 'plan', 'execute', 'judge', 'report', 'requeue'])
+  for (const job of ['collect', 'plan', 'execute', 'judge', 'report', 'advisory', 'requeue'])
     expect(Object.keys(pipeline.jobs)).toContain(job)
 })
 
@@ -193,13 +193,17 @@ test('the identity reaches the steps that post, and nothing else', () => {
       expect(run, `${id}: ${step.name ?? ''}`).not.toMatch(/\$\{?QARE_(APP_ID|APP_PRIVATE_KEY|GITHUB_TOKEN)/)
     }
   }
-  // The steps that write to GitHub: the stub issues and the verdict in judge,
-  // the failure report, and the /qa comments of requeue. collect only reads,
-  // so it keeps the Actions token and never holds a key that can post.
+  // The steps that write to GitHub: the replies to advisory findings (#150),
+  // the stub issues and the verdict in judge, the failure report, the
+  // advisory job a reply starts, and the /qa comments of requeue. collect
+  // only reads, so it keeps the Actions token and never holds a key that can
+  // post.
   expect(holders).toEqual([
+    'judge: Carry out the advisory replies',
     'judge: File stub issues (refused runs only)',
     'judge: Post the evidence on the pull request',
     'report: Report the failure on the pull request',
+    'advisory: Carry out the advisory replies',
     'requeue: Re-queue refused PRs unblocked by the merged stubs',
   ])
   // Rule 7: the identity exists where qare posts, never where the pull
@@ -256,7 +260,9 @@ test('nothing in the pipeline may fail without failing the run', () => {
 
 test("qare's own workflow calls the pipeline it ships", () => {
   const caller = load('.github/workflows/qare.yml')
-  expect(Object.keys(caller.on).sort()).toEqual(['pull_request', 'push', 'workflow_dispatch'])
+  // issue_comment is the reply to an advisory finding (#150): it runs the
+  // advisory job alone.
+  expect(Object.keys(caller.on).sort()).toEqual(['issue_comment', 'pull_request', 'push', 'workflow_dispatch'])
   const jobs = Object.entries(caller.jobs)
   expect(jobs).toHaveLength(1)
   const [, job] = jobs[0] as [string, Job]

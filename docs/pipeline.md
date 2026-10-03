@@ -54,8 +54,10 @@ on:
   push:
     branches: [main]
     paths: ['services/web/qa/**']
+  issue_comment:
+    types: [created]
 concurrency:
-  group: qare-${{ github.ref }}
+  group: qare-${{ github.event.comment.id || github.ref }}
   cancel-in-progress: true
 jobs:
   qare:
@@ -79,7 +81,8 @@ jobs:
 ```
 
 The last three lines are who qare posts as, and all three are optional: see
-"GitHub identity".
+"GitHub identity". The `issue_comment` trigger is optional too: see "Advisory
+UX review".
 
 ## Inputs
 
@@ -109,8 +112,10 @@ Each is passed by name. Only the model key is needed for a run:
 Pass them by name, as above, and never with `secrets: inherit`: the pipeline
 should be handed the secrets it uses, not every secret the repository holds.
 Only two steps ever see the model key, the planner in plan and the verifier
-in judge, and neither holds a GitHub token or the identity. The identity
-reaches only the steps that write to GitHub, in judge, report and requeue.
+in judge, and neither holds a GitHub token or the identity. The advisory UX
+review is asked in that same judge step, after the verdict is computed, so it
+adds no holder of the key. The identity reaches only the steps that write to
+GitHub, in judge, report, advisory and requeue.
 execute, the job that runs the pull request's code, holds no secret at all.
 That map is at the top of `pipeline.yml` and a test holds the file to it.
 
@@ -159,8 +164,8 @@ that calls the pipeline:
 | Permission | Access | What it is for |
 | --- | --- | --- |
 | Contents | Read and write | The `qa-assets` branch, and the branch a criteria proposal is opened from. |
-| Issues | Read and write | Stub issues, sweep findings, questions on issues. |
-| Pull requests | Read and write | The evidence comment, the `/qa` comments of requeue, criteria proposals. |
+| Issues | Read and write | Stub issues, sweep findings, questions on issues, an advisory finding a person promoted. |
+| Pull requests | Read and write | The evidence comment, the `/qa` comments of requeue, the answers to advisory replies, criteria proposals. |
 | Checks | Read and write | The `QARE verdict` check run. |
 | Metadata | Read | Required by GitHub for every App. |
 
@@ -200,7 +205,7 @@ it needs under it:
 | --- | --- |
 | `contents: write` | judge, to push the run's screenshots to the `qa-assets` branch. Every other job reads. |
 | `checks: write` | judge and report, for the check run on the head commit. |
-| `pull-requests: write`, `issues: write` | judge, report and requeue, for the comment and the stub issues. collect reads issues. |
+| `pull-requests: write`, `issues: write` | judge, report, advisory and requeue, for the comment, the stub issues and the replies to advisory findings. collect reads issues. |
 | `actions: read` | report, to name the job and step that failed when no verdict was published. |
 
 These are the permissions of the run's own token. A GitHub App or a personal
@@ -349,6 +354,64 @@ token on disk, plan's checkout leaves none either, and the model key is
 handed to the planner and the verifier in a file outside the workspace that
 is removed when the step ends.
 
+## Advisory UX review
+
+Some problems a change introduces are judgement calls no criterion states: a
+field with no label, an error message that helps nobody, wording that does
+not match the screens around it. When a run's flows drove pages, judge asks a
+model to read what the run saw of them (the action logs, the accessibility
+snapshots and the audit records, not the pixels) and to say what a person
+might trip over. What it reports is advisory: it appears in a section of its
+own in the comment and under `advisory` in `judged-result.json`, and it is
+never part of the verdict. The verdict, the check run and the exit codes are
+computed before the reviewer is asked, and a reviewer that fails to answer
+changes nothing but that section.
+
+It is on by default and costs one more model call on a run that has screens;
+a run with none makes no call. The profile turns it off, or gives it the
+rules your screens are held to:
+
+```yaml
+ux:
+  review: false
+  rules:
+    - Buttons are sentence case.
+    - An error message says what went wrong and what to do next.
+```
+
+Each finding has an id. Two replies on the pull request act on one, each
+written as the first line of a comment:
+
+- `/qa-dismiss <id>` records that the finding is not to be raised again on
+  that pull request. The next run's reviewer is told what was dismissed, and
+  a finding with the same identity (the same screen, category and element)
+  is dropped in code.
+- `/qa-promote <id>` files the finding as an issue: what was seen, why it
+  matters, the screen, its screenshot, and a link back to the pull request.
+  qare files no issue unless asked.
+
+qare answers each reply once, in a comment that is also its record. It acts
+only on a reply from an owner, a member or a collaborator of the repository,
+and reads findings only from its own comment.
+
+A reply is carried out by the next run of the pipeline on that pull request.
+To have it carried out at once, let the caller listen for comments:
+
+```yaml
+on:
+  pull_request:
+  issue_comment:
+    types: [created]
+```
+
+With that trigger a new comment starts a run in which only the `advisory`
+job can run, and only when the comment opens with one of the two commands on
+a pull request; every other comment starts a run whose jobs all skip. If
+your caller sets a `concurrency` group on `github.ref`, give a comment's run
+a group of its own, as the larger caller above does: on a comment the ref is
+the default branch, and a shared group would let one comment cancel another
+run.
+
 ## Triggers
 
 The triggers are yours. `pull_request` runs the pipeline. A `push` to your
@@ -356,6 +419,8 @@ default branch, filtered to the profile's path, runs requeue alone: it posts
 `/qa` on pull requests that were refused for want of a stub the push just
 merged. Leave the push trigger out if you do not use stubs. Filter pushes to
 the default branch, so the `qa-assets` pushes judge makes do not start a run.
+An `issue_comment` trigger runs the advisory job alone, on a reply to an
+advisory finding: see "Advisory UX review".
 
 Call the pipeline once per workflow run. Its artifacts have fixed names, so
 two calls in one run would overwrite each other.
