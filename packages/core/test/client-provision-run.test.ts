@@ -1,14 +1,17 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, realpathSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test, vi } from 'vitest'
-import { bootApp, installCancelCleanup, loadResult, renderComment, runJob, type ClientHealthCheck, type FlowPage, type Job, type JobCriterion, type QaProfile, type RunJobOpts } from '../src/index.js'
+import { bootApp, installCancelCleanup, loadResult, renderComment, runJob, type ClientCell, type ClientHealthCheck, type FlowPage, type Job, type JobCriterion, type QaProfile, type RunJobOpts } from '../src/index.js'
 
 const SECRET = 'sk-desktop-fixture-456'
 
-const WITH_DISPLAY = { clientEnv: { env: { DISPLAY: ':99' }, platform: 'linux' as const } }
+// A build runs contained (#223); what these tests provision is launched by
+// stand-ins, so the host is said to be able to make a cell and the stand-ins
+// report that their build reached for nothing.
+const WITH_DISPLAY = { clientEnv: { env: { DISPLAY: ':99' }, platform: 'linux' as const }, clientCell: { problem: async () => undefined } }
 
 const PNG_1X1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
 
@@ -99,7 +102,7 @@ function installedSession(events: string[], launched: string[]): NonNullable<Run
         await writeFile(path, PNG_1X1)
       },
     }
-    return { page, dispose: async () => {}, console: () => [`[main stdout] shows ${shows}`] }
+    return { page, dispose: async () => {}, console: () => [`[main stdout] shows ${shows}`], reached: () => ({ reached: [] }) }
   }
 }
 
@@ -389,7 +392,7 @@ test('an install that cannot be removed is in the result and the comment, never 
           await writeFile(path, PNG_1X1)
         },
       }
-      return { page, dispose: async () => {} }
+      return { page, dispose: async () => {}, reached: () => ({ reached: [] }) }
     },
   })
   // The checks decided the criteria; what was left behind is said beside them.
@@ -471,4 +474,87 @@ test('an install is removed even when a check throws out of the run (#75)', asyn
     }),
   ).rejects.toThrow('the session seam broke')
   expect(readdirSync(installRoot)).toEqual([])
+})
+
+test('a host that cannot contain the build blocks an artefact profile before anything is built or installed (#223)', async () => {
+  const { job, installRoot } = await workspace()
+  const ran: string[] = []
+  const { result } = await runJob(job, {
+    clientEnv: WITH_DISPLAY.clientEnv,
+    clientCell: { problem: async () => 'a client build runs contained, in a cell the docker daemon makes, and no daemon answered (docker exited 127)' },
+    provision: {
+      installRoot,
+      health: UP,
+      runCommand: async (command) => {
+        ran.push(command)
+        return { code: 0, output: '' }
+      },
+    },
+    clientSession: installedSession([], []),
+  })
+  expect(result.verdict).toBe('blocked')
+  expect(result.criteria[0]?.reason).toBe('a client build runs contained, in a cell the docker daemon makes, and no daemon answered (docker exited 127)')
+  expect(ran).toEqual([])
+  expect(readdirSync(installRoot)).toEqual([])
+})
+
+test('the health check of a contained build is launched in a cell, like every other launch of it (#223)', async () => {
+  // An installed build: the cell is handed the install, which is not in the checkout.
+  const { job, installRoot, repoPath } = await workspace()
+  const asked: Array<{ repoPath: string; hosts: readonly string[]; install?: string }> = []
+  const refusing = {
+    problem: async () => undefined,
+    start: async (cell: { repoPath: string; hosts: readonly string[]; install?: string }): Promise<ClientCell> => {
+      asked.push(cell)
+      throw new Error('the cell could not be made: the gate was not ready in time')
+    },
+  }
+  const declaring = profileOf()
+  const profile = { ...declaring, client: { ...declaring.client!, hosts: ['api.example.test'] } } as QaProfile
+  const boot = await bootApp(profile, { clientEnv: WITH_DISPLAY.clientEnv, clientCell: refusing, root: repoPath, provision: { installRoot } })
+  expect(boot.kind).toBe('blocked')
+  // The build was never launched beside the run: the only launch asked for was the cell's.
+  if (!(boot.reason ?? '').includes('playwright-core')) {
+    expect(boot.reason).toContain('the build did not come up within 30s: the cell could not be made: the gate was not ready in time')
+    expect(asked).toHaveLength(1)
+    expect(asked[0]).toMatchObject({ repoPath, hosts: ['api.example.test'] })
+    expect(asked[0]?.install?.startsWith(join(installRoot, 'qare-install-head-'))).toBe(true)
+  }
+  expect(readdirSync(installRoot)).toEqual([])
+  void job
+
+  // A build launched in place that asks for a health check: the cell is handed the checkout alone.
+  const legacyRepo = await mkdtemp(join(tmpdir(), 'qare-client-legacy-cell-'))
+  await mkdir(join(legacyRepo, 'dist', 'app'), { recursive: true })
+  await writeFile(join(legacyRepo, 'dist', 'app', 'app'), '#!/bin/sh\nexit 0\n')
+  await chmod(join(legacyRepo, 'dist', 'app', 'app'), 0o755)
+  const legacy: QaProfile = { client: { driver: 'electron', executable: 'dist/app/app', args: [], health: { timeout: '5s' } }, stubs: [], visual: { widths: [], themes: [] }, suites: [] }
+  asked.length = 0
+  const checked = await bootApp(legacy, { clientEnv: WITH_DISPLAY.clientEnv, clientCell: refusing, root: legacyRepo })
+  expect(checked.kind).toBe('blocked')
+  if (!(checked.reason ?? '').includes('playwright-core')) expect(asked).toEqual([{ repoPath: legacyRepo, hosts: [], install: join(realpathSync(legacyRepo), 'dist', 'app') }])
+})
+
+test('a flow of a contained installed build is launched in a cell holding the install (#223)', async () => {
+  const { job, installRoot, repoPath } = await workspace()
+  const asked: Array<{ repoPath: string; hosts: readonly string[]; install?: string }> = []
+  const { result } = await runJob(job, {
+    clientEnv: WITH_DISPLAY.clientEnv,
+    clientCell: {
+      problem: async () => undefined,
+      start: async (cell): Promise<ClientCell> => {
+        asked.push(cell)
+        throw new Error('the cell could not be made: the gate was not ready in time')
+      },
+    },
+    provision: { installRoot, health: UP },
+  })
+  expect(result.criteria[0]?.outcome).toBe('unverified')
+  if (!(result.criteria[0]?.reason ?? '').includes('playwright-core')) {
+    expect(result.criteria[0]?.reason).toBe('the flow backend did not start: the cell could not be made: the gate was not ready in time')
+    expect(asked).toHaveLength(1)
+    expect(asked[0]?.repoPath).toBe(repoPath)
+    expect(asked[0]?.install?.startsWith(join(installRoot, 'qare-install-head-'))).toBe(true)
+  }
+  expect(result.client).toMatchObject({ egress: 'contained' })
 })

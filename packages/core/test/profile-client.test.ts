@@ -85,3 +85,30 @@ test('a client profile declares what its driver cannot do, when the profile load
   expect(validateProfileConfig({ client: CLIENT, findings: { fallback: 'octocat' } }).findings).toEqual({ fallback: 'octocat' })
   expect(fieldOf({ client: CLIENT, findings: { fallback: 'not a login' } })).toBe('findings.fallback')
 })
+
+test('a client profile declares the hosts its build may reach, the way target.hosts does (#223)', () => {
+  const profile = validateProfileConfig({ client: { ...CLIENT, hosts: ['api.example.test', '*.cdn.example.test'] } })
+  expect(profile.client).toEqual({ driver: 'electron', executable: 'dist/app/app', args: [], hosts: ['api.example.test', '*.cdn.example.test'] })
+  // Nothing declared is nothing reachable, and the section stays as it was written.
+  expect(validateProfileConfig({ client: CLIENT }).client).toEqual({ driver: 'electron', executable: 'dist/app/app', args: [] })
+  expect(fieldOf({ client: { ...CLIENT, hosts: 'api.example.test' } })).toBe('client.hosts')
+  expect(fieldOf({ client: { ...CLIENT, hosts: [1] } })).toBe('client.hosts[0]')
+  // A host is a name, never a URL, a port or an option handed to the gate.
+  expect(() => validateProfileConfig({ client: { ...CLIENT, hosts: [['https:', '//api.example.test'].join('')] } })).toThrow(
+    /client\.hosts\[0\].*is not a host name: write the name alone, such as api\.example\.com or \*\.example\.com/,
+  )
+  expect(fieldOf({ client: { ...CLIENT, hosts: ['api.example.test', '--host'] } })).toBe('client.hosts[1]')
+  expect(fieldOf({ client: { ...CLIENT, hosts: ['api.example.test:8443'] } })).toBe('client.hosts[0]')
+  expect(fieldOf({ client: { ...CLIENT, hosts: ['*'] } })).toBe('client.hosts[0]')
+})
+
+test('a client profile opts out of containment only by saying so (#223)', () => {
+  expect(validateProfileConfig({ client: { ...CLIENT, egress: 'uncontained' } }).client).toEqual({ driver: 'electron', executable: 'dist/app/app', args: [], egress: 'uncontained' })
+  // Contained is the default, and writing it is saying nothing.
+  expect(validateProfileConfig({ client: { ...CLIENT, egress: 'contained' } }).client).toEqual({ driver: 'electron', executable: 'dist/app/app', args: [] })
+  expect(() => validateProfileConfig({ client: { ...CLIENT, egress: 'open' } })).toThrow(/client\.egress must be contained or uncontained, not "open"/)
+  // An opted-out build is held to no list, so a list beside the opt-out would read as a promise nothing keeps.
+  expect(() => validateProfileConfig({ client: { ...CLIENT, egress: 'uncontained', hosts: ['api.example.test'] } })).toThrow(
+    /client\.hosts.*an uncontained build is held to no list/,
+  )
+})

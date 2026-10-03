@@ -485,3 +485,29 @@ test('the application\'s own output is kept from its first byte: both streams by
   // The endpoint line is the driver's own doing, not the application's.
   expect(started.console().join('\n')).not.toContain('DevTools listening')
 })
+
+test('a click that closes its own window has landed: the window going away under it is not the click failing (#223)', async () => {
+  const events: string[] = []
+  const main = fakeWindow(events, 'Greeter', HOME, ['button=Shared'])
+  const details = fakeWindow(events, 'Details', 'file:///opt/app/resources/app/renderer/details.html', ['button=Close details', 'button=Broken'])
+  const closed = 'locator.click: Target page, context or browser has been closed'
+  // Over a relayed endpoint the window's close can overtake the click's own answer.
+  const getByRole = details.page.getByRole as (role: string, options: { name: string }) => { click: () => Promise<unknown>; first: () => unknown }
+  details.page.getByRole = (role: string, options: { name: string }) => {
+    const locator = getByRole(role, options)
+    locator.click = async () => {
+      if (options.name === 'Close details') details.close()
+      throw new Error(closed)
+    }
+    return locator
+  }
+  const { session } = harness({ windows: [main, details] })
+  const started = await session()
+  // The window is still open after this click, so its error is the click's own.
+  await expect(started.page.click({ role: 'button', name: 'Broken' })).rejects.toThrow(closed)
+  await started.page.click({ role: 'button', name: 'Close details' })
+  // The flow carries on in the window that is left.
+  await started.page.click({ role: 'button', name: 'Shared' })
+  expect(events.filter((event) => event.startsWith('click'))).toEqual(['click button=Shared in Greeter'])
+  await started.dispose()
+})

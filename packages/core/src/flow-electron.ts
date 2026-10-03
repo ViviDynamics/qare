@@ -3,6 +3,7 @@ import { accessSync, constants } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
+import type { CellRecord, ClientCell } from './client-cell.js'
 import { describeElement, type FlowDriverCapabilities, type FlowElement, type FlowPage, type FlowTrace } from './flow.js'
 import { resolveFlowElement } from './flow-playwright.js'
 import { pathOnTarget } from './profile.js'
@@ -74,7 +75,7 @@ function hasDisplay(env: NodeJS.ProcessEnv): boolean {
   return (env.DISPLAY ?? '') !== '' || (env.WAYLAND_DISPLAY ?? '') !== ''
 }
 
-function xvfbOnPath(env: NodeJS.ProcessEnv): string | undefined {
+export function xvfbOnPath(env: NodeJS.ProcessEnv): string | undefined {
   for (const dir of (env.PATH ?? '').split(delimiter)) {
     if (dir === '') continue
     const candidate = join(dir, 'Xvfb')
@@ -229,6 +230,15 @@ export async function makeElectronFlowSession(opts: {
   environment?: 'inherit' | 'minimal'
   /** Starts the virtual display a host with none gets; an Xvfb by default. */
   startDisplay?: (xvfb: string) => Promise<{ display: string; stop: () => Promise<void> }>
+  /**
+   * Makes the cell the build is launched in (#223, ADR-0006): a container
+   * with no network, whose gate records what the build reaches for. With a
+   * cell the build is never started beside the run: the cell brings its own
+   * display, its own user data directory, and the port the build listens
+   * on. Without one the build runs with the network its step has, and the
+   * session reports nothing about what it reached.
+   */
+  cell?: () => Promise<ClientCell>
   launchTimeoutMs?: number
   findTimeoutMs?: number
   pollIntervalMs?: number
@@ -240,6 +250,8 @@ export async function makeElectronFlowSession(opts: {
   dispose: () => Promise<void>
   /** Everything the application wrote and every window it opened or closed, in order. */
   console: () => string[]
+  /** What the build reached for, as its cell's gate recorded it (#223). Only with a cell, and only once disposed. */
+  reached?: () => CellRecord
 }> {
   const launchTimeoutMs = opts.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS
   const findTimeoutMs = opts.findTimeoutMs ?? DEFAULT_FIND_TIMEOUT_MS
@@ -254,14 +266,23 @@ export async function makeElectronFlowSession(opts: {
     throw new ElectronFlowSessionError(code === 'ERR_MODULE_NOT_FOUND' ? NOT_INSTALLED_MESSAGE : LOAD_FAILED_MESSAGE, { cause: error })
   }
   const host: ElectronHost = { ...(opts.env === undefined ? {} : { env: opts.env }), ...(opts.platform === undefined ? {} : { platform: opts.platform }), ...(opts.xvfb === undefined ? {} : { xvfb: opts.xvfb }) }
-  const displayProblem = electronDisplayProblem(host)
+  // A contained build's display is its cell's, so this host's is not asked about.
+  const displayProblem = opts.cell === undefined ? electronDisplayProblem(host) : undefined
   if (displayProblem !== undefined) throw new ElectronFlowSessionError(displayProblem)
+  let cell: ClientCell | undefined
+  if (opts.cell !== undefined) {
+    try {
+      cell = await opts.cell()
+    } catch (error) {
+      throw new ElectronFlowSessionError((error as Error).message, { cause: error })
+    }
+  }
   // A Linux host with no display gets a virtual one for this launch alone,
   // stopped when the session is: the application opens real windows, and
   // nothing else on the host has to have started a display for it.
   const hostEnv = opts.env ?? process.env
   let virtual: { display: string; stop: () => Promise<void> } | undefined
-  if ((opts.platform ?? process.platform) === 'linux' && !hasDisplay(hostEnv)) {
+  if (cell === undefined && (opts.platform ?? process.platform) === 'linux' && !hasDisplay(hostEnv)) {
     const xvfb = (opts.xvfb ?? ((): string | undefined => xvfbOnPath(hostEnv)))()
     if (xvfb !== undefined) virtual = await (opts.startDisplay ?? startVirtualDisplay)(xvfb)
   }
@@ -285,15 +306,22 @@ export async function makeElectronFlowSession(opts: {
   }
   const output = (): string[] => (dropped === 0 ? [...lines] : [`[console] ${dropped} earlier lines dropped: the log keeps the last ${MAX_CONSOLE_LINES}`, ...lines])
 
-  const userDataDir = await mkdtemp(join(tmpdir(), 'qare-electron-'))
+  // Inside a cell the directory is the cell's own and goes with it, and the
+  // port is the one the cell relays: nothing else is in that namespace.
+  const userDataDir = cell?.userDataDir ?? (await mkdtemp(join(tmpdir(), 'qare-electron-')))
+  const removeUserData = async (): Promise<void> => {
+    if (cell === undefined) await rm(userDataDir, { recursive: true, force: true, maxRetries: 3 }).catch(() => {})
+  }
   const spawnApp =
     opts.spawnApp ?? ((command: string, args: string[], env: NodeJS.ProcessEnv): ElectronAppProcess => spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], env }))
+  const launchArgs = [...(opts.args ?? []), `--remote-debugging-port=${cell?.debuggingPort ?? 0}`, `--user-data-dir=${userDataDir}`]
   let child: ElectronAppProcess
   try {
-    child = spawnApp(opts.executable, [...(opts.args ?? []), '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`], appEnv)
+    child = cell === undefined ? spawnApp(opts.executable, launchArgs, appEnv) : cell.spawn(opts.executable, launchArgs)
   } catch (error) {
     await virtual?.stop().catch(() => {})
-    await rm(userDataDir, { recursive: true, force: true }).catch(() => {})
+    await removeUserData()
+    await cell?.dispose().catch(() => {})
     throw new ElectronFlowSessionError(`the application at ${opts.executable} could not be started: ${String(error)}`, { cause: error })
   }
 
@@ -370,6 +398,7 @@ export async function makeElectronFlowSession(opts: {
   const reap = (): void => {
     if (exit === undefined) child.kill('SIGKILL')
     void virtual?.stop().catch(() => {})
+    cell?.reap()
   }
   process.once('exit', reap)
   let disposed = false
@@ -388,7 +417,9 @@ export async function makeElectronFlowSession(opts: {
     }
     await browser?.close().catch(() => {})
     await virtual?.stop().catch(() => {})
-    await rm(userDataDir, { recursive: true, force: true, maxRetries: 3 }).catch(() => {})
+    await removeUserData()
+    // The cell last: its gate writes the record once the build is gone.
+    await cell?.dispose().catch(() => {})
   }
   const failStart = async (message: string): Promise<never> => {
     await dispose()
@@ -426,7 +457,7 @@ export async function makeElectronFlowSession(opts: {
   }
   let context: ReturnType<Browser['contexts']>[number]
   try {
-    browser = await playwright.chromium.connectOverCDP(endpoint)
+    browser = await playwright.chromium.connectOverCDP(cell === undefined ? endpoint : cell.endpoint(endpoint))
     const [first] = browser.contexts()
     if (first === undefined) return await failStart('the application exposes no browser context to attach to')
     context = first
@@ -497,7 +528,21 @@ export async function makeElectronFlowSession(opts: {
       await currentPage().goto(pathInApplication(home, url), { waitUntil: 'networkidle' })
     },
     click: async (element) => {
-      await (await acting(element)).click()
+      const locator = await acting(element)
+      const clicked = current
+      try {
+        await locator.click()
+      } catch (error) {
+        // A click that closes its own window has landed (#223). The window
+        // going away can overtake the click's own answer, the more so over a
+        // relayed endpoint, and Playwright then reports the page as closed.
+        // The click was only attempted because the window showed the
+        // element, so a window that is gone afterwards is what the click
+        // did; any other error, or the same one with the window still open,
+        // is the click failing.
+        if (clicked?.page.isClosed() === true && /has been closed/.test((error as Error).message)) return
+        throw error
+      }
     },
     type: async (element, value) => {
       await (await acting(element)).fill(value)
@@ -548,5 +593,13 @@ export async function makeElectronFlowSession(opts: {
     },
   }
 
-  return { capabilities: ELECTRON_FLOW_DRIVER, page, trace, dispose, console: output }
+  const contained = cell
+  return {
+    capabilities: ELECTRON_FLOW_DRIVER,
+    page,
+    trace,
+    dispose,
+    console: output,
+    ...(contained === undefined ? {} : { reached: (): CellRecord => contained.record() }),
+  }
 }

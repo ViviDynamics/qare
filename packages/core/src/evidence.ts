@@ -271,7 +271,7 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
     ...(result.client === undefined
       ? []
       : result.client.artefact === undefined
-        ? [`Checked against the ${result.client.driver} build ${codeSpan(result.client.executable)}, launched by the run. Nothing ran at a base revision, so there is no base comparison and no regression was looked for.`, '']
+        ? [`Checked against the ${result.client.driver} build ${codeSpan(result.client.executable)}, launched by the run. Nothing ran at a base revision, so there is no base comparison and no regression was looked for.${clientEgressNote(result.client.egress)}`, '']
         : provisioningStopped(result)
           ? [
               // Nothing was installed, so nothing was checked against it.
@@ -287,7 +287,7 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
                 : ` The base side is the build installed from ${artefactSpan(result.client.base)}: the pipeline that produced that file vouches for the revision it was built from${
                     result.client.base.leftover === undefined ? '.' : removalNote(result.client.base, posted, 'base/provision.log')
                   }`
-            }`,
+            }${clientEgressNote(result.client.egress)}`,
             '',
           ]),
     ...baseLines,
@@ -414,4 +414,12 @@ export function renderCheckRun(result: RunResult): CheckRunPayload {
     summary: `verdict ${result.verdict}: ${counts.proven} proven, ${counts.failed} failed, ${counts.unverified} unverified${regressed}`,
     conclusion: CHECK_RUN_CONCLUSIONS[result.verdict],
   }
+}
+
+/** What a client run's comment says about the build's network (#223): contained, opted out, or (an older result) nothing. */
+function clientEgressNote(egress: 'contained' | 'uncontained' | undefined): string {
+  if (egress === 'contained') return " The build ran contained, with no network of its own: the hosts it reached through the gate are in each flow check's `outbound.json`."
+  if (egress === 'uncontained')
+    return ' The build was not contained (`client.egress: uncontained`): it ran with the network its step had, and what it reached was not recorded.'
+  return ''
 }

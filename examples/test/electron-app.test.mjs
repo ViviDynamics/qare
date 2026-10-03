@@ -17,7 +17,9 @@ test('the two profiles differ in the target and in nothing else a flow can see',
   const web = await loadProfile(join(example, 'profiles', 'web'))
 
   // The desktop build is launched by the run: no stack, no URL.
+  // It declares no host: contained, the build reaches nothing (#223).
   assert.deepEqual(desktop.client, { driver: 'electron', executable: 'examples/electron-app/dist/qare-example/qare-example', args: ['--no-sandbox'] })
+  assert.equal(desktop.client.hosts, undefined)
   assert.equal(desktop.app, undefined)
   assert.equal(desktop.target, undefined)
   assert.equal(web.client, undefined)
@@ -80,6 +82,8 @@ test('the provisioned profile installs the build from an archive, for both sides
     },
     health: { timeout: '30s' },
     args: ['--no-sandbox'],
+    // Both builds run contained (#223): what the base build's runtime reaches for by itself is declared.
+    hosts: ['redirector.gvt1.com', '*.gvt1.com'],
   })
   assert.equal(provisioned.app, undefined)
   assert.equal(flowDriverFor(provisioned), ELECTRON_FLOW_DRIVER)
@@ -113,4 +117,41 @@ test('the desktop build bundles the files the browser is served, and its runtime
   assert.ok(lock.includes(`electron@${manifest.devDependencies.electron}`))
   const workspace = JSON.parse(await readFile(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8'))
   assert.equal(workspace.devDependencies.electron, undefined)
+})
+
+test('the egress profiles launch the same build, and differ only in what it is told to reach and what it may (#223)', async () => {
+  const desktop = await loadProfile(join(example, 'profiles', 'desktop'))
+  const declared = await loadProfile(join(example, 'profiles', 'desktop-declared'))
+  const undeclared = await loadProfile(join(example, 'profiles', 'desktop-undeclared'))
+  const uncontained = await loadProfile(join(example, 'profiles', 'desktop-uncontained'))
+  for (const profile of [declared, undeclared, uncontained]) {
+    assert.equal(profile.client.executable, desktop.client.executable)
+    assert.equal(flowDriverFor(profile), ELECTRON_FLOW_DRIVER)
+  }
+  const probed = (profile) => profile.client.args.filter((arg) => arg.startsWith('--probe=')).map((arg) => arg.slice('--probe='.length))
+  const probes = (profile) => probed(profile).filter((url) => !url.startsWith('unix:')).map((url) => new URL(url).hostname)
+
+  // The declared profile reaches for one host, and declares it.
+  assert.deepEqual(declared.client.hosts, ['example.com'])
+  assert.deepEqual(probes(declared), ['example.com'])
+  assert.equal(declared.client.egress, undefined)
+
+  // The undeclared profile declares the same host and reaches for two more:
+  // a name it does not declare, and an address with no name at all.
+  assert.deepEqual(undeclared.client.hosts, ['example.com'])
+  assert.deepEqual(probes(undeclared), ['example.com', 'example.org', '192.0.2.1'])
+  // And for a way out that is no network: a socket left in the build's own directory.
+  assert.deepEqual(probed(undeclared).filter((url) => url.startsWith('unix:')), ['unix:bypass.sock'])
+
+  // The opted-out profile says so, and declares nothing.
+  assert.equal(uncontained.client.egress, 'uncontained')
+  assert.equal(uncontained.client.hosts, undefined)
+  assert.deepEqual(probes(desktop), [])
+
+  // What the main process reaches for it reaches for itself: no page is involved.
+  const main = await readFile(join(example, 'app', 'main.js'), 'utf8')
+  assert.match(main, /arg\.startsWith\('--probe='\)/)
+  // The runtime's own dictionary download is a host nobody declared: the application turns it off.
+  assert.match(main, /setSpellCheckerLanguages\(\[\]\)/)
+  assert.doesNotMatch(await readFile(join(example, 'app', 'renderer', 'index.html'), 'utf8'), /probe/)
 })

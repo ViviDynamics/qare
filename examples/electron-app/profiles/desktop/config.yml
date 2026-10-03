@@ -4,6 +4,11 @@
 #
 # The path resolves from the repository root, where the pipeline runs.
 # `node examples/electron-app/package.mjs` produces the build.
+#
+# The build runs contained (#223): in a cell with no network of its own,
+# reaching only the hosts listed under `client.hosts`. This profile lists
+# none, so the build reaches nothing, and each flow check's `outbound.json`
+# says so.
 client:
   driver: electron
   executable: examples/electron-app/dist/qare-example/qare-example

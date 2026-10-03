@@ -101,6 +101,19 @@ export interface ProfileClientCommon {
   /** The health check the harness runs on the build (#75): how long its first window may take. */
   health?: { timeout: string }
   args: string[]
+  /**
+   * The hosts the build may reach (#223), read the way `target.hosts` is: a
+   * name, or `*.` and a name for one label below it. The build runs with no
+   * network of its own, and these are all the gate connects it to. Absent
+   * means none.
+   */
+  hosts?: string[]
+  /**
+   * `uncontained` runs the build with whatever network its step has, and
+   * the evidence says so (#223). Absent means contained, which is the
+   * default and never has to be written.
+   */
+  egress?: 'uncontained'
 }
 
 /** Exactly one way of naming the build: the type holds what the loader enforces. */
@@ -113,6 +126,13 @@ export type ProfileClientBuild = { executable: string; artefact?: undefined } | 
 export function clientExecutableName(client: ProfileClient): string {
   return client.executable ?? client.artefact.executable
 }
+
+/**
+ * A host a client build may reach, as a profile writes it (#223): a DNS name,
+ * optionally `*.` before it. Never a URL, a port, or anything that could be
+ * read as an option by the gate the list is handed to.
+ */
+const CLIENT_HOST = /^(\*\.)?[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?(\.[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?)*$/i
 
 export interface ProfileStub {
   service: string
@@ -622,7 +642,7 @@ function containedPath(value: unknown, field: string, label: string, inside: str
   return path
 }
 
-const CLIENT_KEYS = ['driver', 'executable', 'artefact', 'health', 'args']
+const CLIENT_KEYS = ['driver', 'executable', 'artefact', 'health', 'args', 'hosts', 'egress']
 
 /**
  * The build of one side (#75). The path is held to the rule the #72
@@ -705,7 +725,25 @@ function parseClient(value: unknown): ProfileClient {
     if (owned !== undefined)
       fail(`client.args[${index}]`, `${owned} is not the profile's to pass: the ${driver} driver sets it for every launch`)
   }
-  const common = { ...(health === undefined ? {} : { health }), args }
+  // What the build may reach (#223). A profile is a file a pull request can
+  // edit, and the list is handed to the gate, so an entry is held to being a
+  // host name and nothing else.
+  const hosts = value.hosts === undefined ? [] : stringArray(value.hosts, 'client.hosts', 'client hosts')
+  for (const [index, host] of hosts.entries()) {
+    if (!CLIENT_HOST.test(host) || host.length > 253)
+      fail(`client.hosts[${index}]`, `${JSON.stringify(host)} is not a host name: write the name alone, such as api.example.com or *.example.com`)
+  }
+  if (value.egress !== undefined && value.egress !== 'contained' && value.egress !== 'uncontained')
+    fail('client.egress', `client.egress must be contained or uncontained, not ${JSON.stringify(value.egress)}`)
+  const uncontained = value.egress === 'uncontained'
+  if (uncontained && hosts.length > 0)
+    fail('client.hosts', 'an uncontained build is held to no list, so client.hosts beside client.egress: uncontained would promise what nothing keeps; remove one of them')
+  const common = {
+    ...(health === undefined ? {} : { health }),
+    args,
+    ...(hosts.length === 0 ? {} : { hosts }),
+    ...(uncontained ? { egress: 'uncontained' as const } : {}),
+  }
   if (artefact !== undefined) return { driver, artefact, ...common }
   // parseClient read an executable whenever it read no artefact.
   return { driver, executable: executable as string, ...common }

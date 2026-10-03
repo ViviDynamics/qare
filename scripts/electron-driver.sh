@@ -8,6 +8,13 @@
 # so the target, is the only thing that differs. A second plan then drives
 # the desktop build into a window of its own and back.
 #
+# Then what the build may reach (#223). The desktop runs above are contained:
+# the build runs in a cell with no network of its own. Three more profiles
+# launch the same build told to reach for hosts from its main process, where
+# no window sees it: one declares the host and is connected to it, one
+# reaches past what it declares and is refused by name, and one opts out of
+# containment and says so in its evidence.
+#
 # Each run is the pipeline's own execute step, read out of
 # .github/workflows/pipeline.yml as the script it is, as in
 # scripts/compose-boot.sh: what runs is what a caller's pipeline runs, in the
@@ -43,6 +50,8 @@ git worktree remove --force "$RUNNER_TEMP/qare-base" 2>/dev/null || true
 cleanup() {
   rm -f plan.json
   docker rm -f "$server" > /dev/null 2>&1 || true
+  [ -n "${listener:-}" ] && kill "$listener" 2>/dev/null || true
+  rm -f "$example/dist/qare-example/bypass.sock"
   [ "$had_traces" -eq 1 ] || rm -rf traces
   git worktree remove --force "$RUNNER_TEMP/qare-base" 2>/dev/null || true
   # Whatever the runs produced is what a reader of a failure needs.
@@ -99,10 +108,53 @@ run() {
   fi
 }
 
+# refused <name> <plan> <profile>: the execute step, for a run that must be
+# refused. The step itself ends cleanly on a refusal qare recorded.
+refused() {
+  local name="$1" plan="$2" profile="$3" code=0
+  rm -rf evidence
+  git worktree remove --force "$RUNNER_TEMP/qare-base" 2>/dev/null || true
+  cp "$plan" plan.json
+  IMAGE_REF="$image" \
+  IMAGE_DIGEST="${image}@local" \
+  BASE_SHA="$(git rev-parse 'HEAD^1')" \
+  HEAD_SHA="$(git rev-parse HEAD)" \
+  PR_NUMBER=0 \
+  PROFILE="$profile" \
+    step 'Run the plan' || code=$?
+  if [ ! -f evidence/result.json ]; then
+    echo "$name: the execute step exited $code and recorded no evidence/result.json" >&2
+    exit 1
+  fi
+  mv evidence "$collected/$name"
+  jq '{verdict, client, criteria: [.criteria[] | {id, outcome, reason}]}' "$collected/$name/result.json"
+  if [ "$code" -ne 0 ] || ! jq -e '.verdict == "refused"' "$collected/$name/result.json" > /dev/null; then
+    echo "$name: the execute step exited $code and the run against $profile was not refused" >&2
+    [ -f "$collected/$name/checks/greets/0/console.log" ] && cat "$collected/$name/checks/greets/0/console.log" >&2
+    exit 1
+  fi
+}
+
 # The same file, twice: the flow is not edited between the two targets.
 run web "$example/plan.json" "$example/profiles/web"
 run desktop "$example/plan.json" "$example/profiles/desktop"
 run desktop-windows "$example/plan-windows.json" "$example/profiles/desktop"
+# The same file again, against the same build, told what to reach for (#223).
+# A process outside the cell listens on a unix socket in the build's own
+# directory first, as a pull request's own command could: a way out that is
+# not a network, which a mount of the live checkout would hand the build.
+bypass="$example/dist/qare-example/bypass.sock"
+rm -f "$bypass"
+node -e 'require("node:net").createServer((socket) => socket.end()).listen(process.argv[1])' "$bypass" &
+listener=$!
+for _ in $(seq 1 50); do [ -S "$bypass" ] && break; sleep 0.1; done
+[ -S "$bypass" ] || { echo "the socket outside the cell never appeared" >&2; exit 1; }
+run desktop-declared "$example/plan.json" "$example/profiles/desktop-declared"
+refused desktop-undeclared "$example/plan.json" "$example/profiles/desktop-undeclared"
+[ -S "$bypass" ] && kill -0 "$listener" 2>/dev/null || { echo "the socket outside the cell did not outlive the run that was to be refused it" >&2; exit 1; }
+kill "$listener" 2>/dev/null || true
+rm -f "$bypass"
+run desktop-uncontained "$example/plan.json" "$example/profiles/desktop-uncontained"
 
 fail() {
   echo "$1" >&2
@@ -120,7 +172,7 @@ check=checks/greets/0
 # Which driver ran which: the browser against a target, the Electron driver
 # against the build, each with one side and no base comparison.
 jq -e '.target.url == "http://127.0.0.1:4173" and .client == null' "$web/result.json" > /dev/null || fail "the browser run does not name its target"
-jq -e '.client == {driver: "electron", executable: "examples/electron-app/dist/qare-example/qare-example", comparison: "none"} and .target == null' "$desktop/result.json" > /dev/null \
+jq -e '.client == {driver: "electron", executable: "examples/electron-app/dist/qare-example/qare-example", comparison: "none", egress: "contained"} and .target == null' "$desktop/result.json" > /dev/null \
   || fail "the desktop run does not name the build it launched"
 
 # The flow both runs drove is the same flow: every action after the open,
@@ -157,6 +209,61 @@ if cmp -s "$windows/$wcheck/capture-4.png" "$windows/$wcheck/capture-8.png"; the
   fail "the captures of the two windows are the same picture"
 fi
 
+# What the build may reach (#223, ADR-0006). Every desktop run above ran its
+# build in a cell; what follows holds the cell to what it claims, from the
+# evidence each run left and from what the application itself wrote about
+# every request its main process made.
+build=examples/electron-app/dist/qare-example/qare-example
+declared="$collected/desktop-declared"
+undeclared="$collected/desktop-undeclared"
+uncontained="$collected/desktop-uncontained"
+
+# A build that reaches for nothing: the record is there, and it is empty.
+jq -e --arg build "$build" '. == {client: $build, containment: "cell", declared: [], reached: []}' "$desktop/$check/outbound.json" > /dev/null \
+  || fail "the contained desktop run did not record an empty outbound.json: $(cat "$desktop/$check/outbound.json" 2>&1)"
+jq -e --arg path "$check/outbound.json" '[.criteria[].evidence[]] | index($path) != null' "$desktop/result.json" > /dev/null || fail "the desktop result does not list outbound.json as evidence"
+
+# A declared host: the main process reached it, through Node and through
+# Chromium's own network stack, and got an answer from the real host.
+grep -Eq '^\[main stdout\] main: probe node https://example\.com/ -> status [0-9]+$' "$declared/$check/console.log" || fail "the build's main process did not reach the declared host through Node"
+grep -Eq '^\[main stdout\] main: probe chromium https://example\.com/ -> status [0-9]+$' "$declared/$check/console.log" || fail "the build's main process did not reach the declared host through Chromium's network stack"
+jq -e '.containment == "cell" and .declared == ["example.com"]
+  and ([.reached[] | select(.declared | not)] | length) == 0
+  and ([.reached[] | select(.host == "example.com" and .port == 443 and .protocol == "https" and .declared and .count >= 2)] | length) == 1' "$declared/$check/outbound.json" > /dev/null \
+  || fail "the declared run's outbound.json does not record the declared host as reached: $(cat "$declared/$check/outbound.json" 2>&1)"
+jq -e '.client.egress == "contained"' "$declared/result.json" > /dev/null || fail "the declared run does not say its build was contained"
+
+# An undeclared host: refused by name. The flow itself passed, and the run
+# is refused all the same.
+jq -e '[.criteria[] | select(.outcome == "unverified" and (.reason | startswith("refused: undeclared host: example.org:53 (dns)")) and (.reason | endswith("the client profile does not list it in client.hosts")))] | length == 1' "$undeclared/result.json" > /dev/null \
+  || fail "the refusal does not name the undeclared host"
+# Inside the cell the name did not resolve, by either stack.
+grep -Eq '^\[main stdout\] main: probe node https://example\.org/ -> error ENOTFOUND$' "$undeclared/$check/console.log" || fail "the undeclared host resolved for Node inside the cell"
+grep -Eq '^\[main stdout\] main: probe chromium https://example\.org/ -> error ' "$undeclared/$check/console.log" || fail "the undeclared host answered Chromium's network stack inside the cell"
+# A bare address has no route: nothing but loopback is in the cell.
+grep -Eq '^\[main stdout\] main: probe node http://192\.0\.2\.1/ -> error ENETUNREACH$' "$undeclared/$check/console.log" || fail "a bare address had a route out of the cell"
+grep -Eq '^\[main stdout\] main: probe chromium http://192\.0\.2\.1/ -> error ' "$undeclared/$check/console.log" || fail "a bare address answered Chromium's network stack inside the cell"
+# A socket a process outside the cell was listening on, in the build's own
+# directory, is not in the cell: the build is launched from a copy.
+grep -Eq '^\[main stdout\] main: probe socket bypass\.sock -> error ENOENT$' "$undeclared/$check/console.log" || fail "a socket in the live checkout was there for the build to connect to"
+# The declared host still answered, in the same launch.
+grep -Eq '^\[main stdout\] main: probe node https://example\.com/ -> status [0-9]+$' "$undeclared/$check/console.log" || fail "the declared host stopped answering beside an undeclared one"
+# The record names what was refused, and nothing the cell never let out.
+jq -e '([.reached[] | select(.host == "example.org" and .protocol == "dns" and (.declared | not))] | length) == 1
+  and ([.reached[] | select(.host == "example.com" and .declared)] | length) == 1
+  and ([.reached[] | select(.host == "192.0.2.1")] | length) == 0
+  and ([.reached[] | select(.declared | not) | .host] | unique) == ["example.org"]' "$undeclared/$check/outbound.json" > /dev/null \
+  || fail "the undeclared run's outbound.json is not what the build reached for: $(cat "$undeclared/$check/outbound.json" 2>&1)"
+
+# The opt-out: the build ran beside the run, and the evidence says so.
+jq -e '.client.egress == "uncontained"' "$uncontained/result.json" > /dev/null || fail "the opted-out run does not say its build was uncontained"
+jq -e --arg build "$build" '.client == $build and .containment == "none" and (.reason | startswith("the profile opts out with client.egress: uncontained"))' "$uncontained/$check/outbound.json" > /dev/null \
+  || fail "the opted-out run's outbound.json does not say nothing was recorded"
+
+# Nothing a cell made outlives its launch.
+left="$(docker ps -a --filter name=qare-cell- --format '{{.Names}}'; docker volume ls --filter name=qare-cell- --format '{{.Name}}')"
+[ -z "$left" ] || fail "cells were left behind: $left"
+
 {
   echo "### Electron driver"
   echo
@@ -165,5 +272,18 @@ fi
   echo '```'
   cat "$desktop/$check/console.log"
   echo '```'
+  echo
+  echo "### What the build may reach"
+  echo
+  echo "The build's main process reached for three destinations from inside its cell (\`$example/profiles/desktop-undeclared\`), and the run was refused:"
+  echo
+  echo '```'
+  grep 'main: probe ' "$undeclared/$check/console.log"
+  echo
+  jq -r '.criteria[] | select(.reason != null) | .reason' "$undeclared/result.json"
+  echo
+  cat "$undeclared/$check/outbound.json"
+  echo '```'
 } >> "$GITHUB_STEP_SUMMARY"
 echo "electron driver: one plan passed against the browser and the desktop build, the desktop evidence carries screenshots and the console output, and a second window was driven and closed"
+echo "egress: the contained build reached its declared host and was recorded, was refused an undeclared one by name, had no route to a bare address, and the opted-out build said it ran uncontained"

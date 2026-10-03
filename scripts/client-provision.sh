@@ -140,7 +140,12 @@ for side in base head; do
   grep -q '^\[teardown\] removed .*; nothing is left$' "$log" || fail "both: the $side install was not removed"
   # The flows drove the installed build, not a path in the checkout.
   grep -q '^\[window 1 console.log\] renderer: greeted Ada$' "$both/$side/checks/greets/0/console.log" || fail "both: the $side build was not driven"
+  # Each installed build ran contained (#223): in a cell with no network of
+  # its own, launched from a copy of the install, reaching nothing undeclared.
+  jq -e '.containment == "cell" and ([.reached[] | select(.declared | not)] | length) == 0' "$both/$side/checks/greets/0/outbound.json" > /dev/null \
+    || fail "both: the $side build did not run contained: $(cat "$both/$side/checks/greets/0/outbound.json" 2>&1)"
 done
+jq -e '.client.egress == "contained"' "$both/result.json" > /dev/null || fail "both: the result does not say the builds were contained"
 # Nothing was built by the run, and the base was not checked out to build it.
 ! grep -q '^\[build\]' "$both/base/provision.log" "$both/head/provision.log" || fail "both: a prebuilt artefact was rebuilt"
 
