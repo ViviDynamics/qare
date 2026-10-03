@@ -54,6 +54,6 @@ Out:
 ## Tasks
 
 - [x] 1. Classifier and rendering in core: tests in `packages/core/test/pipeline-failure.test.ts`.
-- [ ] 2. `listRunJobs` on the GitHub client and the `report-failure` command: tests in `packages/action/test/report-failure.test.ts`.
+- [x] 2. `listRunJobs` on the GitHub client and the `report-failure` command: tests in `packages/action/test/report-failure.test.ts`.
 - [ ] 3. Workflow `report` job and `judge` gating: tests in `packages/cli/test/workflow.test.ts`.
 - [ ] 4. SPEC updates.

@@ -11,6 +11,7 @@ import { GitHubEvidencePoster, postEvidence } from './post-evidence.js'
 import { deliverIngest, IngestDeliveryError } from './ingest-deliver.js'
 import { loadQuestions, postQuestions } from './post-questions.js'
 import { parseSweepPayload, publishSweep } from './sweep-report.js'
+import { reportPipelineFailure } from './report-failure.js'
 export interface Writer {
   write(chunk: string): void
 }
@@ -30,13 +31,14 @@ export async function main(argv: string[], out: Writer = process.stdout, err: Wr
     if (command === 'ingest-deliver') return await ingestDeliverCommand(rest, out)
     if (command === 'post-questions') return await postQuestionsCommand(rest, out)
     if (command === 'sweep-report') return await sweepReportCommand(rest, out)
+    if (command === 'report-failure') return await reportFailureCommand(rest, out)
   } catch (error) {
     err.write(error instanceof Error ? `${error.name}: ${error.message}\n` : `${String(error)}\n`)
     return 1
   }
   entry(out)
   if (command !== undefined) {
-    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence", "ingest-deliver", "post-questions" and "sweep-report"\n`)
+    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence", "ingest-deliver", "post-questions", "sweep-report" and "report-failure"\n`)
     return 1
   }
   return 0
@@ -164,6 +166,41 @@ async function postEvidenceCommand(argv: string[], out: Writer): Promise<number>
   })
   out.write(`posted verdict ${result.verdict} on pull request #${pr} at ${headSha.slice(0, 12)}\n`)
   if (riding.length > 0) out.write(`asked ${riding.length} question(s) in the evidence comment\n`)
+  return 0
+}
+
+/**
+ * `qare-action report-failure`: the pipeline failed and published no verdict
+ * (#203). Read the run's jobs, and when one failed, post on the pull request
+ * that no criterion was evaluated, naming the job and step, so a failure in
+ * qare or its runner is never read as the project failing its criteria.
+ */
+async function reportFailureCommand(argv: string[], out: Writer): Promise<number> {
+  const flags = parseFlags(argv)
+  const runId = flags.number('run-id')
+  const pr = flags.number('pr')
+  const headSha = flags.string('sha')
+  if (runId === undefined || runId <= 0) throw new GitHubClientError('qare-action report-failure needs --run-id <workflow run id>')
+  if (pr === undefined) throw new GitHubClientError('qare-action report-failure needs --pr <pull request number>')
+  if (headSha === undefined) throw new GitHubClientError('qare-action report-failure needs --sha <head commit>')
+  const attempt = flags.number('attempt') ?? 1
+  if (attempt <= 0) throw new GitHubClientError(`--attempt must be a positive integer (got ${attempt})`)
+  const runUrl = flags.string('run-url') || undefined
+  if (runUrl !== undefined && !/^https:\/\/[^\s<>`]+$/.test(runUrl))
+    throw new GitHubClientError(`--run-url must be an https URL (got ${JSON.stringify(runUrl)})`)
+  const client = new GitHubClient({
+    repository: flags.string('repository'),
+    apiRoot: flags.string('api-root'),
+    tokenEnv: flags.string('token-env'),
+  })
+  const poster = new GitHubEvidencePoster(client, pr, headSha, flags.string('author') || undefined)
+  const failure = await reportPipelineFailure(client, poster, { id: runId, attempt, url: runUrl })
+  if (failure === undefined) {
+    out.write(`no job in run ${runId} failed: nothing to report\n`)
+    return 0
+  }
+  const where = failure.step === undefined ? failure.job : `${failure.job} failing at ${failure.step}`
+  out.write(`reported ${where} on pull request #${pr} at ${headSha.slice(0, 12)}: not evaluated, qare or environment failure\n`)
   return 0
 }
 
