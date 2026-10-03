@@ -1,6 +1,6 @@
 import { expect, expectTypeOf, test } from 'vitest'
 import type { VisualCheckOpts } from '../src/index.js'
-import { disposeBrowser, makePlaywrightScreenshot } from '../src/visual-playwright.js'
+import { disposeBrowser, makePlaywrightScreenshot, outboundOf } from '../src/visual-playwright.js'
 
 const NOT_INSTALLED_MESSAGE =
   'playwright-core is not installed; visual checks are unverified without a screenshot backend'
@@ -56,6 +56,7 @@ test('a rejected first launch does not poison later captures', async () => {
             goto: async () => undefined,
             screenshot: async () => PNG_CAPTURE,
           }),
+          on: () => undefined,
           close: async () => undefined,
         }),
         close: async () => undefined,
@@ -90,6 +91,7 @@ test('masks black out their regions at capture, the same at base and head (#119)
               return PNG_CAPTURE
             },
           }),
+          on: () => undefined,
           close: async () => undefined,
         }),
         close: async () => undefined,
@@ -120,6 +122,51 @@ test('masks black out their regions at capture, the same at base and head (#119)
   await disposeBrowser(backend)
 })
 
+test('the backend reports every connection its captures attempted (#143)', async () => {
+  const PAGE_URL = ['https:', '//app.example.test/dashboard'].join('')
+  const PNG_CAPTURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0a, 0x02])
+  const chromium = {
+    launch: () =>
+      Promise.resolve({
+        newContext: async () => {
+          const handlers = new Map<string, (subject: unknown) => void>()
+          return {
+            on: (event: string, handler: (subject: unknown) => void) => handlers.set(event, handler),
+            newPage: async () => ({
+              goto: async (url: string) => {
+                handlers.get('request')?.({ url: () => url })
+                handlers.get('request')?.({ url: () => ['https:', '//cdn.example.test/app.css'].join('') })
+                // Never leaves the browser, so it is not a connection.
+                handlers.get('request')?.({ url: () => 'data:text/plain,hello' })
+                handlers.get('page')?.({
+                  on: (event: string, opened: (socket: unknown) => void) => {
+                    if (event === 'websocket') opened({ url: () => 'wss://live.example.test/feed' })
+                  },
+                })
+              },
+              screenshot: async () => PNG_CAPTURE,
+            }),
+            close: async () => undefined,
+          }
+        },
+        close: async () => undefined,
+      }),
+  }
+  const backend = await makePlaywrightScreenshot({ loadPlaywright: async () => ({ chromium }) as never })
+
+  expect(outboundOf(backend)).toEqual([])
+  await backend(PAGE_URL, 390, 'light', 'head')
+
+  expect(outboundOf(backend)).toEqual([
+    { host: 'app.example.test', port: 443, protocol: 'https' },
+    { host: 'cdn.example.test', port: 443, protocol: 'https' },
+    { host: 'live.example.test', port: 443, protocol: 'wss' },
+  ])
+  // A backend that keeps no record says so, rather than reporting nothing reached.
+  expect(outboundOf(async () => PNG_CAPTURE)).toBeUndefined()
+  await disposeBrowser(backend)
+})
+
 test('without profile masks the screenshot call is unchanged (#119)', async () => {
   const OFFLINE_URL = ['http:', '//localhost:3000/up'].join('')
   const PNG_CAPTURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0a, 0x02])
@@ -135,6 +182,7 @@ test('without profile masks the screenshot call is unchanged (#119)', async () =
               return PNG_CAPTURE
             },
           }),
+          on: () => undefined,
           close: async () => undefined,
         }),
         close: async () => undefined,
