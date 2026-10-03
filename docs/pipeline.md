@@ -142,7 +142,8 @@ Two constraints decide between them:
   GitHub does this so workflows cannot start each other without end. A
   criteria proposal opened that way would reach its reviewer with no checks
   on it, so `qare-action ingest-deliver` refuses to open one with the run's
-  own token and names the two identities that can. Verdicts, comments and
+  own token, under whatever name it was handed over, and names the two
+  identities that can. Verdicts, comments and
   stub issues do not have this constraint.
 - **Only a GitHub App may write a check run.** A personal access token
   cannot, whatever its scopes. With a token, the check run is still written

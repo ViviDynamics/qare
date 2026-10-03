@@ -2,10 +2,13 @@ import { createPrivateKey, createSign, type KeyObject } from 'node:crypto'
 import { GitHubApiError, GitHubClientError } from './errors.js'
 
 /**
- * Who qare is on GitHub (#61, ADR-0003). Everything qare writes, a comment,
- * an issue, a check run, a branch, a pull request, is written as one
- * identity, and which one is the install's choice, made by the credentials it
- * configures and never by code:
+ * Who qare is on GitHub (#61, ADR-0003). What qare writes, a comment, an
+ * issue, a branch, a pull request, is written as the identity the install
+ * configured. A check run is the one exception: GitHub lets only an App write
+ * one, so under a personal access token it is written with a separate
+ * credential, the Actions token of the run (`checksToken`), and does not
+ * carry the user's name. Which identity it is, is the install's choice, made
+ * by the credentials it configures and never by code:
  *
  * - a GitHub App installation: `QARE_APP_ID` and `QARE_APP_PRIVATE_KEY`
  * - a personal access token: `QARE_GITHUB_TOKEN`
@@ -26,6 +29,13 @@ export interface GitHubIdentity {
   checksToken(): Promise<string>
   /** The login what it writes is attributed to, which is how qare finds its own comment again. */
   login(): Promise<string>
+  /**
+   * Whether a pull request it opens starts the repository's workflows. One
+   * the Actions token opens starts none, so a criteria proposal is never
+   * opened with it. Answered from what the credential is, never from the
+   * name it was handed over under.
+   */
+  triggersWorkflows(): Promise<boolean>
 }
 
 export const APP_ID_ENV = 'QARE_APP_ID'
@@ -119,6 +129,10 @@ export class ActionsTokenIdentity implements GitHubIdentity {
   login(): Promise<string> {
     return Promise.resolve(ACTIONS_LOGIN)
   }
+
+  triggersWorkflows(): Promise<boolean> {
+    return Promise.resolve(false)
+  }
 }
 
 interface Transport {
@@ -126,10 +140,16 @@ interface Transport {
   fetchImpl: typeof fetch
 }
 
-/** A personal access token: what it writes is that user's. */
+/**
+ * A token handed to qare: a personal access token, whose writes are that
+ * user's. A token can also arrive here that is no user's at all, the Actions
+ * token under another name or passed directly, so what it is, is asked of
+ * GitHub once and never assumed from how it was handed over.
+ */
 export class TokenIdentity implements GitHubIdentity {
   readonly kind = 'token' as const
-  private known: string | undefined
+  /** The user's login, or undefined for a token that belongs to an installation. */
+  private owner: { user: string | undefined } | undefined
 
   constructor(
     private readonly value: string,
@@ -142,32 +162,48 @@ export class TokenIdentity implements GitHubIdentity {
     return Promise.resolve(this.value)
   }
 
-  checksToken(): Promise<string> {
-    return Promise.resolve(this.actionsToken ?? this.value)
+  async checksToken(): Promise<string> {
+    // An installation's token may write a check run itself.
+    if ((await this.user()) === undefined) return this.value
+    if (this.actionsToken !== undefined) return this.actionsToken
+    throw new GitHubClientError(
+      `only a GitHub App may write a check run, and a personal access token is not one: keep ${ACTIONS_TOKEN_ENV}, the Actions token, in the environment beside it (the pipeline does), or post as the App`,
+    )
   }
 
   async login(): Promise<string> {
-    if (this.known !== undefined) return this.known
+    // Not a user: the one such token a pipeline hands qare is the Actions token.
+    return (await this.user()) ?? ACTIONS_LOGIN
+  }
+
+  async triggersWorkflows(): Promise<boolean> {
+    // A token that is no user's cannot be told from the Actions token, so it
+    // is treated as it: a proposal is not opened on a guess.
+    return (await this.user()) !== undefined
+  }
+
+  /** The user the token belongs to; undefined when it belongs to an installation. */
+  private async user(): Promise<string | undefined> {
+    if (this.owner !== undefined) return this.owner.user
     const response = await this.transport.fetchImpl(new URL(`${this.transport.apiRoot}/user`), {
       method: 'GET',
       headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${this.value}` },
     })
     if (!response.ok) {
       const text = await response.text()
-      // Not a user: a token handed over by name that belongs to an
-      // installation, which GitHub refuses this question in these words.
-      // The one a pipeline hands qare is the Actions token. Any other
-      // refusal, a rate limit say, is an error and never a guess.
+      // Not a user: a token that belongs to an installation, which GitHub
+      // refuses this question in these words. Any other refusal, a rate
+      // limit say, is an error and never a guess.
       if (response.status === 403 && /not accessible by integration/i.test(text)) {
-        this.known = ACTIONS_LOGIN
-        return this.known
+        this.owner = { user: undefined }
+        return undefined
       }
       throw new GitHubApiError(response.status, 'GET /user', text)
     }
     const login = ((await response.json()) as { login?: unknown }).login
     if (typeof login !== 'string' || login === '')
       throw new GitHubClientError('GitHub did not say which user the token belongs to, so qare cannot find its own comments')
-    this.known = login
+    this.owner = { user: login }
     return login
   }
 }
@@ -239,6 +275,10 @@ export class AppInstallationIdentity implements GitHubIdentity {
 
   checksToken(): Promise<string> {
     return this.token()
+  }
+
+  triggersWorkflows(): Promise<boolean> {
+    return Promise.resolve(true)
   }
 
   async login(): Promise<string> {

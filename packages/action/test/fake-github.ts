@@ -28,6 +28,8 @@ export interface FakeToken {
   kind: 'actions' | 'user' | 'installation'
   /** GET /user answers 403 with GitHub's rate limit message, as an exhausted token is answered. */
   rateLimited?: boolean
+  /** A check run is refused: the token's job was not granted checks: write. */
+  noChecks?: boolean
 }
 
 /** The App the fake knows: its id, the public half of its key, and where it is installed. */
@@ -303,6 +305,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
     if (parts[0] === 'repos' && parts[3] === 'check-runs' && parts.length === 4 && request.method === 'POST') {
       // GitHub lets only an App write a check run: a user's token is refused.
       if (caller.kind === 'user') return respond(response, 403, { message: 'You must authenticate via a GitHub App.' })
+      if (caller.noChecks === true) return respond(response, 403, { message: 'Resource not accessible by integration' })
       checkRuns.push(body)
       respond(response, 201, { id: checkRuns.length, ...(body as object) })
       return

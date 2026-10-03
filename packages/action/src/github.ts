@@ -145,18 +145,12 @@ export class GitHubClient {
   /**
    * GitHub lets only an App write a check run, so this one request is made
    * with the identity's checks token: the App's own, or, for a personal
-   * access token, the Actions token of the run it is used in.
+   * access token, the Actions token of the run it is used in. An identity
+   * with no token that may write one says so before anything is sent, and a
+   * refusal from GitHub is reported as GitHub gave it.
    */
   async createCheckRun(run: GitHubCheckRun): Promise<void> {
-    try {
-      await this.request('POST', `/repos/${this.repository}/check-runs`, undefined, run, await this.identity.checksToken())
-    } catch (error) {
-      if (this.identity.kind === 'token' && error instanceof GitHubApiError && error.status === 403)
-        throw new GitHubClientError(
-          'GitHub refused the check run: only a GitHub App may write a check run, and a personal access token is not one. Keep GITHUB_TOKEN, the Actions token, in the environment beside it (the pipeline does), or post as the App',
-        )
-      throw error
-    }
+    await this.request('POST', `/repos/${this.repository}/check-runs`, undefined, run, await this.identity.checksToken())
   }
 
   /** Every job of one attempt of a workflow run, in the order the API lists them. */

@@ -56,9 +56,11 @@ export async function deliverIngest(opts: {
   base: string
   client: GitHubClient
 }): Promise<IngestDelivery> {
-  if (opts.client.identity.kind === 'actions') {
+  // Asked of the identity, which answers from what the credential is: the
+  // Actions token under another name is still the Actions token.
+  if (!(await opts.client.identity.triggersWorkflows())) {
     throw new IngestDeliveryError(
-      `a pull request opened with the Actions token (GITHUB_TOKEN) triggers no workflows, so this proposal would arrive with no checks: open it as the GitHub App (${APP_ID_ENV} and ${APP_PRIVATE_KEY_ENV}) or with a personal access token (${PERSONAL_TOKEN_ENV})`,
+      `qare was handed the Actions token, or a token it cannot tell from it, and a pull request opened with the Actions token triggers no workflows, so this proposal would arrive with no checks: open it as the GitHub App (${APP_ID_ENV} and ${APP_PRIVATE_KEY_ENV}) or with a personal access token (${PERSONAL_TOKEN_ENV})`,
     )
   }
   const proposal = parseProposalPayload(JSON.parse(await readFile(opts.proposalPath, 'utf8')))

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
 import { criterionIdFor, integrityOf, serializeLedger, type LedgerEntry } from '@qare/core'
-import { FAKE_TOKEN, startFakeGithub } from './fake-github.js'
+import { startFakeGithub } from './fake-github.js'
 import { GitHubClient } from '../src/github.js'
 import { deliverIngest } from '../src/ingest-deliver.js'
 
@@ -50,7 +50,9 @@ async function payload(dir: string, entries: LedgerEntry[], resulting: string, c
 }
 
 function clientFor(fake: Awaited<ReturnType<typeof startFakeGithub>>): GitHubClient {
-  return new GitHubClient({ repository: 'o/r', apiRoot: fake.url, token: FAKE_TOKEN })
+  // A personal access token: a proposal is refused under the Actions token (#61).
+  fake.tokens.set('github_pat_fake_user', { login: 'jason', kind: 'user' })
+  return new GitHubClient({ repository: 'o/r', apiRoot: fake.url, token: 'github_pat_fake_user' })
 }
 
 test('the delivery opens the pull request a human applies and comments once', async () => {

@@ -159,6 +159,20 @@ test('ingest-deliver refuses to open a proposal with the Actions token, and writ
   expect(fake.calls.filter((call) => call.method !== 'GET')).toEqual([])
 })
 
+test('the Actions token under another name is refused the same way', async () => {
+  // `GH_TOKEN: ${{ github.token }}` and `--token-env GH_TOKEN` name the same
+  // token: what it is decides, not what it is called.
+  configure({ GH_ALIAS: FAKE_TOKEN })
+  expect(await run(['ingest-deliver', '--proposal', await proposalFile(), '--base', 'main', '--token-env', 'GH_ALIAS'])).toBe(1)
+  expect(err.join('')).toMatch(/triggers no workflows/)
+  expect(fake.pulls).toEqual([])
+  expect(fake.calls.filter((call) => call.method !== 'GET')).toEqual([])
+  // And as the personal token the pipeline would post with.
+  configure({ QARE_GITHUB_TOKEN: FAKE_TOKEN })
+  expect(await run(['ingest-deliver', '--proposal', await proposalFile(), '--base', 'main'])).toBe(1)
+  expect(fake.calls.filter((call) => call.method !== 'GET')).toEqual([])
+})
+
 for (const [name, env, token] of [
   ['the App', APP, 'ghs_fake_installation_1'],
   ['a personal access token', TOKEN, PAT],

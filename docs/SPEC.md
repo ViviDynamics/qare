@@ -810,8 +810,9 @@ are supported and the choice is per install:
 Two constraints hold either way. A pull request opened with the default
 Actions token does not trigger workflows, so criteria proposals would arrive
 with no checks; QARE opens them with the App or the token instead. And the
-identity only ever exists in the plan and judge steps, never in the step that
-executes pull request code.
+identity only ever exists in the steps that write to GitHub, in the judge,
+report and requeue jobs: never in the step that executes pull request code,
+and never beside the planner.
 
 The choice is made by the credentials an install configures, never by code.
 The posting code is written against one interface with an implementation for
@@ -822,7 +823,10 @@ App wins when both are configured, and half an App stops the step by name. The
 reusable pipeline takes all of it as secrets passed by name and hands it to
 the steps that write to GitHub and to no other. GitHub lets only an App write
 a check run, so under a personal access token that one write stays with the
-workflow run's own token. The permissions each option needs are listed in
+workflow run's own token and does not carry the user's name. Whether an
+identity may open a proposal is decided by what the credential is, not by the
+name it was handed over under: the workflow run's token is refused under any
+name. The permissions each option needs are listed in
 [the pipeline guide](./pipeline.md#github-identity).
 
 ## Clients

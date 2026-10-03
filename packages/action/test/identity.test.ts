@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from 'node:crypto'
 import { afterEach, beforeEach, expect, test } from 'vitest'
-import { GitHubClient, GitHubClientError } from '../src/github.js'
+import { GitHubApiError, GitHubClient, GitHubClientError } from '../src/github.js'
 import {
   ACTIONS_LOGIN,
   AppInstallationIdentity,
@@ -184,6 +184,43 @@ test('a personal token with no Actions token beside it says why the check run wa
   expect(failure).toBeInstanceOf(GitHubClientError)
   expect((failure as Error).message).toMatch(/only a GitHub App may write a check run/)
   expect((failure as Error).message).toMatch(/GITHUB_TOKEN/)
+  // Known before anything is sent: the request GitHub would refuse is never made.
+  expect(fake.calls.filter((call) => call.path.endsWith('/check-runs'))).toEqual([])
+})
+
+test('a check run the Actions token is refused is reported as GitHub refused it', async () => {
+  // The personal token was never the one used, so it is not the one blamed:
+  // the job was not granted checks: write, and the error says what GitHub said.
+  fake.tokens.set(FAKE_TOKEN, { login: ACTIONS_LOGIN, kind: 'actions', noChecks: true })
+  const client = new GitHubClient({
+    repository: REPOSITORY,
+    apiRoot: fake.url,
+    identity: resolve({ QARE_GITHUB_TOKEN: PAT, GITHUB_TOKEN: FAKE_TOKEN }),
+  })
+  const failure = await client
+    .createCheckRun({ name: 'QARE verdict', head_sha: 'a'.repeat(40), status: 'completed', conclusion: 'success', output: { title: 't', summary: 's' } })
+    .catch((error: unknown) => error)
+  expect(failure).toBeInstanceOf(GitHubApiError)
+  expect((failure as Error).message).toMatch(/not accessible by integration/)
+  expect((failure as Error).message).not.toMatch(/personal access token/)
+})
+
+test('a token that is an installation\'s writes its own check runs, however it was handed over', async () => {
+  const client = new GitHubClient({ repository: REPOSITORY, apiRoot: fake.url, identity: resolve({ MY_TOKEN: FAKE_TOKEN }, { tokenEnv: 'MY_TOKEN' }) })
+  await client.createCheckRun({ name: 'QARE verdict', head_sha: 'a'.repeat(40), status: 'completed', conclusion: 'success', output: { title: 't', summary: 's' } })
+  expect(fake.checkRuns).toHaveLength(1)
+})
+
+test('each identity knows whether a pull request it opens starts the repository\'s workflows', async () => {
+  expect(await resolve(APP_ENV).triggersWorkflows()).toBe(true)
+  expect(await resolve({ QARE_GITHUB_TOKEN: PAT }).triggersWorkflows()).toBe(true)
+  expect(await resolve({ GITHUB_TOKEN: FAKE_TOKEN }).triggersWorkflows()).toBe(false)
+  // What the token is decides, not how it was handed over: the Actions
+  // token under another name, or passed directly, is still the Actions token.
+  expect(await resolve({ GH_ALIAS: FAKE_TOKEN }, { tokenEnv: 'GH_ALIAS' }).triggersWorkflows()).toBe(false)
+  expect(await resolve({}, { token: FAKE_TOKEN }).triggersWorkflows()).toBe(false)
+  expect(await resolve({ QARE_GITHUB_TOKEN: FAKE_TOKEN }).triggersWorkflows()).toBe(false)
+  expect(await resolve({}, { token: PAT }).triggersWorkflows()).toBe(true)
 })
 
 test('the App writes its own check runs', async () => {
