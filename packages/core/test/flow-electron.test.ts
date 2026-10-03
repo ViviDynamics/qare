@@ -68,7 +68,9 @@ function fakeWindow(events: string[], title: string, url: string, shows: string[
   }
 }
 
-function harness(opts: { windows?: FakeWindow[]; announce?: boolean; env?: Record<string, string>; platform?: NodeJS.Platform; masks?: string[] } = {}) {
+function harness(
+  opts: { windows?: FakeWindow[]; announce?: boolean | 'crash'; env?: Record<string, string>; platform?: NodeJS.Platform; masks?: string[]; launchTimeoutMs?: number; findTimeoutMs?: number } = {},
+) {
   const events: string[] = []
   const process = new FakeProcess()
   const spawned: Array<{ command: string; args: string[] }> = []
@@ -100,17 +102,24 @@ function harness(opts: { windows?: FakeWindow[]; announce?: boolean; env?: Recor
       loadPlaywright: async () => playwright as never,
       spawnApp: (command, args) => {
         spawned.push({ command, args })
-        if (opts.announce !== false)
-          setTimeout(() => {
+        // Whatever the application does, it does once the driver is listening.
+        setTimeout(() => {
+          if (opts.announce === 'crash') {
+            process.stderr.emit('data', 'main: cannot find module ./missing\n')
+            process.emit('exit', 1, null)
+          } else if (opts.announce !== false) {
             process.stdout.emit('data', 'main: ready\n')
             process.stderr.emit('data', `\nDevTools listening on ${ENDPOINT}\n`)
-          }, 0)
+          }
+        }, 0)
         return process as never
       },
       env: opts.env ?? WITH_DISPLAY,
       platform: opts.platform ?? 'linux',
-      launchTimeoutMs: 80,
-      findTimeoutMs: 60,
+      // Generous by default, so a loaded machine cannot time a passing test out;
+      // the tests that wait a timeout out name a short one.
+      launchTimeoutMs: opts.launchTimeoutMs ?? 2_000,
+      findTimeoutMs: opts.findTimeoutMs ?? 2_000,
       pollIntervalMs: 2,
       closeGraceMs: 20,
     })
@@ -176,20 +185,15 @@ test('the backend that is not installed, and a host with no display, are named b
 })
 
 test('an application that exits, or never opens its endpoint, fails the start with its own output named (#72)', async () => {
-  const crashed = harness({ announce: false })
-  const starting = crashed.session()
-  setTimeout(() => {
-    crashed.process.stderr.emit('data', 'main: cannot find module ./missing\n')
-    crashed.process.emit('exit', 1, null)
-  }, 0)
-  await expect(starting).rejects.toThrow(/the application exited with code 1 before the driver could attach; its output: \[main stderr\] main: cannot find module \.\/missing/)
+  const crashed = harness({ announce: 'crash' })
+  await expect(crashed.session()).rejects.toThrow(/the application exited with code 1 before the driver could attach; its output: \[main stderr\] main: cannot find module \.\/missing/)
 
-  const silent = harness({ announce: false })
+  const silent = harness({ announce: false, launchTimeoutMs: 80 })
   await expect(silent.session()).rejects.toThrow(/opened no DevTools endpoint within 80 ms.*a build that turns remote debugging off cannot be driven/)
   // Nothing is left running behind a start that failed.
   expect(silent.process.signals).toContain('SIGTERM')
 
-  const windowless = harness({ windows: [] })
+  const windowless = harness({ windows: [], launchTimeoutMs: 80 })
   await expect(windowless.session()).rejects.toThrow(/the application opened no window within 80 ms/)
   expect(windowless.process.signals).toContain('SIGTERM')
 })
@@ -252,7 +256,7 @@ test('an element is looked for in every open window, newest first, so a flow fol
 
 test('an element no window shows fails the action naming the element and the windows that are open (#72)', async () => {
   const main = fakeWindow([], 'Greeter', HOME)
-  const { session } = harness({ windows: [main] })
+  const { session } = harness({ windows: [main], findTimeoutMs: 60 })
   const started = await session()
 
   await expect(started.page.click({ role: 'button', name: 'Missing' })).rejects.toThrow(

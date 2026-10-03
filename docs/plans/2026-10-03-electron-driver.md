@@ -109,7 +109,7 @@ Out:
 - [x] 3. The session: launch, attach, the vocabulary across windows, `open` by
       path, masked screenshots, snapshot, trace, console lines, dispose
       (`flow-electron.test.ts`, with a fake process and a fake Playwright).
-- [ ] 4. The run: a client profile is preflighted (blocked on a missing
+- [x] 4. The run: a client profile is preflighted (blocked on a missing
       executable or display), its flows run through the Electron session,
       `console.log` is written redacted into the evidence, the result names
       the client, and a full URL in `open` refuses the run (`flow-run.test.ts`,

@@ -116,6 +116,17 @@ export interface RunTarget {
 }
 
 /**
+ * The build a run launched and drove through a client driver (#72): which
+ * driver, and the executable as the profile names it. Like a target it has
+ * one side, so `comparison` is `none`: nothing ran at a base revision.
+ */
+export interface RunClient {
+  driver: string
+  executable: string
+  comparison: 'none'
+}
+
+/**
  * The base side of a two-sided run (#147): the ref the job named as "before",
  * and whether the plan executed there. A base that did not execute (no
  * checkout, no profile, a boot that never came up) names why, and every
@@ -134,6 +145,8 @@ export interface RunResult {
   job?: { id: string }
   waived?: Array<{ criterionId: string; by: string }>
   target?: RunTarget
+  /** The build the run launched, when its profile names a client (#72). */
+  client?: RunClient
   /** The base side this run compared the head against (#147); absent on a one-sided run. */
   base?: RunBase
   /** Where and with which versions this run executed (issue #91). */
@@ -248,6 +261,7 @@ export function parseResult(input: unknown): RunResult {
   const job = parseJobSummary(input.job)
   const waived = parseWaived(input.waived)
   const target = parseTarget(input.target)
+  const client = parseClient(input.client)
   const base = parseRunBase(input.base)
   const environment = parseEnvironment(input.environment)
   const profiles = parseProfiles(input.profiles)
@@ -262,6 +276,7 @@ export function parseResult(input: unknown): RunResult {
     ...(job === undefined ? {} : { job }),
     ...(waived === undefined ? {} : { waived }),
     ...(target === undefined ? {} : { target }),
+    ...(client === undefined ? {} : { client }),
     ...(base === undefined ? {} : { base }),
     ...(environment === undefined ? {} : { environment }),
     ...(profiles === undefined ? {} : { profiles }),
@@ -459,6 +474,16 @@ function parseTarget(value: unknown): RunTarget | undefined {
   if (value.comparison !== 'none')
     fail('target.comparison', `unknown comparison ${JSON.stringify(value.comparison)} (a run against a target has one side, so it is "none")`)
   return { url, comparison: 'none' }
+}
+
+function parseClient(value: unknown): RunClient | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) fail('client', 'result.json client must be a JSON object with driver, executable and comparison')
+  const driver = nonEmptyString(value.driver, 'client.driver', 'client driver')
+  const executable = nonEmptyString(value.executable, 'client.executable', 'client executable')
+  if (value.comparison !== 'none')
+    fail('client.comparison', `unknown comparison ${JSON.stringify(value.comparison)} (a run against a client build has one side, so it is "none")`)
+  return { driver, executable, comparison: 'none' }
 }
 
 /**
