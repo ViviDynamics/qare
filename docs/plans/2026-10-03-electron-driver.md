@@ -114,7 +114,7 @@ Out:
       `console.log` is written redacted into the evidence, the result names
       the client, and a full URL in `open` refuses the run (`flow-run.test.ts`,
       `boot.test.ts`, `result.test.ts`, `evidence.test.ts`).
-- [ ] 5. CLI and doctor: `run --plan` and `plan` take the driver from the
+- [x] 5. CLI and doctor: `run --plan` and `plan` take the driver from the
       profile; doctor requires a display for a client profile.
 - [ ] 6. The example: a packaged Electron application, the shared plan, both
       profiles, and the script that runs the plan against the browser and the

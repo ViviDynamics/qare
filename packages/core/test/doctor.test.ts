@@ -203,3 +203,28 @@ test('a host with no docker on PATH is reported not reachable', async () => {
   expect(docker?.ok).toBe(false)
   expect(docker?.detail).toBe('docker daemon not reachable')
 })
+
+test('a profile that names a desktop client requires a display, and says how to get one (#72)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-doctor-client-'))
+  await writeFile(join(dir, 'QA.md'), '# QA\n')
+  await writeFile(join(dir, 'config.yml'), 'client:\n  driver: electron\n  executable: dist/app/app\n')
+
+  const problem = 'the electron driver needs a display, and neither DISPLAY nor WAYLAND_DISPLAY is set'
+  const dark = await runDoctor({ profilePath: dir, probes: { ...HEALTHY_PROBES, display: () => problem } })
+  const display = dark.findings.find((finding) => finding.name === 'display')
+  expect(dark.ready).toBe(false)
+  expect(display).toMatchObject({ ok: false, required: true })
+  expect(display?.detail).toContain('this profile launches a desktop build')
+  expect(display?.install).toContain('Xvfb')
+  // The browser is not what this profile drives, and nothing boots.
+  expect(dark.findings.find((finding) => finding.name === 'chromium')?.required).toBe(false)
+  expect(dark.findings.find((finding) => finding.name === 'docker')?.required).toBe(false)
+
+  const lit = await runDoctor({ profilePath: dir, probes: { ...HEALTHY_PROBES, display: () => undefined } })
+  expect(lit.ready).toBe(true)
+  expect(lit.findings.find((finding) => finding.name === 'display')).toMatchObject({
+    ok: true,
+    required: true,
+    detail: 'a display is available for the electron driver',
+  })
+})

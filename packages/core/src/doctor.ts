@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { accessSync, constants, existsSync } from 'node:fs'
 import { delimiter, join, resolve } from 'node:path'
 import { detectExecution, type ExecutionKind } from './environment.js'
+import { electronDisplayProblem } from './flow-electron.js'
 import { ProfileMissingError, loadProfile, type QaProfile } from './profile.js'
 import { VERSION } from './version.js'
 
@@ -37,6 +38,8 @@ export interface DoctorProbes {
   chromium?: () => Promise<{ ok: boolean; detail: string }>
   /** The python3 on PATH: its version when one answered, and what was seen. */
   python?: () => Promise<{ version?: string; detail: string }>
+  /** Why a desktop window cannot be shown on this host, or undefined when it can (#72). */
+  display?: () => string | undefined
 }
 
 export interface DoctorOpts {
@@ -63,9 +66,10 @@ const NARE_INSTALL = `install the pinned nare beside qare (needs python ${NARE_P
  * install what is missing (issue #91). The same host runs a containerised qare
  * or a native one, and the checks are the checks a native install needs:
  * node, the pinned nare, the docker daemon for a profile that boots an app,
- * and the chromium driver for a profile whose suites drive a browser. Display
- * and devices are reported but never required: the browser driver runs
- * headless, and devices arrive through the profile's registered MCP servers.
+ * and the chromium driver for a profile whose suites drive a browser. A
+ * display is required only by a profile that names a desktop client (#72):
+ * the browser driver runs headless. Devices are reported but never required:
+ * they arrive through the profile's registered MCP servers.
  */
 export async function runDoctor(opts: DoctorOpts = {}): Promise<DoctorReport> {
   const probes = opts.probes ?? {}
@@ -132,13 +136,27 @@ export async function runDoctor(opts: DoctorOpts = {}): Promise<DoctorReport> {
     install: browser.ok ? undefined : 'install playwright-core beside qare and run npx playwright install chromium',
   })
 
+  // A desktop build opens real windows (#72): a profile that names a client
+  // needs a display, where the browser driver needs none.
+  const displayProblem = profile?.client === undefined ? undefined : (probes.display ?? electronDisplayProblem)()
   findings.push(
-    {
-      name: 'display',
-      ok: true,
-      required: false,
-      detail: 'no display is needed: the browser driver runs headless',
-    },
+    profile?.client === undefined
+      ? {
+          name: 'display',
+          ok: true,
+          required: false,
+          detail: 'no display is needed: the browser driver runs headless',
+        }
+      : {
+          name: 'display',
+          ok: displayProblem === undefined,
+          required: true,
+          detail:
+            displayProblem === undefined
+              ? `a display is available for the ${profile.client.driver} driver`
+              : `${displayProblem} (this profile launches a desktop build, so a display is required)`,
+          install: displayProblem === undefined ? undefined : 'start a virtual display and name it in DISPLAY: Xvfb :99 & export DISPLAY=:99',
+        },
     {
       name: 'devices',
       ok: true,
