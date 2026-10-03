@@ -22,7 +22,7 @@ In:
   real Electron example: a declared host allowed and recorded, an undeclared
   one refused by name, a raw address with no route, and the opt-out saying so.
 - What the decision means for command checks and suites, said in the ADR and
-  the SPEC, with a follow-up issue for doing it.
+  the SPEC, with a follow-up issue for doing it (#224).
 
 Out:
 
@@ -61,29 +61,29 @@ Out:
 ## Tasks
 
 - [x] 1. Plan and ADR-0006.
-- [ ] 2. Profile: `client.hosts` and `client.egress` parse and are refused by
+- [x] 2. Profile: `client.hosts` and `client.egress` parse and are refused by
       field when malformed (`profile-client.test.ts`).
-- [ ] 3. Wire formats: a DNS question is read and answered, the server name is
+- [x] 3. Wire formats: a DNS question is read and answered, the server name is
       read from a TLS client hello and the host from an HTTP request
       (`cell-wire.test.ts`).
-- [ ] 4. The gate: a declared host is connected and recorded, an undeclared
+- [x] 4. The gate: a declared host is connected and recorded, an undeclared
       one is refused and recorded, a lookup is answered, and the summary is
       written when it stops (`cell-gate.test.ts`, over real sockets).
-- [ ] 5. The launcher's shim: DNS on loopback, ports 80 and 443 forwarded to
+- [x] 5. The launcher's shim: DNS on loopback, ports 80 and 443 forwarded to
       the gate by name, the DevTools endpoint relayed (`cell-shim.test.ts`).
-- [ ] 6. The cell: the docker calls that make it, what it refuses to start
+- [x] 6. The cell: the docker calls that make it, what it refuses to start
       without, the record it reads back, and its teardown
       (`client-cell.test.ts`, docker stood in).
-- [ ] 7. The driver launches through a cell when handed one
+- [x] 7. The driver launches through a cell when handed one
       (`flow-electron.test.ts`).
-- [ ] 8. The run: blocked by name when the cell cannot be set up,
+- [x] 8. The run: blocked by name when the cell cannot be set up,
       `outbound.json` in every client flow check, `refused` naming an
       undeclared host, the opt-out recorded, the result and the comment saying
       which (`client-run.test.ts`, `result.test.ts`, `evidence.test.ts`).
-- [ ] 9. CLI: `qare cell gate` and `qare cell launch`
-      (`packages/cli/test/cell.test.ts`).
-- [ ] 10. The example and the CI proof: `scripts/electron-driver.sh` runs the
+- [x] 9. CLI: `qare cell gate` and `qare cell launch`
+      (`cell-launch.test.ts`, `packages/cli/test/cell.test.ts`).
+- [x] 10. The example and the CI proof: `scripts/electron-driver.sh` runs the
       declared, undeclared and opted-out profiles through the pipeline's own
       execute step.
-- [ ] 11. SPEC, pipeline guide, schemas; follow-up issue for command checks
-      and suites.
+- [x] 11. SPEC, pipeline guide, schemas; follow-up issue for command checks
+      and suites (#224).
