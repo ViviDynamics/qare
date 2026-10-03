@@ -66,13 +66,41 @@ test('a plan the desktop driver cannot run is refused when it loads, naming the 
   assert.doesNotThrow(() => loadPlan(visual, [], BROWSER_FLOW_DRIVER))
 })
 
+test('the provisioned profile installs the build from an archive, for both sides, and runs the same plan (#75)', async () => {
+  const provisioned = await loadProfile(join(example, 'profiles', 'desktop-provisioned'))
+  // Nothing is in the checkout to launch: the run installs what the pipeline
+  // packaged, a build of the head and a build of the base.
+  assert.deepEqual(provisioned.client, {
+    driver: 'electron',
+    artefact: {
+      kind: 'archive',
+      executable: 'qare-example/qare-example',
+      head: { path: 'examples/electron-app/artefacts/head.tar' },
+      base: { path: 'examples/electron-app/artefacts/base.tar' },
+    },
+    health: { timeout: '30s' },
+    args: ['--no-sandbox'],
+  })
+  assert.equal(provisioned.app, undefined)
+  assert.equal(flowDriverFor(provisioned), ELECTRON_FLOW_DRIVER)
+  assert.equal(provisioned.flavour, 'web')
+  // The artefacts are the pipeline's output, never committed.
+  const ignored = await readFile(join(example, '.gitignore'), 'utf8')
+  assert.match(ignored, /^artefacts\/$/m)
+  // The packager makes the archive the profile names, from any application directory.
+  const packager = await readFile(join(example, 'package.mjs'), 'utf8')
+  assert.match(packager, /option\('--archive'\)/)
+  assert.match(packager, /'tar', \['-cf', archive, '-C', dirname\(out\), 'qare-example'\]/)
+})
+
 test('the desktop build bundles the files the browser is served, and its runtime is pinned', async () => {
   // One renderer directory: the server serves it and the packager copies the
   // application directory that holds it.
   const serve = await readFile(join(example, 'serve.mjs'), 'utf8')
   assert.match(serve, /new URL\('\.\/app\/renderer\/', import\.meta\.url\)/)
   const packager = await readFile(join(example, 'package.mjs'), 'utf8')
-  assert.match(packager, /cp\(join\(here, 'app'\), join\(out, 'resources', 'app'\)/)
+  assert.match(packager, /const app = resolve\(option\('--app'\) \?\? join\(here, 'app'\)\)/)
+  assert.match(packager, /cp\(app, join\(out, 'resources', 'app'\)/)
   const main = await readFile(join(example, 'app', 'main.js'), 'utf8')
   assert.match(main, /loadFile\(path\.join\(import\.meta\.dirname, 'renderer', 'index\.html'\)\)/)
 
