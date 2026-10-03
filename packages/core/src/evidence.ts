@@ -1,3 +1,4 @@
+import { renderAdvisorySection } from './advisory-comment.js'
 import type { CriterionResult, RunResult, RunVerdict } from './result.js'
 
 export interface CheckRunPayload {
@@ -313,6 +314,8 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
       ),
     )
   }
+  // What the UX reviewer reported (#150): advisory, in a section that says so.
+  if (result.advisory !== undefined) lines.push(...renderAdvisorySection(result.advisory, links))
   if (links.kind === 'relative') {
     const details = detailLinks(result.criteria)
     if (details.length > 0) lines.push('', 'Details:', '', ...details)

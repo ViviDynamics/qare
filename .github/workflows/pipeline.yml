@@ -18,7 +18,14 @@ name: QARE pipeline
 #     (the model-key secret for the verifier, which reads evidence but runs
 #     nothing; the identity for the steps that write to GitHub)
 #   - report:  holds the GitHub identity only (says why no verdict was posted)
+#   - advisory: holds the GitHub identity only (carries out a reply to an
+#     advisory finding: /qa-dismiss records it, /qa-promote files an issue)
 #   - requeue: holds the GitHub identity only (posts /qa on refused PRs)
+#
+# The advisory UX review (#150) adds no holder of the model key: it is the
+# second thing `qare judge` asks the model, in the step that already holds
+# the key, after the verdict is computed. Its findings never reach the
+# verdict, and nothing it needs can fail a run.
 # No secret values are written here; only names, resolved at runtime. The
 # caller passes its model key and its identity by name, as the secrets this
 # workflow declares, and never inherits its secrets into it: a called
@@ -825,6 +832,40 @@ jobs:
         with:
           name: qa-profile
           path: profile
+      # The advisory UX review (#150): what people replied to its findings on
+      # this pull request is carried out here, before the model is asked, so
+      # the reviewer is told what was dismissed and does not raise it again.
+      # /qa-dismiss is recorded and /qa-promote files the finding as an
+      # issue, each once; the event-driven advisory job below does the same
+      # the moment a reply is made, when the caller listens for comments.
+      # This step holds the identity and no model key, and it gates nothing:
+      # a sweep that fails (a pinned qare older than the command, GitHub
+      # refusing) is said, and judge then treats nothing as dismissed.
+      - name: Carry out the advisory replies
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QARE_APP_ID: ${{ secrets.app-id }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_GITHUB_TOKEN: ${{ secrets.personal-access-token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if ! docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              -e GITHUB_TOKEN \
+              -e QARE_APP_ID \
+              -e QARE_APP_PRIVATE_KEY \
+              -e QARE_GITHUB_TOKEN \
+              -e GITHUB_REPOSITORY \
+              -v "$PWD:$PWD" -w "$PWD" \
+              --entrypoint node \
+              "$IMAGE_REF" /opt/qare/lib/packages/action/dist/index.js advisory-replies \
+              --pr "$PR_NUMBER" --out advisory-dismissed.json; then
+            rm -f advisory-dismissed.json
+            echo "::warning::qare-action advisory-replies failed: replies to advisory findings were not carried out and nothing is treated as dismissed; the verdict is unaffected"
+          fi
       - name: Judge the result
         shell: bash
         env:
@@ -864,13 +905,21 @@ jobs:
           if [ -n "$kinds" ]; then
             flow_actions=(--flow-actions "$kinds")
           fi
+          # The findings people dismissed on this pull request (#150), as
+          # the step above read them: the advisory reviewer is told, so it
+          # does not raise them again. They are data for the reviewer alone;
+          # nothing in the verdict reads them.
+          dismissed=()
+          if [ -f advisory-dismissed.json ]; then
+            dismissed=(--dismissed advisory-dismissed.json)
+          fi
           docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
             "${model_env[@]}" \
             -v "$PWD:$PWD" -w "$PWD" \
             "$IMAGE_REF" qare judge \
             --result evidence/result.json --outDir . \
             --plan plan.json --diff change-planner.diff \
-            --nare /usr/local/bin/nare --profile profile "${flow_actions[@]}"
+            --nare /usr/local/bin/nare --profile profile "${flow_actions[@]}" "${dismissed[@]}"
       # What the run cost and decided (#51): its wall clock, the plan's and
       # the verifier's model spend, the criteria it selected and the verdict.
       # Recorded whether the verdict was refused or not, because a refusal
@@ -1049,6 +1098,66 @@ jobs:
             --recorded-verdict "$RECORDED_VERDICT" \
             --pipeline collect,plan,execute,judge --reporter report \
             | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # label: advisory (GitHub token only)
+  # A reply to an advisory finding (#150), acted on the moment it is made:
+  # `/qa-dismiss <id>` records that the finding is not to be raised again on
+  # the pull request, `/qa-promote <id>` files it as an issue. It runs only
+  # when the caller's workflow listens for `issue_comment`; without that
+  # trigger the same replies are carried out by judge on the pull request's
+  # next run. qare files no issue unless a person asks: this job and that
+  # step are the only things that can, and both act on a reply alone.
+  #
+  # A comment is untrusted text. It selects this job through the expression
+  # below and goes nowhere else: no step is handed it, and qare reads the
+  # pull request's comments through the API, taking findings only from its
+  # own comment and replies only from an owner, a member or a collaborator.
+  advisory:
+    name: advisory (GitHub token only)
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
+      (startsWith(github.event.comment.body, '/qa-dismiss') ||
+      startsWith(github.event.comment.body, '/qa-promote'))
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    # One at a time for a pull request: the sweep learns what was already
+    # answered by reading what was written, so two at once could answer the
+    # same reply twice. A run waits; none is cancelled.
+    concurrency:
+      group: qare-advisory-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      # The pinned qare, like every job holding the token (rule 7), and the
+      # whole workspace: nothing of the pull request is checked out or run.
+      - name: Check out qare at the pinned revision
+        uses: actions/checkout@v4
+        with:
+          repository: ViviDynamics/qare
+          ref: ${{ inputs.qare-ref }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Carry out the advisory replies
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QARE_APP_ID: ${{ secrets.app-id }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_GITHUB_TOKEN: ${{ secrets.personal-access-token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          node packages/action/dist/index.js advisory-replies --pr "$PR_NUMBER" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # label: requeue (GitHub token only)
   requeue:

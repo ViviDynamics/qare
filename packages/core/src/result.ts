@@ -1,4 +1,5 @@
 import type { A11yCounts } from './a11y.js'
+import { ADVISORY_CATEGORIES, ADVISORY_SEVERITIES, type AdvisoryFinding, type RunAdvisory } from './advisory.js'
 import type { RunEnvironment, RunImage } from './environment.js'
 import { parseProfileRef, type JobProfileRef } from './job.js'
 import type { MailProof } from './mailbox.js'
@@ -160,6 +161,12 @@ export interface RunResult {
    * the two with the run's wall clock and verdict.
    */
   judgeUsage?: ModelUsage
+  /**
+   * What the advisory UX review reported (#150): a model's findings for a
+   * person to read. It is a key of its own because it is no part of the
+   * verdict: nothing that computes an outcome or a verdict reads it.
+   */
+  advisory?: RunAdvisory
 }
 
 const CRITERION_OUTCOMES: CriterionOutcome[] = ['proven', 'failed', 'unverified']
@@ -246,6 +253,7 @@ export function parseResult(input: unknown): RunResult {
   const profiles = parseProfiles(input.profiles)
   const timestamps = parseTimestamps(input)
   const judgeUsage = parseModelUsage(input.judgeUsage, 'judgeUsage')
+  const advisory = parseAdvisory(input.advisory)
 
   return {
     schemaVersion,
@@ -259,7 +267,74 @@ export function parseResult(input: unknown): RunResult {
     ...(profiles === undefined ? {} : { profiles }),
     ...(timestamps === undefined ? {} : { startedAt: timestamps.startedAt, finishedAt: timestamps.finishedAt }),
     ...(judgeUsage === undefined ? {} : { judgeUsage }),
+    ...(advisory === undefined ? {} : { advisory }),
   }
+}
+
+/**
+ * The advisory key is optional (#150): a run nobody reviewed, and a result
+ * written before the review existed, carry none. One that is there is read
+ * field by field, so a finding holds exactly what a finding has: nothing in
+ * it names an outcome, and its screenshot is a path inside the evidence.
+ */
+function parseAdvisory(value: unknown): RunAdvisory | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) fail('advisory', 'result.json advisory must be a JSON object with status, screens and findings')
+  const status = value.status
+  if (status !== 'reviewed' && status !== 'unavailable')
+    fail('advisory.status', `unknown advisory status ${JSON.stringify(status)} (expected "reviewed" or "unavailable")`)
+  if (status === 'unavailable' && value.reason === undefined) fail('advisory.reason', 'a review that was not made names why')
+  const reason = value.reason === undefined ? undefined : nonEmptyString(value.reason, 'advisory.reason', 'reason')
+  const screens = relativePathArray(value.screens, 'advisory.screens', 'advisory screens')
+  if (!Array.isArray(value.findings)) fail('advisory.findings', 'advisory.findings must be an array of findings')
+  const findings = value.findings.map((entry, index): AdvisoryFinding => {
+    const base = `advisory.findings[${index}]`
+    if (!isRecord(entry)) fail(base, 'an advisory finding must be a JSON object')
+    const id = advisoryId(entry.id, `${base}.id`)
+    const screen = nonEmptyString(entry.screen, `${base}.screen`, 'screen')
+    assertRelativePath(screen, `${base}.screen`)
+    const { category, severity } = entry
+    if (typeof category !== 'string' || !(ADVISORY_CATEGORIES as readonly string[]).includes(category))
+      fail(`${base}.category`, `unknown category ${JSON.stringify(category)} (expected one of ${ADVISORY_CATEGORIES.join(', ')})`)
+    if (typeof severity !== 'string' || !(ADVISORY_SEVERITIES as readonly string[]).includes(severity))
+      fail(`${base}.severity`, `unknown severity ${JSON.stringify(severity)} (expected one of ${ADVISORY_SEVERITIES.join(', ')})`)
+    let screenshot: string | undefined
+    if (entry.screenshot !== undefined) {
+      screenshot = nonEmptyString(entry.screenshot, `${base}.screenshot`, 'screenshot')
+      assertRelativePath(screenshot, `${base}.screenshot`)
+    }
+    return {
+      id,
+      screen,
+      criterionId: nonEmptyString(entry.criterionId, `${base}.criterionId`, 'criterion id'),
+      category: category as AdvisoryFinding['category'],
+      severity: severity as AdvisoryFinding['severity'],
+      saw: nonEmptyString(entry.saw, `${base}.saw`, 'what the reviewer saw'),
+      why: nonEmptyString(entry.why, `${base}.why`, 'why it matters'),
+      ...(entry.element === undefined ? {} : { element: nonEmptyString(entry.element, `${base}.element`, 'element') }),
+      ...(screenshot === undefined ? {} : { screenshot }),
+    }
+  })
+  let dismissed: string[] | undefined
+  if (value.dismissed !== undefined) {
+    if (!Array.isArray(value.dismissed)) fail('advisory.dismissed', 'advisory.dismissed must be an array of finding ids')
+    dismissed = value.dismissed.map((entry, index) => advisoryId(entry, `advisory.dismissed[${index}]`))
+  }
+  const usage = parseModelUsage(value.usage, 'advisory.usage')
+  return {
+    status,
+    ...(reason === undefined ? {} : { reason }),
+    screens,
+    findings,
+    ...(dismissed === undefined ? {} : { dismissed }),
+    ...(usage === undefined ? {} : { usage }),
+  }
+}
+
+/** A finding's id is the eight hex characters its identity hashes to: what a person types back. */
+function advisoryId(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{8}$/.test(value)) fail(field, 'an advisory finding id is 8 lowercase hex characters')
+  return value
 }
 
 /**

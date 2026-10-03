@@ -19,6 +19,11 @@ name: QARE
 # Pushes are filtered to main, so the qa-assets pushes the judge step makes
 # (ADR-0002) never re-trigger this pipeline, which is what keeps those pushes
 # from being pull request completions.
+#
+# A new comment runs the advisory job alone (#150), and only when it opens
+# with /qa-dismiss or /qa-promote on a pull request: a reply to an advisory
+# finding is carried out at once. Every other comment starts a run in which
+# every job skips.
 
 on:
   workflow_dispatch:
@@ -26,12 +31,18 @@ on:
   push:
     branches: [main]
     paths: ['.qa/**']
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: read
 
+# One run at a time for a ref, the newest winning. On a comment the ref is
+# the default branch, so a comment's run takes a group of its own: it must
+# not cancel the requeue of a push to main, nor be cancelled by the next
+# comment. The advisory job serialises itself per pull request.
 concurrency:
-  group: qare-${{ github.ref }}
+  group: qare-${{ github.event.comment.id || github.ref }}
   cancel-in-progress: true
 
 jobs:

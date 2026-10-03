@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { loadResult, RUN_VERDICTS, VERSION } from '@qare/core'
@@ -12,6 +12,7 @@ import { deliverIngest, IngestDeliveryError } from './ingest-deliver.js'
 import { loadQuestions, postQuestions } from './post-questions.js'
 import { parseSweepPayload, publishSweep } from './sweep-report.js'
 import { reportPipelineFailure } from './report-failure.js'
+import { carryOutAdvisoryReplies } from './advisory-replies.js'
 // The GitHub client and the stub issue poster, for `qare init --file-issues`
 // (#146): the CLI files a stub issue the way the pipeline does.
 export { GitHubClient, GitHubClientError } from './github.js'
@@ -51,13 +52,14 @@ export async function main(argv: string[], out: Writer = process.stdout, err: Wr
     if (command === 'post-questions') return await postQuestionsCommand(rest, out)
     if (command === 'sweep-report') return await sweepReportCommand(rest, out)
     if (command === 'report-failure') return await reportFailureCommand(rest, out)
+    if (command === 'advisory-replies') return await advisoryRepliesCommand(rest, out)
   } catch (error) {
     err.write(error instanceof Error ? `${error.name}: ${error.message}\n` : `${String(error)}\n`)
     return 1
   }
   entry(out)
   if (command !== undefined) {
-    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence", "ingest-deliver", "post-questions", "sweep-report" and "report-failure"\n`)
+    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence", "ingest-deliver", "post-questions", "sweep-report", "report-failure" and "advisory-replies"\n`)
     return 1
   }
   return 0
@@ -249,6 +251,34 @@ async function reportFailureCommand(argv: string[], out: Writer): Promise<number
   const where = failure.step === undefined ? failure.job : `${failure.job} failing at ${failure.step}`
   const side = recordedVerdict === undefined ? 'not evaluated' : `verdict ${recordedVerdict} not published`
   out.write(`reported ${where} on pull request #${pr} at ${headSha.slice(0, 12)}: ${side}, qare or environment failure\n`)
+  return 0
+}
+
+/**
+ * `qare-action advisory-replies`: carry out the replies people made to the
+ * advisory findings on a pull request (#150). `/qa-dismiss <id>` is recorded,
+ * `/qa-promote <id>` files the finding as an issue, each once. `--out` writes
+ * the findings that stand dismissed, which judge hands the reviewer of the
+ * next run so they are not raised again.
+ */
+async function advisoryRepliesCommand(argv: string[], out: Writer): Promise<number> {
+  const flags = parseFlags(argv)
+  const pr = flags.number('pr')
+  if (pr === undefined || pr <= 0) throw new GitHubClientError('qare-action advisory-replies needs --pr <pull request number>')
+  const client = new GitHubClient({
+    repository: flags.string('repository'),
+    apiRoot: flags.string('api-root'),
+    tokenEnv: flags.string('token-env'),
+  })
+  // Findings and records are read from this identity's own comments, as the
+  // sticky evidence comment is found (#61).
+  const author = flags.string('author') || (await client.identity.login())
+  const replies = await carryOutAdvisoryReplies(client, pr, author)
+  const outPath = flags.string('out')
+  if (outPath !== undefined && outPath !== '')
+    await writeFile(outPath, `${JSON.stringify({ dismissed: replies.dismissed }, null, 2)}\n`, 'utf8')
+  out.write(`carried out ${replies.answered} advisory reply(ies) on pull request #${pr}: ${replies.dismissed.length} dismissed finding(s) stand\n`)
+  for (const entry of replies.promoted) out.write(`filed advisory finding ${entry.id} as #${entry.issue}\n`)
   return 0
 }
 

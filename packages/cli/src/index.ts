@@ -23,6 +23,7 @@ import {
   defaultCheckEvidenceDir,
   judgeExecuted,
   nareRunners,
+  reviewJudged,
   loadPlan,
   loadResult,
   renderUncheckableComment,
@@ -84,6 +85,7 @@ import type {
   IngestOutcome,
   IntroducedCriterion,
   Job,
+  DismissedFinding,
   JobProfileRef,
   LedgerEntry,
   LedgerResolution,
@@ -137,7 +139,7 @@ export async function main(
   if (argv[0] === 'metrics') return metricsCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) [--base-repo <dir>] [--workers <n>] | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare init [path] [--target <url>] [--health <path>] [--service <name>] [--model <name>] [--file-issues <owner/name>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare sweep [--ledger <dir>] [--json] [--out <file>] | qare metrics <record|note> | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) [--base-repo <dir>] [--workers <n>] | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] [--dismissed <path>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare init [path] [--target <url>] [--health <path>] [--service <name>] [--model <name>] [--file-issues <owner/name>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare sweep [--ledger <dir>] [--json] [--out <file>] | qare metrics <record|note> | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -1007,8 +1009,9 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     // Evidence paths in result.json are relative to its directory, and that
     // directory is all the verifier's read tool can reach.
     const evidenceDir = dirname(resultPath)
-    const { result, changed } = await judgeExecuted(loaded, {
-      texts: Object.fromEntries((plan?.criteria ?? []).map((criterion) => [criterion.id, criterion.text])),
+    const texts = Object.fromEntries((plan?.criteria ?? []).map((criterion) => [criterion.id, criterion.text]))
+    const { result: judged, changed } = await judgeExecuted(loaded, {
+      texts,
       // The verifier reads the diff, and the diff can carry the seeded values
       // the profile rules exist for: the model-facing text is swept like any
       // evidence (#64).
@@ -1018,15 +1021,138 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     })
     for (const criterion of changed)
       err.write(`verifier: ${criterion.criterionId} ${criterion.outcome}: ${redactText(criterion.reason, rules)}\n`)
+    // The verdict is decided. The advisory UX review (#150) comes after it and
+    // is handed the judged result only to copy it: the check run and the
+    // verdict line below are written from `judged`, which the review never
+    // touches, and the review's findings ride the comment and the `advisory`
+    // key alone.
+    const result = verify
+      ? await reviewAdvisory(judged, { argv, binary, evidenceDir, texts, rules, profiles: loaded.profiles, err })
+      : judged
     await mkdir(outDir, { recursive: true })
     await writeFile(join(outDir, 'judged-result.json'), `${JSON.stringify(result, null, 2)}\n`, 'utf8')
     await writeFile(join(outDir, 'comment.md'), `${renderComment(result)}\n`, 'utf8')
-    await writeFile(join(outDir, 'checkrun.json'), `${JSON.stringify(renderCheckRun(result), null, 2)}\n`, 'utf8')
-    out.write(`verdict ${result.verdict}; artifacts ${outDir}\n`)
+    await writeFile(join(outDir, 'checkrun.json'), `${JSON.stringify(renderCheckRun(judged), null, 2)}\n`, 'utf8')
+    out.write(`verdict ${judged.verdict}; artifacts ${outDir}\n`)
     return 0
   } catch (error) {
     err.write(`${formatError(error)}\n`)
     return 4
+  }
+}
+
+/**
+ * The advisory UX review of a judged run (#150), through nare, read-only and
+ * confined to the evidence exactly as the verifier is. Nothing here can stop
+ * or change a judgement: the reviewer fails to `unavailable` inside
+ * `reviewJudged`, and anything that goes wrong around it (a profile that will
+ * not load, a dismissed list that will not parse) is said on `err` and the
+ * judged result is returned as it came.
+ */
+async function reviewAdvisory(
+  judged: RunResult,
+  opts: {
+    argv: string[]
+    binary: string | undefined
+    evidenceDir: string
+    texts: Record<string, string>
+    rules: readonly RedactionRule[]
+    profiles: readonly { name: string; criteria: string[]; profile?: JobProfileRef }[] | undefined
+    err: Writer
+  },
+): Promise<RunResult> {
+  try {
+    const context = await uxContextFor(flag(opts.argv, '--profile'), opts.profiles)
+    const dismissed = await dismissedFindings(flag(opts.argv, '--dismissed'), opts.err)
+    const reviewed = await reviewJudged(judged, {
+      reviewer: nareRunners(opts.binary).verifier(opts.evidenceDir),
+      texts: opts.texts,
+      rules: opts.rules,
+      dismissed,
+      ...context,
+    })
+    const advisory = reviewed.advisory
+    if (advisory?.status === 'unavailable') opts.err.write(`advisory: the UX review did not answer: ${advisory.reason ?? ''}\n`)
+    else if (advisory !== undefined)
+      opts.err.write(`advisory: ${advisory.findings.length} finding(s) on ${advisory.screens.length} screen(s); the verdict was decided without them\n`)
+    return reviewed
+  } catch (error) {
+    opts.err.write(`advisory: no UX review was made (${formatError(error)}); the verdict does not depend on it\n`)
+    return judged
+  }
+}
+
+/**
+ * What the profile gives the reviewer: QA.md, the house rules, and the
+ * criteria whose screens are left out because their profile turned the review
+ * off. A run of several apps reads each app's profile the way the redaction
+ * rules are read, and names each rule for its app.
+ */
+async function uxContextFor(
+  profileDir: string | undefined,
+  profiles: readonly { name: string; criteria: string[]; profile?: JobProfileRef }[] | undefined,
+): Promise<{ qaMd?: string; houseRules?: string[]; skip?: (criterionId: string) => boolean; appOf?: (criterionId: string) => string | undefined }> {
+  if (profileDir === undefined) return {}
+  if (profiles === undefined) {
+    let profile: QaProfile
+    try {
+      profile = await loadProfile(resolve(profileDir))
+    } catch (error) {
+      if (!(error instanceof ProfileMissingError)) throw error
+      return {}
+    }
+    return {
+      ...(profile.instructions === undefined ? {} : { qaMd: profile.instructions }),
+      ...(profile.ux?.rules === undefined ? {} : { houseRules: profile.ux.rules }),
+      ...(profile.ux?.review === false ? { skip: () => true } : {}),
+    }
+  }
+  const off = new Set<string>()
+  const apps = new Map<string, string>()
+  const instructions: string[] = []
+  const houseRules: string[] = []
+  for (const entry of profiles) {
+    const profile =
+      entry.profile !== undefined && 'inline' in entry.profile
+        ? entry.profile.inline
+        : await loadProfile(resolve(join(profileDir, entry.name)), { resources: resolve(profileDir) })
+    for (const id of entry.criteria) apps.set(id, entry.name)
+    if (profile.ux?.review === false) for (const id of entry.criteria) off.add(id)
+    if (profile.instructions !== undefined) instructions.push(`# ${entry.name}\n\n${profile.instructions}`)
+    for (const rule of profile.ux?.rules ?? []) houseRules.push(`${entry.name}: ${rule}`)
+  }
+  return {
+    ...(instructions.length === 0 ? {} : { qaMd: instructions.join('\n\n') }),
+    ...(houseRules.length === 0 ? {} : { houseRules }),
+    skip: (criterionId) => off.has(criterionId),
+    // Each screen is handed over naming its app, so a rule that opens with an
+    // app's name is held to that app's screens alone.
+    appOf: (criterionId) => apps.get(criterionId),
+  }
+}
+
+/**
+ * The findings a person dismissed on this change, as the pipeline read them
+ * off the pull request (`--dismissed <path>`). A list that cannot be read is
+ * said and treated as empty: it is advisory input, and never a reason to stop
+ * a judgement.
+ */
+async function dismissedFindings(path: string | undefined, err: Writer): Promise<DismissedFinding[]> {
+  if (path === undefined) return []
+  try {
+    const parsed: unknown = JSON.parse(await readFile(resolve(path), 'utf8'))
+    const list = typeof parsed === 'object' && parsed !== null && 'dismissed' in parsed ? parsed.dismissed : undefined
+    if (!Array.isArray(list)) throw new Error('it must be a JSON object with a dismissed array')
+    return list.map((entry: unknown, index): DismissedFinding => {
+      if (typeof entry !== 'object' || entry === null) throw new Error(`dismissed[${index}] must be a JSON object`)
+      const { id, screen, category, saw, element } = entry as Record<string, unknown>
+      if (typeof id !== 'string' || typeof screen !== 'string' || typeof category !== 'string' || typeof saw !== 'string')
+        throw new Error(`dismissed[${index}] must carry id, screen, category and saw as strings`)
+      return { id, screen, category, saw, ...(typeof element === 'string' ? { element } : {}) }
+    })
+  } catch (error) {
+    err.write(`advisory: the dismissed list at ${path} could not be read (${error instanceof Error ? error.message : String(error)}), so nothing is treated as dismissed\n`)
+    return []
   }
 }
 

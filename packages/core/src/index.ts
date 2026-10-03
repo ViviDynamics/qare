@@ -209,6 +209,30 @@ export type {
 } from './a11y.js'
 export { A11Y_RECORD, DEFAULT_A11Y_THEME, settleA11y } from './a11y-run.js'
 export type { A11yContext, A11ySettleInput, A11ySettleOutcome } from './a11y-run.js'
+// The advisory UX review (#150): findings a person reads, never a verdict.
+export {
+  ADVISORY_CATEGORIES,
+  ADVISORY_SEVERITIES,
+  UX_REVIEW_OUTPUT_SCHEMA,
+  UX_REVIEW_TIMEOUT_MS,
+  advisoryFindingId,
+  advisoryScreens,
+  consumeUxFindings,
+  reviewJudged,
+  runUxReview,
+} from './advisory.js'
+export type {
+  AdvisoryCategory,
+  AdvisoryFinding,
+  AdvisoryScreen,
+  AdvisorySeverity,
+  DismissedFinding,
+  ReviewJudgedOptions,
+  RunAdvisory,
+  UxReviewInputs,
+} from './advisory.js'
+export type { ProfileUx } from './profile.js'
+export { ADVISORY_DISMISS_COMMAND, ADVISORY_PROMOTE_COMMAND, renderAdvisorySection } from './advisory-comment.js'
 export { runFlowCheck, runSuiteCheck } from './flow.js'
 export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult, FlowTotpConfig, FlowDriverCapabilities } from './flow.js'
 export { SNAPSHOT_SCHEMA_VERSION, nameFindings, normaliseAriaSnapshot, trimToSubtree } from './snapshot.js'
@@ -265,7 +289,7 @@ export type {
 } from './judge.js'
 export { replayRun } from './replay.js'
 export type { ReplayDifference, ReplayReport, StoredVerdict } from './replay.js'
-export { renderComment, renderCheckRun } from './evidence.js'
+export { codeSpan, renderComment, renderCheckRun } from './evidence.js'
 export type { CheckRunPayload, EvidenceLinks, EvidencePoster } from './evidence.js'
 export { classifyPipelineFailure, renderPipelineFailureCheckRun, renderPipelineFailureComment } from './pipeline-failure.js'
 export type { PipelineFailure, PipelineFailureReport, PipelineJob, PipelineStep } from './pipeline-failure.js'

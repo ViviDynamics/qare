@@ -58,7 +58,7 @@ export async function replayRun(input: {
   const bytes = `${JSON.stringify(result, null, 2)}\n`
   if (input.stored === undefined)
     return { result, bytes, stored: false, identical: false, differences: [] }
-  const identical = input.stored.bytes === bytes
+  const identical = withoutAdvisory(input.stored.bytes) === bytes
   const differences = identical ? [] : compare(input.stored.result, result)
   const explanation =
     differences.length === 0 && !identical
@@ -69,6 +69,26 @@ export async function replayRun(input: {
           ? undefined
           : 'the stored verdict does not follow from these artifacts; judge the same result.json with --runner none and compare the two'
   return { result, bytes, stored: true, identical, differences, ...(explanation === undefined ? {} : { explanation }) }
+}
+
+/**
+ * The stored verdict as judge wrote it before the advisory review added its
+ * key (#150). The recompute calls no model, so it has no review to add, and
+ * the review is no part of the verdict: a stored file that differs only by
+ * that key reproduces. Bytes that are not a JSON object, or carry no such
+ * key, are compared as they are.
+ */
+function withoutAdvisory(bytes: string): string {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(bytes)
+  } catch {
+    return bytes
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed) || !('advisory' in parsed)) return bytes
+  const rest: Record<string, unknown> = { ...parsed }
+  delete rest.advisory
+  return `${JSON.stringify(rest, null, 2)}\n`
 }
 
 function compare(stored: RunResult, replayed: RunResult): ReplayDifference[] {
