@@ -21,10 +21,13 @@ function numbered(index: number): Buffer {
  * A page that can be recorded: every frame it hands back is numbered, and
  * what each capture was asked to conceal is written down beside the actions.
  */
-function recordedPage(opts: { missing?: string; clickFails?: boolean; frameMs?: number; frame?: (index: number) => Buffer; frameFails?: Error } = {}): { page: FlowPage; calls: string[] } {
+function recordedPage(
+  opts: { missing?: string; clickFails?: boolean; frameMs?: number; frame?: (index: number) => Buffer; frameFails?: Error; conceals?: boolean } = {},
+): { page: FlowPage; calls: string[] } {
   const calls: string[] = []
   let frames = 0
   const page: FlowPage = {
+    ...(opts.conceals === false ? {} : { conceals: true as const }),
     open: async (url) => void calls.push(`open ${url}`),
     click: async (element) => {
       calls.push(`click ${describe(element)}`)
@@ -156,6 +159,35 @@ test('a typed secret is never rendered: its element is concealed before the valu
   expect(log).toContain('role=textbox name=Passphrase is concealed in every capture from here on: the value typed into it is one redaction sweeps')
   expect(log).not.toContain(SECRET)
   expect(log).toMatch(/^recording recording\.png: .* bytes, concealed: role=textbox name=Passphrase$/m)
+})
+
+test('a driver that cannot conceal an element is not trusted with one: the recording stops before the secret is typed, and nothing claims it was concealed (#78)', async () => {
+  const { page, calls } = recordedPage({ missing: 'Saved', conceals: false })
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    redactLog,
+    recording: BOUNDARIES,
+    actions: [
+      { action: 'open', url: '/' },
+      { action: 'type', element: NAME, value: 'Ada' },
+      { action: 'type', element: PASSWORD, value: SECRET },
+      { action: 'assertText', text: 'Saved' },
+    ],
+  })
+
+  expect(result.outcome).toBe('failed')
+  const typed = calls.indexOf(`type textbox:Passphrase=${SECRET}`)
+  expect(calls.slice(typed).filter((call) => call.startsWith('frame'))).toEqual([])
+  // What was recorded before the secret is kept; the screenshot is the driver's as it always was.
+  expect(await framesOf(dir)).toEqual([0, 1])
+  expect(calls).toContain('screenshot failure.png []')
+  const log = await readFile(join(dir, 'actions.log'), 'utf8')
+  expect(log).toContain('recording stopped before action 2: a secret is about to be typed, and the driver cannot conceal the element it goes into')
+  expect(log).not.toContain('is concealed')
+  expect(log).not.toContain('concealed:')
 })
 
 test('a second factor stops the recording before the code is typed, and what was recorded until then is kept (#78)', async () => {

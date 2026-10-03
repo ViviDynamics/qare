@@ -100,6 +100,13 @@ export interface FlowPage {
   assertElement(element: FlowElement): Promise<void>
   screenshot(path: string, capture?: FlowCaptureOpts): Promise<void>
   /**
+   * Whether the driver blacks out the elements a capture is asked to conceal
+   * (#78). A driver that does keeps being recorded past a typed secret, with
+   * the secret's field concealed; one that does not say so is not asked to,
+   * and its recording stops before the secret is typed.
+   */
+  conceals?: true
+  /**
    * One frame of the screen as it stands, as a PNG, masked as a screenshot
    * is (#78). The flow samples frames into its recording. Optional: a driver
    * without it is not recorded, and declares no `recording` evidence.
@@ -350,6 +357,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   // and on a timer between them. It is not made while a one-time code is on
   // the page, for the reason a screenshot is withheld then (#64).
   let recorder: FlowRecorder | undefined
+  let recordingStopped = false
   if (page.frame !== undefined && recording !== false) {
     const frame = page.frame
     if (codeOnPage) log.push('recording not made: a one-time code is on the page, and redaction cannot read pixels')
@@ -357,7 +365,17 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   }
   // A secret about to be typed (#78): no capture that could show it is in
   // flight when it lands, and none after it shows the element it is in.
-  const conceal = async (element: FlowElement): Promise<void> => {
+  const conceal = async (element: FlowElement, index: number): Promise<void> => {
+    if (page.conceals !== true) {
+      // Nothing is claimed that the driver cannot do. Its screenshots are
+      // what they were before; its recording ends here, as for a code.
+      if (recorder !== undefined && !recordingStopped) {
+        recordingStopped = true
+        log.push(`recording stopped before action ${index}: a secret is about to be typed, and the driver cannot conceal the element it goes into`)
+        await recorder.stop()
+      }
+      return
+    }
     if (!concealed.some((entry) => describeElement(entry) === describeElement(element))) {
       concealed.push(element)
       log.push(`${describeElement(element)} is concealed in every capture from here on: the value typed into it is one redaction sweeps`)
@@ -375,7 +393,8 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   // A one-time code about to be typed stops the recording for good (#64,
   // #78): what was recorded until now stays, and nothing after it is taken.
   const stopRecordingFor = async (index: number): Promise<void> => {
-    if (recorder === undefined || codeOnPage) return
+    if (recorder === undefined || recordingStopped) return
+    recordingStopped = true
     log.push(`recording stopped before action ${index}: a second-factor code is about to be on the page, and redaction cannot read pixels`)
     await recorder.stop()
   }
@@ -434,7 +453,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
         await page.open(current.url)
         break
       case 'type':
-        if (typesSecret(current, index)) await conceal(current.element)
+        if (typesSecret(current, index)) await conceal(current.element, index)
         await page.type(current.element, current.value)
         break
       case 'click':

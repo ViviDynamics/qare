@@ -584,6 +584,8 @@ test('a frame is a screenshot in memory: masked as one, with every concealed ele
   await session.dispose()
 
   expect(Buffer.from(frame as Uint8Array).toString()).toBe('a frame')
+  // The driver says it conceals, which is what lets a flow go on recording past a typed secret.
+  expect(session.page.conceals).toBe(true)
   expect(captures).toEqual([
     { type: 'png', scale: 'css', timeout: 5000, mask: [{ selector: 'css=.fixture-banner' }, { role: 'textbox', name: 'Passphrase' }, { testId: 'pin' }], maskColor: '#000000' },
     { type: 'png', scale: 'css', timeout: 5000, mask: [{ selector: 'css=.fixture-banner' }], maskColor: '#000000' },

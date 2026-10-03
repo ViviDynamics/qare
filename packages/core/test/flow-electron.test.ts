@@ -492,6 +492,7 @@ test('a frame is the current window, masked as a screenshot is, with every conce
   const started = await session()
 
   await started.page.frame?.({ conceal: [{ role: 'textbox', name: 'Passphrase' }] })
+  expect(started.page.conceals).toBe(true)
   await started.page.screenshot('/tmp/failure.png', { conceal: [{ role: 'textbox', name: 'Passphrase' }] })
   await started.dispose()
 

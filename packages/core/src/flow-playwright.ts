@@ -323,6 +323,7 @@ export async function makePlaywrightFlowSession(
         throw new Error(`assert failed: the element is not visible`)
       }
     },
+    conceals: true,
     screenshot: async (path, capture) => {
       const started = await start()
       // Masks black out their regions at capture, in the browser (#119): the

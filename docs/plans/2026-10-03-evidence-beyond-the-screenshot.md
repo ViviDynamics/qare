@@ -102,5 +102,5 @@ Out:
   whose value it logs, a failing plan types a planted secret into it, and
   `scripts/electron-driver.sh` holds the browser and the contained desktop
   build to a recording, a log excerpt and a snapshot with no secret in them.
-- [ ] 8. Docs: SPEC (clients, the Electron driver, output), the evidence
+- [x] 8. Docs: SPEC (clients, the Electron driver, output), the evidence
   directory layout, and what is unexercised for the drivers to come.

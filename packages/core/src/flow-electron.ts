@@ -561,6 +561,7 @@ export async function makeElectronFlowSession(opts: {
       }
       throw new Error('assert failed: the element is not visible in any open window')
     },
+    conceals: true,
     screenshot: async (path, capture) => {
       const shown = currentPage()
       // Masks black out their regions at capture, as in the browser (#119).

@@ -77,6 +77,7 @@ function leakySession(captures: string[], opts: { hangs?: boolean } = {}) {
     const asked = (kind: string, capture: FlowCaptureOpts | undefined): void =>
       void captures.push(`${kind} conceals [${(capture?.conceal ?? []).map((element) => ('name' in element ? element.name : element.testId)).join(', ')}]`)
     const page: FlowPage = {
+      conceals: true,
       open: async () => {
         if (opts.hangs) await new Promise((resolve) => setTimeout(resolve, 300))
         record('[window 1 opened] file:///app/index.html')
