@@ -1,0 +1,176 @@
+# ADR-0006: a client build runs in a cell with no network, and a gate is its only way out
+
+Date: 2026-10-03
+Status: accepted
+
+## Context
+
+CONSTITUTION rule 7 says the step that executes pull request code reaches
+nothing outside the declared stubs. That holds for what qare can see: a
+booted stack's stubs, and the hosts the browser qare drives reaches on a
+target run. It does not hold for a process qare starts and cannot see into
+(issue #223). The build a `client` profile launches (#72) is the sharpest
+case: an Electron main process opens sockets no page ever sees, so watching
+the windows records nothing, and the driver said so by writing no
+`outbound.json`.
+
+Two things about where that build runs today decide what is possible.
+
+**What the execute container can do.** It is started by the pipeline with the
+runner's uid, `--network host`, the runner's docker socket, and nothing else
+(ADR-0005). Measured in the web image, started as the pipeline starts it:
+
+- `CapEff` is `0`: the process holds no capability, so no `CAP_NET_ADMIN`
+  and no `CAP_SYS_ADMIN`;
+- `Seccomp` is `2` (docker's default filter), and `unshare -n` and
+  `unshare -Urn` are both refused with `Operation not permitted`.
+
+So the run cannot make a network namespace for a child, with or without a
+user namespace, and cannot install a packet filter. It shares the runner's
+network outright.
+
+**What an in-process hook is worth.** Chromium's proxy switches steer the
+renderer's requests and nothing else. The main process is Node: `net`,
+`http`, `https`, `dgram` and any native module go straight to the kernel and
+honour no proxy flag and no proxy variable. A hook the build can step around
+is advice, not containment.
+
+## Options
+
+| Option | What it gives | Why not |
+| --- | --- | --- |
+| Proxy flags or variables on the launched build | Records what the renderer fetches | The main process ignores them. Not containment |
+| A network namespace made by the run (`unshare`, bubblewrap) | The build gets loopback only, in-process | The execute container cannot make one. It would need `CAP_SYS_ADMIN` or a seccomp profile that allows `unshare`, which hands every command check and compose service in the same container the same power. A privilege added to the place pull request code already runs, to contain pull request code |
+| A packet filter on the runner (`iptables`, `nftables`) | Rules by address for the whole step | Needs `CAP_NET_ADMIN` on the runner's own network namespace, and rules by address cannot name a host: one address serves many names |
+| A sibling container on a docker `--internal` network, with a proxy on it | No privilege in execute; the daemon makes the namespace | An internal bridge is not closed. Its gateway address is the docker host, and a listener on the host's `0.0.0.0` answered from inside it when measured (docker 29.7). A booted stack publishes exactly such listeners |
+| A sibling container with `--network none`, and a socket to a gate | No privilege in execute; the namespace holds loopback and nothing else; no address in it leads anywhere | It needs the docker daemon, and the build runs in the image rather than beside the run. This is the decision |
+
+## Decision
+
+The build a `client` profile launches runs in a **cell**: a container the
+runner's docker daemon starts from the image the run itself runs in, with
+
+- `--network none`: the namespace holds a loopback interface and no route;
+- `--cap-drop ALL` and `--security-opt no-new-privileges`, the run's own uid
+  and gid, no docker socket, and no environment but the image's;
+- the repository mounted read-only at its own path, which the pipeline
+  already keeps lined up with the daemon's (ADR-0005);
+- one tmpfs volume, shared with the gate, holding two unix sockets.
+
+Beside it runs a **gate**: a second container from the same image, on
+docker's default bridge, holding the profile's `client.hosts`. The gate is
+the only thing the cell can talk to, over `gate.sock`, and it does two
+things: it says whether a name is declared, and it connects to a declared
+name on port 80 or 443 and carries the bytes. Everything else is refused.
+Every request, declared or not, is counted in the gate, and the gate writes
+the record when it stops.
+
+Inside the cell a **launcher** (qare's own, the image's entry point) makes
+that one way out look like a network to a program that knows nothing about
+it:
+
+- **DNS.** The cell's resolver is `127.0.0.1`. The launcher answers there:
+  it asks the gate about each name, answers a declared name with
+  `127.0.0.1`, and answers anything else with no such name. No query leaves
+  the cell, so a lookup cannot carry data out, and the gate has recorded the
+  name before the build learns it will not resolve.
+- **Connections.** The launcher listens on loopback ports 80 and 443, reads
+  the host a connection is for (the `Host` header, or the server name in the
+  TLS client hello), and asks the gate to connect it. TLS is carried, never
+  opened: the build's certificate check is against the real host.
+- **The driver.** The build opens its DevTools endpoint on the cell's
+  loopback. The launcher relays it to `cdp.sock`, the gate relays that to a
+  port published on the runner's loopback, and the Electron driver attaches
+  there. The virtual display is started inside the cell.
+
+A host the build reaches for that the profile does not declare leaves the
+flow `unverified` with `refused: undeclared host: <host>:<port> (<protocol>)`,
+and the run `refused`, exactly as a target run's undeclared host does.
+`outbound.json` is written into every flow check of a client run, after the
+build has exited, however the flow ended.
+
+**Fail closed.** Before any check runs, a client run is held to being able
+to make a cell: a docker daemon it can reach and the image it runs in
+(`QARE_IMAGE_REF`). Without either the run is `blocked`, naming what is
+missing. A gate whose record does not come back leaves the flow `unverified`.
+
+**The opt-out.** `client.egress: uncontained` launches the build as it was
+launched before, beside the run, with the network the step has. The
+result carries `client.egress: "uncontained"`, the comment says the build was
+not contained, and each flow check's `outbound.json` says nothing was
+recorded and why. It is the profile's to write and a reviewer's to see.
+
+**No privilege is added to the execute container.** It keeps no capability,
+the default seccomp filter, and no new mount. The cell is made by the daemon
+ADR-0005 already hands the run.
+
+## What this means for security
+
+What is contained is the build: the process tree the driver launches. From
+inside the cell it has no interface but loopback, no docker socket, a
+read-only view of the checkout, and no capability. Proven in CI on a hosted
+runner with the real Electron example, from the main process, through both
+Node and Chromium's own network stack: a declared host answers, an undeclared
+name does not resolve and is named in the refusal, and a raw address has no
+route.
+
+What is not claimed:
+
+- **The rest of the step.** A command check, a suite and a compose service
+  still run with the network the step has, and still hold the daemon. The
+  execute container is not a sandbox (ADR-0005), and this record does not
+  make it one. A pull request that wants to reach the network from a command
+  check still can. The boundary for that remains the machine: no secret on
+  it.
+- **Who writes the list.** The profile is a file in the repository, so a pull
+  request can add a host to `client.hosts`. The addition is in the diff and
+  in `outbound.json`; containment makes reaching a host a declared act, not
+  an impossible one.
+- **What travels to a declared host.** The gate decides by name. The bytes
+  to a declared host are the build's own, TLS included.
+- **Ports and protocols.** Ports 80 and 443 only, and only connections that
+  name their host. Anything else has no route and is not recorded by name:
+  the build sees the failure, the record does not.
+- **A raw address.** It has no route, so it fails; nothing names it in the
+  record, because nothing left the cell.
+
+The launcher runs beside the build as the same user, so the build can kill
+it or speak to `gate.sock` itself. Neither gets it further: policy and the
+record live in the gate, on the other side of the socket, and a build with
+no launcher has no network at all.
+
+## What the same decision means for command checks and suites
+
+They have the same gap and the same answer would close it: run the command
+in a cell. It is not done here, because a command check is not a program
+that only needs a display. It needs the repository's toolchain, which lives
+on the runner or in the flavour image, write access to the checkout, and the
+booted stack on the runner's loopback, which a cell with no network cannot
+see. Carrying those through the gate (the stack as declared hosts, stubs as
+the list) is its own design, tracked as a follow-up issue. Until it lands,
+the SPEC keeps saying what is true: a command check and a suite run with the
+network their step has.
+
+## Consequences
+
+- A client run needs a docker daemon and `QARE_IMAGE_REF`. The pipeline's
+  execute step provides both. A run on a developer's machine either has
+  them, or opts out, or is blocked by name.
+- The build runs in the image, not beside the run: it sees the image's
+  libraries and environment, the checkout read-only, and a `/tmp` of its
+  own. A build that writes beside its own executable has to be told to write
+  elsewhere.
+- The daemon must be on the machine the run is on, because the gate
+  publishes the driver's endpoint on that machine's loopback. A remote
+  daemon (`DOCKER_HOST` over TCP) leaves the flow `unverified`, naming the
+  attach that failed.
+- A runtime's own background traffic becomes visible. Electron's Chromium
+  looks for component updates at `redirector.gvt1.com` a few seconds after
+  it starts; contained, that is an undeclared host. A profile passes
+  `--disable-component-update`, as the example does, or declares the host.
+- Each flow check costs a volume, two container starts and their removal,
+  a few seconds on a hosted runner.
+- The CI proof reaches `example.com`, the one declared host, over the
+  internet. A hosted runner that cannot reach it fails that proof.
+- macOS and Windows hosts are not covered: the cell is a Linux container
+  (#90).
