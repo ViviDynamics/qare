@@ -108,21 +108,25 @@ Out:
 
 ## Tasks
 
-- [ ] 1. `requires` in the profile: profile tests for the three keys, unknown
+- [x] 1. `requires` in the profile: profile tests for the three keys, unknown
   keys and values, `ios` naming #74, and a contained client that requires
   macOS.
-- [ ] 2. `placement.ts`: `requirementsOf`, `detectHost`, `unmetRequirements`
+- [x] 2. `placement.ts`: `requirementsOf`, `detectHost`, `unmetRequirements`
   and `placementProblem`, tested with fake hosts (macOS, Windows, a
   self-hosted runner, no `/dev/kvm`, adb output).
-- [ ] 3. The run refuses before provisioning: a run requiring macOS on a Linux
+- [x] 3. The run refuses before provisioning: a run requiring macOS on a Linux
   host is `refused` naming it, with no boot, no install, no base checkout; the
   cell and display refusals go the same way; a several-app run refuses the one
   app; a public repository on a self-hosted runner is refused unless allowed.
-- [ ] 4. Evidence: `environment.host` and `requirements` are written, loaded
+- [x] 4. Evidence: `environment.host` and `requirements` are written, loaded
   back, and named in the comment; an older result still loads.
-- [ ] 5. `qare doctor` reports the host and the declared requirements.
-- [ ] 6. The real CLI: `qare run` on this host with a profile that requires
+- [x] 5. `qare doctor` reports the host and the declared requirements.
+- [x] 6. The real CLI: `qare run` on this host with a profile that requires
   macOS exits 3 with the named reason and writes nothing but the result.
-- [ ] 7. The pipeline: the `self-hosted` input, and the three facts handed to
+- [x] 7. The pipeline: the `self-hosted` input, and the three facts handed to
   execute; workflow tests.
-- [ ] 8. Docs.
+- [x] 8. Docs.
+- [x] 9. CI: `scripts/compose-boot.sh` runs the pipeline's execute step against
+  the same app under a profile that requires macOS, and holds the run to
+  refusing by name with only a result left behind; the booted run's evidence
+  is held to naming the host kind.
