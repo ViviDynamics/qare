@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import type { A11yAuditRequest, A11yFlowAudit, A11yFlowAudits, A11yPageAudit } from './a11y.js'
 import type { ExecutionKind } from './environment.js'
 import {
   REPAIRS_SCHEMA_VERSION,
@@ -76,6 +77,12 @@ export interface FlowPage {
    * keeps working; its flow checks carry no snapshot evidence.
    */
   snapshot?: () => Promise<SnapshotNode>
+  /**
+   * Audit the page as it stands against the accessibility rule set (#149),
+   * at the width and theme asked for, and put the viewport back. Optional:
+   * a driver without the seam leaves an `a11y` check unverified.
+   */
+  audit?: (request: A11yAuditRequest) => Promise<A11yPageAudit>
 }
 
 export interface FlowTrace {
@@ -119,6 +126,12 @@ export interface FlowCheckOpts {
   codesOnPage?: boolean
   /** Injectable clock, so window arithmetic is pinned in tests. */
   now?: () => number
+  /**
+   * Audit the pages the flow visits (#149): the rule set's tags, and the
+   * widths and themes each settled page is audited at. No width audits once,
+   * at the viewport the flow ran in.
+   */
+  a11y?: { tags: readonly string[]; widths: readonly number[]; themes: readonly string[] }
 }
 
 export interface FlowCheckResult {
@@ -127,6 +140,8 @@ export interface FlowCheckResult {
   evidence: string[]
   /** Every repair proposed this check, applied or refused (#83). */
   repairs?: FlowRepairRecord[]
+  /** The audits the flow made, when it was asked to audit (#149). What they come to is the caller's to decide. */
+  a11y?: A11yFlowAudits
 }
 
 const KNOWN_KINDS: readonly string[] = [
@@ -198,7 +213,7 @@ function describeAction(action: FlowAction, index: number): string {
  * is unverified, never failed: the criterion says nothing about the change.
  */
 export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult> {
-  const { actions, page, trace, outDir, tracesDir, redactLog, masks, totp, generatedCodes, codesOnPage = false, now = Date.now } = opts
+  const { actions, page, trace, outDir, tracesDir, redactLog, masks, totp, generatedCodes, codesOnPage = false, now = Date.now, a11y } = opts
 
   if (actions.length === 0) {
     return { outcome: 'unverified', reason: 'flow has no actions', evidence: [] }
@@ -443,11 +458,58 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   // whether it fixed the action or sent it to review.
   const records: FlowRepairRecord[] = []
 
+  // The accessibility audits (#149). The page is audited where the plan
+  // itself declared it settled: after an open, after a wait or an assertion
+  // that held, and at the end of a flow that passed. A point nothing acted
+  // on the page since the last audit is not audited twice. One audit that
+  // cannot be made ends the auditing, named: the rest would only repeat it,
+  // and a page that was not audited is never read as a clean one.
+  const audits: A11yFlowAudit[] = []
+  let auditError: string | undefined
+  let actedSinceAudit = false
+  const ACTS_ON_PAGE: readonly string[] = ['open', 'type', 'click', 'choose', 'totp', 'backupCode']
+  const SETTLES_PAGE: readonly string[] = ['open', 'waitFor', 'assertText', 'assertElement']
+  const auditAt = async (point: number): Promise<void> => {
+    if (a11y === undefined || !actedSinceAudit || auditError !== undefined) return
+    actedSinceAudit = false
+    if (page.audit === undefined) {
+      auditError = 'the driver exposes no accessibility audit'
+      log.push(`a11y audit not made: ${auditError}`)
+      return
+    }
+    for (const width of a11y.widths.length === 0 ? [undefined] : a11y.widths) {
+      for (const theme of a11y.themes) {
+        const at = `${width ?? 'viewport'}x${theme}`
+        const shot = `a11y/${point}-${at}.png`
+        try {
+          // A screenshot is evidence redaction cannot read, so none is taken
+          // while a one-time code may sit on the page (#64).
+          if (codeOnPage) log.push(`a11y screenshot withheld at ${at}: the second-factor code is visible on the page, and redaction cannot read pixels`)
+          else await mkdir(join(outDir, 'a11y'), { recursive: true })
+          const audit = await page.audit({ tags: a11y.tags, ...(width === undefined ? {} : { width }), theme, ...(codeOnPage ? {} : { screenshot: join(outDir, shot) }) })
+          const taken = audit.screenshot === true && !codeOnPage
+          audits.push({ ...audit, point, ...(taken ? { screenshotPath: shot } : {}) })
+          const found = audit.violations.reduce((sum, violation) => sum + violation.nodes.length, 0)
+          log.push(`a11y audit after action ${point} at ${audit.width}x${theme}: ${found} violation(s)${taken ? `, screenshot ${shot}${masksNote}` : ''}`)
+        } catch (error) {
+          auditError = `the accessibility audit after action ${point} at ${at} could not be made: ${String(error)}`
+          log.push(`a11y audit failed: ${auditError}`)
+          return
+        }
+      }
+    }
+  }
+  const settled = async (action: FlowAction, index: number): Promise<void> => {
+    if (ACTS_ON_PAGE.includes(action.action)) actedSinceAudit = true
+    if (SETTLES_PAGE.includes(action.action)) await auditAt(index)
+  }
+
   for (const [index, action] of actions.entries()) {
     const line = describeAction(action, index)
     try {
       const driven = await drive(action, index)
       log.push(driven ?? line)
+      await settled(action, index)
     } catch (error) {
       if (action.action === 'assertText' || action.action === 'assertElement') {
         outcome = 'failed'
@@ -470,6 +532,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
       const repaired = await repairLocator(action, index, log, records)
       if (repaired !== undefined && 'line' in repaired) {
         log.push(repaired.line)
+        await settled(action, index)
         continue
       }
       // The failure reason quotes what the action saw, and the action may
@@ -486,6 +549,9 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   }
 
   evidence.push(...captures)
+  // The state a passing flow ended in is a page it visited, like the others.
+  if (outcome === 'passed') await auditAt(actions.length)
+  for (const audit of audits) if (audit.screenshotPath !== undefined) evidence.push(audit.screenshotPath)
   if (outcome === 'passed') {
     const final = await screenshot(FINAL_SCREENSHOT)
     if (final !== undefined) evidence.push(final)
@@ -512,9 +578,10 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
     await writeLog()
   }
 
+  const audited: Pick<FlowCheckResult, 'a11y'> = a11y === undefined ? {} : { a11y: { audits, ...(auditError === undefined ? {} : { error: auditError }) } }
   return outcome === 'passed'
-    ? { outcome, evidence, ...(records.length === 0 ? {} : { repairs: records }) }
-    : { outcome, reason, evidence, ...(records.length === 0 ? {} : { repairs: records }) }
+    ? { outcome, evidence, ...(records.length === 0 ? {} : { repairs: records }), ...audited }
+    : { outcome, reason, evidence, ...(records.length === 0 ? {} : { repairs: records }), ...audited }
 }
 
 /**

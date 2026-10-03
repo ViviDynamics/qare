@@ -8,6 +8,7 @@ import {
   totpCode,
   normaliseAriaSnapshot,
   findCandidates,
+  type A11yAuditRequest,
   type FlowAction,
   type FlowElement,
   type FlowPage,
@@ -820,4 +821,144 @@ test('a repair whose reference still resolves is refused, so a failing action is
   expect(result.outcome).toBe('unverified')
   expect(result.reason).toContain('still resolves to the same element')
   expect(result.repairs?.[0]?.status).toBe('refused')
+})
+
+/** A page whose audit seam answers one violation, and records what it was asked. */
+function auditedPage(opts: { fail?: Error; shoot?: boolean } = {}): { page: FlowPage; calls: string[]; requests: A11yAuditRequest[] } {
+  const { page, calls } = fakePage()
+  const requests: A11yAuditRequest[] = []
+  page.audit = async (request) => {
+    requests.push(request)
+    calls.push(`audit ${request.width ?? 'viewport'}x${request.theme}`)
+    if (opts.fail) throw opts.fail
+    if (request.screenshot !== undefined && opts.shoot !== false) await writeFile(request.screenshot, 'png')
+    return {
+      url: APP_URL,
+      width: request.width ?? 1280,
+      theme: request.theme,
+      engine: { name: 'axe-core', version: '4.13.0' },
+      incomplete: 0,
+      violations: [{ rule: 'button-name', impact: 'critical', help: 'Buttons must have discernible text', nodes: [{ target: 'button', path: 'document/main/button' }] }],
+      ...(request.screenshot !== undefined && opts.shoot !== false ? { screenshot: true } : {}),
+    }
+  }
+  return { page, calls, requests }
+}
+
+const A11Y = { tags: ['wcag2a'], widths: [390, 1280], themes: ['light'] }
+
+test('a flow audits the page at each point the plan declared settled, at every width and theme (#149)', async () => {
+  const { page, calls, requests } = auditedPage()
+  const dir = await outDir()
+
+  const result = await runFlowCheck({
+    outDir: dir,
+    page,
+    a11y: A11Y,
+    actions: [
+      { action: 'open', url: APP_URL },
+      // Nothing acted on the page since the open: this point is not audited twice.
+      { action: 'waitFor', element: { role: 'button', name: 'Save' } },
+      { action: 'click', element: { role: 'button', name: 'Save' } },
+      { action: 'assertText', text: 'Saved' },
+      { action: 'click', element: { role: 'link', name: 'Next' } },
+    ],
+  })
+
+  expect(result.outcome).toBe('passed')
+  expect(calls.filter((call) => !call.startsWith('screenshot'))).toEqual([
+    `open ${APP_URL}`,
+    'audit 390xlight',
+    'audit 1280xlight',
+    'waitFor button:Save',
+    'click button:Save',
+    'assert Saved',
+    'audit 390xlight',
+    'audit 1280xlight',
+    'click link:Next',
+    // The flow passed with the page acted on since the last audit: its final state is audited too.
+    'audit 390xlight',
+    'audit 1280xlight',
+  ])
+  expect(requests[0]).toEqual({ tags: ['wcag2a'], width: 390, theme: 'light', screenshot: join(dir, 'a11y', '0-390xlight.png') })
+  expect(result.a11y?.error).toBeUndefined()
+  expect(result.a11y?.audits.map((audit) => [audit.point, audit.width, audit.screenshotPath])).toEqual([
+    [0, 390, 'a11y/0-390xlight.png'],
+    [0, 1280, 'a11y/0-1280xlight.png'],
+    [3, 390, 'a11y/3-390xlight.png'],
+    [3, 1280, 'a11y/3-1280xlight.png'],
+    [5, 390, 'a11y/5-390xlight.png'],
+    [5, 1280, 'a11y/5-1280xlight.png'],
+  ])
+  // The screenshots the audits took are evidence; the record is the caller's to write.
+  expect(result.evidence).toContain('a11y/3-1280xlight.png')
+  expect(await actionsLog(dir)).toContain('a11y audit after action 0 at 390xlight: 1 violation(s)')
+})
+
+test('a flow nobody asked to audit never calls the audit seam (#149)', async () => {
+  const { page, requests } = auditedPage()
+  const result = await runFlowCheck({ outDir: await outDir(), page, actions: [{ action: 'open', url: APP_URL }] })
+  expect(requests).toEqual([])
+  expect(result.a11y).toBeUndefined()
+})
+
+test('with no width configured the audit runs once at the viewport the flow ran in (#149)', async () => {
+  const { page, requests } = auditedPage({ shoot: false })
+  const result = await runFlowCheck({ outDir: await outDir(), page, a11y: { tags: ['wcag2a'], widths: [], themes: ['dark'] }, actions: [{ action: 'open', url: APP_URL }] })
+  expect(requests.map((request) => [request.width, request.theme])).toEqual([[undefined, 'dark']])
+  // No screenshot was taken, so none is named.
+  expect(result.a11y?.audits[0]?.screenshotPath).toBeUndefined()
+  expect(result.a11y?.audits[0]?.width).toBe(1280)
+})
+
+test('a driver with no audit seam, or an audit that throws, is named and never read as a clean page (#149)', async () => {
+  const { page } = fakePage()
+  const none = await runFlowCheck({ outDir: await outDir(), page, a11y: A11Y, actions: [{ action: 'open', url: APP_URL }] })
+  // The flow's own outcome is the flow's; the caller decides what a missing audit means.
+  expect(none.outcome).toBe('passed')
+  expect(none.a11y).toEqual({ audits: [], error: 'the driver exposes no accessibility audit' })
+
+  const failing = auditedPage({ fail: new Error('axe-core is not installed') })
+  const dir = await outDir()
+  const thrown = await runFlowCheck({
+    outDir: dir,
+    page: failing.page,
+    a11y: A11Y,
+    actions: [{ action: 'open', url: APP_URL }, { action: 'click', element: { role: 'button', name: 'Go' } }],
+  })
+  expect(thrown.a11y?.error).toBe('the accessibility audit after action 0 at 390xlight could not be made: Error: axe-core is not installed')
+  // One failed audit ends the auditing: the rest would only repeat it.
+  expect(failing.requests).toHaveLength(1)
+  expect(await actionsLog(dir)).toContain('could not be made')
+})
+
+test('a flow that fails is audited up to where it got, and not at its end (#149)', async () => {
+  const { page, calls } = auditedPage()
+  page.assertText = async () => {
+    throw new Error('not visible')
+  }
+  const result = await runFlowCheck({
+    outDir: await outDir(),
+    page,
+    a11y: { tags: ['wcag2a'], widths: [], themes: ['light'] },
+    actions: [{ action: 'open', url: APP_URL }, { action: 'click', element: { role: 'button', name: 'Go' } }, { action: 'assertText', text: 'Done' }],
+  })
+  expect(result.outcome).toBe('failed')
+  expect(calls.filter((call) => call.startsWith('audit'))).toHaveLength(1)
+  expect(result.a11y?.audits.map((audit) => audit.point)).toEqual([0])
+})
+
+test('an audit takes no screenshot while a one-time code is on the page (#149, #64)', async () => {
+  const { page, requests } = auditedPage()
+  const dir = await outDir()
+  await runFlowCheck({
+    outDir: dir,
+    page,
+    a11y: { tags: ['wcag2a'], widths: [], themes: ['light'] },
+    totp: { secret: 'JBSWY3DPEHPK3PXP', digits: 6, period: 30, algorithm: 'SHA1' },
+    now: () => 15_000,
+    actions: [{ action: 'open', url: APP_URL }, { action: 'totp', element: { role: 'textbox', name: 'Code' } }],
+  })
+  expect(requests.map((request) => request.screenshot === undefined)).toEqual([false, true])
+  expect(await actionsLog(dir)).toContain('a11y screenshot withheld')
 })
