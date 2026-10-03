@@ -144,6 +144,11 @@ export interface RunClientArtefact {
   kind: string
   source: 'prebuilt' | 'built'
   sha256?: string
+  /**
+   * Why the install could not be removed, when the teardown failed: state the
+   * run left behind is part of the record, never only a line on stderr.
+   */
+  leftover?: string
 }
 
 /**
@@ -283,6 +288,11 @@ export function parseResult(input: unknown): RunResult {
   const target = parseTarget(input.target)
   const client = parseClient(input.client)
   const base = parseRunBase(input.base)
+  // A client's comparison is a claim about the run's base side (#75): it is
+  // "base" only when the base executed, so the record cannot say two builds
+  // were compared when one of them never ran.
+  if (client?.comparison === 'base' && base?.status !== 'executed')
+    fail('client.comparison', 'client.comparison is "base", which says a build of the base was checked, but the run records no base side that executed')
   const environment = parseEnvironment(input.environment)
   const profiles = parseProfiles(input.profiles)
   const timestamps = parseTimestamps(input)
@@ -508,6 +518,12 @@ function parseClient(value: unknown): RunClient | undefined {
     )
   const artefact = parseClientArtefact(value.artefact, 'client.artefact')
   const base = parseClientArtefact(value.base, 'client.base')
+  // The comparison and the builds it names agree: "base" names the build the
+  // base side was installed from, and "none" names none.
+  if (value.comparison === 'base' && base === undefined)
+    fail('client.comparison', 'client.comparison is "base", so client.base must name the artefact the base side was installed from')
+  if (value.comparison === 'none' && base !== undefined)
+    fail('client.base', 'client.base names a build of the base, but client.comparison is "none": a base build that was checked makes the comparison "base"')
   return { driver, executable, comparison: value.comparison, ...(artefact === undefined ? {} : { artefact }), ...(base === undefined ? {} : { base }) }
 }
 
@@ -520,7 +536,14 @@ function parseClientArtefact(value: unknown, field: string): RunClientArtefact |
     fail(`${field}.source`, `unknown artefact source ${JSON.stringify(value.source)} (expected "prebuilt" or "built")`)
   if (value.sha256 !== undefined && (typeof value.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(value.sha256)))
     fail(`${field}.sha256`, 'an artefact sha256 must be 64 lower-case hex characters')
-  return { path, kind, source: value.source, ...(value.sha256 === undefined ? {} : { sha256: value.sha256 as string }) }
+  const leftover = value.leftover === undefined ? undefined : nonEmptyString(value.leftover, `${field}.leftover`, 'what the teardown left behind')
+  return {
+    path,
+    kind,
+    source: value.source,
+    ...(value.sha256 === undefined ? {} : { sha256: value.sha256 as string }),
+    ...(leftover === undefined ? {} : { leftover }),
+  }
 }
 
 /**

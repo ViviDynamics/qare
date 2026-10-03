@@ -93,21 +93,25 @@ export interface ProfileClientArtefact {
  * in place, one side only. `artefact` is a build the run provisions (#75):
  * obtained, installed, proven up and removed again, for one side or both.
  */
-export interface ProfileClient {
+export type ProfileClient = ProfileClientCommon & ProfileClientBuild
+
+/** What every client profile says, however it names its build. */
+export interface ProfileClientCommon {
   driver: ClientDriver
-  executable?: string
-  artefact?: ProfileClientArtefact
   /** The health check the harness runs on the build (#75): how long its first window may take. */
   health?: { timeout: string }
   args: string[]
 }
+
+/** Exactly one way of naming the build: the type holds what the loader enforces. */
+export type ProfileClientBuild = { executable: string; artefact?: undefined } | { artefact: ProfileClientArtefact; executable?: undefined }
 
 /**
  * The executable as the profile names it: the binary in the checkout (#72),
  * or the one inside the artefact the run installs (#75).
  */
 export function clientExecutableName(client: ProfileClient): string {
-  return client.executable ?? client.artefact?.executable ?? ''
+  return client.executable ?? client.artefact.executable
 }
 
 export interface ProfileStub {
@@ -701,13 +705,10 @@ function parseClient(value: unknown): ProfileClient {
     if (owned !== undefined)
       fail(`client.args[${index}]`, `${owned} is not the profile's to pass: the ${driver} driver sets it for every launch`)
   }
-  return {
-    driver,
-    ...(executable === undefined ? {} : { executable }),
-    ...(artefact === undefined ? {} : { artefact }),
-    ...(health === undefined ? {} : { health }),
-    args,
-  }
+  const common = { ...(health === undefined ? {} : { health }), args }
+  if (artefact !== undefined) return { driver, artefact, ...common }
+  // parseClient read an executable whenever it read no artefact.
+  return { driver, executable: executable as string, ...common }
 }
 
 /**

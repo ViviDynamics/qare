@@ -43,8 +43,15 @@ test('execute takes the builds a client profile installs from an artifact the ca
   expect(workflow).toMatch(/\n {6}artefacts:\n {8}description: >-\n[\s\S]*?\n {8}type: string\n {8}default: ''\n/)
   const execute = section('execute')
   expect(execute).toContain("if: inputs.artefacts != ''")
-  // The artifact lands in a directory of its own, named for it.
-  expect(execute).toContain('name: ${{ inputs.artefacts }}\n          path: ${{ inputs.artefacts }}')
+  // The artifact lands in one reserved directory, whatever it is named: an
+  // artifact called "." or ".qa" cannot be laid over the checkout.
+  expect(execute).toContain('name: ${{ inputs.artefacts }}\n          path: qare-artefacts\n')
+  expect(execute).not.toContain('path: ${{ inputs.artefacts }}')
+  // And the checkout may not already carry that directory.
+  const reserve = execute.indexOf('name: Reserve the client artefacts directory')
+  expect(reserve).toBeGreaterThan(-1)
+  expect(reserve).toBeLessThan(execute.indexOf('name: Download the client artefacts'))
+  expect(execute).toContain('if [ -e qare-artefacts ] || [ -L qare-artefacts ]; then')
   // The plan is downloaded after the builds, so nothing a pull request built
   // can stand in for the plan the planner wrote.
   const builds = execute.indexOf('name: Download the client artefacts')

@@ -433,7 +433,13 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     const released = client
     client = undefined
     const torn = await released.teardown()
-    if (!torn.ok) console.error(`teardown left state behind: ${torn.reason ?? 'the install could not be removed'}`)
+    if (!torn.ok) {
+      // State left behind is part of the record: the result names it, so the
+      // comment never says an install was removed when it was not.
+      const leftover = torn.reason ?? 'the install could not be removed'
+      console.error(`teardown left state behind: ${leftover}`)
+      if (targetNote.client?.artefact !== undefined) targetNote.client = { ...targetNote.client, artefact: { ...targetNote.client.artefact, leftover } }
+    }
     await writeProvisionLog(job.evidenceDir, released.log(), rules)
   }
   try {
@@ -554,7 +560,16 @@ async function writeProvisionLog(evidenceDir: string, log: string, rules: readon
 function installProvisionCancel(): () => void {
   const stop = (): void => {
     removeLiveInstalls()
-    process.exit(4)
+    // The exit is the shared one (#53): this run's part is done at once, and
+    // it joins the stops other runs in this process still have pending, so a
+    // compose down a neighbouring run queued on the same signal is waited
+    // for. Every listener of the signal has run by the next turn of the loop.
+    const entry = new Promise<void>((resolve) => setImmediate(resolve))
+    pendingStops.add(entry)
+    void entry.finally(() => {
+      pendingStops.delete(entry)
+      if (pendingStops.size === 0) process.exit(4)
+    })
   }
   process.once('SIGINT', stop)
   process.once('SIGTERM', stop)

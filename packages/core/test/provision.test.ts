@@ -276,6 +276,37 @@ test('an uninstall that fails is reported, never swallowed: state left behind is
   expect(outcome.log()).toContain('[teardown] the head artefact artefacts/app.apk could not be uninstalled from emulator-5554: device offline')
 })
 
+test('a build command that forks does not outlive its deadline: the whole group is ended and the run moves on (#75)', async () => {
+  const { root, opts } = await workspace()
+  // The child leaves a grandchild holding its output open, then waits itself.
+  await writeFile(join(root, 'fork.sh'), 'sleep 30 &\nsleep 30\n')
+  const started = Date.now()
+  const outcome = await provisionClient(client({ head: { path: 'artefacts/slow.tar.gz', build: 'sh fork.sh' }, timeout: '1s' }), opts)
+  expect(outcome.kind === 'blocked' && outcome.reason).toBe('the head artefact artefacts/slow.tar.gz could not be built: `sh fork.sh` exited -1')
+  expect(Date.now() - started).toBeLessThan(8_000)
+  expect(outcome.log()).toContain('[build] [killed: it outlived its 1000 ms deadline]')
+}, 15_000)
+
+test('a file whose name starts with two dots is still inside the repository (#75)', async () => {
+  const { root, opts } = await workspace()
+  execFileSync('cp', [join(root, 'artefacts', 'head.tar.gz'), join(root, '..head.tar.gz')])
+  const outcome = await provisionClient(client({ head: { path: '..head.tar.gz' } }), opts)
+  if (outcome.kind !== 'up') throw new Error(outcome.reason)
+  await outcome.teardown()
+})
+
+test('an installer that throws still blocks naming the artefact, and its install directory is removed (#75)', async () => {
+  const { installRoot, opts } = await workspace()
+  const outcome = await provisionClient(client(), {
+    ...opts,
+    runCommand: async () => {
+      throw new Error('the command runner broke')
+    },
+  })
+  expect(outcome.kind === 'blocked' && outcome.reason).toBe('the head artefact artefacts/head.tar.gz could not be installed: the command runner broke')
+  expect(readdirSync(installRoot)).toEqual([])
+})
+
 test('an artefact kind nothing installs blocks by name (#75)', async () => {
   const { opts } = await workspace()
   const outcome = await provisionClient(client({ kind: 'package' }), opts)

@@ -460,7 +460,8 @@ test('a criterion result may carry the messages its mail checks read (#65)', () 
 
 test('a result names the artefacts a client run provisioned, and what it compared with (#75)', () => {
   const sha256 = 'a'.repeat(64)
-  const withClient = (client: unknown): string => JSON.stringify({ schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [], client })
+  const withClient = (client: unknown, base: unknown = { ref: 'main', status: 'executed' }): string =>
+    JSON.stringify({ schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [], client, ...(base === null ? {} : { base }) })
   const client = {
     driver: 'electron',
     executable: 'greeter/greeter',
@@ -477,4 +478,17 @@ test('a result names the artefacts a client run provisioned, and what it compare
   expect(field({ ...client, artefact: { ...client.artefact, source: 'downloaded' } })).toBe('client.artefact.source')
   expect(field({ ...client, artefact: { ...client.artefact, sha256: 'abc' } })).toBe('client.artefact.sha256')
   expect(field({ ...client, base: { kind: 'archive', source: 'built' } })).toBe('client.base.path')
+  // A comparison the record cannot substantiate is refused: "base" needs the
+  // build of each side and a base that executed, and "none" carries no base build.
+  const { base: _base, ...headOnly } = client
+  void _base
+  expect(field(headOnly)).toBe('client.comparison')
+  expect(field({ ...client, comparison: 'none' })).toBe('client.base')
+  const mismatch = (base: unknown): string => resultError(() => loadResult(withClient(client, base))).field
+  expect(mismatch(null)).toBe('client.comparison')
+  expect(mismatch({ ref: 'main', status: 'not-executed', reason: 'no artefact' })).toBe('client.comparison')
+  // State a teardown left behind is part of the record.
+  const left = { ...client, artefact: { ...client.artefact, leftover: 'the install at /tmp/x could not be removed' } }
+  expect(loadResult(withClient(left)).client?.artefact?.leftover).toBe('the install at /tmp/x could not be removed')
+  expect(field({ ...client, artefact: { ...client.artefact, leftover: '' } })).toBe('client.artefact.leftover')
 })

@@ -96,7 +96,7 @@ UX review".
 | `runs-on` | `"ubuntu-latest"` | Where every job runs, as JSON: one label, or a list of labels for your own runners. |
 | `execute-runs-on` | empty | Where execute runs, in the same JSON form, when it should not share runners with the jobs that hold secrets. Empty means `runs-on`. See "Your own runners". |
 | `planner-diff-exclude` | empty | Space-separated git pathspecs left out of the planner's copy of the diff, for a diff too large to plan from whole. execute and judge still read the full diff. |
-| `artefacts` | empty | The name of a workflow artifact that holds the builds a client profile installs, uploaded by an earlier job of your workflow. execute downloads it into the workspace before the run. See "Profiles that install a build". |
+| `artefacts` | empty | The name of a workflow artifact that holds the builds a client profile installs, uploaded by an earlier job of your workflow. execute downloads it into `qare-artefacts/` at the repository root before the run. See "Profiles that install a build". |
 | `qare-ref` | the release | The qare revision the pipeline runs. It defaults to the release the workflow file ships in. Leave it alone and pin the release in `uses:`. |
 
 ## Secrets
@@ -287,7 +287,7 @@ Building is your pipeline's step, not qare's: execute runs in the qare image,
 which carries no toolchain of yours, and it reaches nothing outside the run.
 So a job of your workflow builds the artefacts and uploads them as one
 artifact, and the pipeline is told its name. execute downloads the artifact
-into a directory of that name at the repository root, which is where the
+into `qare-artefacts/` at the repository root, whatever the artifact is named (the checkout must not carry a path of that name), which is where the
 profile's paths above find it:
 
 ```yaml

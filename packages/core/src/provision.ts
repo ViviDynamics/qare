@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { createReadStream, rmSync } from 'node:fs'
 import { access, constants, cp, mkdtemp, realpath, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { parseDurationMs } from './duration.js'
 import { electronDisplayProblem, makeElectronFlowSession, type ElectronHost } from './flow-electron.js'
 import type { ProfileClient } from './profile.js'
@@ -155,35 +155,54 @@ export const runProvisionCommand: ProvisionCommandRunner = (command, args, opts)
     }
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(command, args, { cwd: opts.cwd, env: opts.env, stdio: ['ignore', 'pipe', 'pipe'] })
+      // A group of its own, so the deadline ends whatever the command forked
+      // and not just the process that was started.
+      child = spawn(command, args, { cwd: opts.cwd, env: opts.env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' })
     } catch (error) {
       done({ code: -1, output: String(error) })
       return
     }
+    const signal = (name: NodeJS.Signals): void => {
+      try {
+        if (child.pid !== undefined && process.platform !== 'win32') process.kill(-child.pid, name)
+        else child.kill(name)
+      } catch {
+        // The group is already gone.
+      }
+    }
     let timedOut = false
     let killTimer: ReturnType<typeof setTimeout> | undefined
-    const timer = setTimeout(() => {
-      timedOut = true
-      child.kill('SIGTERM')
-      killTimer = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS)
-    }, opts.timeoutMs)
-    child.stdout?.on('data', keep)
-    child.stderr?.on('data', keep)
+    let hardTimer: ReturnType<typeof setTimeout> | undefined
     let settled = false
     const settle = (result: ProvisionCommandResult): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       if (killTimer !== undefined) clearTimeout(killTimer)
+      if (hardTimer !== undefined) clearTimeout(hardTimer)
       done(result)
     }
+    const killedNote = (): string => `${output}\n[killed: it outlived its ${opts.timeoutMs} ms deadline]\n`
+    const timer = setTimeout(() => {
+      timedOut = true
+      signal('SIGTERM')
+      killTimer = setTimeout(() => signal('SIGKILL'), KILL_GRACE_MS)
+      // A descendant that escaped the group can still hold the pipes open, so
+      // `close` may never come: the deadline settles the call regardless.
+      hardTimer = setTimeout(() => {
+        child.stdout?.destroy()
+        child.stderr?.destroy()
+        settle({ code: -1, output: killedNote() })
+      }, KILL_GRACE_MS * 2)
+    }, opts.timeoutMs)
+    child.stdout?.on('data', keep)
+    child.stderr?.on('data', keep)
     child.on('error', (error) => {
       const missing = (error as NodeJS.ErrnoException).code === 'ENOENT'
       settle({ code: -1, output: `${output}${String(error)}\n`, ...(missing ? { missing: true } : {}) })
     })
     child.on('close', (code) => {
-      if (timedOut) keep(`\n[killed: it outlived its ${opts.timeoutMs} ms deadline]\n`)
-      settle({ code: timedOut ? -1 : (code ?? -1), output })
+      settle(timedOut ? { code: -1, output: killedNote() } : { code: code ?? -1, output })
     })
   })
 
@@ -223,7 +242,8 @@ async function exists(path: string): Promise<boolean> {
 async function isInside(root: string, path: string): Promise<boolean> {
   const [realRoot, real] = await Promise.all([realpath(root), realpath(path)])
   const rel = relative(realRoot, real)
-  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
+  // `..` as a path segment climbs out; a name that merely starts with two dots does not.
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
 }
 
 function firstLine(text: string): string {
@@ -245,11 +265,24 @@ function desktopInstaller(unpack: (input: InstallInput, dir: string) => Promise<
         liveInstalls.delete(dir)
         if (await exists(dir)) throw new Error(`${dir} is still there`)
       }
+      // A failed install leaves nothing, and when it cannot be cleared the
+      // reason says what is still there instead of hiding it.
       const refuse = async (reason: string): Promise<{ ok: false; reason: string }> => {
-        await remove().catch(() => {})
+        try {
+          await remove()
+        } catch (error) {
+          const left = `its install directory could not be removed (${error instanceof Error ? error.message : String(error)})`
+          input.log(left)
+          return { ok: false, reason: `${reason}; ${left}` }
+        }
         return { ok: false, reason }
       }
-      const problem = await unpack(input, dir)
+      let problem: string | undefined
+      try {
+        problem = await unpack(input, dir)
+      } catch (error) {
+        problem = error instanceof Error ? error.message : String(error)
+      }
       if (problem !== undefined) return refuse(problem)
       const executable = resolve(dir, input.executable)
       const isFile = (await stat(executable).catch(() => undefined))?.isFile() ?? false

@@ -3,8 +3,8 @@ import { existsSync, readdirSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { expect, test } from 'vitest'
-import { bootApp, loadResult, renderComment, runJob, type ClientHealthCheck, type FlowPage, type Job, type JobCriterion, type QaProfile, type RunJobOpts } from '../src/index.js'
+import { expect, test, vi } from 'vitest'
+import { bootApp, installCancelCleanup, loadResult, renderComment, runJob, type ClientHealthCheck, type FlowPage, type Job, type JobCriterion, type QaProfile, type RunJobOpts } from '../src/index.js'
 
 const SECRET = 'sk-desktop-fixture-456'
 
@@ -208,8 +208,13 @@ test('a failed install is blocked naming the artefact, with the log attached, an
   expect(log).toContain('[blocked] the head artefact artefacts/head.tar.gz could not be installed')
   expect(launched).toEqual([])
   expect(readdirSync(installRoot)).toEqual([])
-  // The comment names the log beside the reason.
-  expect(renderComment(loadResult(await readFile(join(job.evidenceDir, 'result.json'), 'utf8')))).toContain('provision.log')
+  // The comment names the log beside the reason, and does not say a build
+  // that was never installed was checked.
+  const comment = renderComment(loadResult(await readFile(join(job.evidenceDir, 'result.json'), 'utf8')))
+  expect(comment).toContain('provision.log')
+  expect(comment).not.toContain('Checked against')
+  expect(comment).toContain('The electron build `greeter/greeter` was to be installed from `artefacts/head.tar.gz`')
+  expect(comment).toContain('provisioning stopped before any check ran')
 })
 
 const TWO_SIDES = profileOf({ base: { path: 'artefacts/base.tar.gz' } })
@@ -347,6 +352,111 @@ test('a profile that runs nothing at the base installs nothing there (#75)', asy
   expect(result.base).toMatchObject({ status: 'not-executed', reason: 'the profile runs no criteria at the base (base.criteria: none)' })
   expect(launched).toHaveLength(1)
   expect(existsSync(join(job.evidenceDir, 'base', 'provision.log'))).toBe(false)
+})
+
+test('an install that cannot be removed is in the result and the comment, never reported as removed (#75)', async () => {
+  const { job, installRoot } = await workspace()
+  const { result } = await runJob(job, {
+    ...WITH_DISPLAY,
+    provision: {
+      installRoot,
+      health: UP,
+      installers: {
+        archive: {
+          install: async (input) => ({
+            ok: true,
+            installed: {
+              location: 'a place that will not let go',
+              executable: join(input.installRoot, 'never-launched'),
+              uninstall: async () => {
+                throw new Error('device or resource busy')
+              },
+            },
+          }),
+        },
+      },
+    },
+    flowSession: async () => {
+      const page: FlowPage = {
+        open: async () => {},
+        click: async () => {},
+        type: async () => {},
+        choose: async () => {},
+        waitFor: async () => {},
+        assertText: async () => {},
+        assertElement: async () => {},
+        screenshot: async (path) => {
+          await writeFile(path, PNG_1X1)
+        },
+      }
+      return { page, dispose: async () => {} }
+    },
+  })
+  // The checks decided the criteria; what was left behind is said beside them.
+  expect(result.verdict).toBe('passed')
+  const leftover = 'the head artefact artefacts/head.tar.gz could not be uninstalled from a place that will not let go: device or resource busy'
+  expect(result.client?.artefact?.leftover).toBe(leftover)
+  const comment = renderComment(loadResult(await readFile(join(job.evidenceDir, 'result.json'), 'utf8')))
+  expect(comment).not.toContain('and removed afterwards')
+  expect(comment).toContain('It was not removed afterwards')
+  expect(comment).toContain('provision.log')
+  expect(await readFile(join(job.evidenceDir, 'provision.log'), 'utf8')).toContain(`[teardown] ${leftover}`)
+})
+
+test('a cancel removes the install at once and still waits for a neighbouring run\'s compose down before exiting (#75, #53)', async () => {
+  const { job, installRoot } = await workspace()
+  const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+  let finishDown: () => void = () => {}
+  const downs: string[] = []
+  // Another run in the same process, with a stack whose down takes a while.
+  const neighbour = installCancelCleanup(
+    { app: { boot: { compose: 'compose.qa.yaml', service: 'web' }, health: { http: ['http:', '//localhost:1/'].join(''), timeout: '1s' }, seed: { command: 'true' }, login: { fixture: 'f', role: 'r' } }, stubs: [], visual: { widths: [], themes: [] }, suites: [] },
+    {
+      runCompose: (args) => {
+        downs.push(args.join(' '))
+        return new Promise((resolve) => {
+          finishDown = () => resolve({ code: 0, stdout: '', stderr: '' })
+        })
+      },
+      isolation: { runId: 'run-n', project: 'qare-run-n', startedAt: '2026-01-01T00:00:00.000Z', port: 4321 },
+    },
+  )
+  let release: () => void = () => {}
+  let reached: () => void = () => {}
+  const inFlight = new Promise<void>((resolve) => {
+    reached = resolve
+  })
+  const running = runJob(job, {
+    ...WITH_DISPLAY,
+    provision: { installRoot, health: UP },
+    // The run is held inside its first check, with its build installed.
+    clientSession: () => async () => {
+      reached()
+      await new Promise<void>((resolve) => {
+        release = resolve
+      })
+      throw new Error('cancelled')
+    },
+  })
+  try {
+    await inFlight
+    expect(readdirSync(installRoot)).toHaveLength(1)
+    process.emit('SIGINT')
+    // The install is gone before anything else happens.
+    expect(readdirSync(installRoot)).toEqual([])
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(downs).toEqual(['-p qare-run-n -f compose.qa.yaml down'])
+    // The neighbour's down has not settled, so the process has not exited.
+    expect(exit).not.toHaveBeenCalled()
+    finishDown()
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(4))
+    expect(exit).toHaveBeenCalledTimes(1)
+  } finally {
+    release()
+    await running.catch(() => {})
+    neighbour()
+    exit.mockRestore()
+  }
 })
 
 test('an install is removed even when a check throws out of the run (#75)', async () => {

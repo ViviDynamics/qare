@@ -56,7 +56,7 @@ In:
 - **A way for prebuilt artefacts to reach the pipeline's execute job.** The
   reusable workflow has no step of the caller's, so it gains one input,
   `artefacts`: the name of a workflow artifact an earlier job of the caller
-  uploaded, which execute downloads into a directory of that name before the
+  uploaded, which execute downloads into the reserved `qare-artefacts/` before the
   run. Found while writing the docs: without it a client profile could only
   be provisioned by `qare run` on a host. The run itself still downloads
   nothing.
