@@ -51,7 +51,7 @@ const version = (JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')
 
 const LEVEL: Record<string, number> = { none: 0, read: 1, write: 2 }
 
-/** Every permission a called job declares must fit under what the calling job grants. */
+/** Every permission a called job declares must be covered by what the calling job grants. */
 function expectCeilingCovers(ceiling: Permissions | undefined, where: string): void {
   expect(ceiling, `${where} grants no permissions, so every called job would run with the repository default`).toBeDefined()
   for (const [id, job] of Object.entries(pipeline.jobs)) {
