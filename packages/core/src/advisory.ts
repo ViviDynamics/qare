@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { ModelUsage } from './metrics.js'
-import { BUILTIN_REDACTION_RULES, redactAdvisory, type RedactionRule } from './redact.js'
+import { BUILTIN_REDACTION_RULES, redactAdvisory, redactText, type RedactionRule } from './redact.js'
 import type { RunResult } from './result.js'
 import type { AgentRunRequest, AgentRunner } from './runner.js'
 
@@ -65,6 +65,8 @@ export interface AdvisoryScreen {
   criterionId: string
   files: string[]
   screenshot?: string
+  /** The app the screen belongs to, in a run of several: whose house rules it is held to. */
+  app?: string
 }
 
 /** A finding a person dismissed, as qare recorded it on the pull request. */
@@ -82,6 +84,12 @@ const MAX_TEXT = 300
 const MAX_ELEMENT = 160
 /** QA.md rides the prompt, and the prompt is one argument (nare#29): a long one is cut, and says so. */
 const MAX_CONTEXT = 20_000
+/**
+ * How long the reviewer is waited for. The verdict is computed before it is
+ * asked and published after it answers, so a reviewer that hangs must not
+ * hold the verdict: past this it is given up on and its process is killed.
+ */
+export const UX_REVIEW_TIMEOUT_MS = 5 * 60 * 1000
 
 /** The evidence a flow or an audit leaves when it drove a page: its presence is what makes a directory a screen. */
 function isPageEvidence(name: string): boolean {
@@ -234,6 +242,7 @@ const UX_REVIEW_INSTRUCTIONS = [
   'Report what a person using the screen would trip over: a control with no label, or a label that does not say what it does; an error message that does not say what went wrong or what to do next; wording or a pattern that differs from the screens around it, from QA.md or from the house rules; a flow with a confusing or missing step; an action that gives no feedback.',
   'Your findings are advisory. They are shown to a person and decide nothing: you cannot prove, fail or change a criterion, so do not say whether one is met.',
   'Each finding names the screen exactly as it was given, a category (label, error-message, consistency, flow, copy, layout, feedback or other), a severity (high: a person cannot finish the task or is likely to make a mistake; medium: a person is slowed or confused; low: polish), what you saw, why it matters, and the element it is about, by role and accessible name, when there is one.',
+  'When a screen names an app, the run checked several apps: a house rule that opens with an app\'s name applies only to the screens of that app, and the part of QA.md under an app\'s heading describes that app alone.',
   'The findings under "dismissed" were raised on this change before and a person dismissed them. Do not report them again, however you would word them.',
   'Answer with {"findings": [{"screen": string, "category": string, "severity": string, "saw": string, "why": string, "element": string_OR_omit}]}. An empty list is an answer: most screens are fine.',
 ].join('\n')
@@ -292,7 +301,7 @@ function unavailable(screens: readonly AdvisoryScreen[], reason: string, usage?:
 export async function runUxReview(
   runner: AgentRunner,
   inputs: UxReviewInputs,
-  request: Partial<Omit<AgentRunRequest, 'prompt'>> = {},
+  request: Partial<Omit<AgentRunRequest, 'prompt' | 'signal'>> & { timeoutMs?: number } = {},
 ): Promise<RunAdvisory | undefined> {
   const screens = inputs.screens
   if (screens.length === 0) return undefined
@@ -301,7 +310,12 @@ export async function runUxReview(
   const payload = JSON.stringify({
     screens: screens.map((screen) => {
       const text = Object.hasOwn(inputs.texts, screen.criterionId) ? inputs.texts[screen.criterionId] : undefined
-      return { screen: screen.screen, criterion: { id: screen.criterionId, ...(text === undefined ? {} : { text }) }, files: screen.files }
+      return {
+        screen: screen.screen,
+        ...(screen.app === undefined ? {} : { app: screen.app }),
+        criterion: { id: screen.criterionId, ...(text === undefined ? {} : { text }) },
+        files: screen.files,
+      }
     }),
     ...(context === undefined
       ? {}
@@ -318,18 +332,40 @@ export async function runUxReview(
           })),
         }),
   })
-  let result: Awaited<ReturnType<AgentRunner['run']>>
+  // The wait is bounded twice over: the signal kills a runner's process, and
+  // the race stops waiting for a runner that ignores the signal.
+  const timeoutMs = request.timeoutMs ?? UX_REVIEW_TIMEOUT_MS
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const gaveUp = Symbol('gave up')
+  let result: Awaited<ReturnType<AgentRunner['run']>> | typeof gaveUp
   try {
-    result = await runner.run({
+    const run = runner.run({
       system: request.system ?? '',
       toolPolicy: request.toolPolicy ?? 'read-only',
       outputSchema: request.outputSchema ?? JSON.stringify(UX_REVIEW_OUTPUT_SCHEMA),
       budget: request.budget ?? { maxOutputTokens: 4096 },
       prompt: `${UX_REVIEW_INSTRUCTIONS}\n\n${payload}`,
+      signal: controller.signal,
     })
+    // The losing branch is drained: a run that fails after it was given up on
+    // must not surface as an unhandled rejection.
+    void run.catch(() => {})
+    result = await Promise.race([
+      run,
+      new Promise<typeof gaveUp>((resolve) => {
+        timer = setTimeout(() => {
+          controller.abort()
+          resolve(gaveUp)
+        }, timeoutMs)
+      }),
+    ])
   } catch (error) {
     return unavailable(screens, error instanceof Error ? error.message : String(error))
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
   }
+  if (result === gaveUp) return unavailable(screens, `no answer within ${timeoutMs} ms`)
   if (result.status !== 'completed')
     return unavailable(screens, `the run stopped (${result.stopReason})${result.error === undefined ? '' : `: ${result.error}`}`, result.usage)
   const consumed = consumeUxFindings(result.output, screens, dismissed)
@@ -348,7 +384,11 @@ export interface ReviewJudgedOptions extends Omit<UxReviewInputs, 'screens'> {
   reviewer?: AgentRunner
   /** Criteria whose screens are left out: the ones of a profile that turned the review off. */
   skip?: (criterionId: string) => boolean
+  /** In a run of several apps, the app a criterion belongs to: each screen is handed over naming its own. */
+  appOf?: (criterionId: string) => string | undefined
   rules?: readonly RedactionRule[]
+  /** How long the reviewer is waited for; `UX_REVIEW_TIMEOUT_MS` when absent. */
+  timeoutMs?: number
 }
 
 /**
@@ -366,14 +406,36 @@ export async function reviewJudged(result: RunResult, opts: ReviewJudgedOptions)
     return rest
   }
   if (opts.reviewer === undefined || result.verdict === 'refused') return unreviewed()
-  const screens = advisoryScreens(result).filter((screen) => opts.skip?.(screen.criterionId) !== true)
-  const advisory = await runUxReview(opts.reviewer, {
-    screens,
-    texts: opts.texts,
-    ...(opts.qaMd === undefined ? {} : { qaMd: opts.qaMd }),
-    ...(opts.houseRules === undefined ? {} : { houseRules: opts.houseRules }),
-    ...(opts.dismissed === undefined ? {} : { dismissed: opts.dismissed }),
-  })
+  const rules = opts.rules ?? BUILTIN_REDACTION_RULES
+  const sweep = (text: string): string => redactText(text, rules)
+  const screens = advisoryScreens(result)
+    .filter((screen) => opts.skip?.(screen.criterionId) !== true)
+    .map((screen) => {
+      const app = opts.appOf?.(screen.criterionId)
+      return app === undefined ? screen : { ...screen, app }
+    })
+  // Everything the model is shown is swept first, as the planner's copy of
+  // QA.md is: a profile's instructions and rules can name the fixture values
+  // its own redact section exists for, and the criteria can quote them.
+  const advisory = await runUxReview(
+    opts.reviewer,
+    {
+      screens,
+      texts: Object.fromEntries(Object.entries(opts.texts).map(([id, text]) => [id, sweep(text)])),
+      ...(opts.qaMd === undefined ? {} : { qaMd: sweep(opts.qaMd) }),
+      ...(opts.houseRules === undefined ? {} : { houseRules: opts.houseRules.map(sweep) }),
+      ...(opts.dismissed === undefined
+        ? {}
+        : {
+            dismissed: opts.dismissed.map((finding) => ({
+              ...finding,
+              saw: sweep(finding.saw),
+              ...(finding.element === undefined ? {} : { element: sweep(finding.element) }),
+            })),
+          }),
+    },
+    opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs },
+  )
   if (advisory === undefined) return unreviewed()
-  return { ...result, advisory: redactAdvisory(advisory, opts.rules ?? BUILTIN_REDACTION_RULES) }
+  return { ...result, advisory: redactAdvisory(advisory, rules) }
 }

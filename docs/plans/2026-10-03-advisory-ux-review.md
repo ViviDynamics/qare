@@ -75,6 +75,10 @@ Out:
   findings list yields `status: "unavailable"` with the reason, no findings,
   and the same verdict and exit code. The comment says the review did not
   answer.
+- The reviewer is waited for five minutes, then given up on and its process
+  killed: the verdict is published after the review, so the review must not
+  be able to hold it. What the model is shown (QA.md, house rules, criteria,
+  the dismissed list) is swept with the run's redaction rules first.
 - Model output is filtered in code: a finding naming a screen it was not
   given is dropped, text is capped and redacted with the run's rules, and at
   most 12 findings are kept. No field of a finding names a criterion outcome.

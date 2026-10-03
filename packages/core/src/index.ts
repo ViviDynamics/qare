@@ -214,6 +214,7 @@ export {
   ADVISORY_CATEGORIES,
   ADVISORY_SEVERITIES,
   UX_REVIEW_OUTPUT_SCHEMA,
+  UX_REVIEW_TIMEOUT_MS,
   advisoryFindingId,
   advisoryScreens,
   consumeUxFindings,

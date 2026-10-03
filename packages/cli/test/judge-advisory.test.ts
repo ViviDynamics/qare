@@ -395,8 +395,10 @@ test('in a run of several apps each profile speaks for its own screens: one turn
   const nare = await standInNare('reads-the-evidence')
   await judge([...on.args, '--nare', nare.binary])
   const prompt = (await nare.calls())[1]?.[1] ?? ''
-  const payload = JSON.parse(prompt.slice(prompt.indexOf('\n\n{') + 2)) as { qaMd: string; houseRules: string[] }
+  const payload = JSON.parse(prompt.slice(prompt.indexOf('\n\n{') + 2)) as { qaMd: string; houseRules: string[]; screens: Array<{ app?: string }> }
   expect(payload.houseRules).toEqual(['admin: Forms name every field.', 'ledger: Amounts show a currency.'])
+  // The screen names the app it belongs to, so admin's rule is held to it and ledger's is not.
+  expect(payload.screens.map((screen) => screen.app)).toEqual(['admin'])
   expect(payload.qaMd).toBe('# admin\n\nAbout admin.\n\n\n# ledger\n\nAbout ledger.\n')
   expect((await artifacts(on.dir)).judged.advisory?.findings).toHaveLength(2)
 })

@@ -1091,7 +1091,7 @@ async function reviewAdvisory(
 async function uxContextFor(
   profileDir: string | undefined,
   profiles: readonly { name: string; criteria: string[]; profile?: JobProfileRef }[] | undefined,
-): Promise<{ qaMd?: string; houseRules?: string[]; skip?: (criterionId: string) => boolean }> {
+): Promise<{ qaMd?: string; houseRules?: string[]; skip?: (criterionId: string) => boolean; appOf?: (criterionId: string) => string | undefined }> {
   if (profileDir === undefined) return {}
   if (profiles === undefined) {
     let profile: QaProfile
@@ -1108,6 +1108,7 @@ async function uxContextFor(
     }
   }
   const off = new Set<string>()
+  const apps = new Map<string, string>()
   const instructions: string[] = []
   const houseRules: string[] = []
   for (const entry of profiles) {
@@ -1115,6 +1116,7 @@ async function uxContextFor(
       entry.profile !== undefined && 'inline' in entry.profile
         ? entry.profile.inline
         : await loadProfile(resolve(join(profileDir, entry.name)), { resources: resolve(profileDir) })
+    for (const id of entry.criteria) apps.set(id, entry.name)
     if (profile.ux?.review === false) for (const id of entry.criteria) off.add(id)
     if (profile.instructions !== undefined) instructions.push(`# ${entry.name}\n\n${profile.instructions}`)
     for (const rule of profile.ux?.rules ?? []) houseRules.push(`${entry.name}: ${rule}`)
@@ -1123,6 +1125,9 @@ async function uxContextFor(
     ...(instructions.length === 0 ? {} : { qaMd: instructions.join('\n\n') }),
     ...(houseRules.length === 0 ? {} : { houseRules }),
     skip: (criterionId) => off.has(criterionId),
+    // Each screen is handed over naming its app, so a rule that opens with an
+    // app's name is held to that app's screens alone.
+    appOf: (criterionId) => apps.get(criterionId),
   }
 }
 

@@ -493,7 +493,10 @@ visited are the screens the change touched; the base side's evidence is not
 reviewed. For each screen the reviewer is handed the text evidence the
 harness saved, with the text of the criterion the check belongs to, `QA.md`,
 and the profile's house rules (`ux.rules`: a design system, voice and tone,
-patterns to hold to). It reads no screenshot: nare's `read` tool returns
+patterns to hold to). All of it is swept with the run's redaction rules before
+the model sees it, as the planner's copy of `QA.md` is. In a run of several
+apps each screen names its app, and a rule is held to the screens of the app
+whose profile wrote it. It reads no screenshot: nare's `read` tool returns
 text, so the reviewer works from the snapshots and logs and is told so
 (ViviDynamics/nare#48 asks for images).
 
@@ -521,8 +524,9 @@ The boundary with the verdict is structural, and a test holds it:
   its own, "Advisory UX review", below everything the verdict rests on, saying
   that they are a model's opinion, not evidence, and that the verdict was
   decided without them.
-- A reviewer that throws, stops, or answers something that is not a findings
-  list is `unavailable`, with the reason and no findings. The verdict, the
+- A reviewer that throws, stops, answers something that is not a findings
+  list, or has not answered within five minutes (its process is then killed)
+  is `unavailable`, with the reason and no findings. The verdict, the
   exit code and the check run are what they were. This is the one place a
   model failure does not stop anything, because nothing rests on it.
 - `qare replay` compares a stored verdict without its `advisory` key: the
@@ -549,6 +553,9 @@ first line of a comment and naming the finding by its id:
 pull request's comments that is safe to repeat: each reply is answered once,
 in a comment that is also the record, so nothing is dismissed, filed or said
 twice, and a finding promoted a second time is pointed at its issue. The
+issue carries a marker naming the pull request and the finding, so a sweep
+that died after filing it and before recording it finds the issue again
+instead of filing another. The
 findings ride qare's evidence comment as data, and both they and the records
 are read only from comments the posting identity wrote; a reply counts only
 from an owner, a member or a collaborator of the repository. The pipeline

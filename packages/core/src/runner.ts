@@ -26,6 +26,11 @@ export interface AgentRunRequest {
   tools?: AgentToolChannel
   /** The host's registered MCP servers (#93), addressed as server.tool. */
   mcp?: AgentToolChannel
+  /**
+   * Gives up on the run: when it fires, the runner stops waiting and kills
+   * whatever it started. For work nothing may wait on forever (#150).
+   */
+  signal?: AbortSignal
 }
 
 export type AgentRunStatus = 'completed' | 'failed'
@@ -221,7 +226,7 @@ export class NareAgentRunner implements AgentRunner {
         await writeFile(schemaPath, request.outputSchema, 'utf8')
         argv.push('--schema', schemaPath)
       }
-      const { code, stdout } = await this.spawn(argv, request.tools, request.mcp)
+      const { code, stdout } = await this.spawn(argv, request.tools, request.mcp, request.signal)
       return this.readOutcome(code, stdout)
     } finally {
       await rm(workDir, { recursive: true, force: true })
@@ -232,6 +237,7 @@ export class NareAgentRunner implements AgentRunner {
     argv: string[],
     exploration?: AgentToolChannel,
     mcp?: AgentToolChannel,
+    signal?: AbortSignal,
   ): Promise<{ code: number; stdout: string }> {
     const { spawn } = await import('node:child_process')
     const binary = this.options.binary ?? 'nare'
@@ -240,6 +246,9 @@ export class NareAgentRunner implements AgentRunner {
         cwd: this.options.cwd,
         env: channelEnv(exploration, mcp, this.options.env),
         stdio: ['ignore', 'pipe', 'pipe'],
+        // An aborted run kills the process: node sends it SIGTERM and reports
+        // the abort as the spawn's error, which rejects below.
+        ...(signal === undefined ? {} : { signal }),
       })
       let stdout = ''
       let stderr = ''

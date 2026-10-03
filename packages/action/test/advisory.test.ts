@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, test } from 'vitest'
 import { RESULT_SCHEMA_VERSION, type AdvisoryFinding, type RunResult } from '@qare/core'
-import { ADVISORY_DATA_MARKER, ADVISORY_REPLY_MARKER, carryOutAdvisoryReplies, readAdvisoryData } from '../src/advisory-replies.js'
+import { ADVISORY_DATA_MARKER, ADVISORY_REPLY_MARKER, advisoryIssueMarker, carryOutAdvisoryReplies, readAdvisoryData } from '../src/advisory-replies.js'
 import { GitHubClient } from '../src/github.js'
 import { main } from '../src/index.js'
 import { EVIDENCE_MARKER, GitHubEvidencePoster, postEvidence } from '../src/post-evidence.js'
@@ -232,6 +232,26 @@ test('a screenshot that was never pushed is named in the issue, not linked', asy
   const body = filedIssues()[0]?.body ?? ''
   expect(body).toContain('`checks/signup-form/0/final.png`')
   expect(body).not.toContain('![')
+})
+
+test('a promotion whose record was never written is recovered from the issue itself, not filed again', async () => {
+  await postRun()
+  says('a-person', 'MEMBER', '/qa-promote 0a1b2c3d')
+  await carryOutAdvisoryReplies(client, PR, QARE)
+  const [issue] = filedIssues()
+  // The issue names the pull request and the finding it came from.
+  expect(issue?.body).toContain(advisoryIssueMarker(PR, '0a1b2c3d'))
+  // The answer that recorded it is lost (the post failed, or the run died
+  // between the two writes): the next sweep has no record to go by.
+  const lost = fake.commentRecords.findIndex((record) => record.body.startsWith(ADVISORY_REPLY_MARKER))
+  fake.commentRecords.splice(lost, 1)
+  const outcome = await carryOutAdvisoryReplies(client, PR, QARE)
+  expect(filedIssues()).toHaveLength(1)
+  expect(outcome.promoted).toEqual([{ id: '0a1b2c3d', issue: issue?.number }])
+  expect(answers()).toHaveLength(1)
+  expect(answers()[0]).toContain(`already filed as #${issue?.number}`)
+  // The same finding id on another pull request is another finding.
+  expect(advisoryIssueMarker(13, '0a1b2c3d')).not.toBe(advisoryIssueMarker(PR, '0a1b2c3d'))
 })
 
 test('qare-action advisory-replies carries the replies out and writes the dismissed list for judge', async () => {

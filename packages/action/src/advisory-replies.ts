@@ -127,6 +127,17 @@ export function parseAdvisoryReply(body: string | undefined): Reply | undefined 
   return { command: match[1] === ADVISORY_DISMISS_COMMAND ? 'dismiss' : 'promote', ids }
 }
 
+/**
+ * What marks the issue a finding was promoted to, in the issue's own body:
+ * the pull request and the finding. The reply record on the pull request is
+ * written after the issue is, so a run that dies between the two leaves an
+ * issue no record names; the marker is how the next sweep finds it again
+ * instead of filing a second one.
+ */
+export function advisoryIssueMarker(pr: number, id: string): string {
+  return `qare:advisory-issue pr-${pr} ${id}`
+}
+
 function issueTitle(finding: PostedFinding): string {
   const flat = finding.saw.replace(/\s+/g, ' ').trim()
   return `UX: ${flat.length <= 100 ? flat : `${flat.slice(0, 99)}…`}`
@@ -145,6 +156,7 @@ export function advisoryIssueBody(finding: PostedFinding, pr: number, by: string
         ? [`The screenshot ${codeSpan(finding.screenshot)} is in the evidence artifact of the run on pull request #${pr}; it was not pushed anywhere it can be linked.`]
         : ['The run saved no screenshot of this screen.']
   return [
+    `<!-- ${advisoryIssueMarker(pr, finding.id)} -->`,
     `A UX finding qare's advisory review raised on pull request #${pr}, filed here because @${by} asked for it (${codeSpan(`${ADVISORY_PROMOTE_COMMAND} ${finding.id}`)}).`,
     '',
     `- Screen: ${codeSpan(finding.screen)}, reached while checking criterion ${codeSpan(finding.criterionId)}`,
@@ -234,8 +246,17 @@ export async function carryOutAdvisoryReplies(client: GitHubClient, pr: number, 
         said.push(`Dismissed advisory finding ${codeSpan(id)} (${codeSpan(finding.saw)}) at the request of @${by}. It will not be raised again on this pull request.`)
         continue
       }
-      const existing = promoted.get(id)
+      // Asked of GitHub only when no record on the pull request names an
+      // issue: the search index lags a new issue by minutes, so the record is
+      // the first word and the marker the fallback.
+      const existing =
+        promoted.get(id) ??
+        (await client.searchIssues(`repo:${client.repository} in:body is:issue "${advisoryIssueMarker(pr, id)}"`))[0]?.number
       if (existing !== undefined) {
+        if (!promoted.has(id)) {
+          promoted.set(id, existing)
+          record.promoted = [...(record.promoted ?? []), { id, issue: existing }]
+        }
         said.push(`Advisory finding ${codeSpan(id)} is already filed as #${existing}.`)
         continue
       }
