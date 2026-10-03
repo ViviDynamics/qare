@@ -1,0 +1,19 @@
+# The desktop build, reaching for more than its profile declares (#223). It
+# is told to request three URLs when it starts: the declared host, a host
+# nobody declared, and a bare address (192.0.2.1 is reserved for
+# documentation and leads nowhere).
+#
+# The declared host answers. The undeclared name does not resolve inside the
+# cell, the gate records that it was asked for, and the run is refused naming
+# it. The bare address has no route: the build's cell has no network.
+client:
+  driver: electron
+  executable: examples/electron-app/dist/qare-example/qare-example
+  args:
+    - --no-sandbox
+    - --probe=https://example.com/
+    - --probe=https://example.org/
+    - --probe=http://192.0.2.1/
+  hosts:
+    - example.com
+flavour: web

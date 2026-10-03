@@ -1,0 +1,15 @@
+# The desktop build, opted out of containment (#223). `egress: uncontained`
+# launches the build beside the run, with whatever network its step has, as
+# every build was launched before builds were contained. Nothing is held to a
+# list and nothing is recorded, and the evidence says so: the result carries
+# `client.egress: "uncontained"`, and each flow check's `outbound.json` says
+# why it lists nothing.
+#
+# It is here to show what the opt-out looks like, not as a way to run.
+client:
+  driver: electron
+  executable: examples/electron-app/dist/qare-example/qare-example
+  args:
+    - --no-sandbox
+  egress: uncontained
+flavour: web

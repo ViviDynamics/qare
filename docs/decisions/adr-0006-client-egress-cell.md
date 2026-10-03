@@ -80,8 +80,10 @@ it:
   opened: the build's certificate check is against the real host.
 - **The driver.** The build opens its DevTools endpoint on the cell's
   loopback. The launcher relays it to `cdp.sock`, the gate relays that to a
-  port published on the runner's loopback, and the Electron driver attaches
-  there. The virtual display is started inside the cell.
+  port of its own, and the Electron driver attaches there: at the port
+  published on the runner's loopback, or at the gate's address on the
+  default bridge where a daemon publishes on a loopback the run does not
+  share. The virtual display is started inside the cell.
 
 A host the build reaches for that the profile does not declare leaves the
 flow `unverified` with `refused: undeclared host: <host>:<port> (<protocol>)`,
@@ -147,7 +149,7 @@ that only needs a display. It needs the repository's toolchain, which lives
 on the runner or in the flavour image, write access to the checkout, and the
 booted stack on the runner's loopback, which a cell with no network cannot
 see. Carrying those through the gate (the stack as declared hosts, stubs as
-the list) is its own design, tracked as a follow-up issue. Until it lands,
+the list) is its own design, tracked as #224. Until it lands,
 the SPEC keeps saying what is true: a command check and a suite run with the
 network their step has.
 
@@ -160,14 +162,17 @@ network their step has.
   libraries and environment, the checkout read-only, and a `/tmp` of its
   own. A build that writes beside its own executable has to be told to write
   elsewhere.
-- The daemon must be on the machine the run is on, because the gate
-  publishes the driver's endpoint on that machine's loopback. A remote
-  daemon (`DOCKER_HOST` over TCP) leaves the flow `unverified`, naming the
-  attach that failed.
-- A runtime's own background traffic becomes visible. Electron's Chromium
-  looks for component updates at `redirector.gvt1.com` a few seconds after
-  it starts; contained, that is an undeclared host. A profile passes
-  `--disable-component-update`, as the example does, or declares the host.
+- The daemon must be on the machine the run is on, because the driver
+  attaches to the gate over that machine's loopback or its default bridge.
+  A remote daemon (`DOCKER_HOST` over TCP) leaves the flow `unverified`,
+  saying the relay answered at neither.
+- A runtime's own background traffic becomes visible. Electron's
+  spellchecker downloads its dictionary from `redirector.gvt1.com` as soon
+  as the application starts; contained, that is an undeclared host, and the
+  example run was refused for it until the example gave the spellchecker no
+  language (`--disable-component-update` and `--disable-background-networking`
+  do not stop it). An application does that, or its profile declares the
+  host.
 - Each flow check costs a volume, two container starts and their removal,
   a few seconds on a hosted runner.
 - The CI proof reaches `example.com`, the one declared host, over the

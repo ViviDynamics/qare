@@ -1287,6 +1287,7 @@ client:
   driver: electron
   executable: dist/linux-unpacked/my-app    # from the repository the run checks
   args: [--no-sandbox]                      # optional; passed to the build as written
+  hosts: [api.example.com]                  # optional; the hosts the build may reach
 flavour: web
 ```
 
@@ -1313,9 +1314,12 @@ own. It owns `--remote-debugging-port` and `--user-data-dir`, and a profile
 that passes either is refused. On a Linux host with no display the driver
 starts a virtual one (Xvfb, which the `web` image ships) for the launch and
 stops it afterwards, so a pipeline's execute step needs nothing added. The
-build is pull request code, so on a host it is launched with the minimal
-environment a command step gets there (PATH, HOME, and the display), never
-the host's own; inside an image it inherits the image's.
+build is pull request code, so it is launched inside a cell with no network of
+its own ([Containing the build](#containing-the-build)), where the display and
+the environment are the cell's. A profile that opts out of the cell launches
+the build beside the run: on a host with the minimal environment a command
+step gets there (PATH, HOME, and the display), never the host's own; inside
+an image with the image's.
 
 An application has windows where a browser flow has one page, and the
 vocabulary names no window. An element reference is looked for in every open
@@ -1353,13 +1357,100 @@ when it loads and again before a run boots, naming the check and the driver:
 | Run an `a11y` check | The audit resizes and re-themes the page the same way | The plan is refused; a client profile with an `a11y` section is refused when it loads |
 | Open a full URL | A desktop shell has no address bar | The plan is refused naming the action |
 | Compare with a base revision without a build of it | A build launched in place (`client.executable`), or a `client.artefact` with no `base`, is one build | The run has one side: the result carries `client: { driver, executable, comparison: "none" }` and the comment says so. A profile that names `client.artefact.base` has two (#75): `comparison: "base"`, with the artefact each side was installed from. A run over several apps refuses a client profile, which runs on its own |
-| List or limit the hosts a run reached | The main process reaches the network without a page seeing it | No `outbound.json` is written, and nothing is claimed about egress. Like a command check or a suite, the build runs with the network its step has: containing it is the step's sandbox's to do, and is not done yet (#223) |
+| See what the build reaches from its windows | The main process reaches the network without a page seeing it | The whole process is contained instead, and its gate keeps the record ([Containing the build](#containing-the-build)) |
 | Seed a second factor | A client profile has no `app.login` | A flow that types a `totp` or `backupCode` is `unverified` before it runs, naming the gap |
 | Drive a build that turns remote debugging off | The driver attaches over the endpoint `--remote-debugging-port` opens | The flow is `unverified`, naming it, with the application's output |
 | Run where no window can be shown | It opens real windows | The run is `blocked`, naming the display |
 
-It is proven on Linux. Nothing in it is Linux's alone, but macOS and Windows
-hosts are their own issue (#90).
+It is proven on Linux. Nothing in the driver is Linux's alone, but macOS and
+Windows hosts are their own issue (#90), and the cell a build is contained in
+is a Linux container.
+
+### Containing the build
+
+The build a client profile launches is pull request code that qare starts and
+cannot see into: its main process opens sockets no window ever shows. So the
+run does not watch it, it contains it (#223,
+[ADR-0006](./decisions/adr-0006-client-egress-cell.md)). Each launch gets a
+**cell**: a container the runner's docker daemon starts from the image the
+run is in, with no network but loopback (`--network none`), no capability,
+no docker socket, and the repository mounted read-only at its own path.
+
+The cell's one way out is a socket to a **gate**, a second container holding
+`client.hosts`. Inside the cell a launcher answers DNS on loopback: it asks
+the gate about each name, answers a declared one with loopback, and answers
+any other with no such name, so no query leaves the cell. It listens there on
+ports 80 and 443, reads the host each connection is for (the `Host` header,
+or the server name in the TLS client hello) and has the gate connect it. TLS
+is carried, never opened. A build needs no proxy setting and honours none:
+there is no other route to take.
+
+`client.hosts` reads the way `target.hosts` does: a name, or `*.` before a
+name for one label below it. Nothing declared is nothing reachable.
+
+| The build reaches for | Inside the cell | In the evidence |
+| --- | --- | --- |
+| A declared host, on port 80 or 443 | It answers | `outbound.json` lists the host, port, protocol and count, `declared: true` |
+| A name the profile does not declare | It does not resolve | Listed with `declared: false`; the flow is `unverified` with `refused: undeclared host: <host>:<port> (<protocol>)` and the run is `refused`, as an undeclared host refuses a target run |
+| A declared host on another port | The connection is refused | Not listed: nothing left the cell to be named |
+| A bare address | No route | Not listed, for the same reason |
+
+`outbound.json` is written into every flow check of a client run, after the
+build has exited and whatever the flow's outcome, a timeout included:
+
+```json
+{
+  "client": "dist/linux-unpacked/my-app",
+  "containment": "cell",
+  "declared": ["api.example.com"],
+  "reached": [{ "host": "api.example.com", "port": 443, "protocol": "https", "declared": true, "count": 3 }]
+}
+```
+
+It fails closed. Before any check runs, the run is held to being able to make
+a cell: a docker daemon it can reach, and the image it runs in
+(`QARE_IMAGE_REF`, which the pipeline's execute step sets). Without either
+the run is `blocked`, naming what is missing, and the build is never launched
+with the step's network instead. A gate whose record does not come back
+leaves the flow `unverified`, never passed on an empty list.
+
+A profile opts out in as many words:
+
+```yaml
+client:
+  driver: electron
+  executable: dist/linux-unpacked/my-app
+  egress: uncontained
+```
+
+The build is then launched beside the run, with the network its step has.
+The result carries `client.egress: "uncontained"`, the comment says the build
+was not contained, and each flow check's `outbound.json` carries
+`"containment": "none"` and the reason nothing is listed. A profile cannot
+both opt out and declare hosts.
+
+What the cell does not do:
+
+- It contains the build, not the step. A command check, a suite and a
+  compose service still run with the network the step has
+  ([ADR-0005](./decisions/adr-0005-execute-docker-access.md)). Containing
+  them is the same decision applied to a process that needs the repository's
+  toolchain and the booted stack, and is not done yet (#224).
+- The profile is a file in the repository, so a pull request can add a host
+  to it. The addition is in the diff and in `outbound.json`.
+- A runtime's own background traffic becomes a host nobody declared.
+  Electron's spellchecker downloads its dictionary from
+  `redirector.gvt1.com` as soon as the application starts: an application
+  gives the spellchecker no language, as the example does, or its profile
+  declares the host.
+- The build runs in the image rather than beside the run, with the checkout
+  read-only. The docker daemon has to be on the machine the run is on.
+
+`examples/electron-app` proves it in CI on a hosted runner, from the build's
+main process, through Node and through Chromium's own network stack: a
+declared host answers and is recorded, an undeclared name is refused by name,
+a bare address has no route, and the opted-out profile says it was not
+contained.
 
 ## Installing and running QARE
 
@@ -1591,7 +1682,10 @@ names the rest, with the same `*.` wildcards as a stub's hosts. A host that is
 neither refuses the run, as a missing stub does in a booted run, except that no
 stub issue is filed: a target has no stubs. Command checks and suites are not intercepted:
 a suite drives its own browser, which QARE cannot see. Only the traffic of the
-browser QARE drives is recorded.
+browser QARE drives is recorded. A process the run starts is contained rather
+than watched; that is done for the build a client profile launches
+([Containing the build](#containing-the-build)) and not yet for command
+checks and suites (#224).
 
 There is only one side, so nothing runs at a base revision and no regression is
 looked for. The result carries `target: { url, comparison: "none" }` and the

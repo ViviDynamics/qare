@@ -1,0 +1,16 @@
+# The desktop build, reaching a host its profile declares (#223). The build
+# is the one `profiles/desktop` launches; `--probe=<url>` has its main
+# process request that URL when it starts, through Node and through
+# Chromium's network stack, where no window sees it.
+#
+# The host is declared, so the gate connects the build to it, and each flow
+# check's `outbound.json` records that it was reached.
+client:
+  driver: electron
+  executable: examples/electron-app/dist/qare-example/qare-example
+  args:
+    - --no-sandbox
+    - --probe=https://example.com/
+  hosts:
+    - example.com
+flavour: web
