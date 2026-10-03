@@ -1179,6 +1179,100 @@ client, installing an artefact for another, and launching a binary for a third.
 And some clients can only run in certain places, so a target declares what it
 requires and a run refuses to start where that is unmet, naming what is missing.
 
+### Evidence beyond the screenshot
+
+A screenshot shows where a flow ended. What makes a failure diagnosable is
+the record of how it got there (#78), so a flow check that did not pass
+leaves three more things in its directory, on every driver that can produce
+them:
+
+| File | What it is | When |
+| --- | --- | --- |
+| `recording.png` | The screen recording of the flow: an animated PNG that plays once | The check failed, or was `unverified` at an action |
+| `failure.log` | The platform's log for the window around the failure | The check did not pass, including a flow that outlived its timeout |
+| `assert-<n>.json` | The accessibility tree at the assertion (#82), trimmed to what the assertion touched | Every assertion, passed or failed |
+
+`console.log` holds the platform's whole log for the check, whatever its
+outcome.
+
+**The recording** is frames, not a video. A driver that can be recorded
+answers one more seam, `frame`: a picture of the screen as it stands, taken
+the way it takes a screenshot. The flow asks for one after every action and
+one every 500 ms while an action is in flight, and qare puts them together
+into an animated PNG, each frame shown for as long as it stood on the screen.
+It is frames because of what a recording must never hold. A video is taken by
+the platform, past every mask, and nothing can sweep it afterwards; a frame
+is a screenshot, and carries the guarantees a screenshot carries. It also
+stays an image: the evidence sweep vouches for it as it does for a
+screenshot, it is pushed to `qa-assets` and linked from the comment like one,
+and it needs no encoder and no new dependency.
+
+A recording is kept free of credentials by three rules, all decided in code:
+
+1. **Masks are applied.** Every frame is taken with the profile's
+   `redact.masks` blacked out (#119).
+2. **A typed secret is never rendered.** When a flow types a value the run's
+   redaction would sweep from the action log (a `redact` value or pattern, a
+   token shape, a value going into a field whose name says password, token or
+   secret), the element it types into is concealed: blacked out in every
+   frame, every screenshot and every audit screenshot from then on. It is
+   concealed before the value is typed, and no capture is in flight when it
+   lands. The action log names each concealed element. A driver says whether
+   it can conceal; one that cannot (the MCP driver) is never said to have:
+   its recording stops before the secret is typed, and every screenshot
+   after it is withheld, named in the action log, as for a one-time code.
+3. **A one-time code stops it.** The recording stops before a `totp` or
+   `backupCode` is typed, as screenshots are withheld from then on (#64), and
+   is not made at all when a mail-borne code is already on the page. The
+   frames taken before that point are kept.
+
+What these rules do not cover is what a screenshot does not cover either: a
+secret the application itself puts somewhere on the screen that no mask
+names. That is what `redact.masks` is for.
+
+It is bounded. A recording is taken for every flow and kept only when the
+check did not pass; a passing flow's frames are dropped, and its action log
+says how many. A kept recording holds at most 120 distinct frames and 4 MiB
+of frame data, and past either bound the oldest frames go, because the end of
+the flow is where the failure is; a frame that alone is past the byte bound
+goes too, and a recording left with no frame is not written. A screen that did not change is one frame
+shown longer, a still is shown for at most 5 seconds, a frame gets 5 seconds
+to be taken, and a frame of another size than the first (a viewport an audit
+resized) is left out. The action log says how many frames the recording
+holds, over how long, in how many bytes, and what was dropped. One capture
+runs at a time: a frame, a screenshot and an accessibility audit never put
+masks up or take them down under one another. A flow that outlived its
+timeout is told to stop: it takes no more frames, starts no further action
+and writes nothing more, so it keeps no recording and adds nothing to
+evidence the run has already vouched for.
+
+**The platform log** is what the client itself wrote while the flow ran:
+the console messages and page errors of every page or window, each one
+opening and closing, a renderer that crashed, and for a desktop build both
+streams of its main process and how it exited. It is bounded to its last
+5,000 lines of at most 8,192 characters. `failure.log` is the part of it a
+reader of a failure wants first: the 30 seconds before the check stopped (at
+most the 200 lines nearest it), a mark where it stopped, and what the
+platform wrote from there until the application was gone (at most 100
+lines), each line with its distance from that moment. Both files are swept
+by the run's redaction, and of every code the flow generated or read.
+
+A crash is reported as that line in the log. A crash dump is not collected: a
+minidump is a memory image that can hold any secret the process held, and
+nothing can sweep it, so it is never published.
+
+| Driver | Recording | Platform log | Tree snapshot |
+| --- | --- | --- | --- |
+| Browser | Yes | Console, page errors, crashed and closed pages | Yes |
+| Electron (Linux, in its cell or beside the run) | Yes, of the window the flow is in | The same per window, plus the main process's output and exit | Yes |
+| MCP | No: it declares no `recording` | Its call log, `tool-calls.json` | When the host maps one |
+| Android, iOS, native desktop (#73, #74, #85) | Not built. The seam is `frame`: a driver that can take a masked screenshot is recorded with no more work | Not built. The seam is the session's platform log: a device log (logcat, the simulator's log) is recorded into it under a label of its own, and `failure.log` follows | The normalised snapshot (#82) |
+
+What is unexercised: no device log has been recorded into the platform log,
+and a driver that can only record natively (a video file from the platform)
+has no seam here, because nothing here can mask or sweep one. Both belong to
+the issues that build those drivers.
+
 ### Provisioning
 
 Getting the application in front of its driver is one lifecycle whatever the
@@ -1347,6 +1441,10 @@ exited, so what it wrote on the way out is in it, and it is swept by the same
 redaction as the action log. The build is pull request code, so its output is
 bounded: the log keeps the last 5,000 lines and says how many it dropped, and
 a line is cut at 8,192 characters and says so, whether or not it ever ends.
+A window whose renderer died is a line in it too. A check that did not pass
+also gets the recording of the window the flow was in and the log around the
+failure ([Evidence beyond the screenshot](#evidence-beyond-the-screenshot)),
+both taken through the cell's relayed endpoint like every other capture.
 
 What the driver cannot do it declares, and a plan that asks for it is refused
 when it loads and again before a run boots, naming the check and the driver:
@@ -1753,6 +1851,11 @@ Fork PRs are refused outright in the Action.
   and patterns. A run redacts what it writes; the pipeline sweeps the evidence
   directory again before uploading it, and a file the sweep cannot vouch for (a
   binary that is not an image, a symlink) stops the upload.
+- A flow check that did not pass carries a screen recording, the platform's
+  log around the failure and the accessibility tree at the assertion (#78,
+  [Evidence beyond the screenshot](#evidence-beyond-the-screenshot)). The
+  recording is an animated PNG, so it lands on `qa-assets` and is linked from
+  the comment like a screenshot.
 - Screenshots are masked at capture (#119): the profile's `redact.masks`
   selectors name page regions the browser blacks out while it takes the
   screenshot, so fixture data never reaches the pixels text rules cannot read.

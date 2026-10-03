@@ -1,7 +1,9 @@
 import type { EgressAttempt } from './egress.js'
-import type { FlowDriverCapabilities, FlowElement, FlowPage, FlowTrace } from './flow.js'
+import type { FlowCaptureOpts, FlowDriverCapabilities, FlowElement, FlowPage, FlowTrace } from './flow.js'
+import { RECORDING_FRAME_TIMEOUT_MS } from './flow-recording.js'
 import { parseSegment, splitSegments } from './locator.js'
 import type { A11yAuditNode, A11yAuditViolation } from './a11y.js'
+import { makePlatformLog, type PlatformLogEntry } from './platform-log.js'
 import { normaliseAriaSnapshot, type SnapshotNode } from './snapshot.js'
 
 const NOT_INSTALLED_MESSAGE =
@@ -19,7 +21,7 @@ const LOAD_FAILED_MESSAGE =
 export const BROWSER_FLOW_DRIVER: FlowDriverCapabilities = {
   name: 'browser',
   actions: ['open', 'type', 'click', 'choose', 'waitFor', 'assertText', 'assertElement', 'capture', 'totp', 'backupCode'],
-  evidence: ['screenshot', 'trace'],
+  evidence: ['screenshot', 'trace', 'console', 'recording'],
   checks: ['visual', 'a11y'],
 }
 
@@ -162,6 +164,40 @@ export function resolveFlowElement(page: PlaywrightPage, element: FlowElement): 
   return chain
 }
 
+/**
+ * What a capture of one page blacks out (#119, #78): the profile's masks,
+ * and every element the flow concealed because a secret was typed into it.
+ * The browser paints them over while it takes the picture, so the pixels on
+ * disk never held what they cover. Nothing to hide asks for no mask at all.
+ */
+export function captureMasks(page: PlaywrightPage, masks: readonly string[] | undefined, capture: FlowCaptureOpts | undefined): { mask?: PlaywrightLocator[]; maskColor?: string } {
+  const mask = [...(masks ?? []).map((selector) => page.locator(selector)), ...(capture?.conceal ?? []).map((element) => resolveFlowElement(page, element))]
+  return mask.length === 0 ? {} : { mask, maskColor: '#000000' }
+}
+
+/**
+ * One frame of a recording (#78): a screenshot kept in memory, at the size
+ * the page is laid out at, masked as a screenshot is, and given a bounded
+ * time so a page that cannot be pictured costs the flow one frame.
+ */
+export async function takeFrame(page: PlaywrightPage, masks: readonly string[] | undefined, capture: FlowCaptureOpts | undefined): Promise<Uint8Array> {
+  return page.screenshot({ type: 'png', scale: 'css', timeout: RECORDING_FRAME_TIMEOUT_MS, ...captureMasks(page, masks, capture) })
+}
+
+/**
+ * Follow one page into the platform log (#72, #78): that it opened, what it
+ * wrote to its console, the errors it raised, and that it crashed or closed.
+ */
+export function followPage(page: PlaywrightPage, label: string, record: (label: string, text?: string) => void): void {
+  record(`${label} opened`, page.url())
+  page.on('console', (message) => record(`${label} console.${message.type()}`, message.text()))
+  page.on('pageerror', (error) => record(`${label} error`, error.message))
+  // A renderer that died is the crash report a reader gets: the dump itself
+  // is a memory image nothing can sweep, and is never published.
+  page.on('crash', () => record(`${label} crashed`))
+  page.on('close', () => record(`${label} closed`))
+}
+
 export class PlaywrightFlowSessionError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options)
@@ -190,6 +226,10 @@ export async function makePlaywrightFlowSession(
   trace: FlowTrace
   dispose: () => Promise<void>
   outbound: () => EgressAttempt[]
+  /** What the pages wrote and what became of them, in order (#78). */
+  console: () => string[]
+  /** The same lines, each with the moment it was written. */
+  platformLog: () => PlatformLogEntry[]
 }> {
   const loadPlaywright =
     opts.loadPlaywright ?? ((): Promise<PlaywrightModule> => import('playwright-core'))
@@ -212,6 +252,10 @@ export async function makePlaywrightFlowSession(
   // Every request the context makes, so a run against a target can hold the
   // hosts it reached against the ones its profile declares (#122).
   const outbound: EgressAttempt[] = []
+  // What every page of the context wrote (#78), bounded like a desktop
+  // application's output: the page is pull request code too.
+  const platform = makePlatformLog()
+  let pages = 0
 
   const start = (): Promise<{ browser: Browser; context: Context; page: BrowserPage }> => {
     starting ??= chromium
@@ -225,7 +269,11 @@ export async function makePlaywrightFlowSession(
         context.on('request', (request) => record(request.url()))
         // A WebSocket never raises a request event, so every page the context
         // opens reports its own: the flow's page, and any popup it spawns.
-        context.on('page', (opened) => opened.on('websocket', (socket) => record(socket.url())))
+        context.on('page', (opened) => {
+          opened.on('websocket', (socket) => record(socket.url()))
+          pages += 1
+          followPage(opened, `page ${pages}`, platform.record)
+        })
         const page = await context.newPage()
         return { browser, context, page }
       })
@@ -275,19 +323,16 @@ export async function makePlaywrightFlowSession(
         throw new Error(`assert failed: the element is not visible`)
       }
     },
-    screenshot: async (path) => {
+    conceals: true,
+    screenshot: async (path, capture) => {
       const started = await start()
       // Masks black out their regions at capture, in the browser (#119): the
       // screenshot on disk never carries the pixels the profile redacts away.
-      await started.page.screenshot(
-        opts.masks === undefined || opts.masks.length === 0
-          ? { path }
-          : {
-              path,
-              mask: opts.masks.map((selector) => started.page.locator(selector)),
-              maskColor: '#000000',
-            },
-      )
+      await started.page.screenshot({ path, ...captureMasks(started.page, opts.masks, capture) })
+    },
+    frame: async (capture) => {
+      const started = await start()
+      return takeFrame(started.page, opts.masks, capture)
     },
     // The browser driver's mapping into the normalised schema (#82): the page's
     // ARIA snapshot, turned into nodes whose roles come from Core-AAM and whose
@@ -330,9 +375,7 @@ export async function makePlaywrightFlowSession(
           await browserPage.screenshot({
             path: request.screenshot,
             fullPage: true,
-            ...(opts.masks === undefined || opts.masks.length === 0
-              ? {}
-              : { mask: opts.masks.map((selector) => browserPage.locator(selector)), maskColor: '#000000' }),
+            ...captureMasks(browserPage, opts.masks, request),
           })
           screenshot = true
         }
@@ -442,7 +485,7 @@ export async function makePlaywrightFlowSession(
     await started.browser.close()
   }
 
-  return { capabilities: BROWSER_FLOW_DRIVER, page, trace, dispose, outbound: () => [...outbound] }
+  return { capabilities: BROWSER_FLOW_DRIVER, page, trace, dispose, outbound: () => [...outbound], console: () => platform.lines(), platformLog: () => platform.entries() }
 }
 
 const DEFAULT_PORTS: Record<string, number> = { 'http:': 80, 'https:': 443, 'ws:': 80, 'wss:': 443 }

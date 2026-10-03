@@ -11,6 +11,7 @@ import {
   identityText,
   type FlowRepairRecord,
 } from './locator.js'
+import { makeFlowRecorder, type FlowRecorder, type FlowRecordingOpts } from './flow-recording.js'
 import { DEFAULT_CHECK_TIMEOUT_MS, runCommandCheck } from './run.js'
 import { SNAPSHOT_SCHEMA_VERSION, nameFindings, trimToSubtree, type SnapshotNode } from './snapshot.js'
 import { totpCode, totpWindow, windowRemaining } from './totp.js'
@@ -79,6 +80,16 @@ export interface FlowTotpConfig {
   backupCode?: string
 }
 
+/** What a capture is asked beside the profile's masks, which the driver holds itself. */
+export interface FlowCaptureOpts {
+  /**
+   * Elements blacked out in this capture (#78): the ones the flow typed a
+   * secret into, so a value redaction would sweep from text never reaches
+   * pixels it cannot read.
+   */
+  conceal?: readonly FlowElement[]
+}
+
 export interface FlowPage {
   open(url: string): Promise<void>
   click(element: FlowElement): Promise<void>
@@ -87,7 +98,20 @@ export interface FlowPage {
   waitFor(element: FlowElement): Promise<void>
   assertText(text: string): Promise<void>
   assertElement(element: FlowElement): Promise<void>
-  screenshot(path: string): Promise<void>
+  screenshot(path: string, capture?: FlowCaptureOpts): Promise<void>
+  /**
+   * Whether the driver blacks out the elements a capture is asked to conceal
+   * (#78). A driver that does keeps being recorded past a typed secret, with
+   * the secret's field concealed; one that does not say so is not asked to,
+   * and its recording stops before the secret is typed.
+   */
+  conceals?: true
+  /**
+   * One frame of the screen as it stands, as a PNG, masked as a screenshot
+   * is (#78). The flow samples frames into its recording. Optional: a driver
+   * without it is not recorded, and declares no `recording` evidence.
+   */
+  frame?: (capture?: FlowCaptureOpts) => Promise<Uint8Array>
   /**
    * The page's accessibility snapshot in the normalised schema (#82), mapped
    * from the driver's own tree. Optional: a driver without a snapshot seam
@@ -149,6 +173,18 @@ export interface FlowCheckOpts {
    * at the viewport the flow ran in.
    */
   a11y?: { tags: readonly string[]; widths: readonly number[]; themes: readonly string[] }
+  /**
+   * The screen recording (#78), taken whenever the driver has a `frame` seam
+   * and kept when the check did not pass. `false` turns it off; the bounds
+   * are the recording's own unless a caller names others.
+   */
+  recording?: FlowRecordingOpts | false
+  /**
+   * Stops the flow (#78): a caller that gave up on it, at a timeout, aborts
+   * this, and from then on the flow takes no frame, starts no action and
+   * writes nothing, so it adds nothing to evidence already vouched for.
+   */
+  signal?: AbortSignal
 }
 
 export interface FlowCheckResult {
@@ -159,6 +195,8 @@ export interface FlowCheckResult {
   repairs?: FlowRepairRecord[]
   /** The audits the flow made, when it was asked to audit (#149). What they come to is the caller's to decide. */
   a11y?: A11yFlowAudits
+  /** When the check stopped, for a check that did not pass (#78): the moment its platform log is cut around. */
+  failedAt?: number
 }
 
 const KNOWN_KINDS: readonly string[] = [
@@ -185,6 +223,7 @@ const BOUNDARY_GUARD_MS = 1000
 const FAILURE_SCREENSHOT = 'failure.png'
 const FINAL_SCREENSHOT = 'final.png'
 const ACTION_LOG = 'actions.log'
+const RECORDING = 'recording.png'
 
 function unknownKind(action: FlowAction): string | undefined {
   const kind = (action as { action?: unknown }).action
@@ -230,7 +269,8 @@ function describeAction(action: FlowAction, index: number): string {
  * is unverified, never failed: the criterion says nothing about the change.
  */
 export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult> {
-  const { actions, page, trace, outDir, tracesDir, redactLog, masks, totp, generatedCodes, codesOnPage = false, now = Date.now, a11y } = opts
+  const { actions, page, trace, outDir, tracesDir, redactLog, masks, totp, generatedCodes, codesOnPage = false, now = Date.now, a11y, recording, signal } = opts
+  const stopped = (): boolean => signal?.aborted === true
 
   if (actions.length === 0) {
     return { outcome: 'unverified', reason: 'flow has no actions', evidence: [] }
@@ -269,6 +309,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
 
   const log: string[] = []
   const writeLog = async (): Promise<void> => {
+    if (stopped()) return
     const text = log.join('\n')
     await writeFile(join(outDir, ACTION_LOG), `${redactLog === undefined ? text : redactLog(text)}\n`)
   }
@@ -282,13 +323,35 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   // from mail — may still sit in an input on it, and redaction cannot read
   // pixels: every capture is withheld until the flow can prove otherwise (#64).
   let codeOnPage = codesOnPage
+  // One capture at a time (#78): a frame, a screenshot and an audit each put
+  // masks up and take them down, and none may do so under another.
+  let capturing: Promise<unknown> = Promise.resolve()
+  const exclusive = <T>(work: () => Promise<T>): Promise<T> => {
+    const next = capturing.then(work, work)
+    capturing = next.catch(() => {})
+    return next
+  }
+  // The elements the flow typed a secret into (#78), blacked out in every
+  // capture from the moment before the value is typed.
+  const concealed: FlowElement[] = []
+  // A secret typed into a page whose driver cannot conceal it (#78): like a
+  // one-time code, it may sit on the page from then on, so every capture of
+  // pixels is withheld rather than published with nothing over the field.
+  let secretOnPage = false
+  const SECRET_ON_PAGE = 'a secret was typed into the page, and the driver cannot conceal the element it went into'
+  const capture = (): FlowCaptureOpts | undefined => (concealed.length === 0 ? undefined : { conceal: [...concealed] })
   const screenshot = async (name: string, opts: { required?: boolean } = {}): Promise<string | undefined> => {
     if (codeOnPage) {
       log.push(`${name} withheld: the second-factor code is visible on the page, and redaction cannot read pixels`)
       return undefined
     }
+    if (secretOnPage) {
+      log.push(`${name} withheld: ${SECRET_ON_PAGE}`)
+      return undefined
+    }
+    if (stopped()) return undefined
     try {
-      await page.screenshot(join(outDir, name))
+      await exclusive(() => page.screenshot(join(outDir, name), capture()))
       log.push(`screenshot ${name}${masksNote}`)
       return name
     } catch (error) {
@@ -308,8 +371,60 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
     }
   }
 
+  // The recording (#78): frames the driver takes, sampled after every action
+  // and on a timer between them. It is not made while a one-time code is on
+  // the page, for the reason a screenshot is withheld then (#64).
+  let recorder: FlowRecorder | undefined
+  let recordingStopped = false
+  if (page.frame !== undefined && recording !== false) {
+    const frame = page.frame
+    if (codeOnPage) log.push('recording not made: a one-time code is on the page, and redaction cannot read pixels')
+    else recorder = makeFlowRecorder({ take: () => frame(capture()), exclusive, now, ...(recording === undefined ? {} : { recording }) })
+  }
+  // A flow that is stopped takes no more frames from that moment.
+  const stopRecorder = (): void => void recorder?.stop()
+  signal?.addEventListener('abort', stopRecorder, { once: true })
+  // A secret about to be typed (#78): no capture that could show it is in
+  // flight when it lands, and none after it shows the element it is in.
+  const conceal = async (element: FlowElement, index: number): Promise<void> => {
+    if (page.conceals !== true) {
+      // Nothing is claimed that the driver cannot do: its recording ends
+      // here and its captures are withheld from here on, as for a code.
+      secretOnPage = true
+      if (recorder !== undefined && !recordingStopped) {
+        recordingStopped = true
+        log.push(`recording stopped before action ${index}: a secret is about to be typed, and the driver cannot conceal the element it goes into`)
+        await recorder.stop()
+      }
+      return
+    }
+    // The whole reference is the identity: two fields of one role and name at different paths are two fields.
+    if (!concealed.some((entry) => JSON.stringify(entry) === JSON.stringify(element))) {
+      concealed.push(element)
+      log.push(`${describeElement(element)} is concealed in every capture from here on: the value typed into it is one redaction sweeps`)
+    }
+    await exclusive(async () => {})
+  }
+  // A typed value is a secret when the run's redaction would sweep it from
+  // the action log: the value itself, or the value beside the name of the
+  // field it goes into. What the log cannot show, the pixels do not either.
+  const typesSecret = (action: Extract<FlowAction, { action: 'type' }>, index: number): boolean => {
+    if (redactLog === undefined) return false
+    const line = describeAction(action, index)
+    return redactLog(action.value) !== action.value || redactLog(line) !== line
+  }
+  // A one-time code about to be typed stops the recording for good (#64,
+  // #78): what was recorded until now stays, and nothing after it is taken.
+  const stopRecordingFor = async (index: number): Promise<void> => {
+    if (recorder === undefined || recordingStopped) return
+    recordingStopped = true
+    log.push(`recording stopped before action ${index}: a second-factor code is about to be on the page, and redaction cannot read pixels`)
+    await recorder.stop()
+  }
+
   let outcome: FlowCheckResult['outcome'] = 'passed'
   let reason: string | undefined
+  let failedAt: number | undefined
   let failureScreenshot: string | undefined
   // A capture is evidence the flow took on the way past, so it is listed in
   // the result whatever happens to the actions that follow it (#70).
@@ -321,6 +436,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   // same criterion yields comparable snapshots across clients. A control in
   // that subtree with no accessible name is a named finding, not a silent pass.
   const snapshotAt = async (index: number, trim?: string): Promise<void> => {
+    if (stopped()) return
     if (page.snapshot === undefined) {
       log.push('snapshot not taken: the driver exposes no accessibility snapshot')
       return
@@ -361,6 +477,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
         await page.open(current.url)
         break
       case 'type':
+        if (typesSecret(current, index)) await conceal(current.element, index)
         await page.type(current.element, current.value)
         break
       case 'click':
@@ -395,6 +512,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
         if (remaining < BOUNDARY_GUARD_MS) {
           await new Promise((resolve) => setTimeout(resolve, remaining))
         }
+        await stopRecordingFor(index)
         const window = totpWindow(config.period, now())
         const code = totpCode(config.secret, config, now())
         // The code is on the page from the moment the type is attempted:
@@ -419,6 +537,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
       }
       case 'backupCode': {
         const value = totp!.backupCode!
+        await stopRecordingFor(index)
         // The recovery value is fail-closed the same way: the capture is
         // withheld from a type that throws, whatever the seam did first (#64).
         codeOnPage = true
@@ -487,13 +606,14 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   const ACTS_ON_PAGE: readonly string[] = ['open', 'type', 'click', 'choose', 'totp', 'backupCode']
   const SETTLES_PAGE: readonly string[] = ['open', 'waitFor', 'assertText', 'assertElement']
   const auditAt = async (point: number): Promise<void> => {
-    if (a11y === undefined || !actedSinceAudit || auditError !== undefined) return
+    if (a11y === undefined || !actedSinceAudit || auditError !== undefined || stopped()) return
     actedSinceAudit = false
     if (page.audit === undefined) {
       auditError = 'the driver exposes no accessibility audit'
       log.push(`a11y audit not made: ${auditError}`)
       return
     }
+    const runAudit = page.audit
     for (const width of a11y.widths.length === 0 ? [undefined] : a11y.widths) {
       for (const theme of a11y.themes) {
         const at = `${width ?? 'viewport'}x${theme}`
@@ -501,10 +621,15 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
         try {
           // A screenshot is evidence redaction cannot read, so none is taken
           // while a one-time code may sit on the page (#64).
+          const withheld = codeOnPage || secretOnPage
           if (codeOnPage) log.push(`a11y screenshot withheld at ${at}: the second-factor code is visible on the page, and redaction cannot read pixels`)
+          else if (secretOnPage) log.push(`a11y screenshot withheld at ${at}: ${SECRET_ON_PAGE}`)
           else await mkdir(join(outDir, 'a11y'), { recursive: true })
-          const audit = await page.audit({ tags: a11y.tags, ...(width === undefined ? {} : { width }), theme, ...(codeOnPage ? {} : { screenshot: join(outDir, shot) }) })
-          const taken = audit.screenshot === true && !codeOnPage
+          // The audit's own screenshot conceals what every other capture conceals (#78).
+          const audit = await exclusive(() =>
+            runAudit({ tags: a11y.tags, ...(width === undefined ? {} : { width }), theme, ...(withheld ? {} : { screenshot: join(outDir, shot), ...capture() }) }),
+          )
+          const taken = audit.screenshot === true && !withheld
           audits.push({ ...audit, point, ...(taken ? { screenshotPath: shot } : {}) })
           const found = audit.violations.reduce((sum, violation) => sum + violation.nodes.length, 0)
           log.push(`a11y audit after action ${point} at ${audit.width}x${theme}: ${found} violation(s)${taken ? `, screenshot ${shot}${masksNote}` : ''}`)
@@ -522,12 +647,17 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   }
 
   for (const [index, action] of actions.entries()) {
+    if (stopped()) break
     const line = describeAction(action, index)
     try {
       const driven = await drive(action, index)
       log.push(driven ?? line)
+      await recorder?.sample()
       await settled(action, index)
     } catch (error) {
+      // A flow that was stopped has no failure of its own to report.
+      if (stopped()) break
+      failedAt = now()
       if (action.action === 'assertText' || action.action === 'assertElement') {
         outcome = 'failed'
         reason =
@@ -540,6 +670,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
         // the whole tree for a test-id reference (#82).
         if (action.action === 'assertText') await snapshotAt(index, action.text)
         else await snapshotAt(index, 'name' in action.element ? action.element.name : undefined)
+        await recorder?.sample()
         failureScreenshot = await screenshot(FAILURE_SCREENSHOT)
         break
       }
@@ -548,7 +679,9 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
       // action's own line stands in the log when the re-drive succeeds.
       const repaired = await repairLocator(action, index, log, records)
       if (repaired !== undefined && 'line' in repaired) {
+        failedAt = undefined
         log.push(repaired.line)
+        await recorder?.sample()
         await settled(action, index)
         continue
       }
@@ -560,11 +693,17 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
         repaired !== undefined && 'refused' in repaired
           ? `action ${index} failed: ${redactLog === undefined ? String(error) : redactLog(String(error))}; the locator repair was refused: ${repaired.refused}`
           : `action ${index} failed: ${redactLog === undefined ? String(error) : redactLog(String(error))}`
+      await recorder?.sample()
       failureScreenshot = await screenshot(FAILURE_SCREENSHOT)
       break
     }
   }
 
+  signal?.removeEventListener('abort', stopRecorder)
+  if (stopped()) {
+    await recorder?.stop()
+    return { outcome: 'unverified', reason: 'the flow was stopped before it ended', evidence: [] }
+  }
   evidence.push(...captures)
   // The state a passing flow ended in is a page it visited, like the others.
   if (outcome === 'passed') await auditAt(actions.length)
@@ -575,16 +714,53 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   } else if (failureScreenshot !== undefined) {
     evidence.push(failureScreenshot)
   }
+  // The recording is kept for a check that did not pass (#78): a screenshot
+  // already shows where a passing flow ended, and frames nobody will watch
+  // are evidence nobody should have to store.
+  if (recorder !== undefined) {
+    await recorder.stop()
+    const failures = recorder.failures()
+    if (outcome === 'passed') log.push(`recording not kept: the flow passed (${recorder.taken()} frames taken)`)
+    else {
+      const assembled = recorder.assemble(now())
+      if (stopped()) {
+        // Nothing more is written once the caller has given up on the flow.
+      } else if (assembled === undefined)
+        log.push(
+          recorder.dropped() > 0
+            ? `recording not kept: every frame was larger than the ${recorder.bounds().maxBytes} bytes a recording may hold (${recorder.dropped()} dropped)`
+            : failures.count === 0
+            ? 'recording not kept: no frame was taken'
+            : `recording not kept: no frame could be taken (${failures.count} failed, the first with ${redactLog === undefined ? failures.first : redactLog(failures.first ?? '')})`,
+        )
+      else {
+        await writeFile(join(outDir, RECORDING), assembled.apng)
+        evidence.push(RECORDING)
+        const bounds = recorder.bounds()
+        const notes = [
+          `${assembled.frames} ${assembled.frames === 1 ? 'frame' : 'frames'} over ${(assembled.durationMs / 1000).toFixed(1)} s, ${assembled.apng.length} bytes`,
+          ...(masksNote === '' ? [] : [masksNote.trim()]),
+          ...(concealed.length === 0 ? [] : [`concealed: ${concealed.map(describeElement).join(', ')}`]),
+          ...(assembled.dropped === 0
+            ? []
+            : [`${assembled.dropped} earlier ${assembled.dropped === 1 ? 'frame' : 'frames'} dropped to keep it within ${bounds.maxFrames} frames and ${bounds.maxBytes} bytes`]),
+          ...(assembled.skipped === 0 ? [] : [`${assembled.skipped} of another size left out`]),
+          ...(failures.count === 0 ? [] : [`${failures.count} could not be taken`]),
+        ]
+        log.push(`recording ${RECORDING}: ${notes.join(', ')}`)
+      }
+    }
+  }
   // The repairs are evidence like the log is: written through the same
   // redaction sweep, listed in the evidence, and named in the run's comment.
-  if (records.length > 0) {
+  if (records.length > 0 && !stopped()) {
     const serialized = `${JSON.stringify({ schemaVersion: REPAIRS_SCHEMA_VERSION, repairs: records }, null, 2)}\n`
     await writeFile(join(outDir, 'repairs.json'), redactLog === undefined ? serialized : redactLog(serialized))
     evidence.push('repairs.json')
   }
   await writeLog()
 
-  if (trace) {
+  if (trace && !stopped()) {
     const tracePath = join(tracesDir ?? outDir, 'trace.zip')
     try {
       await trace.stop(tracePath)
@@ -598,7 +774,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   const audited: Pick<FlowCheckResult, 'a11y'> = a11y === undefined ? {} : { a11y: { audits, ...(auditError === undefined ? {} : { error: auditError }) } }
   return outcome === 'passed'
     ? { outcome, evidence, ...(records.length === 0 ? {} : { repairs: records }), ...audited }
-    : { outcome, reason, evidence, ...(records.length === 0 ? {} : { repairs: records }), ...audited }
+    : { outcome, reason, evidence, ...(records.length === 0 ? {} : { repairs: records }), ...audited, ...(failedAt === undefined ? {} : { failedAt }) }
 }
 
 /**

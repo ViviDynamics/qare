@@ -486,6 +486,39 @@ test('the application\'s own output is kept from its first byte: both streams by
   expect(started.console().join('\n')).not.toContain('DevTools listening')
 })
 
+test('a frame is the current window, masked as a screenshot is, with every concealed element blacked out (#78)', async () => {
+  const events: string[] = []
+  const { session } = harness({ windows: [fakeWindow(events, 'Greeter', HOME)], masks: ['css=.secret'] })
+  const started = await session()
+
+  await started.page.frame?.({ conceal: [{ role: 'textbox', name: 'Passphrase' }] })
+  expect(started.page.conceals).toBe(true)
+  await started.page.screenshot('/tmp/failure.png', { conceal: [{ role: 'textbox', name: 'Passphrase' }] })
+  await started.dispose()
+
+  // The second mask is the concealed element's own locator, which has nothing a string can show.
+  expect(events).toEqual([
+    'loaded Greeter to load',
+    'screenshot {"type":"png","scale":"css","timeout":5000,"mask":[{"selector":"css=.secret"},{}],"maskColor":"#000000"} of Greeter',
+    'screenshot {"path":"/tmp/failure.png","mask":[{"selector":"css=.secret"},{}],"maskColor":"#000000"} of Greeter',
+  ])
+})
+
+test('a window whose renderer died says so in the output, and every line carries the moment it was written (#78)', async () => {
+  const main = fakeWindow([], 'Greeter', HOME)
+  const { session } = harness({ windows: [main] })
+  const before = Date.now()
+  const started = await session()
+
+  main.emit('crash')
+  await started.dispose()
+
+  expect(started.console()).toEqual(['[main stdout] main: ready', `[window 1 opened] ${HOME}`, '[window 1 crashed]', '[main exited] code 0'])
+  const entries = started.platformLog()
+  expect(entries.map((entry) => entry.line)).toEqual(started.console())
+  for (const entry of entries) expect(entry.at).toBeGreaterThanOrEqual(before)
+})
+
 test('a click that closes its own window has landed: the window going away under it is not the click failing (#223)', async () => {
   const events: string[] = []
   const main = fakeWindow(events, 'Greeter', HOME, ['button=Shared'])
