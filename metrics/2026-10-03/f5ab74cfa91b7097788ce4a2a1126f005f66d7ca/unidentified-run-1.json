@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "qare.metrics.v1",
+  "recordedAt": "2026-10-03T16:00:21.991Z",
+  "runId": "pr-215",
+  "startedAt": "2026-10-03T15:59:55.545Z",
+  "finishedAt": "2026-10-03T15:59:55.644Z",
+  "wallMs": 99,
+  "verdict": "blocked",
+  "criteria": {
+    "selected": [
+      {
+        "id": "c-e21fb7dccfff1295",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-048ef02867b15873",
+        "outcome": "unverified"
+      }
+    ],
+    "counts": {
+      "unverified": 2
+    }
+  },
+  "model": {},
+  "context": {
+    "pr": 215
+  }
+}
