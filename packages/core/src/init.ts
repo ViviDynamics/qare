@@ -68,6 +68,8 @@ interface ComposeService {
   build: boolean
   hostPort?: string
   healthPath?: string
+  /** The scheme the service's own healthcheck asks with; http when it names none. */
+  healthScheme?: string
 }
 
 export async function planInit(repoPath: string, opts: InitOptions = {}): Promise<InitPlan> {
@@ -81,7 +83,9 @@ export async function planInit(repoPath: string, opts: InitOptions = {}): Promis
   let config: string
   // A target profile that is already there says where the app runs, so a
   // repository that only lacks the workflow needs no flag.
-  const target = opts.target ?? (inventory.boot.length === 0 ? inventory.profile.target?.url : undefined)
+  // It holds whatever compose files lie beside it: a compose file kept for
+  // local development does not turn a target repository into a booted one.
+  const target = opts.target ?? inventory.profile.target?.url
   if (target !== undefined) {
     kind = 'target'
     config = targetConfig(target, opts.health, suites)
@@ -146,7 +150,7 @@ export function callerWorkflow(opts: { model: string; requeue?: { branch: string
     'name: QARE',
     'on:',
     '  pull_request:',
-    ...(opts.requeue === undefined ? [] : ['  push:', `    branches: [${opts.requeue.branch}]`, "    paths: ['.qa/**']"]),
+    ...(opts.requeue === undefined ? [] : ['  push:', `    branches: [${yamlString(opts.requeue.branch)}]`, "    paths: ['.qa/**']"]),
     'jobs:',
     '  qare:',
     '    permissions:',
@@ -157,11 +161,20 @@ export function callerWorkflow(opts: { model: string; requeue?: { branch: string
     '      pull-requests: write',
     `    uses: ${PIPELINE_WORKFLOW}@${VERSION}`,
     '    with:',
-    `      nare-model: ${opts.model}`,
+    `      nare-model: ${yamlString(opts.model)}`,
     '    secrets:',
     `      model-key: \${{ secrets.${INIT_MODEL_SECRET} }}`,
     '',
   ].join('\n')
+}
+
+/**
+ * A value as a YAML string. A branch or a model may be named `true`, `null`
+ * or `123`, which a bare scalar would read as something else; those are
+ * quoted, and every other name is written as a person would write it.
+ */
+function yamlString(value: string): string {
+  return parseYaml(value) === value ? value : JSON.stringify(value)
 }
 
 const HEADER = [
@@ -194,7 +207,7 @@ function targetConfig(url: string, health: string | undefined, suites: Suite[]):
 function appConfig(service: ComposeService, composeLabel: string, inventory: ReadinessInventory, suites: Suite[]): string {
   const compose = composeLabel.replace(/^\.\//, '')
   const guessed = service.hostPort === undefined
-  const health = `http://localhost:${service.hostPort ?? '3000'}${service.healthPath ?? '/'}`
+  const health = `${service.healthScheme ?? 'http'}://localhost:${service.hostPort ?? '3000'}${service.healthPath ?? '/'}`
   const hosts = [...new Set(inventory.origins.map((hit) => hit.origin.slice(hit.origin.indexOf('://') + 3).replace(/:\d+$/, '')))].sort()
   return [
     ...HEADER,
@@ -339,12 +352,12 @@ function composeServices(text: string): ComposeService[] {
     .map(([name, raw]) => {
       const record = isRecord(raw) ? raw : {}
       const hostPort = Array.isArray(record.ports) ? record.ports.map(publishedPort).find((port) => port !== undefined) : undefined
-      const healthPath = healthPathOf(record.healthcheck)
+      const health = healthOf(record.healthcheck)
       return {
         name,
         build: record.build !== undefined && record.build !== null,
         ...(hostPort === undefined ? {} : { hostPort }),
-        ...(healthPath === undefined ? {} : { healthPath }),
+        ...(health === undefined ? {} : { healthPath: health.path, healthScheme: health.scheme }),
       }
     })
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
@@ -367,15 +380,15 @@ function publishedPort(entry: unknown): string | undefined {
   return first !== undefined && /^\d+$/.test(first) ? first : undefined
 }
 
-/** The path the service's own healthcheck asks for, when it names a URL. */
-function healthPathOf(healthcheck: unknown): string | undefined {
+/** The scheme and path the service's own healthcheck asks with, when it names a URL. */
+function healthOf(healthcheck: unknown): { scheme: string; path: string } | undefined {
   if (!isRecord(healthcheck)) return undefined
   const test = Array.isArray(healthcheck.test) ? healthcheck.test.map(String).join(' ') : String(healthcheck.test ?? '')
   const match = /https?:\/\/[^\s"'|;&)]+/.exec(test)
   if (match === null) return undefined
   try {
     const url = new URL(match[0])
-    return `${url.pathname}${url.search}`
+    return { scheme: url.protocol.replace(/:$/, ''), path: `${url.pathname}${url.search}` }
   } catch {
     return undefined
   }

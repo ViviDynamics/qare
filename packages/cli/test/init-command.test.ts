@@ -123,6 +123,27 @@ test('a profile is written beside an existing workflow, and a caller under anoth
   expect(out).not.toContain('add the repository secret')
 })
 
+test('a workflow that only mentions the pipeline is not a caller, so init still writes one', async () => {
+  const repo = await composeRepo({
+    '.github/workflows/ci.yml': [
+      'jobs:',
+      '  test:',
+      '    # uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.9.0',
+      '    steps:',
+      '      - run: echo "uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.9.0 one day"',
+    ].join('\n'),
+  })
+  const { code, out } = await run(['init', repo])
+  expect(code).toBe(0)
+  expect(out).toContain('wrote .github/workflows/qare.yml\n')
+  expect(out).toContain('- add the repository secret OPENAI_API_KEY')
+  // Quoted, or with a trailing comment, an active entry is still a caller.
+  const quoted = await composeRepo({
+    '.github/workflows/qa.yml': 'jobs:\n  qa:\n    uses: "ViviDynamics/qare/.github/workflows/pipeline.yml@2026.9.0" # pinned\n',
+  })
+  expect((await run(['init', quoted])).out).toContain('kept .github/workflows/qa.yml (it already calls the qare pipeline)')
+})
+
 test('on a repository with no compose file, init --target writes a target profile that qare check runs', async () => {
   const target = url('https', 'app.example.test')
   const repo = await repoWith({ 'smoke.mjs': 'console.log("up", process.argv[2])\n' })

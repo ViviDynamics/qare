@@ -96,6 +96,26 @@ test('a health URL init had to guess is marked for a person to confirm', async (
   expect(config).toContain('TODO(qare init): the service "api" publishes no port: publish one, and correct the health URL')
 })
 
+test('the health URL keeps the scheme the healthcheck asks with', async () => {
+  const repo = await repoWith({
+    'compose.yaml': `services:\n  web:\n    ports: ["8443:8443"]\n    healthcheck: { test: "curl -kf ${url('https', 'localhost:8443/up')}" }\n`,
+  })
+  await write(repo, await planInit(repo))
+  expect((await loadProfile(join(repo, '.qa'))).app?.health.http).toBe(url('https', 'localhost:8443/up'))
+})
+
+test('a target profile that is already there holds, whatever compose file lies beside it', async () => {
+  const target = url('https', 'staging.example.test')
+  const repo = await repoWith({
+    'docker-compose.yml': 'services:\n  web:\n    build: .\n',
+    '.qa/QA.md': '# QA\n',
+    '.qa/config.yml': `target:\n  url: ${target}\n  health: { http: /up, timeout: 30s }\n`,
+  })
+  const plan = await planInit(repo)
+  expect(plan.kind).toBe('target')
+  expect(plan.workflow.content).not.toContain('push:')
+})
+
 test('the application service can be named, and a name the compose file does not define is refused', async () => {
   const repo = await composeRepo()
   await write(repo, await planInit(repo, { service: 'worker' }))
@@ -177,6 +197,12 @@ test('the caller workflow pins this release, and re-queues refused pull requests
   expect(workflow.jobs.qare.secrets).toEqual({ 'model-key': '${{ secrets.OPENAI_API_KEY }}' })
   expect(workflow.on.push).toEqual({ branches: ['trunk'], paths: ['.qa/**'] })
   expect(app.secret).toBe('OPENAI_API_KEY')
+
+  // A branch or a model named like a YAML keyword or a number stays a string.
+  const odd = parse(callerWorkflow({ model: '123', requeue: { branch: 'true' } })) as typeof workflow
+  expect(odd.jobs.qare.with).toEqual({ 'nare-model': '123' })
+  expect(odd.on.push?.branches).toEqual(['true'])
+  expect(callerWorkflow({ model: 'null' })).toContain('nare-model: "null"')
 
   const target = parse(callerWorkflow({ model: 'some-model' })) as { on: Record<string, unknown> }
   expect(Object.keys(target.on)).toEqual(['pull_request'])

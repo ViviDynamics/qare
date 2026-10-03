@@ -56,6 +56,16 @@ async function defaultBranch(repo: string): Promise<string | undefined> {
   }
 }
 
+/**
+ * Whether a workflow line is a job's `uses:` of the pipeline. A comment that
+ * mentions the pipeline calls nothing, and taking it for a caller would leave
+ * the repository without one.
+ */
+function callsPipeline(line: string): boolean {
+  const entry = /^\s*uses:\s*(['"]?)([^\s'"#]+)\1\s*(?:#.*)?$/.exec(line)
+  return entry !== null && (entry[2] as string).startsWith(`${PIPELINE_WORKFLOW}@`)
+}
+
 /** A workflow that already calls the pipeline, whatever its file is named. */
 async function existingCaller(repo: string): Promise<string | undefined> {
   if (await exists(join(repo, INIT_WORKFLOW_PATH))) return INIT_WORKFLOW_PATH
@@ -63,7 +73,7 @@ async function existingCaller(repo: string): Promise<string | undefined> {
   for (const name of (await readdir(dir).catch(() => [])).sort()) {
     if (!/\.ya?ml$/.test(name)) continue
     const text = await readFile(join(dir, name), 'utf8').catch(() => '')
-    if (text.includes(`${PIPELINE_WORKFLOW}@`)) return `${dirname(INIT_WORKFLOW_PATH)}/${name}`
+    if (text.split('\n').some(callsPipeline)) return `${dirname(INIT_WORKFLOW_PATH)}/${name}`
   }
   return undefined
 }
