@@ -209,6 +209,29 @@ export type {
 } from './a11y.js'
 export { A11Y_RECORD, DEFAULT_A11Y_THEME, settleA11y } from './a11y-run.js'
 export type { A11yContext, A11ySettleInput, A11ySettleOutcome } from './a11y-run.js'
+// The advisory UX review (#150): findings a person reads, never a verdict.
+export {
+  ADVISORY_CATEGORIES,
+  ADVISORY_SEVERITIES,
+  UX_REVIEW_OUTPUT_SCHEMA,
+  advisoryFindingId,
+  advisoryScreens,
+  consumeUxFindings,
+  redactAdvisory,
+  reviewJudged,
+  runUxReview,
+} from './advisory.js'
+export type {
+  AdvisoryCategory,
+  AdvisoryFinding,
+  AdvisoryScreen,
+  AdvisorySeverity,
+  DismissedFinding,
+  ReviewJudgedOptions,
+  RunAdvisory,
+  UxReviewInputs,
+} from './advisory.js'
+export type { ProfileUx } from './profile.js'
 export { runFlowCheck, runSuiteCheck } from './flow.js'
 export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult, FlowTotpConfig, FlowDriverCapabilities } from './flow.js'
 export { SNAPSHOT_SCHEMA_VERSION, nameFindings, normaliseAriaSnapshot, trimToSubtree } from './snapshot.js'

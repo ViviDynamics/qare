@@ -1,4 +1,5 @@
 import type { A11yCounts } from './a11y.js'
+import type { RunAdvisory } from './advisory.js'
 import type { RunEnvironment, RunImage } from './environment.js'
 import { parseProfileRef, type JobProfileRef } from './job.js'
 import type { MailProof } from './mailbox.js'
@@ -160,6 +161,12 @@ export interface RunResult {
    * the two with the run's wall clock and verdict.
    */
   judgeUsage?: ModelUsage
+  /**
+   * What the advisory UX review reported (#150): a model's findings for a
+   * person to read. It is a key of its own because it is no part of the
+   * verdict: nothing that computes an outcome or a verdict reads it.
+   */
+  advisory?: RunAdvisory
 }
 
 const CRITERION_OUTCOMES: CriterionOutcome[] = ['proven', 'failed', 'unverified']
