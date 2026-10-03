@@ -82,6 +82,8 @@ test('the provisioned profile installs the build from an archive, for both sides
     },
     health: { timeout: '30s' },
     args: ['--no-sandbox'],
+    // Both builds run contained (#223): what the base build's runtime reaches for by itself is declared.
+    hosts: ['redirector.gvt1.com', '*.gvt1.com'],
   })
   assert.equal(provisioned.app, undefined)
   assert.equal(flowDriverFor(provisioned), ELECTRON_FLOW_DRIVER)

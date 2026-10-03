@@ -192,7 +192,7 @@ test('a harness that is going away takes the cell with it, without waiting (#223
   cell.reap()
   expect(calls.slice(3)).toEqual([
     ['sync', 'rm', '-f', 'qare-cell-abc123-app', 'qare-cell-abc123-gate'],
-    ['sync', 'volume', 'rm', '-f', 'qare-cell-abc123'],
+    ['sync', 'volume', 'rm', '-f', 'qare-cell-abc123', 'qare-cell-abc123-build'],
   ])
 })
 
@@ -214,4 +214,38 @@ test('what a cell needs is checked by name: the image the run is in, and a daemo
   )
   // An image reference is handed to docker as an argument, so it is held to being one.
   expect(await clientCellProblem({ QARE_IMAGE_REF: '--privileged' }, docker)).toMatch(/QARE_IMAGE_REF is not an image reference/)
+})
+
+test('a build the run installed outside the checkout is copied into the cell, not mounted from a path the daemon may not see (#223, #75)', async () => {
+  const { docker, calls, spawned } = fakeDocker()
+  const install = '/tmp/qare-install-head-x1'
+  const cell = await startClientCell({ ...OPTS, docker, install })
+  // A volume of its own, filled through a container that never runs: the
+  // copy travels over the daemon's API, so it works wherever the daemon is.
+  expect(calls.slice(3)).toEqual([
+    ['volume', 'create', 'qare-cell-abc123-build'],
+    ['create', '--name', 'qare-cell-abc123-load', '-v', 'qare-cell-abc123-build:/build', 'qare-web:test', 'true'],
+    ['cp', '/tmp/qare-install-head-x1/.', 'qare-cell-abc123-load:/build'],
+    ['rm', '-f', 'qare-cell-abc123-load'],
+  ])
+  cell.spawn('/tmp/qare-install-head-x1/greeter/greeter', ['--no-sandbox'])
+  const args = spawned[1]?.args ?? []
+  // The install is where the driver was told it is, read-only, and the checkout is not in the cell at all.
+  expect(args.join(' ')).toContain('-v qare-cell-abc123-build:/tmp/qare-install-head-x1:ro -w /tmp/qare-install-head-x1')
+  expect(args.join(' ')).not.toContain('/work/repo')
+  await cell.dispose()
+  expect(calls.slice(-2)).toEqual([['volume', 'rm', '-f', 'qare-cell-abc123'], ['volume', 'rm', '-f', 'qare-cell-abc123-build']])
+
+  const failing = fakeDocker({ fail: { cp: 'Error response from daemon: no space left on device' } })
+  await expect(startClientCell({ ...OPTS, docker: failing.docker, install })).rejects.toThrow(
+    'the cell could not be made: the installed build could not be copied into it: Error response from daemon: no space left on device',
+  )
+  expect(failing.calls.slice(-4)).toEqual([
+    ['rm', '-f', 'qare-cell-abc123-load'],
+    ['rm', '-f', 'qare-cell-abc123-gate'],
+    ['volume', 'rm', '-f', 'qare-cell-abc123'],
+    ['volume', 'rm', '-f', 'qare-cell-abc123-build'],
+  ])
+  // An install is an absolute path of the run's own making, and is held to looking like one.
+  await expect(startClientCell({ ...OPTS, docker: fakeDocker().docker, install: 'relative/dir' })).rejects.toThrow(/the installed build's directory is not an absolute path/)
 })

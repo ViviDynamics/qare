@@ -26,4 +26,11 @@ client:
   # The harness launches each installed build once and waits for its first
   # window before any check runs.
   health: { timeout: 30s }
+  # Both builds run contained (#223), and these are all they may reach. The
+  # base build is the application as the base revision has it, and an
+  # Electron runtime that is not told otherwise downloads its spellchecker's
+  # dictionary when it starts: from redirector.gvt1.com, which sends it on to
+  # a server one label below gvt1.com. A build of a revision that turns the
+  # spellchecker's languages off reaches neither, and the list can go.
+  hosts: [redirector.gvt1.com, "*.gvt1.com"]
 flavour: web

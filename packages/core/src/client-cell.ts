@@ -118,6 +118,13 @@ export interface ClientCellOptions {
   /** The repository the build is in, mounted read-only at its own path. */
   repoPath: string
   hosts: readonly string[]
+  /**
+   * Where the run installed the build, when that is not in the repository
+   * (#75). The directory is copied into the cell at the same path, over the
+   * daemon's API, so it need not be a path the daemon can see: the run's own
+   * temporary directory is not, when the run is in a container.
+   */
+  install?: string
   docker?: CellDocker
   uid?: number
   gid?: number
@@ -170,6 +177,9 @@ export async function startClientCell(opts: ClientCellOptions): Promise<ClientCe
   const volume = `qare-cell-${id}`
   const gateName = `${volume}-gate`
   const appName = `${volume}-app`
+  const buildVolume = `${volume}-build`
+  const loadName = `${volume}-load`
+  if (opts.install !== undefined && !/^\/[^\0]*$/.test(opts.install)) throw new Error("the cell could not be made: the installed build's directory is not an absolute path")
   // What both containers share: no capability, no way to gain one, the
   // run's own user, and the volume that holds the two sockets.
   const common = ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '-u', `${uid}:${gid}`, '-e', 'HOME=/tmp', '-v', `${volume}:${SOCKET_DIR}`]
@@ -214,6 +224,7 @@ export async function startClientCell(opts: ClientCellOptions): Promise<ClientCe
   const remove = async (): Promise<void> => {
     await docker.run(['rm', '-f', gateName])
     await docker.run(['volume', 'rm', '-f', volume])
+    if (opts.install !== undefined) await docker.run(['volume', 'rm', '-f', buildVolume])
   }
   const unmade = async (why: string): Promise<never> => {
     await remove()
@@ -266,6 +277,28 @@ export async function startClientCell(opts: ClientCellOptions): Promise<ClientCe
     )
   const relayAt = `${relay.host}:${relay.port}`
 
+  // A build installed outside the checkout is copied in: a volume of its
+  // own, filled through a container that is created and never started.
+  if (opts.install !== undefined) {
+    const steps: string[][] = [
+      ['volume', 'create', buildVolume],
+      ['create', '--name', loadName, '-v', `${buildVolume}:/build`, opts.image, 'true'],
+      ['cp', `${opts.install}/.`, `${loadName}:/build`],
+    ]
+    let failed: string | undefined
+    for (const step of steps) {
+      const ran = await docker.run(step)
+      if (ran.code === 0) continue
+      failed = firstLine(ran.stderr) || `docker ${step[0]} exited ${ran.code}`
+      break
+    }
+    await docker.run(['rm', '-f', loadName])
+    if (failed !== undefined) return unmade(`the installed build could not be copied into it: ${failed}`)
+  }
+  // What the build is launched from: the install, copied in, or the
+  // repository, mounted at its own path. Read-only either way.
+  const source = opts.install === undefined ? ['-v', `${opts.repoPath}:${opts.repoPath}:ro`, '-w', opts.repoPath] : ['-v', `${buildVolume}:${opts.install}:ro`, '-w', opts.install]
+
   let disposed: Promise<void> | undefined
   return {
     debuggingPort: GATE_RELAY_PORT,
@@ -278,7 +311,7 @@ export async function startClientCell(opts: ClientCellOptions): Promise<ClientCe
         // time with the runner's suffix, which names the runner to the build and
         // puts a host nobody reached for in the record.
         '--network', 'none', '--dns', '127.0.0.1', '--dns-search', '.',
-        '-v', `${opts.repoPath}:${opts.repoPath}:ro`, '-w', opts.repoPath,
+        ...source,
         opts.image, 'qare', 'cell', 'launch', '--socket-dir', SOCKET_DIR, '--cdp-port', String(GATE_RELAY_PORT), '--',
         command, ...args,
       ]), // prettier-ignore
@@ -307,7 +340,7 @@ export async function startClientCell(opts: ClientCellOptions): Promise<ClientCe
     },
     reap: () => {
       docker.runSync(['rm', '-f', appName, gateName])
-      docker.runSync(['volume', 'rm', '-f', volume])
+      docker.runSync(['volume', 'rm', '-f', volume, buildVolume])
     },
   }
 }

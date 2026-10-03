@@ -1,3 +1,4 @@
+import type { ClientCell } from './client-cell.js'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createReadStream, rmSync } from 'node:fs'
@@ -102,6 +103,8 @@ export type ClientProvision =
       kind: 'up'
       /** What the driver launches. */
       executable: string
+      /** Where the build was installed: what a cell is handed to launch it from (#223). */
+      install: string
       artefact: ProvisionedArtefact
       /** The log so far; the teardown appends to it. */
       log: () => string
@@ -128,6 +131,12 @@ export interface ProvisionOpts {
   environment?: 'inherit' | 'minimal'
   /** The host a desktop build opens its window on. */
   host?: ElectronHost
+  /**
+   * Makes the cell the health check launches the build in (#223), from where
+   * it was installed. Absent for a profile that opts out of containment,
+   * whose build is launched beside the run.
+   */
+  cell?: (install: string) => Promise<ClientCell>
 }
 
 export const DEFAULT_PROVISION_TIMEOUT = '10m'
@@ -325,10 +334,11 @@ export const DESKTOP_INSTALLERS: Record<string, ArtefactInstaller> = {
 }
 
 /** The health check of a desktop build (#75): the driver starts it, attaches, and sees its first window. */
-export function electronHealthCheck(host: ElectronHost = {}, environment: 'inherit' | 'minimal' = 'inherit'): ClientHealthCheck {
+export function electronHealthCheck(host: ElectronHost = {}, environment: 'inherit' | 'minimal' = 'inherit', cell?: () => Promise<ClientCell>): ClientHealthCheck {
   return async ({ executable, args, timeoutMs }) => {
     try {
-      const session = await makeElectronFlowSession({ executable, args, ...host, environment, launchTimeoutMs: timeoutMs })
+      // A contained build is contained for every launch (#223), this one included.
+      const session = await makeElectronFlowSession({ executable, args, ...host, environment, launchTimeoutMs: timeoutMs, ...(cell === undefined ? {} : { cell }) })
       await session.dispose()
       return { ok: true, lines: session.console() }
     } catch (error) {
@@ -399,7 +409,8 @@ export async function provisionClient(client: ProfileClient, opts: ProvisionOpts
   // installed, so a host that cannot show one is told once and plainly.
   // A caller that brings its own health check and names no host is not
   // launching through the driver, and is asked nothing about a display.
-  if (client.driver === 'electron' && (opts.health === undefined || opts.host !== undefined)) {
+  // Nor is a contained build's host: its window opens on its cell's display (#223).
+  if (client.driver === 'electron' && opts.cell === undefined && (opts.health === undefined || opts.host !== undefined)) {
     const display = electronDisplayProblem(opts.host)
     if (display !== undefined) return blocked(display)
   }
@@ -469,7 +480,8 @@ export async function provisionClient(client: ProfileClient, opts: ProvisionOpts
   }
 
   // Health: asked by the harness, of the build as installed.
-  const health = opts.health ?? electronHealthCheck(opts.host, environment)
+  const startCell = opts.cell
+  const health = opts.health ?? electronHealthCheck(opts.host, environment, startCell === undefined ? undefined : () => startCell(installed.location))
   let healthy: Awaited<ReturnType<ClientHealthCheck>>
   try {
     healthy = await health({ executable: installed.executable, args: client.args, timeoutMs: healthTimeoutMs })
@@ -483,5 +495,5 @@ export async function provisionClient(client: ProfileClient, opts: ProvisionOpts
     return blocked(`${named} was installed, but the build did not come up within ${healthTimeout}: ${healthy.reason}`)
   }
   note('health', `the build came up within ${healthTimeout}`)
-  return { kind: 'up', executable: installed.executable, artefact: provisioned, log, teardown }
+  return { kind: 'up', executable: installed.executable, install: installed.location, artefact: provisioned, log, teardown }
 }

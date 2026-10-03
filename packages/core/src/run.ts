@@ -8,7 +8,7 @@ import { prepareBaseCheckout, type BaseCheckout, type BaseCheckoutInput, type Ba
 import { collectCriterionFiles, criterionCacheKey, FileCheckCache, planFingerprint, profileFingerprint, resolveRefSha } from './cache.js'
 import { Artefacts, type ArtefactField } from './artefacts.js'
 import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
-import { bootApp, CANCEL_DOWN_TIMEOUT_MS, clientExecutablePath, killActiveCompose, stopApp, type BootOpts, type BootedClient } from './boot.js'
+import { bootApp, CANCEL_DOWN_TIMEOUT_MS, clientCellStarter, clientExecutablePath, killActiveCompose, stopApp, type BootOpts, type BootedClient } from './boot.js'
 import { removeLiveInstalls } from './provision.js'
 import { hasMintedProject, isolatedHealthUrl, isolateRun, type RunIsolation } from './isolation.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
@@ -16,7 +16,7 @@ import { runFlowCheck, runSuiteCheck, undeclaredCheckKinds, type FlowCheckResult
 import type { FlowRepairRecord } from './locator.js'
 import { flowDriverFor } from './flow-driver.js'
 import { applicationPathProblem, makeElectronFlowSession } from './flow-electron.js'
-import { startClientCell, type CellRecord } from './client-cell.js'
+import type { CellRecord } from './client-cell.js'
 import { makePlaywrightFlowSession } from './flow-playwright.js'
 import { evidenceOf, judgeRun, toBaseSideResults, toSideResults } from './judge.js'
 import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck, type JobProfileGroup, type JobProfileRef, type JobToolCheck, type SeveralProfilesJob, type SingleProfileJob } from './job.js'
@@ -183,16 +183,14 @@ function clientSessionFactory(
   // Contained unless the profile says otherwise (#223): each launch gets a
   // cell of its own, made from the image the run is in, holding the hosts
   // the profile declares.
-  const startCell =
-    opts.clientCell?.start ??
-    ((cell: { repoPath: string; hosts: readonly string[] }) => startClientCell({ ...cell, image: process.env.QARE_IMAGE_REF ?? '' }))
+  const startCell = clientCellStarter(opts.clientCell)
   return ({ masks }) =>
     makeElectronFlowSession({
       executable,
       args: client.args,
       masks,
       ...opts.clientEnv,
-      ...(client.egress === 'uncontained' ? {} : { cell: () => startCell({ repoPath, hosts: client.hosts ?? [] }) }),
+      ...(client.egress === 'uncontained' ? {} : { cell: () => startCell({ repoPath, hosts: client.hosts ?? [], ...(booted?.install === undefined ? {} : { install: booted.install }) }) }),
       // The build is pull request code: on a host it gets the minimal
       // environment a command step gets there, never the host's own (#91).
       environment: execution === 'native' ? 'minimal' : 'inherit',

@@ -3,7 +3,7 @@ import http from 'node:http'
 import https from 'node:https'
 import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve } from 'node:path'
-import { clientCellProblem, type ClientCell } from './client-cell.js'
+import { clientCellProblem, startClientCell, type ClientCell } from './client-cell.js'
 import { electronDisplayProblem, type ElectronHost } from './flow-electron.js'
 import { clientExecutableName, type ProfileApp, type ProfileClient, type QaProfile } from './profile.js'
 import { VERSION } from './version.js'
@@ -15,9 +15,23 @@ import { DEFAULT_CLIENT_HEALTH_TIMEOUT, electronHealthCheck, provisionClient, ty
  * The build a client profile's flows launch (#72, #75): where it is, what it
  * was provisioned from when the run installed it, and how it is taken away.
  */
+/** What a cell is made for (#223): the repository, the hosts the profile declares, and the install when the build is not in the repository. */
+export interface CellRequest {
+  repoPath: string
+  hosts: readonly string[]
+  install?: string
+}
+
+/** How a run makes a cell: the caller's own way, or docker and the image the run is in. */
+export function clientCellStarter(seam: BootOpts['clientCell']): (request: CellRequest) => Promise<ClientCell> {
+  return seam?.start ?? ((request) => startClientCell({ ...request, image: process.env.QARE_IMAGE_REF ?? '' }))
+}
+
 export interface BootedClient {
   /** What the driver launches: the build in the checkout, or the one the run installed. */
   executable: string
+  /** Where the run installed the build (#75), which a cell is handed to launch it from (#223); absent for a build launched in place. */
+  install?: string
   /** What the side was provisioned from; absent for a build launched in place. */
   artefact?: ProvisionedArtefact
   /** The provisioning log so far; a teardown appends to it. */
@@ -92,7 +106,7 @@ export interface BootOpts {
    */
   clientCell?: {
     problem?: () => Promise<string | undefined>
-    start?: (opts: { repoPath: string; hosts: readonly string[] }) => Promise<ClientCell>
+    start?: (opts: CellRequest) => Promise<ClientCell>
   }
 }
 
@@ -287,13 +301,31 @@ export function clientExecutablePath(client: ProfileClient, root: string = proce
  * installed and proven up, with every step in the log the outcome carries.
  */
 async function probeClient(client: ProfileClient, opts: BootOpts): Promise<BootOutcome> {
+  // Fail closed (#223): a build runs contained or, when its profile says so
+  // in as many words, uncontained. A host that cannot make a cell blocks the
+  // run here, by name, before anything is built, installed or launched; it
+  // never runs the build with the step's network because containing it
+  // turned out to be inconvenient.
+  const contained = client.egress !== 'uncontained'
+  const cellProblem = async (): Promise<BootOutcome | undefined> => {
+    if (!contained) return undefined
+    const problem = await (opts.clientCell?.problem ?? ((): Promise<string | undefined> => clientCellProblem()))()
+    return problem === undefined ? undefined : { kind: 'blocked', reason: problem, logs: '' }
+  }
+  const root = opts.root ?? process.cwd()
+  const startCell = clientCellStarter(opts.clientCell)
+  const hosts = client.hosts ?? []
   if (client.artefact !== undefined) {
+    const uncontainable = await cellProblem()
+    if (uncontainable !== undefined) return uncontainable
     const provision = await provisionClient(client, {
       root: opts.root ?? process.cwd(),
       ...(opts.side === undefined ? {} : { side: opts.side }),
       ...(opts.buildRoot === undefined ? {} : { buildRoot: opts.buildRoot }),
       ...(opts.clientEnvironment === undefined ? {} : { environment: opts.clientEnvironment }),
       ...(opts.clientEnv === undefined ? {} : { host: opts.clientEnv }),
+      // The health check's launch is a launch like any other: in a cell.
+      ...(contained ? { cell: (install: string) => startCell({ repoPath: root, hosts, install }) } : {}),
       ...opts.provision,
     })
     if (provision.kind === 'blocked')
@@ -301,7 +333,7 @@ async function probeClient(client: ProfileClient, opts: BootOpts): Promise<BootO
     return {
       kind: 'up',
       logs: provision.log(),
-      client: { executable: provision.executable, artefact: provision.artefact, log: provision.log, teardown: provision.teardown },
+      client: { executable: provision.executable, install: provision.install, artefact: provision.artefact, log: provision.log, teardown: provision.teardown },
     }
   }
   const path = clientExecutablePath(client, opts.root)
@@ -330,24 +362,19 @@ async function probeClient(client: ProfileClient, opts: BootOpts): Promise<BootO
       reason: `the client build is not there to launch: client.executable ${client.executable} resolves to ${path}, which is not a file; building it is the project's own step, before the run`,
       logs: '',
     }
-  // Fail closed (#223): a build runs contained or, when its profile says so
-  // in as many words, uncontained. A host that cannot make a cell blocks the
-  // run here, by name; it never runs the build with the step's network
-  // because containing it turned out to be inconvenient.
-  if (client.egress !== 'uncontained') {
-    const cell = await (opts.clientCell?.problem ?? ((): Promise<string | undefined> => clientCellProblem()))()
-    return cell === undefined ? { kind: 'up', logs: '' } : { kind: 'blocked', reason: cell, logs: '' }
-  }
+  // A build that is there is held to being containable before it is launched.
+  const uncontainable = await cellProblem()
+  if (uncontainable !== undefined) return uncontainable
   // An uncontained build opens its windows on this host; a contained one on
   // the display its cell starts.
-  const display = electronDisplayProblem(opts.clientEnv)
+  const display = contained ? undefined : electronDisplayProblem(opts.clientEnv)
   if (display !== undefined) return { kind: 'blocked', reason: display, logs: '' }
   // The health check a profile asks for (#75): the build is launched once
   // and held to opening its first window. A #72 profile that does not ask is
   // launched by its first flow check, as before.
   const lines: string[] = []
   if (client.health !== undefined) {
-    const health = opts.provision?.health ?? electronHealthCheck(opts.clientEnv, opts.clientEnvironment)
+    const health = opts.provision?.health ?? electronHealthCheck(opts.clientEnv, opts.clientEnvironment, contained ? () => startCell({ repoPath: root, hosts }) : undefined)
     const timeout = client.health.timeout ?? DEFAULT_CLIENT_HEALTH_TIMEOUT
     let healthy: Awaited<ReturnType<typeof health>>
     try {
