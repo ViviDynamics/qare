@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { ModelUsage } from './metrics.js'
-import { BUILTIN_REDACTION_RULES, redactText, type RedactionRule } from './redact.js'
+import { BUILTIN_REDACTION_RULES, redactAdvisory, type RedactionRule } from './redact.js'
 import type { RunResult } from './result.js'
 import type { AgentRunRequest, AgentRunner } from './runner.js'
 
@@ -339,20 +339,6 @@ export async function runUxReview(
     findings: consumed.findings,
     ...(consumed.dismissed.length === 0 ? {} : { dismissed: consumed.dismissed }),
     usage: result.usage,
-  }
-}
-
-/** A finding quotes the page, and the page can hold fixture data: its free text is swept like any reason. */
-export function redactAdvisory(advisory: RunAdvisory, rules: readonly RedactionRule[] = BUILTIN_REDACTION_RULES): RunAdvisory {
-  return {
-    ...advisory,
-    ...(advisory.reason === undefined ? {} : { reason: redactText(advisory.reason, rules) }),
-    findings: advisory.findings.map((finding) => ({
-      ...finding,
-      saw: redactText(finding.saw, rules),
-      why: redactText(finding.why, rules),
-      ...(finding.element === undefined ? {} : { element: redactText(finding.element, rules) }),
-    })),
   }
 }
 

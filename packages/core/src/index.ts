@@ -217,7 +217,6 @@ export {
   advisoryFindingId,
   advisoryScreens,
   consumeUxFindings,
-  redactAdvisory,
   reviewJudged,
   runUxReview,
 } from './advisory.js'

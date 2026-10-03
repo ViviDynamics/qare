@@ -1,5 +1,6 @@
 import { lstat, readdir, readFile, writeFile } from 'node:fs/promises'
 import { join, relative } from 'node:path'
+import type { RunAdvisory } from './advisory.js'
 import { DEFAULT_CODE_PATTERN } from './mailbox.js'
 import { loadResult, type RunResult } from './result.js'
 
@@ -369,6 +370,24 @@ function redactNode(value: unknown, rules: readonly RedactionRule[]): unknown {
 }
 
 /**
+ * The advisory review's free text, redacted (#150): a finding quotes the
+ * page, and the page can hold fixture data. Its id, screen and screenshot
+ * path are identities and stay as they are.
+ */
+export function redactAdvisory(advisory: RunAdvisory, rules: readonly RedactionRule[] = BUILTIN_REDACTION_RULES): RunAdvisory {
+  return {
+    ...advisory,
+    ...(advisory.reason === undefined ? {} : { reason: redactText(advisory.reason, rules) }),
+    findings: advisory.findings.map((finding) => ({
+      ...finding,
+      saw: redactText(finding.saw, rules),
+      why: redactText(finding.why, rules),
+      ...(finding.element === undefined ? {} : { element: redactText(finding.element, rules) }),
+    })),
+  }
+}
+
+/**
  * A result with its reasons, target URL and repair records redacted, the only
  * free text in it. Ids and evidence paths are identities: a criterion id may
  * legally read `token:1`, and redacting it would detach the result from its
@@ -377,6 +396,8 @@ function redactNode(value: unknown, rules: readonly RedactionRule[]): unknown {
 export function redactResult(result: RunResult, rules: readonly RedactionRule[] = BUILTIN_REDACTION_RULES): RunResult {
   return {
     ...result,
+    // What the advisory review reported is model text about the page (#150).
+    ...(result.advisory === undefined ? {} : { advisory: redactAdvisory(result.advisory, rules) }),
     // A target URL can carry credentials in its userinfo or query.
     ...(result.target === undefined ? {} : { target: { ...result.target, url: redactText(result.target.url, rules) } }),
     // Why a base side did not run quotes what stopped it (#147).
