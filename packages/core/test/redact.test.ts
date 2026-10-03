@@ -388,3 +388,23 @@ test('the standalone result sweep loses the secrets a repair record quotes too (
   expect(repair.refusedReason).toBe(`the element moved: ${REDACTED}`)
   expect(repair.identity).toBe('same role, same accessible name, same landmark ancestry (main/form)')
 })
+
+test('the message a result carries is swept with the rules like every other free text in it (#65)', () => {
+  const swept = redactResult(
+    {
+      schemaVersion: '1',
+      verdict: 'passed',
+      criteria: [
+        {
+          id: 'c',
+          outcome: 'proven',
+          evidence: ['message.json'],
+          mail: [{ check: 'CUST-123456 mail', from: 'App CUST-123456', subject: 'Order CUST-123456', excerpt: 'for CUST-123456', links: ['/orders/CUST-123456'] }],
+        },
+      ],
+    },
+    redactionRules({ values: [], patterns: ['CUST-\\d{6}'] }),
+  )
+  expect(JSON.stringify(swept)).not.toContain('CUST-123456')
+  expect(swept.criteria[0]?.mail?.[0]?.links).toEqual(['/orders/[redacted]'])
+})

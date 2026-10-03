@@ -15,6 +15,20 @@ export interface MailEvidenceMessage {
   polls: number
 }
 
+/**
+ * The message a mail check read, as a result carries it and the comment
+ * shows it (#65): the sender, the subject, an excerpt and its links, with
+ * addresses and one-time codes already swept. Never the whole body.
+ */
+export interface MailProof {
+  /** The mail check's name, or its position in the criterion when it has none. */
+  check: string
+  from: string
+  subject: string
+  excerpt: string
+  links: string[]
+}
+
 export type ReadMail = (address: string, after: string, signal?: AbortSignal) => Promise<MailMessage[]>
 
 export type MailOutcome =

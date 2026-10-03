@@ -2,13 +2,14 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mkdtemp } from 'node:fs/promises'
-import { afterEach, expect, test, vi } from 'vitest'
+import { expect, test } from 'vitest'
 import {
   PlanValidationError,
   extractCode,
   httpMailbox,
   loadJobFromText,
   mailEvidence,
+  mailpitSource,
   parsePlan,
   runJob,
   validateProfileConfig,
@@ -16,11 +17,7 @@ import {
   type MailMessage,
   type ReadMail,
 } from '../src/index.js'
-import { caughtMessage, fakeMailpit, type Caught } from './fake-mailpit.js'
-
-afterEach(() => {
-  vi.unstubAllGlobals()
-})
+import { answering, caughtMessage, fakeMailpit, type Caught, type Transport } from './fake-mailpit.js'
 
 // Test files must not carry network literals (the offline scanner), so the
 // schemes and authorities are joined at runtime.
@@ -170,6 +167,16 @@ test('a message matching every matcher proves the criterion and lands in the evi
       id: 'criterion-1',
       outcome: 'proven',
       evidence: ['checks/criterion-1/0/message.json'],
+      // The message that proved it, as the comment shows it (#65).
+      mail: [
+        {
+          check: 'welcome mail',
+          from: 'Qare <no-reply@example.test>',
+          subject: 'Sign in',
+          excerpt: `Welcome. Open ${REDACTED_URL} to continue.`,
+          links: [REDACTED_URL],
+        },
+      ],
     },
   ])
   const recorded = JSON.parse(
@@ -358,24 +365,33 @@ test('a mail domain that is not a host name is refused, naming the field (#65)',
 const CATCHER_TEMPLATE = ['http:', '//catcher.local/{{run.id}}/mailpit'].join('')
 
 /**
- * A fake catcher behind the global fetch a declared source reads with. It
+ * A fake catcher behind the seam a run builds its mail source through. It
  * catches one message for whatever address is first searched for, the way an
  * app that was just asked to send one would have delivered it.
  */
-function catcher(deliver: (address: string) => Caught[] = (address) => [caughtMessage({ to: address, created: new Date(Date.now() + 5).toISOString() })]) {
+function catcher(
+  deliver: (address: string) => Caught[] = (address) => [caughtMessage({ to: address, created: new Date(Date.now() + 5).toISOString() })],
+  wrap: (transport: Transport) => Transport = (transport) => transport,
+) {
   const caught: Caught[] = []
   const fake = fakeMailpit(caught)
   const delivered = new Set<string>()
-  vi.stubGlobal('fetch', (async (input: string | URL | Request, init?: RequestInit) => {
-    const query = /^to:"(.*)"$/.exec(new URL(String(input)).searchParams.get('query') ?? '')
-    const address = query?.[1]
-    if (address !== undefined && !delivered.has(address)) {
-      delivered.add(address)
-      caught.push(...deliver(address))
-    }
-    return fake.fetch(input, init)
-  }) as typeof fetch)
-  return { caught, requests: fake.requests }
+  const transport = wrap(
+    answering((input, init) => {
+      const query = /^to:"(.*)"$/.exec(new URL(String(input)).searchParams.get('query') ?? '')
+      const address = query?.[1]
+      if (address !== undefined && !delivered.has(address)) {
+        delivered.add(address)
+        caught.push(...deliver(address))
+      }
+      return fake.transport(input, init)
+    }),
+  )
+  return {
+    caught,
+    requests: fake.requests,
+    opts: { ...HEALTHY_BOOT, mailSource: (declared: { url: string }) => mailpitSource(declared.url, transport) },
+  }
 }
 
 const CATCHER = { source: { kind: 'mailpit', url: CATCHER_TEMPLATE } }
@@ -394,7 +410,7 @@ test('a run reads through the source its profile declares, at an address minted 
     source: { kind: 'mailpit', url: CATCHER_TEMPLATE },
     domain: 'qa.example.test',
   })
-  const { result } = await runJob(job, HEALTHY_BOOT)
+  const { result } = await runJob(job, sink.opts)
 
   expect(result.verdict).toBe('passed')
   // The source URL carried the run's id, and the address its domain.
@@ -406,7 +422,7 @@ test('a mail source URL naming a value the run does not mint refuses the run, na
   const job = await makeJob(mailCriteria({ address: '{{run.mail_address}}' }), {
     source: { kind: 'mailpit', url: ['http:', '//catcher.local/{{run.nonsense}}/mailpit'].join('') },
   })
-  const { result } = await runJob(job, HEALTHY_BOOT)
+  const { result } = await runJob(job, sink.opts)
 
   expect(result.verdict).toBe('refused')
   expect(JSON.stringify(result.criteria)).toContain('mail.source.url')
@@ -441,7 +457,7 @@ test('a run deletes the mail at the address it minted when it finishes, and reco
     caughtMessage({ ID: 'not-this-runs', to: 'qare-another-run@localhost' }),
   ])
   const job = await makeJob(mailCriteria({ address: '{{run.mail_address}}' }), CATCHER)
-  const { result } = await runJob(job, HEALTHY_BOOT)
+  const { result } = await runJob(job, sink.opts)
 
   expect(result.verdict).toBe('passed')
   expect(sink.caught.map((caught) => caught.to)).toEqual(['qare-another-run@localhost'])
@@ -453,7 +469,7 @@ test('a run deletes the mail at the address it minted when it finishes, and reco
 test('mail at an address the run did not mint is left alone, and the record says so (#65)', async () => {
   const sink = catcher((address) => [caughtMessage({ to: address, created: new Date(Date.now() + 5).toISOString() })])
   const job = await makeJob(mailCriteria({ address: 'shared@localhost' }), CATCHER)
-  const { result } = await runJob(job, HEALTHY_BOOT)
+  const { result } = await runJob(job, sink.opts)
 
   expect(result.verdict).toBe('passed')
   // Another run may be waiting at a shared address: nothing there is deleted.
@@ -463,12 +479,9 @@ test('mail at an address the run did not mint is left alone, and the record says
 })
 
 test('a source that cannot delete is recorded, and the verdict stands (#65)', async () => {
-  const sink = catcher()
-  const reads = globalThis.fetch
-  vi.stubGlobal('fetch', (async (input: string | URL | Request, init?: RequestInit) =>
-    init?.method === 'DELETE' ? new Response('no', { status: 500 }) : reads(input, init)) as typeof fetch)
+  const sink = catcher(undefined, (reads) => answering((input, init) => (init?.method === 'DELETE' ? new Response('no', { status: 500 }) : reads(input, init))))
   const job = await makeJob(mailCriteria({ address: '{{run.mail_address}}' }), CATCHER)
-  const { result } = await runJob(job, HEALTHY_BOOT)
+  const { result } = await runJob(job, sink.opts)
 
   expect(result.verdict).toBe('passed')
   expect(sink.caught).toHaveLength(1)
@@ -478,9 +491,45 @@ test('a source that cannot delete is recorded, and the verdict stands (#65)', as
 test('a run whose checks waited for no mail asks nothing of the source (#65)', async () => {
   const sink = catcher()
   const job = await makeJob([{ id: 'no-mail', text: 'no mail', checks: [{ kind: 'command', run: 'node --version' }] }], CATCHER)
-  const { result } = await runJob(job, HEALTHY_BOOT)
+  const { result } = await runJob(job, sink.opts)
 
   expect(result.verdict).toBe('passed')
   expect(sink.requests).toEqual([])
   expect(await cleanupRecord(job)).toBeUndefined()
+})
+
+test('addresses and one-time codes are swept from the message evidence, and the body is never stored whole (#65)', async () => {
+  const person = 'jane.doe@customer.test'
+  const link = ['https:', '//example.test/confirm?email=jane.doe@customer.test&step=2'].join('')
+  const help = ['https:', '//example.test/help'].join('')
+  const job = await makeJob(mailCriteria({ address: 'qa@localhost' }))
+  const { result } = await runJob(job, {
+    ...HEALTHY_BOOT,
+    readMail: reader(() =>
+      message({
+        subject: `Sign in, ${person}`,
+        body: `Hello ${person}, your code is 482913. Open ${link} to continue, or read ${help}?for=${person} first. ${'x'.repeat(400)} TAIL-OF-THE-BODY`,
+      }),
+    ),
+  })
+
+  expect(result.verdict).toBe('passed')
+  const text = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'message.json'), 'utf8')
+  expect(text).not.toContain(person)
+  // A code is swept whether or not the check declared one to extract.
+  expect(text).not.toContain('482913')
+  expect(text).not.toContain('TAIL-OF-THE-BODY')
+  const recorded = JSON.parse(text)
+  // The sender is the app's own sending identity, which the evidence shows.
+  expect(recorded.from).toBe('Qare <no-reply@example.test>')
+  expect(recorded.subject).toBe('Sign in, [redacted]')
+  // The first link is the artefact a later check may follow, which #64 sweeps
+  // as a secret wherever it appears; the other links are shown, swept.
+  expect(recorded.excerpt).toContain('Hello [redacted], your code is [redacted]. Open [redacted] to continue')
+  expect(recorded.links).toEqual([`${help}?for=[redacted]`])
+  // The result carries the same swept record, never a second copy of the body.
+  expect(JSON.stringify(result)).not.toContain(person)
+  expect(JSON.stringify(result)).not.toContain('482913')
+  const criterion = result.criteria[0]
+  expect(criterion?.mail?.[0]?.subject).toBe('Sign in, [redacted]')
 })

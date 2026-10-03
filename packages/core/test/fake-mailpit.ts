@@ -16,7 +16,15 @@ export interface Caught {
  * Like the real one, its `to:` search matches a substring of the address,
  * whatever its case.
  */
-export function fakeMailpit(caught: Caught[]): { fetch: typeof fetch; requests: string[] } {
+/** The transport an adapter reads with: the platform's own, or a fake of it. */
+export type Transport = typeof fetch
+
+/** A transport that answers every request the same way. */
+export function answering(respond: (input: string | URL | Request, init?: RequestInit) => Response | Promise<Response>): Transport {
+  return (async (input: string | URL | Request, init?: RequestInit) => respond(input, init)) as Transport
+}
+
+export function fakeMailpit(caught: Caught[]): { transport: Transport; requests: string[] } {
   const requests: string[] = []
   const summary = (message: Caught) => ({
     ID: message.ID,
@@ -58,7 +66,7 @@ export function fakeMailpit(caught: Caught[]): { fetch: typeof fetch; requests: 
     }
     return new Response('not found', { status: 404 })
   }
-  return { fetch: transport as typeof fetch, requests }
+  return { transport: transport as Transport, requests }
 }
 
 export function caughtMessage(fields: Partial<Caught> = {}): Caught {

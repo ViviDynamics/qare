@@ -1,5 +1,6 @@
 import { lstat, readdir, readFile, writeFile } from 'node:fs/promises'
 import { join, relative } from 'node:path'
+import { DEFAULT_CODE_PATTERN } from './mailbox.js'
 import { loadResult, type RunResult } from './result.js'
 
 /**
@@ -277,6 +278,24 @@ export function valueRules(values: (string | undefined)[]): RedactionRule[] {
     .map((value) => ({ name: 'run value', pattern: new RegExp(escapeRegExp(value), 'g'), replacement: REDACTED }))
 }
 
+// A local part of the usual characters, an @, and a host: bounded, like every
+// rule here, because a message body is output of the app under test.
+const MAIL_ADDRESS = /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){0,8}/g
+
+/**
+ * What is swept from a message before it becomes evidence (#65): every mail
+ * address in its subject and body, and every run of digits shaped like a
+ * one-time code, whether or not the check declared a code to extract. They
+ * ride beside the run's own rules for message evidence only: a command's
+ * output may legitimately print an address or a number.
+ */
+export function mailEvidenceRules(): RedactionRule[] {
+  return [
+    { name: 'mail address', pattern: MAIL_ADDRESS, replacement: REDACTED },
+    { name: 'one-time code', pattern: new RegExp(DEFAULT_CODE_PATTERN, 'g'), replacement: REDACTED },
+  ]
+}
+
 function profilePattern(source: string): RedactionRule {
   let pattern: RegExp
   try {
@@ -366,6 +385,18 @@ export function redactResult(result: RunResult, rules: readonly RedactionRule[] 
       ...criterion,
       ...('reason' in criterion && typeof criterion.reason === 'string' ? { reason: redactText(criterion.reason, rules) } : {}),
       ...(criterion.base?.reason === undefined ? {} : { base: { ...criterion.base, reason: redactText(criterion.base.reason, rules) } }),
+      // The message a mail check read is the app's own text (#65).
+      ...(criterion.mail === undefined
+        ? {}
+        : {
+            mail: criterion.mail.map((message) => ({
+              check: redactText(message.check, rules),
+              from: redactText(message.from, rules),
+              subject: redactText(message.subject, rules),
+              excerpt: redactText(message.excerpt, rules),
+              links: message.links.map((link) => redactText(link, rules)),
+            })),
+          }),
       // A repair record quotes element references: free text the snapshot
       // read back, swept like every other reason (#83).
       ...('repairs' in criterion && criterion.repairs !== undefined
