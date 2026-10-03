@@ -528,7 +528,21 @@ export async function makeElectronFlowSession(opts: {
       await currentPage().goto(pathInApplication(home, url), { waitUntil: 'networkidle' })
     },
     click: async (element) => {
-      await (await acting(element)).click()
+      const locator = await acting(element)
+      const clicked = current
+      try {
+        await locator.click()
+      } catch (error) {
+        // A click that closes its own window has landed (#223). The window
+        // going away can overtake the click's own answer, the more so over a
+        // relayed endpoint, and Playwright then reports the page as closed.
+        // The click was only attempted because the window showed the
+        // element, so a window that is gone afterwards is what the click
+        // did; any other error, or the same one with the window still open,
+        // is the click failing.
+        if (clicked?.page.isClosed() === true && /has been closed/.test((error as Error).message)) return
+        throw error
+      }
     },
     type: async (element, value) => {
       await (await acting(element)).fill(value)
