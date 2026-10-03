@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { expect, test } from 'vitest'
+import { afterEach, expect, test } from 'vitest'
 import { NARE_PYTHON_MINIMUM, runDoctor } from '../src/index.js'
 
 const HEALTHY_PROBES = {
@@ -160,4 +160,46 @@ test('a python version is compared numerically, so 3.9 is below the floor and 3.
   expect(await at('3.13.0')).toBe(true)
   expect(await at(`${NARE_PYTHON_MINIMUM}.0`)).toBe(true)
   expect(await at('4.0.0')).toBe(true)
+})
+
+// The real docker probe, run against a fake `docker` that is the only thing on
+// PATH. The tests above fake `dockerInfo`, so they never reach the probe (#206).
+const REAL_PATH = process.env.PATH
+
+afterEach(() => {
+  process.env.PATH = REAL_PATH
+})
+
+async function dockerFindingWith(script: string | undefined) {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-doctor-docker-'))
+  if (script !== undefined) {
+    await writeFile(join(dir, 'docker'), script, 'utf8')
+    await chmod(join(dir, 'docker'), 0o755)
+  }
+  process.env.PATH = dir
+  // Every probe but dockerInfo is faked, so the docker one is the real one.
+  const report = await runDoctor({
+    probes: { which: HEALTHY_PROBES.which, chromium: HEALTHY_PROBES.chromium, python: HEALTHY_PROBES.python },
+  })
+  return report.findings.find((finding) => finding.name === 'docker')
+}
+
+test('a docker daemon that answers docker info is reported reachable (#206)', async () => {
+  const docker = await dockerFindingWith('#!/bin/sh\necho "server 27.0"\n')
+  expect(docker?.ok).toBe(true)
+  expect(docker?.detail).toBe('docker daemon reachable (server 27.0)')
+  expect(docker?.install).toBeUndefined()
+})
+
+test('a docker whose daemon does not answer is reported not reachable', async () => {
+  const docker = await dockerFindingWith('#!/bin/sh\necho "Cannot connect to the Docker daemon" >&2\nexit 1\n')
+  expect(docker?.ok).toBe(false)
+  expect(docker?.detail).toBe('docker daemon not reachable')
+  expect(docker?.install).toContain('Docker')
+})
+
+test('a host with no docker on PATH is reported not reachable', async () => {
+  const docker = await dockerFindingWith(undefined)
+  expect(docker?.ok).toBe(false)
+  expect(docker?.detail).toBe('docker daemon not reachable')
 })

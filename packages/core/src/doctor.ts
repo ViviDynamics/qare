@@ -246,7 +246,8 @@ function whichOnPath(name: string): string | undefined {
 function dockerDaemon(): Promise<{ ok: boolean; detail: string }> {
   return new Promise((resolvePromise) => {
     execFile('docker', ['info', '--format', 'server {{.ServerVersion}}'], { timeout: 10000 }, (error, stdout) => {
-      if (error === undefined) resolvePromise({ ok: true, detail: `docker daemon reachable (${String(stdout).trim()})` })
+      // execFile passes null, not undefined, when the command succeeds (#206).
+      if (error === null) resolvePromise({ ok: true, detail: `docker daemon reachable (${String(stdout).trim()})` })
       else resolvePromise({ ok: false, detail: 'docker daemon not reachable' })
     })
   })
