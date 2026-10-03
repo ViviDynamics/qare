@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
+import { A11Y_IMPACTS, A11Y_STANDARDS, type A11yAccepted, type A11yImpact, type ProfileA11y } from './a11y.js'
 import { parseDurationMs, shellCharacter } from './duration.js'
 import { channelToolName } from './mcp.js'
 import { RedactionError, redactionRules, validateMaskSelectors, type ProfileRedaction } from './redact.js'
@@ -174,6 +175,13 @@ export interface QaProfile {
    * how long. Whatever it leaves out is reported as not compared.
    */
   base?: ProfileBase
+  /**
+   * What an accessibility audit holds a page to (#149): the rule set, the
+   * impacts that fail, the violations accepted with a reason, and whether
+   * every flow is audited. Absent, a planned `a11y` check takes the defaults
+   * and no flow is audited without one.
+   */
+  a11y?: ProfileA11y
 }
 
 export interface ProfileBase {
@@ -397,6 +405,7 @@ export function validateProfileConfig(config: unknown): QaProfile {
     ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
     ...(config.commands === undefined ? {} : { commands: parseCommands(config.commands) }),
     ...(config.base === undefined ? {} : { base: parseProfileBase(config.base) }),
+    ...(config.a11y === undefined ? {} : { a11y: parseA11y(config.a11y) }),
   }
 }
 
@@ -425,6 +434,7 @@ function validateTargetConfig(config: Record<string, unknown>): QaProfile {
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
     ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
     ...(config.commands === undefined ? {} : { commands: parseCommands(config.commands) }),
+    ...(config.a11y === undefined ? {} : { a11y: parseA11y(config.a11y) }),
   }
 }
 
@@ -586,6 +596,53 @@ function parseVisual(value: unknown): ProfileVisual {
   return {
     widths: numberArray(value.widths, 'visual.widths', 'widths'),
     themes: stringArray(value.themes, 'visual.themes', 'themes'),
+  }
+}
+
+/**
+ * The profile's `a11y` section (#149): which rule set the audits run, which
+ * impacts fail a check, which known violations are accepted and why, and
+ * whether every flow is audited. A field nobody knows is refused, because a
+ * misspelt `standing` would otherwise quietly audit nothing.
+ */
+function parseA11y(value: unknown): ProfileA11y {
+  if (!isRecord(value)) fail('a11y', 'a11y must be a YAML object with standard, fail, accept and standing')
+  for (const key of Object.keys(value))
+    if (!['standard', 'fail', 'accept', 'standing'].includes(key)) fail(`a11y.${key}`, `a11y takes standard, fail, accept and standing, not ${JSON.stringify(key)}`)
+  if (value.standard !== undefined && (typeof value.standard !== 'string' || !Object.hasOwn(A11Y_STANDARDS, value.standard)))
+    fail('a11y.standard', `a11y.standard must be one of ${Object.keys(A11Y_STANDARDS).join(', ')}, not ${JSON.stringify(value.standard)}`)
+  let impacts: A11yImpact[] | undefined
+  if (value.fail !== undefined) {
+    if (!Array.isArray(value.fail) || value.fail.length === 0)
+      fail('a11y.fail', `a11y.fail must be a non-empty array of impacts (${A11Y_IMPACTS.join(', ')}); leave it out to fail on serious and critical`)
+    impacts = value.fail.map((impact: unknown, index) => {
+      if (typeof impact !== 'string' || !(A11Y_IMPACTS as readonly string[]).includes(impact))
+        fail(`a11y.fail[${index}]`, `impact ${JSON.stringify(impact)} must be one of ${A11Y_IMPACTS.join(', ')}`)
+      return impact as A11yImpact
+    })
+  }
+  if (value.standing !== undefined && typeof value.standing !== 'boolean') fail('a11y.standing', 'a11y.standing must be a boolean')
+  let accept: A11yAccepted[] | undefined
+  if (value.accept !== undefined) {
+    if (!Array.isArray(value.accept)) fail('a11y.accept', 'a11y.accept must be an array of accepted violations, each with a rule and a reason')
+    accept = value.accept.map((entry: unknown, index) => {
+      const base = `a11y.accept[${index}]`
+      if (!isRecord(entry)) fail(base, 'an accepted violation must be a YAML object with rule and reason')
+      for (const key of Object.keys(entry))
+        if (!['rule', 'page', 'element', 'reason'].includes(key)) fail(`${base}.${key}`, `an accepted violation takes rule, page, element and reason, not ${JSON.stringify(key)}`)
+      const rule = nonEmptyString(entry.rule, `${base}.rule`, 'rule')
+      const page = entry.page === undefined ? undefined : nonEmptyString(entry.page, `${base}.page`, 'page')
+      const element = entry.element === undefined ? undefined : nonEmptyString(entry.element, `${base}.element`, 'element')
+      // Accepted debt names why it is carried, or it is just a switch.
+      const reason = nonEmptyString(entry.reason, `${base}.reason`, 'reason')
+      return { rule, ...(page === undefined ? {} : { page }), ...(element === undefined ? {} : { element }), reason }
+    })
+  }
+  return {
+    ...(value.standard === undefined ? {} : { standard: value.standard as string }),
+    ...(impacts === undefined ? {} : { fail: impacts }),
+    ...(value.standing === undefined ? {} : { standing: value.standing as boolean }),
+    ...(accept === undefined ? {} : { accept }),
   }
 }
 

@@ -186,6 +186,24 @@ export { runVisualCheck, type VisualRevision, type VisualCheckOpts, type VisualS
 export { decodePng, diffPngs, encodePng, PngError, type PngImage } from './png.js'
 export { playwrightVisualSession, runVisualCheckJob, visualPageUrl, VISUAL_RECORD } from './visual-run.js'
 export type { VisualCheckJobInput, VisualCheckJobOutcome, VisualComparison, VisualContext, VisualSessionFactory } from './visual-run.js'
+export { A11Y_IMPACTS, A11Y_STANDARDS, DEFAULT_A11Y_FAIL, DEFAULT_A11Y_STANDARD, a11yConfigOf, decideA11y, pageOf } from './a11y.js'
+export type {
+  A11yAccepted,
+  A11yAuditNode,
+  A11yAuditRequest,
+  A11yAuditViolation,
+  A11yBaseline,
+  A11yConfig,
+  A11yCounts,
+  A11yDecision,
+  A11yFinding,
+  A11yFlowAudit,
+  A11yFlowAudits,
+  A11yImpact,
+  A11yPageAudit,
+  A11yStatus,
+  ProfileA11y,
+} from './a11y.js'
 export { runFlowCheck, runSuiteCheck } from './flow.js'
 export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult, FlowTotpConfig, FlowDriverCapabilities } from './flow.js'
 export { SNAPSHOT_SCHEMA_VERSION, nameFindings, normaliseAriaSnapshot, trimToSubtree } from './snapshot.js'
