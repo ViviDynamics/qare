@@ -106,7 +106,7 @@ Out:
       serves, `flowDriverFor(profile)`; a plan with a `visual` or `a11y` check
       is refused at load and before boot, and the planner is not offered them
       (`flow-electron.test.ts`, `plan.test.ts`, `plan-step.test.ts`).
-- [ ] 3. The session: launch, attach, the vocabulary across windows, `open` by
+- [x] 3. The session: launch, attach, the vocabulary across windows, `open` by
       path, masked screenshots, snapshot, trace, console lines, dispose
       (`flow-electron.test.ts`, with a fake process and a fake Playwright).
 - [ ] 4. The run: a client profile is preflighted (blocked on a missing

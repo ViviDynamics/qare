@@ -128,6 +128,40 @@ export function unmarkInPage(marks: Array<{ selector: string; previous: string |
   }
 }
 
+type PlaywrightPage = import('playwright-core').Page
+type PlaywrightLocator = import('playwright-core').Locator
+
+// Elements are resolved against the page here, from the semantic reference
+// the plan carries (#70, #121): the model names a role with its accessible
+// name or a test id, never a selector, never coordinates. A reference that
+// carries a snapshot path (#83) resolves by walking the path itself: each
+// step names a role, an optional accessible name and an optional occurrence
+// index, so the walk lands on the element the snapshot named.
+function resolveStep(parent: PlaywrightPage | PlaywrightLocator, step: string): PlaywrightLocator {
+  const parsed = parseSegment(step)
+  if (parsed === undefined)
+    throw new Error(`a snapshot path step is a role, an optional quoted accessible name and an optional occurrence index: ${step}`)
+  const locator = parent.getByRole(parsed.role as never, parsed.name === undefined ? {} : { name: parsed.name, exact: true })
+  return parsed.occurrence === undefined ? locator : locator.nth(parsed.occurrence - 1)
+}
+
+/**
+ * One element reference, resolved against one page. Every driver that drives
+ * a Chromium page through Playwright resolves a reference the same way, so a
+ * flow means the same element in the browser and in a desktop window (#72).
+ */
+export function resolveFlowElement(page: PlaywrightPage, element: FlowElement): PlaywrightLocator {
+  if ('testId' in element) return page.getByTestId(element.testId)
+  if (element.at === undefined) return page.getByRole(element.role as never, { name: element.name })
+  // The path's own root step is the document, which is the page the walk
+  // starts from; the steps below it chain one into the next.
+  const [first, ...rest] = splitSegments(element.at).slice(1)
+  if (first === undefined) return page.getByRole(element.role as never, { name: element.name })
+  let chain = resolveStep(page, first)
+  for (const step of rest) chain = resolveStep(chain, step)
+  return chain
+}
+
 export class PlaywrightFlowSessionError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options)
@@ -203,38 +237,6 @@ export async function makePlaywrightFlowSession(
     return starting
   }
 
-  // Elements are resolved against the page here, from the semantic reference
-  // the plan carries (#70, #121): the model names a role with its accessible
-  // name or a test id, never a selector, never coordinates. A reference that
-  // carries a snapshot path (#83) resolves by walking the path itself: each
-  // step names a role, an optional accessible name and an optional occurrence
-  // index, so the walk lands on the element the snapshot named.
-  const resolveStep = (
-    parent: BrowserPage | ReturnType<BrowserPage['getByRole']>,
-    step: string,
-  ): ReturnType<BrowserPage['getByRole']> => {
-    const parsed = parseSegment(step)
-    if (parsed === undefined)
-      throw new Error(`a snapshot path step is a role, an optional quoted accessible name and an optional occurrence index: ${step}`)
-    const locator = parent.getByRole(parsed.role as never, parsed.name === undefined ? {} : { name: parsed.name, exact: true })
-    return parsed.occurrence === undefined ? locator : locator.nth(parsed.occurrence - 1)
-  }
-
-  const resolve = (
-    page: BrowserPage,
-    element: FlowElement,
-  ): ReturnType<BrowserPage['getByRole']> | ReturnType<BrowserPage['getByTestId']> => {
-    if ('testId' in element) return page.getByTestId(element.testId)
-    if (element.at === undefined) return page.getByRole(element.role as never, { name: element.name })
-    // The path's own root step is the document, which is the page the walk
-    // starts from; the steps below it chain one into the next.
-    const [first, ...rest] = splitSegments(element.at).slice(1)
-    if (first === undefined) return page.getByRole(element.role as never, { name: element.name })
-    let chain: ReturnType<BrowserPage['getByRole']> = resolveStep(page, first)
-    for (const step of rest) chain = resolveStep(chain, step)
-    return chain
-  }
-
   const page: FlowPage = {
     open: async (url) => {
       const started = await start()
@@ -242,21 +244,21 @@ export async function makePlaywrightFlowSession(
     },
     click: async (element) => {
       const started = await start()
-      await resolve(started.page, element).click()
+      await resolveFlowElement(started.page, element).click()
     },
     type: async (element, value) => {
       const started = await start()
-      await resolve(started.page, element).fill(value)
+      await resolveFlowElement(started.page, element).fill(value)
     },
     choose: async (element, value) => {
       const started = await start()
       // The option is chosen by its accessible name, the same semantic form
       // the element reference itself carries (#70).
-      await resolve(started.page, element).selectOption({ label: value })
+      await resolveFlowElement(started.page, element).selectOption({ label: value })
     },
     waitFor: async (element) => {
       const started = await start()
-      await resolve(started.page, element).waitFor({ state: 'visible' })
+      await resolveFlowElement(started.page, element).waitFor({ state: 'visible' })
     },
     assertText: async (text) => {
       const started = await start()
@@ -268,7 +270,7 @@ export async function makePlaywrightFlowSession(
     },
     assertElement: async (element) => {
       const started = await start()
-      const visible = await resolve(started.page, element).isVisible()
+      const visible = await resolveFlowElement(started.page, element).isVisible()
       if (!visible) {
         throw new Error(`assert failed: the element is not visible`)
       }

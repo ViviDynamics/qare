@@ -260,7 +260,8 @@ export {
   PlaywrightScreenshotBackendError,
 } from './visual-playwright.js'
 export { BROWSER_FLOW_DRIVER, makePlaywrightFlowSession, PlaywrightFlowSessionError } from './flow-playwright.js'
-export { ELECTRON_FLOW_DRIVER } from './flow-electron.js'
+export { ELECTRON_FLOW_DRIVER, ElectronFlowSessionError, applicationPathProblem, electronDisplayProblem, makeElectronFlowSession } from './flow-electron.js'
+export type { ElectronAppProcess } from './flow-electron.js'
 export { flowDriverFor } from './flow-driver.js'
 export { matchesStub, summarizeEgress, mergeVerdicts } from './egress.js'
 export type { EgressAttempt, EgressFinding, EgressStub } from './egress.js'
