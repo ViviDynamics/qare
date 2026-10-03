@@ -128,7 +128,8 @@ describe('the issue a finding becomes', () => {
   })
 
   test('a failure nothing shows ever passed is not handed off as a regression, and the fallback is told why', () => {
-    const { lastProven: _dropped, ...never } = finding({ kind: 'failure' })
+    const never = finding({ kind: 'failure' })
+    delete never.lastProven
     const issue = renderMainFindingIssue(never, blameMainFinding(never, undefined, { fallback: 'acme/qa-leads' }), undefined, context())
     expect(issue.title).toBe('QA failure on main: BIL-014')
     expect(issue.labels).toEqual(['qa-failure'])

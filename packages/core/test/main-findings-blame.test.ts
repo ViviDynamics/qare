@@ -19,8 +19,9 @@ function finding(extra: Partial<MainFinding> = {}): MainFinding {
 }
 
 function unproven(kind: MainFinding['kind']): MainFinding {
-  const { lastProven: _dropped, ...rest } = finding({ kind })
-  return rest
+  const made = finding({ kind })
+  delete made.lastProven
+  return made
 }
 
 function pull(number: number, author: string, extra: Partial<RangePull> = {}): RangePull {

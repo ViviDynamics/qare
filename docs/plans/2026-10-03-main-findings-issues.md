@@ -83,21 +83,21 @@ Out:
 
 ## Tasks
 
-- [ ] 1. Profile `findings` section: a test that `fallback` and `bots` load
+- [x] 1. Profile `findings` section: a test that `fallback` and `bots` load
   and that an unknown field or a malformed login is refused by name.
-- [ ] 2. Classification and fingerprint: tests for failed, proven,
+- [x] 2. Classification and fingerprint: tests for failed, proven,
   quarantined, blocked, refused, and for a fingerprint that is stable across
   runs and moves with the failing checks.
-- [ ] 3. Blame: tests for one author, several authors with the one the
+- [x] 3. Blame: tests for one author, several authors with the one the
   evidence points at, a bot's pull request (merger, then approver), no
   record of a pass, an empty range, and the cap.
-- [ ] 4. Rendering: tests that the body carries the criterion's text, the
+- [x] 4. Rendering: tests that the body carries the criterion's text, the
   outcome, the verdict, the range, the evidence with only uploaded links,
   redacted text, and mentions only where they belong.
-- [ ] 5. GitHub client and fake: labels and state on issues, commits since,
+- [x] 5. GitHub client and fake: labels and state on issues, commits since,
   pull requests of a commit, a pull request, its files and reviews.
-- [ ] 6. Filing: tests against the fake for each "Done when" item: open one,
+- [x] 6. Filing: tests against the fake for each "Done when" item: open one,
   bot author, fallback, update without a duplicate or a new mention, close
   on recovery, reopen a hand-closed one, one environment issue.
-- [ ] 7. The `main-findings` command, with `--dry-run`.
-- [ ] 8. SPEC, pipeline guide, orchestrator contract, schemas.
+- [x] 7. The `main-findings` command, with `--dry-run`.
+- [x] 8. SPEC, pipeline guide, orchestrator contract, schemas.
