@@ -132,10 +132,10 @@ test('a finding a person dismissed is not raised again, and is counted as dismis
 test('the same finding twice is one finding, long text is cut, and the list is bounded', () => {
   const many = Array.from({ length: 30 }, (_, index) => ({ ...UNHELPFUL, element: `alert ${index}` }))
   const consumed = consumeUxFindings(JSON.stringify({ findings: [UNLABELLED, UNLABELLED, { ...UNLABELLED, element: 'x', saw: 'a'.repeat(5000), why: 'multi\nline\twhy' }, ...many] }), SCREENS, [])
-  expect(consumed?.findings).toHaveLength(20)
+  expect(consumed?.findings).toHaveLength(12)
   expect(consumed?.findings.filter((finding) => finding.id === advisoryFindingId(UNLABELLED))).toHaveLength(1)
   const long = consumed?.findings.find((finding) => finding.element === 'x')
-  expect(long?.saw.length).toBeLessThanOrEqual(600)
+  expect(long?.saw.length).toBe(300)
   expect(long?.saw.endsWith('…')).toBe(true)
   // One line each: a finding is a row of a comment, never a block of Markdown.
   expect(long?.why).toBe('multi line why')

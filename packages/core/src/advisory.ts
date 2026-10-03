@@ -76,8 +76,9 @@ export interface DismissedFinding {
   element?: string
 }
 
-const MAX_FINDINGS = 20
-const MAX_TEXT = 600
+// Bounded so the findings fit a pull request comment twice over: once to be read, once as data.
+const MAX_FINDINGS = 12
+const MAX_TEXT = 300
 const MAX_ELEMENT = 160
 /** QA.md rides the prompt, and the prompt is one argument (nare#29): a long one is cut, and says so. */
 const MAX_CONTEXT = 20_000
