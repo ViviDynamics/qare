@@ -1,0 +1,111 @@
+import { expect, test } from 'vitest'
+import {
+  classifyPipelineFailure,
+  renderPipelineFailureCheckRun,
+  renderPipelineFailureComment,
+  type PipelineJob,
+} from '../src/pipeline-failure.js'
+
+// The shape of dettmore-platform run 37086848535 (#203): nare would not
+// install on the runner's Python, so plan failed and nothing was evaluated.
+const nareInstallFailed: PipelineJob[] = [
+  { name: 'collect (GitHub token only)', conclusion: 'success', steps: [{ name: 'Read the linked issue and the diff', conclusion: 'success' }] },
+  {
+    name: 'plan (model key + GitHub token only)',
+    conclusion: 'failure',
+    steps: [
+      { name: 'Set up job', conclusion: 'success' },
+      { name: 'Build qare', conclusion: 'success' },
+      { name: 'Install nare at the pinned release', conclusion: 'failure' },
+      { name: 'Plan the QA run', conclusion: 'skipped' },
+    ],
+  },
+  { name: 'execute (no secrets)', conclusion: 'skipped', steps: [] },
+  { name: 'judge (GitHub token only)', conclusion: 'skipped', steps: [] },
+]
+
+const RUN_URL = ['https:', '//github.com/octocat/app/actions/runs/37086848535'].join('')
+
+test('a failed setup step is named with its job and the jobs it left skipped', () => {
+  expect(classifyPipelineFailure(nareInstallFailed)).toEqual({
+    job: 'plan (model key + GitHub token only)',
+    step: 'Install nare at the pinned release',
+    skipped: ['execute (no secrets)', 'judge (GitHub token only)'],
+  })
+})
+
+test('a run with no failed job has nothing to report', () => {
+  const green: PipelineJob[] = [
+    { name: 'plan', conclusion: 'success', steps: [] },
+    { name: 'execute', conclusion: 'success', steps: [] },
+  ]
+  expect(classifyPipelineFailure(green)).toBeUndefined()
+})
+
+// A superseded run is cancelled by the concurrency group: that is not a fault,
+// and saying qare failed would be the same confusion #203 is about.
+test('a cancelled job is not a failure', () => {
+  expect(classifyPipelineFailure([{ name: 'plan', conclusion: 'cancelled', steps: [] }])).toBeUndefined()
+})
+
+test('a timed out job is a failure', () => {
+  const timedOut: PipelineJob[] = [
+    { name: 'execute', conclusion: 'timed_out', steps: [{ name: 'Run the plan', conclusion: 'cancelled' }] },
+  ]
+  expect(classifyPipelineFailure(timedOut)).toEqual({ job: 'execute', step: undefined, skipped: [] })
+})
+
+// The job that reports is itself in the run and still in progress.
+test('a job still running is neither a failure nor skipped', () => {
+  const jobs: PipelineJob[] = [...nareInstallFailed, { name: 'report (GitHub token only)', conclusion: null, steps: [] }]
+  expect(classifyPipelineFailure(jobs)?.skipped).toEqual(['execute (no secrets)', 'judge (GitHub token only)'])
+})
+
+test('a job that failed before any step ran names no step', () => {
+  expect(classifyPipelineFailure([{ name: 'plan', conclusion: 'failure', steps: [] }])).toEqual({
+    job: 'plan',
+    step: undefined,
+    skipped: [],
+  })
+})
+
+test('the comment says no criterion was evaluated and which side failed', () => {
+  const failure = classifyPipelineFailure(nareInstallFailed)
+  if (failure === undefined) throw new Error('expected a failure')
+  const comment = renderPipelineFailureComment(failure, { runUrl: RUN_URL })
+  expect(comment.split('\n')[0]).toBe('## QARE run: not evaluated (qare or its environment failed)')
+  expect(comment).toContain('No acceptance criterion was evaluated')
+  expect(comment).toContain('not a verdict on this pull request')
+  expect(comment).toContain('`plan (model key + GitHub token only)`')
+  expect(comment).toContain('`Install nare at the pinned release`')
+  expect(comment).toContain('`execute (no secrets)`, `judge (GitHub token only)`')
+  // Rule 4: the run page is not an uploaded file, so it is named, not linked.
+  expect(comment).toContain(`\`${RUN_URL}\``)
+  expect(comment).not.toContain(`](${RUN_URL}`)
+  expect(comment).not.toContain(`](<${RUN_URL}`)
+})
+
+test('a job name carrying markdown cannot reshape the comment', () => {
+  const comment = renderPipelineFailureComment({ job: 'plan [x](javascript:alert(1)) @team', step: 'a `step`', skipped: [] })
+  expect(comment).toContain('`plan [x](javascript:alert(1)) @team`')
+  expect(comment).toContain('`` a `step` ``')
+  expect(comment).not.toContain('Jobs skipped')
+})
+
+test('a failure with no step says so', () => {
+  const comment = renderPipelineFailureComment({ job: 'plan', step: undefined, skipped: [] })
+  expect(comment).toContain('The `plan` job failed before any of its steps reported')
+})
+
+// Rule 6: not reaching a verdict never passes, and the title tells it apart
+// from a verdict at a glance.
+test('the check run fails closed and names the failed job and step', () => {
+  const failure = classifyPipelineFailure(nareInstallFailed)
+  if (failure === undefined) throw new Error('expected a failure')
+  expect(renderPipelineFailureCheckRun(failure)).toEqual({
+    title: 'QARE: not evaluated (qare or environment failure)',
+    summary:
+      'No acceptance criterion was evaluated: plan (model key + GitHub token only) failed at Install nare at the pinned release. This is not a verdict on the pull request.',
+    conclusion: 'failure',
+  })
+})

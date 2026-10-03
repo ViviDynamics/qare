@@ -234,6 +234,8 @@ export { replayRun } from './replay.js'
 export type { ReplayDifference, ReplayReport, StoredVerdict } from './replay.js'
 export { renderComment, renderCheckRun } from './evidence.js'
 export type { CheckRunPayload, EvidenceLinks, EvidencePoster } from './evidence.js'
+export { classifyPipelineFailure, renderPipelineFailureCheckRun, renderPipelineFailureComment } from './pipeline-failure.js'
+export type { PipelineFailure, PipelineJob, PipelineStep } from './pipeline-failure.js'
 export {
   SetSeenShas,
   decideTrigger,
