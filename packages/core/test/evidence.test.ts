@@ -321,3 +321,79 @@ test('the repairs a run made are named in its comment, applied and refused alike
 test('a run without repairs renders no repairs section (#83)', () => {
   expect(renderComment(allProven)).not.toContain('Locator repairs')
 })
+
+const twoSided: RunResult = {
+  ...result('failed', [
+    {
+      id: 'old-export',
+      outcome: 'failed',
+      evidence: ['head/checks/old-export/0/stdout.txt'],
+      regression: true,
+      base: { outcome: 'proven', evidence: ['base/checks/old-export/0/stdout.txt'] },
+    },
+    { id: 'new-filter', outcome: 'failed', evidence: ['head/checks/new-filter/0/stdout.txt'], regression: false, base: { outcome: 'failed', evidence: ['base/checks/new-filter/0/stdout.txt'] } },
+    { id: 'new-page', outcome: 'proven', evidence: ['head/checks/new-page/0/stdout.txt'], base: { outcome: 'failed' } },
+    {
+      id: 'slow-report',
+      outcome: 'proven',
+      evidence: ['head/checks/slow-report/0/stdout.txt'],
+      base: { outcome: 'not-compared', reason: "not run at the base: the base side's time budget of 10m was spent before this criterion ran" },
+    },
+  ]),
+  base: { ref: 'origin/main', status: 'executed' },
+}
+
+test('a regression is named as one, apart from new behaviour that does not work yet (#147)', () => {
+  const body = renderComment(twoSided)
+  expect(body).toContain('The plan ran on both sides: at the base `origin/main` and at the head.')
+  expect(body).toContain('| old-export | failed (regression) | regression: proven at the base, failed at the head |')
+  expect(body).toContain('| new-filter | failed | not a regression: it failed at the base too, so this is behaviour that does not work yet |')
+  // New behaviour that works says nothing more, and what was not run at the
+  // base is not compared, never passed there.
+  expect(body).toContain('| new-page | proven |  |')
+  expect(body).toContain("| slow-report | proven | not compared with the base: not run at the base: the base side's time budget of 10m was spent before this criterion ran |")
+})
+
+test('a regression lists its base evidence beside its head evidence (#147)', () => {
+  const body = renderComment(twoSided)
+  expect(body).toContain('- old-export: [stdout.txt](<head/checks/old-export/0/stdout.txt>)')
+  expect(body).toContain('- old-export at the base: [stdout.txt](<base/checks/old-export/0/stdout.txt>)')
+  // Only a regression rests on the base's evidence, so only it lists any.
+  expect(body).not.toContain('new-filter at the base')
+
+  const posted = renderComment(twoSided, { kind: 'artifact', url: ['https:', '//example.test/artifact'].join('') })
+  expect(posted).toContain('- `old-export` at the base: `base/checks/old-export/0/stdout.txt`')
+  expect(posted).toContain('| `old-export` | failed (regression) | `regression: proven at the base, failed at the head` |')
+})
+
+test('a base side that did not run is said once, and no failure reads as compared (#147)', () => {
+  const reason = 'the base side did not run: compose up exited 1'
+  const body = renderComment({
+    ...result('failed', [{ id: 'old-export', outcome: 'failed', evidence: ['head/checks/old-export/0/stdout.txt'], base: { outcome: 'not-compared', reason } }]),
+    base: { ref: 'origin/main', status: 'not-executed', reason: 'compose up exited 1' },
+  })
+  expect(body).toContain('The base `origin/main` was not checked (compose up exited 1), so nothing was compared with it and no regression was looked for.')
+  expect(body).toContain('| old-export | failed |  |')
+  expect(body).not.toContain('regression:')
+
+  // On a pull request the reason is text, never markup.
+  const posted = renderComment(
+    { ...result('failed', []), base: { ref: 'origin/main', status: 'not-executed', reason: 'see [here](x) <b>' } },
+    { kind: 'artifact' },
+  )
+  expect(posted).toContain('was not checked (`see [here](x) <b>`)')
+})
+
+test('a waived criterion that regressed says why the run is still red (#147)', () => {
+  const body = renderComment({
+    ...result('failed', [{ id: 'old-export', outcome: 'unverified', reason: 'waived by human', regression: true, base: { outcome: 'proven' } }]),
+    base: { ref: 'origin/main', status: 'executed' },
+  })
+  expect(body).toContain('| old-export | unverified (regression) | waived (human): waived by human; regression: proven at the base, failed at the head, which a waiver does not cover |')
+})
+
+test('the check run counts the regressions, and a one-sided run reads as it did (#147)', () => {
+  expect(renderCheckRun(twoSided).summary).toBe('verdict failed: 2 proven, 2 failed, 0 unverified; 1 regression against the base')
+  expect(renderCheckRun(mixed).summary).toBe('verdict failed: 1 proven, 1 failed, 1 unverified')
+  expect(renderComment(mixed)).not.toContain('base')
+})
