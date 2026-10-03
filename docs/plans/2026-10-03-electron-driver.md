@@ -85,7 +85,10 @@ Out:
   `--user-data-dir`; a profile naming either is refused. Everything else,
   including `--no-sandbox` where a container needs it, is the profile's to say.
 - **A missing executable or display blocks the run**, named, before any check
-  runs: it is the environment's fault, never a failed criterion.
+  runs: it is the environment's fault, never a failed criterion. On Linux a
+  host with no display but an Xvfb has one: the driver starts a virtual
+  display for each launch and stops it afterwards, so the pipeline's execute
+  step runs a client profile without being changed.
 - **Egress is not recorded.** The main process can reach the network without
   a page ever seeing it, so the driver does not claim to list the hosts a run
   reached. A client profile has no target hosts to hold them against.
@@ -116,9 +119,9 @@ Out:
       `boot.test.ts`, `result.test.ts`, `evidence.test.ts`).
 - [x] 5. CLI and doctor: `run --plan` and `plan` take the driver from the
       profile; doctor requires a display for a client profile.
-- [ ] 6. The example: a packaged Electron application, the shared plan, both
+- [x] 6. The example: a packaged Electron application, the shared plan, both
       profiles, and the script that runs the plan against the browser and the
       desktop build (`examples/test/electron-app.test.mjs`,
       `scripts/electron-driver.sh`).
-- [ ] 7. The web image gains GTK, CI gains the `electron-driver` job, and the
-      spec, the image guide and the test commands say what shipped.
+- [x] 7. The web image gains GTK, CI gains the `electron-driver` job, and the
+      spec, the image guide and the schema reference say what shipped.

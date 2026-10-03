@@ -1178,6 +1178,85 @@ client, installing an artefact for another, and launching a binary for a third.
 And some clients can only run in certain places, so a target declares what it
 requires and a run refuses to start where that is unmet, naming what is missing.
 
+### The Electron driver
+
+The second driver, shipped (#72). A desktop shell is a browser in a window, so
+the driver declares the browser's whole vocabulary, and a flow written for the
+browser runs against a desktop build with nothing edited but the profile it
+runs under. `examples/electron-app` holds that proof: one `plan.json`, a
+profile that names a URL and a profile that names a build, and a CI job that
+runs the plan against both.
+
+A profile names the build in a `client` section, the third shape beside `app`
+and `target`, and like a target profile it needs nothing else but `QA.md`:
+
+```yaml
+client:
+  driver: electron
+  executable: dist/linux-unpacked/my-app    # from the repository the run checks
+  args: [--no-sandbox]                      # optional; passed to the build as written
+flavour: web
+```
+
+The run boots nothing. Before any check runs it holds the build to being
+there and the host to being able to show a window, and a run that fails either
+is `blocked`, naming the path or the display, with no criterion marked
+`failed`. Building the artefact is the project's own step: provisioning it,
+for one side or for both, is not this section's to do (#75).
+
+Each flow check launches the build fresh, with a user data directory of its
+own that is removed afterwards, so one check's state never explains
+another's. The driver starts the executable itself and attaches to it over
+the DevTools endpoint the build opens, through Playwright, so the locators,
+the snapshot, the masked screenshots and the trace are the browser driver's
+own. It owns `--remote-debugging-port` and `--user-data-dir`, and a profile
+that passes either is refused. On a Linux host with no display the driver
+starts a virtual one (Xvfb, which the `web` image ships) for the launch and
+stops it afterwards, so a pipeline's execute step needs nothing added.
+
+An application has windows where a browser flow has one page, and the
+vocabulary names no window. An element reference is looked for in every open
+window, newest first, and the window that shows it is the one the next
+screenshot and snapshot are taken of. A flow written for one page runs
+unchanged; one that opens a second window follows the application into it and
+comes back when it closes. An action waits for its element as long as an
+action is given, so a window that is still opening is waited for like an
+element that is still rendering; an assertion asks every open window once,
+and waits for nothing.
+
+`open` takes a path inside the application. `/` is the page the application's
+first window loaded, and any other path resolves beside it, the way a path on
+a target resolves below its URL. A full URL is refused before the run boots:
+a desktop shell has no address bar, and a window of the application is not
+pointed at a page it never shipped.
+
+Its evidence is the browser's (the action log, screenshots, the snapshot at
+each assertion, the trace kept outside the published evidence) plus the
+application's own console output, as `console.log` in each flow check's
+directory: both streams of the main process by line from its first byte,
+every window's console messages and page errors, and each window opening and
+closing, in the order they happened. It is read once the application has
+exited, so what it wrote on the way out is in it, and it is swept by the same
+redaction as the action log. The log keeps the last 5,000 lines and says how
+many it dropped.
+
+What the driver cannot do it declares, and a plan that asks for it is refused
+when it loads and again before a run boots, naming the check and the driver:
+
+| It cannot | Because | So |
+| --- | --- | --- |
+| Run a `visual` check | A capture is taken at named widths and themes, and a desktop window is sized by its window manager, not a viewport | The plan is refused; a client profile that names widths or themes is refused when it loads; the planner is not offered the kind |
+| Run an `a11y` check | The audit resizes and re-themes the page the same way | The plan is refused; a client profile with an `a11y` section is refused when it loads |
+| Open a full URL | A desktop shell has no address bar | The plan is refused naming the action |
+| Compare with a base revision | Nothing provisions a build of the base (#75) | The run has one side: the result carries `client: { driver, executable, comparison: "none" }` and the comment says so. A run over several apps refuses a client profile, which runs on its own |
+| List the hosts a run reached | The main process reaches the network without a page seeing it | No `outbound.json` is written, and nothing is claimed about egress |
+| Seed a second factor | A client profile has no `app.login` | A flow that types a `totp` or `backupCode` is `unverified` before it runs, naming the gap |
+| Drive a build that turns remote debugging off | The driver attaches over the endpoint `--remote-debugging-port` opens | The flow is `unverified`, naming it, with the application's output |
+| Run where no window can be shown | It opens real windows | The run is `blocked`, naming the display |
+
+It is proven on Linux. Nothing in it is Linux's alone, but macOS and Windows
+hosts are their own issue (#90).
+
 ## Installing and running QARE
 
 QARE runs the same way installed on a host or inside a container. Neither is
@@ -1195,7 +1274,9 @@ point and the user are a stable contract, so a derived image keeps working
 across QARE releases.
 
 The shipped flavours are `core` (the base) and `web` (built from the core,
-adding the browser engine, its browsers and a virtual display). A profile
+adding the browser engine, its browsers, a virtual display, and the one
+library a desktop shell needs beside the browser's, so the Electron driver
+runs in it too). A profile
 names the flavour its checks need, and the run refuses a name the family does
 not ship before anything boots: the family is the pipeline's, and a name
 outside it can only be a misspelling or a wish the family has not grown yet.
@@ -1272,9 +1353,10 @@ for a profile that boots an app, and the chromium driver for a profile whose
 suites drive a browser. While nare is missing it also checks that `python3` is
 new enough to install it, so a too-old interpreter is named before pip refuses
 the wheel; once nare is installed the interpreter is only reported, because
-nare may run under its own. Display and devices are reported but never required:
-the browser driver runs headless, and devices arrive through the profile's
-registered MCP servers. A profile that is there but broken is a caller
+nare may run under its own. A display is required only by a profile that names
+a desktop client (#72), which opens real windows: a running one, or an Xvfb
+the driver can start. The browser driver runs headless. Devices are reported
+but never required: they arrive through the profile's registered MCP servers. A profile that is there but broken is a caller
 mistake, named on the error stream.
 
 A run on a host obeys the same rules a container run does, and the one rule
@@ -1410,7 +1492,8 @@ There is only one side, so nothing runs at a base revision and no regression is
 looked for. The result carries `target: { url, comparison: "none" }` and the
 PR comment says so, rather than implying a base comparison that never ran.
 `qare readiness` reports a target profile as ready: without a boot, a compose
-file and stub coverage are not gaps.
+file and stub coverage are not gaps. A client profile (#72) is the same there:
+it launches a build, so it boots and stubs nothing.
 
 The one part that differs in kind is anything QARE has to observe from outside
 the app. Mail is the usual case: locally a sink in the stack catches it, and on a
