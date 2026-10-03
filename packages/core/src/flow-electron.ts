@@ -348,10 +348,19 @@ export async function makeElectronFlowSession(opts: {
 
   type Browser = Awaited<ReturnType<PlaywrightModule['chromium']['connectOverCDP']>>
   let browser: Browser | undefined
+  // A harness that exits with the session still open (a canceled run) must
+  // not leave the application or its display running behind it: there is no
+  // time to ask, so both are ended outright.
+  const reap = (): void => {
+    if (exit === undefined) child.kill('SIGKILL')
+    void virtual?.stop().catch(() => {})
+  }
+  process.once('exit', reap)
   let disposed = false
   const dispose = async (): Promise<void> => {
     if (disposed) return
     disposed = true
+    process.off('exit', reap)
     // Closing is the application's to do: it is asked, given a grace, and
     // only then killed, so what it writes on the way out is still read.
     if (exit === undefined) {

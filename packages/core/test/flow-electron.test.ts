@@ -301,6 +301,22 @@ test('the vocabulary drives the window that shows the element, with the browser\
   ])
 })
 
+test('a harness that exits with a session still open takes the application and its display with it (#72)', async () => {
+  const before = process.listeners('exit')
+  const { session, process: app, displays } = harness({ windows: [fakeWindow([], 'Greeter', HOME)], env: {}, xvfb: '/usr/bin/Xvfb' })
+  const started = await session()
+  const added = process.listeners('exit').filter((listener) => !before.includes(listener))
+  expect(added).toHaveLength(1)
+  // What the harness's own exit would do: nothing is asked, there is no time to wait.
+  ;(added[0] as () => void)()
+  expect(app.signals).toEqual(['SIGKILL'])
+  expect(displays).toEqual(['start /usr/bin/Xvfb', 'stop'])
+
+  await started.dispose()
+  // A session that was disposed leaves nothing behind on the process.
+  expect(process.listeners('exit').filter((listener) => !before.includes(listener))).toEqual([])
+})
+
 test('a window that goes away while an assertion asks it is a window that does not show the element, not a failed assertion (#72)', async () => {
   const main = fakeWindow([], 'Greeter', HOME, ['text=Greeter', 'heading=Greeter'])
   const closing = fakeWindow([], 'Details', 'file:///opt/app/details.html')
