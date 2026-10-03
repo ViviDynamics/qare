@@ -10,6 +10,32 @@ export interface GitHubIssue {
   title: string
   body?: string
   state?: string
+  /** Who opened it. An issue is qare's own only when this is the identity qare posts as. */
+  user?: { login?: string } | null
+}
+
+/** A GitHub account as blame reads it (#154): its login, and whether GitHub says it is a bot. */
+export interface GitHubPerson {
+  login: string
+  bot: boolean
+}
+
+/** A pull request as blame reads it (#154): who opened it and who merged it. */
+export interface GitHubPull {
+  number: number
+  title: string
+  author?: GitHubPerson
+  mergedBy?: GitHubPerson
+}
+
+interface GithubUser {
+  login?: string
+  type?: string
+}
+
+function person(user: GithubUser | null | undefined): GitHubPerson | undefined {
+  if (user === null || user === undefined || typeof user.login !== 'string' || user.login === '') return undefined
+  return { login: user.login, bot: user.type === 'Bot' }
 }
 
 export interface GitHubComment {
@@ -113,8 +139,98 @@ export class GitHubClient {
     return this.request('GET', `/repos/${this.repository}/issues/${number}`)
   }
 
-  async createIssue(title: string, body: string): Promise<GitHubIssue> {
-    return this.request('POST', `/repos/${this.repository}/issues`, undefined, { title, body })
+  /** Labels are sent only when named: GitHub creates one that does not exist yet. */
+  async createIssue(title: string, body: string, labels?: string[]): Promise<GitHubIssue> {
+    return this.request('POST', `/repos/${this.repository}/issues`, undefined, {
+      title,
+      body,
+      ...(labels === undefined || labels.length === 0 ? {} : { labels }),
+    })
+  }
+
+  /** Close or reopen an issue (#154), saying why. The body and the labels are left as they are. */
+  async setIssueState(number: number, state: 'open' | 'closed', reason: 'completed' | 'reopened'): Promise<void> {
+    await this.request('PATCH', `/repos/${this.repository}/issues/${number}`, undefined, { state, state_reason: reason })
+  }
+
+  /**
+   * The commits reachable from a revision and committed since a moment
+   * (#154), newest first, with the first line of each message. At most
+   * `limit` are read; `truncated` says there were more.
+   */
+  async listCommitsSince(sha: string, since: string, limit: number): Promise<{ commits: Array<{ sha: string; subject: string }>; truncated: boolean }> {
+    const commits: Array<{ sha: string; subject: string }> = []
+    for (let page = 1; ; page += 1) {
+      const batch = await this.request<Array<{ sha: string; commit?: { message?: string } }>>(
+        'GET',
+        `/repos/${this.repository}/commits`,
+        new URLSearchParams({ sha, since, per_page: '100', page: String(page) }),
+      )
+      if (!Array.isArray(batch) || batch.length === 0) break
+      for (const entry of batch) {
+        if (commits.length >= limit) return { commits, truncated: true }
+        commits.push({ sha: entry.sha, subject: (entry.commit?.message ?? '').split('\n')[0] ?? '' })
+      }
+      if (batch.length < 100) break
+    }
+    return { commits, truncated: false }
+  }
+
+  /** The numbers of the merged pull requests a commit came in by (#154); one never merged brought nothing. */
+  async listMergedPullsForCommit(sha: string): Promise<number[]> {
+    const pulls = await this.request<Array<{ number: number; merged_at?: string | null }>>(
+      'GET',
+      `/repos/${this.repository}/commits/${sha}/pulls`,
+      new URLSearchParams({ per_page: '100' }),
+    )
+    if (!Array.isArray(pulls)) return []
+    return pulls.filter((pull) => typeof pull.merged_at === 'string' && pull.merged_at !== '').map((pull) => pull.number)
+  }
+
+  async getPull(number: number): Promise<GitHubPull> {
+    const pull = await this.request<{ number: number; title?: string; user?: GithubUser | null; merged_by?: GithubUser | null }>(
+      'GET',
+      `/repos/${this.repository}/pulls/${number}`,
+    )
+    const author = person(pull.user)
+    const mergedBy = person(pull.merged_by)
+    return {
+      number: pull.number,
+      title: pull.title ?? '',
+      ...(author === undefined ? {} : { author }),
+      ...(mergedBy === undefined ? {} : { mergedBy }),
+    }
+  }
+
+  /** The paths a pull request changed, at most `limit` of them. */
+  async listPullFiles(number: number, limit: number): Promise<string[]> {
+    const files: string[] = []
+    for (let page = 1; files.length < limit; page += 1) {
+      const batch = await this.request<Array<{ filename?: string }>>(
+        'GET',
+        `/repos/${this.repository}/pulls/${number}/files`,
+        new URLSearchParams({ per_page: '100', page: String(page) }),
+      )
+      if (!Array.isArray(batch) || batch.length === 0) break
+      for (const entry of batch) if (typeof entry.filename === 'string') files.push(entry.filename)
+      if (batch.length < 100) break
+    }
+    return files.slice(0, limit)
+  }
+
+  /** Who approved a pull request, in the order they did, each once. */
+  async listPullApprovers(number: number): Promise<GitHubPerson[]> {
+    const reviews = await this.request<Array<{ state?: string; user?: GithubUser | null }>>(
+      'GET',
+      `/repos/${this.repository}/pulls/${number}/reviews`,
+      new URLSearchParams({ per_page: '100' }),
+    )
+    const approvers = new Map<string, GitHubPerson>()
+    for (const review of Array.isArray(reviews) ? reviews : []) {
+      const who = review.state === 'APPROVED' ? person(review.user) : undefined
+      if (who !== undefined && !approvers.has(who.login)) approvers.set(who.login, who)
+    }
+    return [...approvers.values()]
   }
 
   async patchIssueBody(number: number, body: string): Promise<void> {
