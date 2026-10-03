@@ -69,19 +69,19 @@ Out:
 
 ## Tasks
 
-- [ ] 1. `classifyPipelineFailure` matches a job listed under a caller's job
+- [x] 1. `classifyPipelineFailure` matches a job listed under a caller's job
   name: a test with `qare / plan (model key only)` in a `plan` pipeline.
-- [ ] 2. `requeue --profile`: a test that the stub diff is read under the
+- [x] 2. `requeue --profile`: a test that the stub diff is read under the
   given profile path.
-- [ ] 3. `pipeline.yml` is the reusable workflow and holds the pipeline: the
+- [x] 3. `pipeline.yml` is the reusable workflow and holds the pipeline: the
   structural tests read it, and a new test holds its `workflow_call`
   interface (inputs, defaults, the one secret).
-- [ ] 4. `qare.yml` is a caller: a test holds its `with` and `secrets` to the
+- [x] 4. `qare.yml` is a caller: a test holds its `with` and `secrets` to the
   declared interface, refuses `secrets: inherit` and a `runs-on`, and checks
   the permission ceiling covers every called job.
-- [ ] 5. Secret boundaries and fail closed: the model key reaches only the
+- [x] 5. Secret boundaries and fail closed: the model key reaches only the
   planner and verifier steps, and nothing is `continue-on-error`.
-- [ ] 6. The release pin: `qare-ref` defaults to `package.json`'s version,
+- [x] 6. The release pin: `qare-ref` defaults to `package.json`'s version,
   `sync-version` stamps it, version 2026.10.2.
-- [ ] 7. Documentation: `docs/pipeline.md`, SPEC subsection, and a test that
+- [x] 7. Documentation: `docs/pipeline.md`, SPEC subsection, and a test that
   holds the documented caller to the interface and the pinned release.

@@ -851,6 +851,36 @@ judge; and until a release publishes the images, those pulls fail naming
 exactly that, because a quiet fallback to a source build is the failure mode
 the family exists to remove.
 
+### In a repository's pipeline
+
+The pipeline is a reusable workflow, shipped (#145). A repository does not
+copy it: it calls `ViviDynamics/qare/.github/workflows/pipeline.yml` at a
+release tag from a workflow of about ten lines, and passes what is its own to
+choose: the profile path, the model and its endpoint, the runners, and the
+model key, by the name of the secret that holds it. The triggers, the
+concurrency group and the permission ceiling stay with the caller, because a
+called workflow can hold no permission its calling job does not grant.
+[docs/pipeline.md](pipeline.md) is the caller's guide.
+
+A release tag is the pin. Each release's pipeline names that release as the
+qare it runs (a called workflow cannot learn its own ref, so the release is
+written into the file and stamped with the version), so the tag in `uses:`
+moves the pipeline, the qare its token-only jobs build and the images its
+other jobs pull together, and upgrading is that one line.
+
+The secret boundaries are the ones the jobs have always had: the caller
+passes one secret by name and never inherits its secrets into the pipeline,
+the planner and the verifier steps are the only ones that see it, and the
+job that runs pull request code holds nothing. No step or job is allowed to
+fail without failing the run, and a missing model key stops the plan by name
+rather than reading as a pass.
+
+qare's own pull requests run through the same file: its QARE workflow is a
+caller that names the file in its own tree, so a change to the pipeline is
+checked by its own pull request, and pins the base commit where another
+repository pins a release, so the qare a token-holding job runs is still a
+revision the pull request cannot change.
+
 ### On a host
 
 The host install is the same package the image ships: `@qare/cli` at a pinned
