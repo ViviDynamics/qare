@@ -146,6 +146,12 @@ export function codeSpan(text: string): string {
   return `${fence}${pad}${flat}${pad}${fence}`
 }
 
+/** An artefact as a comment names it (#75): its path, and the start of the hash of the file that was installed. */
+function artefactSpan(artefact: { path: string; source: 'prebuilt' | 'built'; sha256?: string }): string {
+  const hash = artefact.sha256 === undefined ? '' : `, sha256 ${codeSpan(artefact.sha256.slice(0, 12))}`
+  return `${codeSpan(artefact.path)} (${artefact.source === 'built' ? 'built by this run' : 'prebuilt'}${hash})`
+}
+
 // In a table a pipe ends the cell even inside a code span unless escaped.
 function cellSpan(text: string): string {
   return text === '' ? '' : codeSpan(text).replaceAll('|', '\\|')
@@ -237,9 +243,23 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
       : [`Checked against the running target ${codeSpan(result.target.url)}. Nothing ran at a base revision, so there is no base comparison and no regression was looked for.`, '']),
     // A build the run launched has one side too (#72): the driver and the
     // executable are named, so a reader knows what the checks drove.
+    // A build the run provisioned (#75) names the artefact it installed for
+    // each side: which file the checks drove is a fact a reader can check,
+    // and which revision a prebuilt file was built from is not qare's to say.
     ...(result.client === undefined
       ? []
-      : [`Checked against the ${result.client.driver} build ${codeSpan(result.client.executable)}, launched by the run. Nothing ran at a base revision, so there is no base comparison and no regression was looked for.`, '']),
+      : result.client.artefact === undefined
+        ? [`Checked against the ${result.client.driver} build ${codeSpan(result.client.executable)}, launched by the run. Nothing ran at a base revision, so there is no base comparison and no regression was looked for.`, '']
+        : [
+            `Checked against the ${result.client.driver} build ${codeSpan(result.client.executable)}, installed by the run from ${artefactSpan(result.client.artefact)} and removed afterwards.${
+              result.base === undefined ? ' Nothing ran at a base revision, so there is no base comparison and no regression was looked for.' : ''
+            }${
+              result.client.base === undefined
+                ? ''
+                : ` The base side is the build installed from ${artefactSpan(result.client.base)}: the pipeline that produced that file vouches for the revision it was built from.`
+            }`,
+            '',
+          ]),
     ...baseLines,
     // Where the run executed and what it ran with (issue #91): a host run and
     // an image run are readable side by side.

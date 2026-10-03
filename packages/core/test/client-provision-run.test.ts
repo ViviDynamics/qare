@@ -151,3 +151,77 @@ test('a profile that names an executable in the checkout is launched in place, a
   expect(checked.reason).toBe('the client build dist/app/app is there, but it did not come up within 5s: the application opened no window within 5000 ms')
   expect(checked.logs).toContain('[health] [main stderr] no window')
 })
+
+test('a run installs the head artefact, drives the installed build, publishes the provisioning log swept, and leaves nothing installed (#75)', async () => {
+  const { job, installRoot } = await workspace()
+  const events: string[] = []
+  const launched: string[] = []
+  const { result } = await runJob(job, {
+    ...WITH_DISPLAY,
+    provision: { installRoot, health: async () => ({ ok: true, lines: [`[main stdout] token ${SECRET}`, '[window 1 opened] file:///app/index.html'] }) },
+    clientSession: installedSession(events, launched),
+  })
+
+  expect(result.verdict).toBe('passed')
+  expect(result.criteria[0]).toMatchObject({ id: 'greets', outcome: 'proven' })
+  // The build the flows drove is the one the run installed, not a path in the checkout.
+  expect(launched).toHaveLength(1)
+  expect(launched[0]?.startsWith(installRoot)).toBe(true)
+  expect(events).toEqual(['open /', 'assert Good evening, Ada.'])
+  // One side, and the result names what was provisioned.
+  expect(result.client).toMatchObject({
+    driver: 'electron',
+    executable: 'greeter/greeter',
+    comparison: 'none',
+    artefact: { path: 'artefacts/head.tar.gz', kind: 'archive', source: 'prebuilt' },
+  })
+  expect(result.client?.artefact?.sha256).toMatch(/^[0-9a-f]{64}$/)
+  expect(result.base).toBeUndefined()
+  const loaded = loadResult(await readFile(join(job.evidenceDir, 'result.json'), 'utf8'))
+  expect(loaded.client).toEqual(result.client)
+  expect(renderComment(loaded)).toContain('Checked against the electron build `greeter/greeter`, installed by the run from `artefacts/head.tar.gz`')
+
+  const log = await readFile(join(job.evidenceDir, 'provision.log'), 'utf8')
+  expect(log).toContain('provisioning the head side from artefacts/head.tar.gz (archive)')
+  expect(log).toContain('[health] [main stdout] token [redacted]')
+  expect(log).not.toContain(SECRET)
+  expect(log).toMatch(/\[teardown\] removed .*; nothing is left/)
+  expect(readdirSync(installRoot)).toEqual([])
+})
+
+test('a failed install is blocked naming the artefact, with the log attached, and no criterion is failed (#75)', async () => {
+  const { job, installRoot } = await workspace({ corruptHead: true })
+  const launched: string[] = []
+  const { result } = await runJob(job, { ...WITH_DISPLAY, provision: { installRoot, health: UP }, clientSession: installedSession([], launched) })
+
+  expect(result.verdict).toBe('blocked')
+  expect(result.criteria).toHaveLength(1)
+  const criterion = result.criteria[0]!
+  expect(criterion.outcome).toBe('unverified')
+  expect(criterion.outcome === 'unverified' && criterion.reason).toMatch(/^the head artefact artefacts\/head\.tar\.gz could not be installed: tar exited \d+/)
+  expect(criterion.evidence).toEqual(['provision.log'])
+  expect(result.criteria.some((entry) => entry.outcome === 'failed')).toBe(false)
+  // What the run got as far as obtaining is still named.
+  expect(result.client).toMatchObject({ artefact: { path: 'artefacts/head.tar.gz', source: 'prebuilt' } })
+  const log = await readFile(join(job.evidenceDir, 'provision.log'), 'utf8')
+  expect(log).toMatch(/\[install\] tar: /)
+  expect(log).toContain('[blocked] the head artefact artefacts/head.tar.gz could not be installed')
+  expect(launched).toEqual([])
+  expect(readdirSync(installRoot)).toEqual([])
+  // The comment names the log beside the reason.
+  expect(renderComment(loadResult(await readFile(join(job.evidenceDir, 'result.json'), 'utf8')))).toContain('provision.log')
+})
+
+test('an install is removed even when a check throws out of the run (#75)', async () => {
+  const { job, installRoot } = await workspace()
+  await expect(
+    runJob(job, {
+      ...WITH_DISPLAY,
+      provision: { installRoot, health: UP },
+      clientSession: () => {
+        throw new Error('the session seam broke')
+      },
+    }),
+  ).rejects.toThrow('the session seam broke')
+  expect(readdirSync(installRoot)).toEqual([])
+})

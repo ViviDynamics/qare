@@ -205,10 +205,20 @@ test('a blocked boot marks every criterion unverified and the run blocked', asyn
   })
 
   expect(result.verdict).toBe('blocked')
+  // A provisioning failure carries its log (#75): what compose said is in the
+  // evidence, and each criterion nothing checked points at it.
   expect(result.criteria).toEqual([
-    { id: 'criterion-1', outcome: 'unverified', reason: 'compose up exited 1' },
-    { id: 'criterion-2', outcome: 'unverified', reason: 'compose up exited 1' },
+    { id: 'criterion-1', outcome: 'unverified', reason: 'compose up exited 1', evidence: ['provision.log'] },
+    { id: 'criterion-2', outcome: 'unverified', reason: 'compose up exited 1', evidence: ['provision.log'] },
   ])
+  expect(await readFile(join(job.evidenceDir, 'provision.log'), 'utf8')).toBe('compose boom\n')
+})
+
+test('a blocked boot that said nothing attaches no log: nothing links to a file that is not there (#75)', async () => {
+  const job = await makeJob({ criteria: commandCriteria('echo ok'), profile: { inline: INLINE_PROFILE } })
+  const { result } = await runJob(job, { runCompose: async () => ({ code: 1, stdout: '', stderr: '' }) })
+  expect(result.criteria).toEqual([{ id: 'criterion-1', outcome: 'unverified', reason: 'compose up exited 1' }])
+  expect(existsSync(join(job.evidenceDir, 'provision.log'))).toBe(false)
 })
 
 test('a criterion with zero checks stays unverified pending planning', async () => {

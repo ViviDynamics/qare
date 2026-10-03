@@ -71,7 +71,7 @@ test('a malformed artefact is refused by field (#75)', () => {
   expect(fieldOf(client({ ...ARTEFACT, timeout: 'soon' }))).toBe('client.artefact.timeout')
   // A field nobody knows is a misspelling, and a misspelt side would quietly drop the comparison.
   expect(() => validateProfileConfig(client({ ...ARTEFACT, bsae: { path: 'a' } }))).toThrow(/client\.artefact takes kind, executable, head, base and timeout, not "bsae"/)
-  expect(() => validateProfileConfig(client({ ...ARTEFACT, head: { path: 'a', url: 'https://example.com/a' } }))).toThrow(/client\.artefact\.head takes path and build, not "url"/)
+  expect(() => validateProfileConfig(client({ ...ARTEFACT, head: { path: 'a', url: 'artefacts.example/a' } }))).toThrow(/client\.artefact\.head takes path and build, not "url"/)
   expect(fieldOf(client(ARTEFACT, { health: '20s' }))).toBe('client.health')
   expect(fieldOf(client(ARTEFACT, { health: { timeout: 'soon' } }))).toBe('client.health.timeout')
   expect(() => validateProfileConfig(client(ARTEFACT, { health: { http: '/' } }))).toThrow(/client\.health takes timeout, not "http"/)

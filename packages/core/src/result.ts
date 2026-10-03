@@ -117,13 +117,33 @@ export interface RunTarget {
 
 /**
  * The build a run launched and drove through a client driver (#72): which
- * driver, and the executable as the profile names it. Like a target it has
- * one side, so `comparison` is `none`: nothing ran at a base revision.
+ * driver, and the executable as the profile names it. A build launched in
+ * place has one side, so `comparison` is `none`: nothing ran at a base
+ * revision. A run that provisioned its build (#75) names the artefact it
+ * installed, and one that provisioned a build of the base too says so:
+ * `comparison` is `base`, and `base` names that artefact.
  */
 export interface RunClient {
   driver: string
   executable: string
-  comparison: 'none'
+  comparison: 'none' | 'base'
+  /** What the head side was provisioned from (#75); absent for a build launched in place. */
+  artefact?: RunClientArtefact
+  /** What the base side was provisioned from (#75), when the profile names a base artefact. */
+  base?: RunClientArtefact
+}
+
+/**
+ * An artefact a run obtained for one side (#75): the path the profile names,
+ * its kind, whether it was already there or this run built it, and the hash
+ * of the file that was installed, which is what says which build the checks
+ * drove. qare cannot tell which revision a prebuilt file was built from.
+ */
+export interface RunClientArtefact {
+  path: string
+  kind: string
+  source: 'prebuilt' | 'built'
+  sha256?: string
 }
 
 /**
@@ -481,9 +501,26 @@ function parseClient(value: unknown): RunClient | undefined {
   if (!isRecord(value)) fail('client', 'result.json client must be a JSON object with driver, executable and comparison')
   const driver = nonEmptyString(value.driver, 'client.driver', 'client driver')
   const executable = nonEmptyString(value.executable, 'client.executable', 'client executable')
-  if (value.comparison !== 'none')
-    fail('client.comparison', `unknown comparison ${JSON.stringify(value.comparison)} (a run against a client build has one side, so it is "none")`)
-  return { driver, executable, comparison: 'none' }
+  if (value.comparison !== 'none' && value.comparison !== 'base')
+    fail(
+      'client.comparison',
+      `unknown comparison ${JSON.stringify(value.comparison)} (a run against a client build has one side, so it is "none", unless it provisioned a build of the base, when it is "base")`,
+    )
+  const artefact = parseClientArtefact(value.artefact, 'client.artefact')
+  const base = parseClientArtefact(value.base, 'client.base')
+  return { driver, executable, comparison: value.comparison, ...(artefact === undefined ? {} : { artefact }), ...(base === undefined ? {} : { base }) }
+}
+
+function parseClientArtefact(value: unknown, field: string): RunClientArtefact | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) fail(field, `result.json ${field} must be a JSON object with path, kind and source`)
+  const path = nonEmptyString(value.path, `${field}.path`, 'artefact path')
+  const kind = nonEmptyString(value.kind, `${field}.kind`, 'artefact kind')
+  if (value.source !== 'prebuilt' && value.source !== 'built')
+    fail(`${field}.source`, `unknown artefact source ${JSON.stringify(value.source)} (expected "prebuilt" or "built")`)
+  if (value.sha256 !== undefined && (typeof value.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(value.sha256)))
+    fail(`${field}.sha256`, 'an artefact sha256 must be 64 lower-case hex characters')
+  return { path, kind, source: value.source, ...(value.sha256 === undefined ? {} : { sha256: value.sha256 as string }) }
 }
 
 /**
