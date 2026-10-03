@@ -64,6 +64,17 @@ function runnable(check: PlanCheck): JobCheck | undefined {
         ...(check.widths === undefined || check.widths.length === 0 ? {} : { widths: check.widths }),
         ...(check.themes === undefined || check.themes.length === 0 ? {} : { themes: check.themes }),
       }
+    case 'a11y':
+      // The page or the actions that reach it travel with the check (#149),
+      // and so do the widths and themes the plan chose, as a visual check's do.
+      return {
+        kind: 'a11y',
+        name: check.name,
+        ...(check.url === undefined ? {} : { url: check.url }),
+        ...(check.actions === undefined ? {} : { actions: check.actions }),
+        ...(check.widths === undefined || check.widths.length === 0 ? {} : { widths: check.widths }),
+        ...(check.themes === undefined || check.themes.length === 0 ? {} : { themes: check.themes }),
+      }
     default:
       // Every kind a plan carries today runs. A plan written by a newer
       // planner may carry one this runner has never heard of.
@@ -92,8 +103,8 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
     const skipped = criterion.checks.filter((check) => runnable(check) === undefined)
     if (skipped.length > 0)
       notes.push(
-        `${criterion.id}: ${skipped.length} check(s) not run, because the runner executes command, mail, flow, tool and visual checks only ` +
-          `(${[...new Set(skipped.map((check) => check.kind))].join(', ')})`,
+        `${criterion.id}: ${skipped.length} check(s) not run, because the runner executes command, mail, flow, tool, visual and a11y checks only` +
+          ` (${[...new Set(skipped.map((check) => check.kind))].join(', ')})`,
       )
     const kinds = [...new Set(skipped.map((check) => check.kind))].join(', ')
     const isolated = criterion.isolated === undefined ? {} : { isolated: criterion.isolated }

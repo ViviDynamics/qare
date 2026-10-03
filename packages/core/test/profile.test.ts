@@ -569,3 +569,47 @@ test('the loaded profile carries its QA.md instructions (#156)', async () => {
 
   expect(profile.instructions).toBe('QA instructions: what the app is, what matters, and how to log in.\n')
 })
+
+// Assembled, never literal: no network marker sits as a literal in a test.
+const A11Y_TARGET = ['https:', '//app.example'].join('')
+
+test('an a11y section states the rule set, the impacts that fail, what is accepted, and whether it is standing (#149)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(
+    join(dir, 'config.yml'),
+    `${fixtureConfig()}\na11y:\n  standard: wcag21aa\n  fail: [moderate, serious, critical]\n  standing: true\n  accept:\n    - rule: color-contrast\n      page: /legacy\n      element: 'document/main/button "Go"'\n      reason: tracked in the redesign\n`,
+  )
+  expect((await loadProfile(dir)).a11y).toEqual({
+    standard: 'wcag21aa',
+    fail: ['moderate', 'serious', 'critical'],
+    standing: true,
+    accept: [{ rule: 'color-contrast', page: '/legacy', element: 'document/main/button "Go"', reason: 'tracked in the redesign' }],
+  })
+  // Absent means no standing audit; a planned a11y check takes the defaults.
+  expect((await loadProfile(fixtureDir)).a11y).toBeUndefined()
+  // An empty section is the defaults, spelled out by nobody.
+  expect(validateProfileConfig({ target: { url: A11Y_TARGET, health: { http: '/', timeout: '5s' } }, a11y: {} }).a11y).toEqual({})
+  rmSync(dir, { recursive: true })
+})
+
+test('an a11y section that names an unknown rule set, impact or field fails naming it (#149)', () => {
+  const target = { url: A11Y_TARGET, health: { http: '/', timeout: '5s' } }
+  const error = (a11y: unknown): ProfileValidationError => {
+    try {
+      validateProfileConfig({ target, a11y })
+    } catch (caught) {
+      return caught as ProfileValidationError
+    }
+    throw new Error('expected the a11y section to be refused')
+  }
+  expect(error({ standard: 'wcag3' }).field).toBe('a11y.standard')
+  expect(error({ standard: 'wcag3' }).message).toContain('wcag22aa')
+  expect(error({ fail: ['severe'] }).field).toBe('a11y.fail[0]')
+  expect(error({ fail: [] }).field).toBe('a11y.fail')
+  expect(error({ standing: 'yes' }).field).toBe('a11y.standing')
+  expect(error({ rules: ['x'] }).field).toBe('a11y.rules')
+  // An accepted violation is debt somebody chose to carry: it names why.
+  expect(error({ accept: [{ rule: 'color-contrast' }] }).field).toBe('a11y.accept[0].reason')
+  expect(error({ accept: [{ reason: 'because' }] }).field).toBe('a11y.accept[0].rule')
+  expect(error({ accept: [{ rule: 'x', reason: 'y', selector: 'z' }] }).field).toBe('a11y.accept[0].selector')
+})

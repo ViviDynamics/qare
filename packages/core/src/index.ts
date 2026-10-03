@@ -145,7 +145,7 @@ export type { RunContext } from './job-from-plan.js'
 export { EXECUTE_PATH_TOOLS, NO_DIFF, PLAN_OUTPUT_SCHEMA, PlanStepError, planRun } from './plan-step.js'
 export type { DeclaredRunInputs, PlanCriterionInput, PlanInputs } from './plan-step.js'
 export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'
-export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobVisualCheck, JobCheck, JobPostTarget, JobProfileGroup, SingleProfileJob, SeveralProfilesJob } from './job.js'
+export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobVisualCheck, JobA11yCheck, JobCheck, JobPostTarget, JobProfileGroup, SingleProfileJob, SeveralProfilesJob } from './job.js'
 export { httpMailbox, mailEvidence, runMailCheck, extractCode, DEFAULT_CODE_PATTERN } from './mailbox.js'
 export type { MailMessage, MailEvidenceMessage, MailOutcome, ReadMail } from './mailbox.js'
 export { Artefacts } from './artefacts.js'
@@ -186,6 +186,26 @@ export { runVisualCheck, type VisualRevision, type VisualCheckOpts, type VisualS
 export { decodePng, diffPngs, encodePng, PngError, type PngImage } from './png.js'
 export { playwrightVisualSession, runVisualCheckJob, visualPageUrl, VISUAL_RECORD } from './visual-run.js'
 export type { VisualCheckJobInput, VisualCheckJobOutcome, VisualComparison, VisualContext, VisualSessionFactory } from './visual-run.js'
+export { A11Y_IMPACTS, A11Y_STANDARDS, DEFAULT_A11Y_FAIL, DEFAULT_A11Y_STANDARD, a11yConfigOf, decideA11y, pageOf } from './a11y.js'
+export type {
+  A11yAccepted,
+  A11yAuditNode,
+  A11yAuditRequest,
+  A11yAuditViolation,
+  A11yBaseline,
+  A11yConfig,
+  A11yCounts,
+  A11yDecision,
+  A11yFinding,
+  A11yFlowAudit,
+  A11yFlowAudits,
+  A11yImpact,
+  A11yPageAudit,
+  A11yStatus,
+  ProfileA11y,
+} from './a11y.js'
+export { A11Y_RECORD, DEFAULT_A11Y_THEME, settleA11y } from './a11y-run.js'
+export type { A11yContext, A11ySettleInput, A11ySettleOutcome } from './a11y-run.js'
 export { runFlowCheck, runSuiteCheck } from './flow.js'
 export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult, FlowTotpConfig, FlowDriverCapabilities } from './flow.js'
 export { SNAPSHOT_SCHEMA_VERSION, nameFindings, normaliseAriaSnapshot, trimToSubtree } from './snapshot.js'

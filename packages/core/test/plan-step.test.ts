@@ -119,6 +119,33 @@ test('the schema and the prompt give a visual check the page it captures (#143)'
   expect(request.prompt).toContain('compared with the same page at the base revision')
 })
 
+test('the schema and the prompt offer an a11y check, inferred unless the criterion asked for it (#149)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+  await planRun(runner, INPUTS)
+
+  const schema = JSON.parse(runner.requests[0].outputSchema)
+  expect(schema.properties.criteria.items.properties.checks.items.properties.kind.enum).toContain('a11y')
+
+  const [request] = runner.requests
+  expect(request.prompt).toContain('- a11y: {"kind":"a11y","name":...,"url":"/the/page"}')
+  // The planner may add one to any criterion about a user interface, and says it was not asked for.
+  expect(request.prompt).toContain('You may add an a11y check to any criterion about a user interface')
+  expect(request.prompt).toContain('"inferred": true unless the criterion itself asks for accessibility')
+  // What decides it is stated, so the planner does not plan one to prove what a page says.
+  expect(request.prompt).toContain('only violations the base revision did not already have fail the criterion')
+})
+
+test('a planned a11y check comes back parsed (#149)', async () => {
+  const output = planned({
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'login unit', command: 'node --version' }] },
+      { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'a11y', name: 'dashboard is accessible', url: '/dashboard', inferred: true }] },
+    ],
+  })
+  const plan = await planRun(new FakeAgentRunner([completed(output)]), INPUTS)
+  expect(plan.criteria[1]).toMatchObject({ checks: [{ kind: 'a11y', name: 'dashboard is accessible', url: '/dashboard', inferred: true }] })
+})
+
 test('an unplannable criterion is kept, with its reason', async () => {
   const runner = new FakeAgentRunner([
     completed(

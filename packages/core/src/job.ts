@@ -66,7 +66,27 @@ export interface JobVisualCheck {
   timeoutMs?: number
 }
 
-export type JobCheck = JobCommandCheck | JobMailCheck | JobFlowCheck | JobToolCheck | JobVisualCheck
+/**
+ * Audits the pages it visits against the accessibility rule set (#149). On a
+ * run with two sides only the violations the base did not have fail it; on a
+ * run with one side every violation at a failing impact does.
+ */
+export interface JobA11yCheck {
+  kind: 'a11y'
+  name?: string
+  /** The page: a path on the app, or a URL. The app's root when neither it nor `actions` is given. */
+  url?: string
+  /** The flow that reaches the pages to audit, in place of `url`. */
+  actions?: FlowActionStep[]
+  /** The viewport widths to audit at; the profile's `visual.widths` when absent. */
+  widths?: number[]
+  /** The colour schemes to audit in; the profile's `visual.themes` when absent. */
+  themes?: string[]
+  /** How long the flow and its audits may take. */
+  timeoutMs?: number
+}
+
+export type JobCheck = JobCommandCheck | JobMailCheck | JobFlowCheck | JobToolCheck | JobVisualCheck | JobA11yCheck
 
 export interface JobCriterion {
   id: string
@@ -373,8 +393,9 @@ function parseCheck(value: unknown, base: string): JobCheck {
   if (value.kind === 'flow') return parseFlowCheck(value, base)
   if (value.kind === 'tool') return parseToolCheck(value, base)
   if (value.kind === 'visual') return parseVisualCheck(value, base)
+  if (value.kind === 'a11y') return parseA11yCheck(value, base)
   if (value.kind !== 'command')
-    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(value.kind)} (job checks are command, mail, flow, tool or visual checks, expected "command", "mail", "flow", "tool" or "visual")`)
+    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(value.kind)} (job checks are command, mail, flow, tool, visual or a11y checks, expected "command", "mail", "flow", "tool", "visual" or "a11y")`)
   const run = nonEmptyString(value.run, `${base}.run`, 'run command')
   const cwd = value.cwd === undefined ? undefined : nonEmptyString(value.cwd, `${base}.cwd`, 'working directory')
   const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
@@ -398,6 +419,53 @@ function parseVisualCheck(value: Record<string, unknown>, base: string): JobVisu
   const name = value.name === undefined ? undefined : nonEmptyString(value.name, `${base}.name`, 'name')
   const screenshot = nonEmptyString(value.screenshot, `${base}.screenshot`, 'screenshot name')
   const url = value.url === undefined ? undefined : nonEmptyString(value.url, `${base}.url`, 'url')
+  const { widths, themes } = parseViewports(value, base)
+  const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
+  return {
+    kind: 'visual',
+    ...(name !== undefined ? { name } : {}),
+    screenshot,
+    ...(url !== undefined ? { url } : {}),
+    ...(widths !== undefined ? { widths } : {}),
+    ...(themes !== undefined ? { themes } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  }
+}
+
+/**
+ * An a11y check (#149): a page named by `url`, or reached with `actions`,
+ * never both. Its widths and themes are held to the rules a visual check's
+ * are, because they name evidence files the same way.
+ */
+function parseA11yCheck(value: Record<string, unknown>, base: string): JobA11yCheck {
+  const name = value.name === undefined ? undefined : nonEmptyString(value.name, `${base}.name`, 'name')
+  if (value.url !== undefined && value.actions !== undefined)
+    fail(`${base}.url`, 'an a11y check names its page by url or drives to it with actions, not both')
+  const url = value.url === undefined ? undefined : nonEmptyString(value.url, `${base}.url`, 'url')
+  let actions: FlowActionStep[] | undefined
+  if (value.actions !== undefined) {
+    try {
+      actions = parseFlowActions(value.actions, `${base}.actions`)
+    } catch (error) {
+      if (error instanceof PlanValidationError) throw new JobValidationError(error.field, error.message)
+      throw error
+    }
+  }
+  const { widths, themes } = parseViewports(value, base)
+  const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
+  return {
+    kind: 'a11y',
+    ...(name !== undefined ? { name } : {}),
+    ...(url !== undefined ? { url } : {}),
+    ...(actions !== undefined ? { actions } : {}),
+    ...(widths !== undefined ? { widths } : {}),
+    ...(themes !== undefined ? { themes } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  }
+}
+
+/** The widths and themes a browser check names, each a non-empty list of what an evidence file name may carry. */
+function parseViewports(value: Record<string, unknown>, base: string): { widths?: number[]; themes?: string[] } {
   let widths: number[] | undefined
   if (value.widths !== undefined) {
     if (!Array.isArray(value.widths) || value.widths.length === 0)
@@ -419,16 +487,7 @@ function parseVisualCheck(value: Record<string, unknown>, base: string): JobVisu
       return text
     })
   }
-  const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
-  return {
-    kind: 'visual',
-    ...(name !== undefined ? { name } : {}),
-    screenshot,
-    ...(url !== undefined ? { url } : {}),
-    ...(widths !== undefined ? { widths } : {}),
-    ...(themes !== undefined ? { themes } : {}),
-    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-  }
+  return { ...(widths === undefined ? {} : { widths }), ...(themes === undefined ? {} : { themes }) }
 }
 
 function parseToolCheck(value: Record<string, unknown>, base: string): JobToolCheck {

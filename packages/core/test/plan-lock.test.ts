@@ -167,6 +167,21 @@ test('the page a visual check captures is part of the locked check (#143)', () =
   expect(fingerprintPlan(visual('/reports'))).toBe(fingerprintPlan(visual('/reports')))
 })
 
+test('what an a11y check audits is part of the locked check (#149)', () => {
+  const a11y = (fields: Record<string, unknown>) =>
+    parsePlan({ ...basePlanInput, criteria: [{ id: 'c2', text: 'second criterion.', checks: [{ kind: 'a11y', name: 'n2', ...fields }] }] })
+  const locked = fingerprintPlan(a11y({ url: '/settings' }))
+  expect(fingerprintPlan(a11y({ url: '/settings' }))).toBe(locked)
+  expect(fingerprintPlan(a11y({ url: '/billing' }))).not.toBe(locked)
+  expect(fingerprintPlan(a11y({}))).not.toBe(locked)
+  expect(fingerprintPlan(a11y({ url: '/settings', widths: [390] }))).not.toBe(locked)
+  expect(fingerprintPlan(a11y({ url: '/settings', themes: ['dark'] }))).not.toBe(locked)
+  expect(fingerprintPlan(a11y({ actions: [{ action: 'open', url: '/settings' }] }))).not.toBe(locked)
+
+  const findings = comparePlan(a11y({ url: '/billing' }), lockPlan(a11y({ url: '/settings' })).locked).findings
+  expect(findings).toEqual(['criterion c2: check 0 changed: url "/settings" -> "/billing"'])
+})
+
 test('the fingerprint does not change when only criterion text or the unplannable reason changes', () => {
   const textOnly = parsePlan({
     schemaVersion: '1',

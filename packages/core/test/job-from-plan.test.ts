@@ -175,11 +175,64 @@ test('flow checks are carried to the job, with suites and typed actions', () => 
   expect(notes.join(' ')).not.toMatch(/flow/)
 })
 
-test('the drop note names every kind the runner executes, visual among them (#143)', () => {
+test('the drop note names every kind the runner executes, visual and a11y among them (#143, #149)', () => {
   const { notes } = jobFromPlan(planWith([{ id: 'c1', text: 'x', checks: [UNKNOWN_KIND] }]), CONTEXT)
 
-  expect(notes.join(' ')).toMatch(/command, mail, flow, tool and visual checks only/)
+  expect(notes.join(' ')).toMatch(/command, mail, flow, tool, visual and a11y checks only \(telepathy\)/)
   expect(notes.join(' ')).not.toMatch(/yet/)
+})
+
+test('an a11y check is carried to the job with its page or its actions, widths and themes (#149)', () => {
+  const actions = [{ action: 'open', url: '/login' }, { action: 'click', element: { testId: 'sign-in' } }]
+  const { job, notes } = jobFromPlan(
+    plan([
+      {
+        id: 'c1',
+        text: 'usable',
+        checks: [
+          { kind: 'a11y', name: 'home', inferred: true },
+          { kind: 'a11y', name: 'settings on a phone', url: '/settings', widths: [390], themes: ['dark'] },
+          { kind: 'a11y', name: 'after sign in', actions, widths: [], themes: [] },
+        ],
+      },
+    ]),
+    CONTEXT,
+  )
+
+  expect(job.criteria[0]?.checks).toEqual([
+    { kind: 'a11y', name: 'home' },
+    { kind: 'a11y', name: 'settings on a phone', url: '/settings', widths: [390], themes: ['dark'] },
+    // Nothing chosen: the run takes the profile's widths and themes.
+    { kind: 'a11y', name: 'after sign in', actions },
+  ])
+  expect(notes).toEqual([])
+})
+
+test('the job loader validates an a11y check, naming the field (#149)', async () => {
+  const { parseJob, JobValidationError } = await import('../src/index.js')
+  const fieldOf = (check: Record<string, unknown>): string => {
+    try {
+      parseJob({
+        id: 'j', repoPath: '/work', baseRef: 'a', headRef: 'b', profile: { path: '.qa' }, evidenceDir: 'e', post: 'none',
+        criteria: [{ id: 'c1', text: 'x', checks: [{ kind: 'a11y', ...check }] }],
+      })
+    } catch (error) {
+      if (error instanceof JobValidationError) return error.field
+      throw error
+    }
+    return 'accepted'
+  }
+
+  expect(fieldOf({})).toBe('accepted')
+  expect(fieldOf({ name: 'settings', url: '/settings', widths: [390, 1440], themes: ['light', 'dark'], timeoutMs: 5000 })).toBe('accepted')
+  expect(fieldOf({ actions: [{ action: 'open', url: '/settings' }] })).toBe('accepted')
+  expect(fieldOf({ url: '/settings', actions: [{ action: 'open', url: '/settings' }] })).toBe('criteria[0].checks[0].url')
+  expect(fieldOf({ url: '' })).toBe('criteria[0].checks[0].url')
+  expect(fieldOf({ actions: 'open' })).toBe('criteria[0].checks[0].actions')
+  expect(fieldOf({ widths: [] })).toBe('criteria[0].checks[0].widths')
+  expect(fieldOf({ widths: [0] })).toBe('criteria[0].checks[0].widths[0]')
+  expect(fieldOf({ themes: ['a/b'] })).toBe('criteria[0].checks[0].themes[0]')
+  expect(fieldOf({ timeoutMs: 0 })).toBe('criteria[0].checks[0].timeoutMs')
 })
 
 test('a plan whose criteria are all unrunnable says so', () => {

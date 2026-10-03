@@ -1,3 +1,4 @@
+import type { A11yCounts } from './a11y.js'
 import { mergeVerdicts } from './egress.js'
 import { BUILTIN_REDACTION_RULES, redactResult, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionOutcome, type CriterionResult, type RunResult, type RunVerdict } from './result.js'
@@ -390,12 +391,19 @@ export function judgedResult(
   // base and failed at the head is a regression, failed at both is behaviour
   // that does not work yet, and a criterion the verifier failed after its
   // check passed is neither, because no model output creates a regression.
-  const comparisonOf = (criterion: CriterionVerdict): { base?: CriterionBase; regression?: boolean } => {
+  const sidesOf = (criterion: CriterionVerdict): { base?: CriterionBase; regression?: boolean } => {
     const before = executed.get(criterion.criterionId)
     if (before?.base === undefined) return {}
     if (regressed.has(criterion.criterionId)) return { base: before.base, regression: true }
     if (criterion.outcome === 'failed' && before.outcome === 'failed' && before.base.outcome === 'failed') return { base: before.base, regression: false }
     return { base: before.base }
+  }
+  // What the accessibility audits counted is the harness's own record (#149):
+  // it survives judging as it was written, or the comment could not list the
+  // violations a judged run found.
+  const comparisonOf = (criterion: CriterionVerdict): { base?: CriterionBase; regression?: boolean; a11y?: A11yCounts } => {
+    const a11y = executed.get(criterion.criterionId)?.a11y
+    return { ...sidesOf(criterion), ...(a11y === undefined ? {} : { a11y }) }
   }
   // Judging can only downgrade a criterion, so an app summary computed at run
   // time can go stale: it is recomputed from the final criteria of its subset

@@ -9,7 +9,7 @@ import { DEFAULT_PROFILE_NAME } from './monorepo.js'
 
 export const PLAN_SCHEMA_VERSION = '1'
 
-export type CheckKind = 'command' | 'flow' | 'visual' | 'mail' | 'tool'
+export type CheckKind = 'command' | 'flow' | 'visual' | 'mail' | 'tool' | 'a11y'
 
 export type FlowActionStep = FlowAction
 
@@ -85,7 +85,25 @@ export interface ToolCheck {
   inferred?: boolean
 }
 
-export type PlanCheck = CommandCheck | FlowCheck | VisualCheck | MailCheck | ToolCheck
+/**
+ * An accessibility audit (#149): the pages the check visits are run through
+ * the rule engine at each width and theme. It names its page by `url`, or
+ * drives to it with the flow vocabulary in `actions`; neither audits the
+ * app's root.
+ */
+export interface A11yCheck {
+  kind: 'a11y'
+  name: string
+  /** The page to audit: a path on the app, or a URL. */
+  url?: string
+  /** The flow that reaches the pages to audit, in place of `url`. */
+  actions?: FlowActionStep[]
+  widths?: number[]
+  themes?: string[]
+  inferred?: boolean
+}
+
+export type PlanCheck = CommandCheck | FlowCheck | VisualCheck | MailCheck | ToolCheck | A11yCheck
 
 export interface PlannedCriterion {
   id: string
@@ -145,7 +163,7 @@ export interface Plan {
   usage?: ModelUsage
 }
 
-const CHECK_KINDS: CheckKind[] = ['command', 'flow', 'visual', 'mail', 'tool']
+const CHECK_KINDS: CheckKind[] = ['command', 'flow', 'visual', 'mail', 'tool', 'a11y']
 
 /** The widest viewport a visual check captures at (#143): wider is a typo, not a screen. */
 export const MAX_VISUAL_WIDTH = 10000
@@ -335,12 +353,34 @@ function parseCriterion(value: unknown, index: number, extraFlowActions: readonl
   }
 }
 
+/**
+ * The widths and themes a browser check names (#143, #149). Both become
+ * evidence file names, so a width is a whole number of pixels and a theme
+ * carries nothing a file name may not.
+ */
+function parseViewports(value: Record<string, unknown>, base: string): { widths?: number[]; themes?: string[] } {
+  const widths = value.widths === undefined ? undefined : numberArray(value.widths, `${base}.widths`, 'widths')
+  const themes = value.themes === undefined ? undefined : stringArray(value.themes, `${base}.themes`, 'themes')
+  if (widths !== undefined)
+    for (const [index, width] of widths.entries())
+      if (!Number.isInteger(width) || width < 1 || width > MAX_VISUAL_WIDTH)
+        fail(`${base}.widths[${index}]`, `width ${JSON.stringify(width)} must be a whole number of pixels between 1 and ${MAX_VISUAL_WIDTH}; a width is the viewport a screenshot is taken at`)
+  if (themes !== undefined)
+    for (const [index, theme] of themes.entries())
+      if (/[/\\]|\.\.|[\x00-\x1f\x7f]/.test(theme))
+        fail(
+          `${base}.themes[${index}]`,
+          `theme ${JSON.stringify(theme)} must not contain path separators, ".." or control characters; themes become evidence file names`,
+        )
+  return { ...(widths === undefined ? {} : { widths }), ...(themes === undefined ? {} : { themes }) }
+}
+
 function parseCheck(value: unknown, base: string, extraFlowActions: readonly string[]): PlanCheck {
   if (!isRecord(value)) fail(base, 'check must be a JSON object')
 
   const kind = value.kind
   if (typeof kind !== 'string' || !CHECK_KINDS.includes(kind as CheckKind))
-    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(kind)} (expected "command", "flow", "visual", "mail" or "tool")`)
+    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(kind)} (expected "command", "flow", "visual", "mail", "tool" or "a11y")`)
   const name = nonEmptyString(value.name, `${base}.name`, 'name')
   const inferred = parseInferred(value.inferred, `${base}.inferred`)
 
@@ -366,20 +406,28 @@ function parseCheck(value: unknown, base: string, extraFlowActions: readonly str
     case 'visual': {
       const screenshot = nonEmptyString(value.screenshot, `${base}.screenshot`, 'screenshot')
       const url = value.url === undefined ? undefined : nonEmptyString(value.url, `${base}.url`, 'url')
-      const widths = value.widths === undefined ? undefined : numberArray(value.widths, `${base}.widths`, 'widths')
-      const themes = value.themes === undefined ? undefined : stringArray(value.themes, `${base}.themes`, 'themes')
-      if (widths !== undefined)
-        for (const [index, width] of widths.entries())
-          if (!Number.isInteger(width) || width < 1 || width > MAX_VISUAL_WIDTH)
-            fail(`${base}.widths[${index}]`, `width ${JSON.stringify(width)} must be a whole number of pixels between 1 and ${MAX_VISUAL_WIDTH}; a width is the viewport a screenshot is taken at`)
-      if (themes !== undefined)
-        for (const [index, theme] of themes.entries())
-          if (/[/\\]|\.\.|[\x00-\x1f\x7f]/.test(theme))
-            fail(
-              `${base}.themes[${index}]`,
-              `theme ${JSON.stringify(theme)} must not contain path separators, ".." or control characters; themes become evidence file names`,
-            )
+      const { widths, themes } = parseViewports(value, base)
       return finish({ kind: 'visual', name, screenshot, ...(url !== undefined ? { url } : {}), ...(widths !== undefined ? { widths } : {}), ...(themes !== undefined ? { themes } : {}) }, inferred)
+    }
+    case 'a11y': {
+      // The page is named, or driven to: a check that carried both would
+      // leave it to the runner to guess which one the plan meant (#149).
+      if (value.url !== undefined && value.actions !== undefined)
+        fail(`${base}.url`, 'an a11y check names its page by url or drives to it with actions, not both')
+      const url = value.url === undefined ? undefined : nonEmptyString(value.url, `${base}.url`, 'url')
+      const actions = value.actions === undefined ? undefined : parseFlowActions(value.actions, `${base}.actions`, extraFlowActions)
+      const { widths, themes } = parseViewports(value, base)
+      return finish(
+        {
+          kind: 'a11y',
+          name,
+          ...(url !== undefined ? { url } : {}),
+          ...(actions !== undefined ? { actions } : {}),
+          ...(widths !== undefined ? { widths } : {}),
+          ...(themes !== undefined ? { themes } : {}),
+        },
+        inferred,
+      )
     }
     case 'mail': {
       const address = nonEmptyString(value.address, `${base}.address`, 'address')
@@ -496,7 +544,7 @@ function rejectUndeclaredActions(plan: Plan, driver: FlowDriverCapabilities): vo
   for (const [criterionIndex, criterion] of plan.criteria.entries()) {
     if ('unplannable' in criterion) continue
     for (const [checkIndex, check] of criterion.checks.entries()) {
-      if (check.kind !== 'flow' || check.actions === undefined) continue
+      if ((check.kind !== 'flow' && check.kind !== 'a11y') || check.actions === undefined) continue
       const base = `criteria[${criterionIndex}].checks[${checkIndex}]`
       for (const [actionIndex, action] of check.actions.entries()) {
         if (!driver.actions.includes(action.action)) {

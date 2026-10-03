@@ -1,5 +1,5 @@
-import { expect, test } from 'vitest'
-import { attemptOf, BROWSER_FLOW_DRIVER, makePlaywrightFlowSession } from '../src/flow-playwright.js'
+import { expect, test, vi } from 'vitest'
+import { attemptOf, BROWSER_FLOW_DRIVER, makePlaywrightFlowSession, markInPage, runAxeInPage, unmarkInPage } from '../src/flow-playwright.js'
 
 const NOT_INSTALLED_MESSAGE =
   'playwright-core is not installed; flow checks are unverified without a browser backend'
@@ -315,4 +315,213 @@ test('a reference that carries a snapshot path resolves by walking it (#83)', as
     'nth 2',
     'click link Ada exact',
   ])
+})
+
+const HELP_URL = ['https:', '//dequeuniversity.com/rules/axe/4.13/button-name'].join('')
+
+/**
+ * A page the audit seam can drive: what the rule engine answers, and the
+ * page's snapshot. `snapshot` renders the tree with the accessible names the
+ * marked elements wear, by selector: an element the tree does not hold is
+ * simply never rendered.
+ */
+function auditableChromium(events: string[], opts: { raw: unknown; snapshot: (names: Record<string, string>) => string }) {
+  let viewport = { width: 1280, height: 720 }
+  let names: Record<string, string> = {}
+  const page = {
+    goto: async () => undefined,
+    url: () => APP_URL,
+    viewportSize: () => viewport,
+    setViewportSize: async (size: { width: number; height: number }) => {
+      viewport = size
+      events.push(`viewport ${size.width}x${size.height}`)
+    },
+    emulateMedia: async (media: { colorScheme: string | null }) => events.push(`scheme ${String(media.colorScheme)}`),
+    evaluate: async (script: unknown, arg?: unknown) => {
+      if (typeof script === 'string') {
+        events.push(`inject ${script}`)
+        return undefined
+      }
+      if (script === markInPage) {
+        const marks = arg as Array<{ selector: string; marker: string }>
+        names = Object.fromEntries(marks.map((mark) => [mark.selector, mark.marker]))
+        events.push(`mark ${marks.map((mark) => mark.selector).join(', ')}`)
+        return marks.map(() => null)
+      }
+      if (script === unmarkInPage) {
+        names = {}
+        events.push(`unmark ${(arg as Array<{ selector: string; previous: string | null }>).map((mark) => `${mark.selector}=${String(mark.previous)}`).join(', ')}`)
+        return undefined
+      }
+      events.push(`run ${JSON.stringify(arg)}`)
+      return opts.raw
+    },
+    ariaSnapshot: async () => opts.snapshot(names),
+    locator: (selector: string) => ({ selector }),
+    screenshot: async (capture: { path: string; fullPage?: boolean; mask?: unknown[] }) =>
+      events.push(`screenshot ${capture.path}${capture.fullPage === true ? ' full page' : ''}${capture.mask === undefined ? '' : ` masked ${capture.mask.length}`}`),
+  }
+  return {
+    launch: () => Promise.resolve({ newContext: async () => ({ on: () => undefined, newPage: async () => page }), close: async () => undefined }),
+  }
+}
+
+const RAW_AUDIT = {
+  version: '4.13.0',
+  incomplete: 2,
+  violations: [
+    { id: 'button-name', impact: 'critical', help: 'Buttons must have discernible text', helpUrl: HELP_URL, nodes: [{ target: 'button:nth-child(2)', selector: 'button:nth-child(2)' }] },
+    { id: 'html-has-lang', impact: 'serious', help: 'The html element must have a lang attribute', nodes: [{ target: 'html', selector: 'html' }] },
+  ],
+}
+
+// Two buttons, the second with no name of its own. The document element is no
+// node of the snapshot, so a marker on it changes nothing.
+const auditedSnapshot = (names: Record<string, string>): string => {
+  const marker = names['button:nth-child(2)']
+  return `- main:\n  - button "Save"\n  - button${marker === undefined ? '' : ` ${JSON.stringify(marker)}`}`
+}
+
+test('the browser driver audits the page with axe-core and names each element from the snapshot (#149)', async () => {
+  const events: string[] = []
+  const session = await makePlaywrightFlowSession({
+    loadPlaywright: async () => ({ chromium: auditableChromium(events, { raw: RAW_AUDIT, snapshot: auditedSnapshot }) }) as never,
+    loadAxe: async () => ({ source: 'AXE SOURCE' }),
+    masks: ['css=.fixture-banner'],
+  })
+
+  const audit = await session.page.audit!({ tags: ['wcag2a', 'wcag2aa'], width: 390, theme: 'dark', screenshot: '/tmp/qare-a11y.png' })
+  await session.dispose()
+
+  expect(audit).toEqual({
+    url: APP_URL,
+    width: 390,
+    theme: 'dark',
+    engine: { name: 'axe-core', version: '4.13.0' },
+    incomplete: 2,
+    screenshot: true,
+    violations: [
+      {
+        rule: 'button-name',
+        impact: 'critical',
+        help: 'Buttons must have discernible text',
+        helpUrl: HELP_URL,
+        nodes: [{ target: 'button:nth-child(2)', role: 'button', path: 'document/main/button' }],
+      },
+      { rule: 'html-has-lang', impact: 'serious', help: 'The html element must have a lang attribute', nodes: [{ target: 'html' }] },
+    ],
+  })
+  // The page is audited at the width and scheme asked for, and put back as the flow had it.
+  expect(events).toEqual([
+    'viewport 390x720',
+    'scheme dark',
+    'inject AXE SOURCE',
+    'run {"tags":["wcag2a","wcag2aa"]}',
+    // Each element wears a marker for one snapshot, and gets back what it carried.
+    'mark button:nth-child(2), html',
+    'unmark button:nth-child(2)=null, html=null',
+    'screenshot /tmp/qare-a11y.png full page masked 1',
+    'scheme null',
+    'viewport 1280x720',
+  ])
+})
+
+test('a marker that changes the shape of the tree names nothing, and the elements are then marked one by one (#149)', async () => {
+  const events: string[] = []
+  const raw = {
+    version: '4.13.0',
+    incomplete: 0,
+    violations: [{ id: 'color-contrast', impact: 'serious', help: 'Contrast', nodes: [{ target: 'section', selector: 'section' }, { target: 'a', selector: 'a' }] }],
+  }
+  // A section with a name becomes a region: the marker gives the tree a node it did not have.
+  const snapshot = (names: Record<string, string>): string => {
+    const link = `- link ${JSON.stringify(names.a ?? 'Home')}`
+    return names.section === undefined ? `- main:\n  ${link}` : `- main:\n  - region ${JSON.stringify(names.section)}:\n    ${link}`
+  }
+  const session = await makePlaywrightFlowSession({
+    loadPlaywright: async () => ({ chromium: auditableChromium(events, { raw, snapshot }) }) as never,
+    loadAxe: async () => ({ source: 'AXE SOURCE' }),
+  })
+
+  const audit = await session.page.audit!({ tags: ['wcag2a'], theme: 'light' })
+  await session.dispose()
+
+  expect(audit.violations[0]?.nodes).toEqual([{ target: 'section' }, { target: 'a', role: 'link', name: 'Home', path: 'document/main/link "Home"' }])
+  expect(events.filter((event) => event.startsWith('mark'))).toEqual(['mark section, a', 'mark section', 'mark a'])
+})
+
+test('a clean page takes no screenshot, and the viewport is left alone when no width is asked (#149)', async () => {
+  const events: string[] = []
+  const session = await makePlaywrightFlowSession({
+    loadPlaywright: async () =>
+      ({ chromium: auditableChromium(events, { raw: { version: '4.13.0', incomplete: 0, violations: [] }, snapshot: () => '- main' }) }) as never,
+    loadAxe: async () => ({ source: 'AXE SOURCE' }),
+  })
+
+  const audit = await session.page.audit!({ tags: ['wcag2a'], theme: 'light', screenshot: '/tmp/qare-a11y.png' })
+  await session.dispose()
+
+  expect(audit).toMatchObject({ width: 1280, theme: 'light', violations: [] })
+  expect(audit.screenshot).toBeUndefined()
+  expect(events).toEqual(['scheme light', 'inject AXE SOURCE', 'run {"tags":["wcag2a"]}', 'scheme null'])
+})
+
+test('an audit without axe-core names what is missing (#149)', async () => {
+  const session = await makePlaywrightFlowSession({
+    loadPlaywright: async () => ({ chromium: auditableChromium([], { raw: {}, snapshot: () => '' }) }) as never,
+    loadAxe: async () => {
+      const error = new Error('Cannot find package') as NodeJS.ErrnoException
+      error.code = 'ERR_MODULE_NOT_FOUND'
+      throw error
+    },
+  })
+  await expect(session.page.audit!({ tags: ['wcag2a'], theme: 'light' })).rejects.toThrow('axe-core is not installed; accessibility checks are unverified without the rule engine')
+  await session.dispose()
+})
+
+test('the function run in the page asks the engine for the rule set and flattens what it found (#149)', async () => {
+  const asked: unknown[] = []
+  // The function runs in the page, where these are the page's own globals.
+  vi.stubGlobal('axe', {
+    version: '4.13.0',
+    run: async (_context: unknown, options: unknown) => {
+      asked.push(options)
+      return {
+        violations: [
+          {
+            id: 'button-name',
+            impact: 'critical',
+            help: 'Buttons must have discernible text',
+            helpUrl: HELP_URL,
+            // One element in the page, one inside a frame, one inside a shadow root.
+            nodes: [{ target: ['button'] }, { target: ['iframe#pay', 'button'] }, { target: [['x-card', 'button']] }],
+          },
+        ],
+        incomplete: [{ id: 'color-contrast' }],
+      }
+    },
+  })
+  vi.stubGlobal('document', {})
+  vi.stubGlobal('requestAnimationFrame', (done: () => void) => done())
+  let raw: unknown
+  try {
+    raw = await runAxeInPage({ tags: ['wcag2a'] })
+  } finally {
+    vi.unstubAllGlobals()
+  }
+  expect(asked).toEqual([{ runOnly: { type: 'tag', values: ['wcag2a'] }, resultTypes: ['violations', 'incomplete'] }])
+  expect(raw).toEqual({
+    version: '4.13.0',
+    incomplete: 1,
+    violations: [
+      {
+        id: 'button-name',
+        impact: 'critical',
+        help: 'Buttons must have discernible text',
+        helpUrl: HELP_URL,
+        // Only an element of the page itself has a selector the snapshot can be asked about.
+        nodes: [{ target: 'button', selector: 'button' }, { target: 'iframe#pay button' }, { target: 'x-card button' }],
+      },
+    ],
+  })
 })

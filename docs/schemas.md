@@ -47,7 +47,7 @@ that can settle it or to a reason it cannot be planned.
 | `text` | criterion | required, non-empty string |
 | `checks` | planned criterion | required array, at least one check; mutually exclusive with `unplannable` |
 | `unplannable` | criterion | non-empty reason string; mutually exclusive with `checks` |
-| `kind` | check | required: `"command"`, `"flow"`, `"visual"`, `"mail"` or `"tool"` |
+| `kind` | check | required: `"command"`, `"flow"`, `"visual"`, `"mail"`, `"tool"` or `"a11y"` |
 | `name` | check | required, non-empty string |
 | `inferred` | check | optional boolean; `true` marks a check the model derived without the criterion naming it |
 
@@ -60,6 +60,8 @@ Per-kind required fields (all values are non-empty strings):
 | `visual` | `screenshot` | what the screenshot is called in the evidence |
 | `visual` | `url` | optional: the page to capture, a path on the app or a URL; the app's root when omitted (#143) |
 | `visual` | `widths`, `themes` | optional arrays of whole pixel widths (1 to 10000) / of strings; the profile's `visual` section applies when omitted. Themes become evidence file names, so they carry no path separators |
+| `a11y` | `url` or `actions` | optional, at most one (#149): the page to audit (a path on the app or a URL), or the typed flow actions that reach the pages to audit; the app's root when both are omitted |
+| `a11y` | `widths`, `themes` | optional, as for `visual`: the viewports and colour schemes each page is audited at |
 
 A flow action is one of `{"action": "open", "url": "..."}`, `{"action": "type", "element": ..., "value": "..."}`, `{"action": "click", "element": ...}` and `{"action": "assertText", "text": "..."}`. An element reference is `{"role": "...", "name": "..."}` or `{"testId": "..."}` — semantic, never a selector. Free-form strings are rejected when the plan loads.
 
@@ -92,7 +94,8 @@ The run's output and the machine contract other harnesses consume.
 | `outcome` | criterion result | required: `"proven"`, `"failed"` or `"unverified"` |
 | `evidence` | proven / failed | required, non-empty array of relative paths — a criterion is proven or failed only by evidence |
 | `reason` | unverified | required, non-empty string — why no check ran |
-| `reason` | failed | optional, non-empty string — present when judge failed a criterion its check proved (the verifier), saying why |
+| `reason` | failed | optional, non-empty string — present when judge failed a criterion its check proved (the verifier), saying why, and when an accessibility audit failed it (#149), naming the rule and the element |
+| `a11y` | criterion result | optional (#149): what the accessibility audits of the criterion's checks counted. `new`, `existing`, `accepted`, `reported` and `uncompared`, each a whole number of at least 0. Absent when nothing was audited |
 | `evidence` | unverified | optional array of relative paths |
 | `job` | document | optional; when present `job.id` is required non-empty — the caller's job id, echoed back |
 | `waived` | document | optional non-empty array of `{ criterionId, by }` — the human waiver record a `waived` run carries |
