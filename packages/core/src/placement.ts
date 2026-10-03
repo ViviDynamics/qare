@@ -37,8 +37,21 @@ export function requirementsOf(profile: QaProfile): Requirements {
   }
 }
 
+/** Each requirement in words, in the order a refusal names them: what the comment says a profile requires. */
+export function describeRequirements(requirements: Requirements): string[] {
+  return [
+    ...(requirements.os === undefined ? [] : [`a ${requirements.os} host`]),
+    ...(requirements.virtualisation === true ? ['hardware virtualisation'] : []),
+    ...(requirements.devices ?? []).map((kind) => `an attached ${kind} device`),
+    ...(requirements.cell === true ? ['a cell the docker daemon makes for the build'] : []),
+    ...(requirements.display === true ? ['a display'] : []),
+  ]
+}
+
 /** The runners a run can know it is on: what GitHub Actions calls its two kinds. */
-export type RunnerKind = 'github-hosted' | 'self-hosted'
+export const RUNNER_KINDS = ['github-hosted', 'self-hosted'] as const
+
+export type RunnerKind = (typeof RUNNER_KINDS)[number]
 
 /**
  * The kind of host a run executed on, as the evidence names it (#76). `os`
@@ -179,6 +192,16 @@ export async function unmetRequirements(requirements: Requirements, host: HostKi
     if (problem !== undefined) missing.push(problem)
   }
   return missing
+}
+
+/**
+ * What a run records when its host does not have what it requires. It opens
+ * the way the run's other refusals do (`refused: undeclared host`,
+ * `refused: missing stub`), and says the one thing a reader then asks: what
+ * the run did before it stopped.
+ */
+export function unmetReason(missing: readonly string[]): string {
+  return `refused: unmet requirement: ${missing.join('; ')}. Nothing was provisioned.`
 }
 
 /**

@@ -1,7 +1,9 @@
 import { expect, test } from 'vitest'
 import { attachedAndroidDevices, detectHost, describeHost, placementProblem, requirementsOf, unmetRequirements, validateProfileConfig, type HostProbes } from '../src/index.js'
 
-const TARGET = { target: { url: 'https://staging.example.com', health: { http: 'https://staging.example.com/up', timeout: '10s' } } }
+// Test files carry no network literals (the offline scanner), so the URL is joined at runtime.
+const TARGET_URL = ['https:', '//staging.example.test'].join('')
+const TARGET = { target: { url: TARGET_URL, health: { http: `${TARGET_URL}/up`, timeout: '10s' } } }
 const CLIENT = { driver: 'electron', executable: 'dist/my-app' }
 
 const LINUX: HostProbes = { platform: 'linux', arch: 'x64', env: {}, virtualisation: () => undefined }

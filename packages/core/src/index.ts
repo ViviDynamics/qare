@@ -458,7 +458,7 @@ export { CheckInputError, checkCriteria, defaultCheckEvidenceDir, nareRunners } 
 export type { CheckOptions, CheckOutcome } from './check.js'
 export { detectExecution, runEnvironment } from './environment.js'
 export type { ExecutionKind, RunEnvironment } from './environment.js'
-export { attachedAndroidDevices, describeHost, detectHost, placementProblem, requirementsOf, unmetRequirements } from './placement.js'
+export { attachedAndroidDevices, describeHost, describeRequirements, detectHost, placementProblem, requirementsOf, unmetReason, unmetRequirements } from './placement.js'
 export type { AttachedDevices, HostKind, HostProbes, Requirements, RunnerKind } from './placement.js'
 export { DEVICE_KINDS, HOST_OPERATING_SYSTEMS } from './profile.js'
 export type { DeviceKind, HostOperatingSystem, ProfileRequires } from './profile.js'

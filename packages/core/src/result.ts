@@ -4,7 +4,8 @@ import type { RunEnvironment, RunImage } from './environment.js'
 import { parseProfileRef, type JobProfileRef } from './job.js'
 import type { MailProof } from './mailbox.js'
 import type { ModelUsage } from './metrics.js'
-import { isUnsafeProfileName } from './profile.js'
+import { RUNNER_KINDS, type HostKind, type Requirements, type RunnerKind } from './placement.js'
+import { DEVICE_KINDS, HOST_OPERATING_SYSTEMS, isUnsafeProfileName, type DeviceKind, type HostOperatingSystem } from './profile.js'
 
 export const RESULT_SCHEMA_VERSION = '1'
 
@@ -169,6 +170,15 @@ export interface RunBase {
   reason?: string
 }
 
+/** One app of a several-app run (#55): its verdict, its criteria, the profile it was checked under, and what that profile required of the host (#76). */
+export interface RunProfileSummary {
+  name: string
+  verdict: RunVerdict
+  criteria: string[]
+  profile?: JobProfileRef
+  requirements?: Requirements
+}
+
 export interface RunResult {
   schemaVersion: string
   verdict: RunVerdict
@@ -191,7 +201,15 @@ export interface RunResult {
    * redact re-read the rules from the result and the .qa artifact alone.
    * Absent when the run checked one profile.
    */
-  profiles?: Array<{ name: string; verdict: RunVerdict; criteria: string[]; profile?: JobProfileRef }>
+  profiles?: RunProfileSummary[]
+  /**
+   * What the profile required of the host (#76): what it declares in
+   * `requires`, and what its shape implies (a cell for a contained build, a
+   * display for one launched on the host). Recorded whether the host met it
+   * or the run was refused for it. Absent when the profile required nothing,
+   * and in a run over several apps, where each app carries its own.
+   */
+  requirements?: Requirements
   /**
    * The run's wall clock (#51): when the run started and when its result was
    * written, as ISO 8601 timestamps. Absent on results written before the
@@ -301,6 +319,7 @@ export function parseResult(input: unknown): RunResult {
     fail('client.comparison', 'client.comparison is "base", which says a build of the base was checked, but the run records no base side that executed')
   const environment = parseEnvironment(input.environment)
   const profiles = parseProfiles(input.profiles)
+  const requirements = parseRequirements(input.requirements, 'requirements')
   const timestamps = parseTimestamps(input)
   const judgeUsage = parseModelUsage(input.judgeUsage, 'judgeUsage')
   const advisory = parseAdvisory(input.advisory)
@@ -316,6 +335,7 @@ export function parseResult(input: unknown): RunResult {
     ...(base === undefined ? {} : { base }),
     ...(environment === undefined ? {} : { environment }),
     ...(profiles === undefined ? {} : { profiles }),
+    ...(requirements === undefined ? {} : { requirements }),
     ...(timestamps === undefined ? {} : { startedAt: timestamps.startedAt, finishedAt: timestamps.finishedAt }),
     ...(judgeUsage === undefined ? {} : { judgeUsage }),
     ...(advisory === undefined ? {} : { advisory }),
@@ -440,6 +460,61 @@ function parseEnvironment(value: unknown): RunEnvironment | undefined {
         : fail('environment.versions.nareContract', 'nare contract must be a number'),
     },
     ...(value.image === undefined ? {} : { image: parseRunImage(value.image) }),
+    ...(value.host === undefined ? {} : { host: parseHost(value.host) }),
+  }
+}
+
+/**
+ * The host record is optional with the same rule (#76): a result written
+ * before it existed still loads, and one written with it names the kind of
+ * host that produced the run. The operating system is whatever the host
+ * called itself, so it is held to being a name and no more.
+ */
+function parseHost(value: unknown): HostKind {
+  if (!isRecord(value)) fail('environment.host', 'environment.host must be a JSON object with os, arch and virtualisation')
+  if (typeof value.virtualisation !== 'boolean') fail('environment.host.virtualisation', 'environment.host.virtualisation must be true or false')
+  if (value.runner !== undefined && !(RUNNER_KINDS as readonly unknown[]).includes(value.runner))
+    fail('environment.host.runner', `unknown runner ${JSON.stringify(value.runner)} (expected "github-hosted" or "self-hosted")`)
+  // Both are named in a posted comment: a platform's own name, never markup.
+  const name = (entry: unknown, field: string, label: string): string =>
+    typeof entry === 'string' && HOST_NAME.test(entry) ? entry : fail(field, `${label} must be a plain name (letters, digits, "_" and "-", at most 32 characters)`)
+  return {
+    os: name(value.os, 'environment.host.os', 'host operating system'),
+    arch: name(value.arch, 'environment.host.arch', 'host architecture'),
+    virtualisation: value.virtualisation,
+    ...(value.runner === undefined ? {} : { runner: value.runner as RunnerKind }),
+  }
+}
+
+const HOST_NAME = /^[A-Za-z0-9_-]{1,32}$/
+
+const REQUIREMENT_KEYS =['os', 'virtualisation', 'devices', 'cell', 'display']
+
+/**
+ * What a profile required of the host (#76), read field by field: every
+ * value is one of the short lists a run can hold a host to, so the record
+ * cannot carry a requirement nothing checked.
+ */
+function parseRequirements(value: unknown, field: string): Requirements | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) fail(field, `${field} must be a JSON object with os, virtualisation, devices, cell and display`)
+  for (const key of Object.keys(value)) if (!REQUIREMENT_KEYS.includes(key)) fail(`${field}.${key}`, `${field} carries no ${JSON.stringify(key)}`)
+  if (value.os !== undefined && !(HOST_OPERATING_SYSTEMS as readonly unknown[]).includes(value.os))
+    fail(`${field}.os`, `unknown operating system ${JSON.stringify(value.os)} (expected one of ${HOST_OPERATING_SYSTEMS.join(', ')})`)
+  for (const flag of ['virtualisation', 'cell', 'display'] as const)
+    if (value[flag] !== undefined && value[flag] !== true) fail(`${field}.${flag}`, `${field}.${flag} is true when it is required, and absent when it is not`)
+  if (value.devices !== undefined && !Array.isArray(value.devices)) fail(`${field}.devices`, `${field}.devices must be an array of device kinds`)
+  const devices = (value.devices as unknown[] | undefined)?.map((kind, index) =>
+    (DEVICE_KINDS as readonly unknown[]).includes(kind)
+      ? (kind as DeviceKind)
+      : fail(`${field}.devices[${index}]`, `unknown device kind ${JSON.stringify(kind)} (expected one of ${DEVICE_KINDS.join(', ')})`),
+  )
+  return {
+    ...(value.os === undefined ? {} : { os: value.os as HostOperatingSystem }),
+    ...(value.virtualisation === true ? { virtualisation: true as const } : {}),
+    ...(devices === undefined ? {} : { devices }),
+    ...(value.cell === true ? { cell: true as const } : {}),
+    ...(value.display === true ? { display: true as const } : {}),
   }
 }
 
@@ -471,9 +546,7 @@ function parseRunImage(value: unknown): RunImage {
   }
 }
 
-function parseProfiles(
-  value: unknown,
-): Array<{ name: string; verdict: RunVerdict; criteria: string[]; profile?: JobProfileRef }> | undefined {
+function parseProfiles(value: unknown): RunProfileSummary[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value))
     fail('profiles', 'result.json profiles must be an array of { name, verdict, criteria, profile }')
@@ -492,7 +565,9 @@ function parseProfiles(
     // rules from the result and the .qa artifact alone, so the reference is
     // carried here rather than reconstructed from the app's name alone.
     const profile = entry.profile === undefined ? undefined : parseProfileRef(entry.profile)
+    const requirements = parseRequirements(entry.requirements, `profiles[${index}].requirements`)
     return {
+      ...(requirements === undefined ? {} : { requirements }),
       name,
       verdict: verdict as RunVerdict,
       criteria: entry.criteria.map((criterion, criterionIndex) =>

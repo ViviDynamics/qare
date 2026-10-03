@@ -1,4 +1,5 @@
 import { renderAdvisorySection } from './advisory-comment.js'
+import { describeHost, describeRequirements, type HostKind, type Requirements } from './placement.js'
 import type { CriterionResult, RunResult, RunVerdict } from './result.js'
 
 export interface CheckRunPayload {
@@ -193,6 +194,20 @@ function escapeLinkText(text: string): string {
  * heading: a name that carries Markdown or HTML cannot reshape the comment or
  * inject markup into it (#55).
  */
+/**
+ * What a profile required of the host, in a sentence (#76). Whether the host
+ * offers hardware virtualisation is said beside the requirement for it,
+ * because nothing else in the comment names that fact.
+ */
+function requirementLines(requirements: Requirements, subject: string, host: HostKind | undefined): string[] {
+  const named = describeRequirements(requirements)
+  if (named.length === 0) return []
+  const list = named.length === 1 ? named[0] : `${named.slice(0, -1).join(', ')} and ${named.at(-1)}`
+  const offers =
+    requirements.virtualisation === true && host !== undefined ? `; this host offers ${host.virtualisation ? '' : 'no '}hardware virtualisation` : ''
+  return [`${subject} requires ${list}${offers}.`]
+}
+
 function escapeHeading(text: string): string {
   return (
     text
@@ -248,11 +263,23 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
             ? []
             : [`Drivers it ships: ${Object.entries(image.drivers).map(([name, version]) => `${name} ${version}`).join(', ')}.`]),
         ]
+  // The host kind that produced the result (#76), when the run recorded it:
+  // a verdict from a hosted Linux runner and one from somebody's own macOS
+  // machine are not the same claim, and a reader is told which this is.
+  const host = result.environment?.host
+  const where =
+    host === undefined
+      ? result.environment?.execution === 'native'
+        ? 'natively on a host'
+        : 'in a container'
+      : `${result.environment?.execution === 'native' ? 'natively' : 'in a container'} on ${describeHost(host)}${host.runner === undefined ? '' : ','}`
   const environment = result.environment === undefined
     ? []
     : [
-        `Executed ${result.environment.execution === 'native' ? 'natively on a host' : 'in a container'} with qare ${result.environment.versions.qare}, node ${result.environment.versions.node}, nare contract ${result.environment.versions.nareContract}.`,
+        `Executed ${where} with qare ${result.environment.versions.qare}, node ${result.environment.versions.node}, nare contract ${result.environment.versions.nareContract}.`,
         ...(result.environment.image === undefined ? [] : imageLines(result.environment.image)),
+        // What the profile required of that host (#76), met or not.
+        ...(result.requirements === undefined ? [] : requirementLines(result.requirements, 'The profile', host)),
         '',
       ]
   const lines = [
@@ -304,6 +331,8 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
           ...result.profiles.flatMap(summary => [
             `### ${escapeHeading(summary.name)} — verdict ${summary.verdict}`,
             '',
+            // What this app's own profile required of the host (#76).
+            ...(summary.requirements === undefined ? [] : requirementLines(summary.requirements, codeSpan(summary.name), host).flatMap((line) => [line, ''])),
             ...table(result.criteria.filter(criterion => summary.criteria.includes(criterion.id))),
             '',
           ]),
