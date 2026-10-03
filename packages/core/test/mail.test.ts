@@ -533,3 +533,31 @@ test('addresses and one-time codes are swept from the message evidence, and the 
   const criterion = result.criteria[0]
   expect(criterion?.mail?.[0]?.subject).toBe('Sign in, [redacted]')
 })
+
+test('two concurrent runs on one source each read their own message and delete only their own (#65)', async () => {
+  let sent = 0
+  const subjects = new Map<string, string>()
+  const sink = catcher((address) => {
+    sent += 1
+    subjects.set(address, `Message ${sent}`)
+    return [caughtMessage({ ID: `message-${sent}`, to: address, subject: `Message ${sent}`, created: new Date(Date.now() + 5).toISOString() })]
+  })
+  const jobs = await Promise.all([1, 2].map(() => makeJob(mailCriteria({ address: '{{run.mail_address}}', subject: 'Message' }), CATCHER)))
+  const outcomes = await Promise.all(jobs.map((job) => runJob(job, sink.opts)))
+
+  const read: string[] = []
+  for (const [index, { result }] of outcomes.entries()) {
+    expect(result.verdict).toBe('passed')
+    const job = jobs[index]
+    if (job === undefined) throw new Error('a run has no job')
+    const cleaned = (await cleanupRecord(job))?.addresses as Array<{ address: string; deleted: number }>
+    expect(cleaned).toHaveLength(1)
+    expect(cleaned[0]?.deleted).toBe(1)
+    // The message this run read is the one sent to the address it minted.
+    const subject = result.criteria[0]?.mail?.[0]?.subject
+    expect(subject).toBe(subjects.get(cleaned[0]?.address ?? ''))
+    read.push(subject ?? '')
+  }
+  expect(read.sort()).toEqual(['Message 1', 'Message 2'])
+  expect(sink.caught).toEqual([])
+})
