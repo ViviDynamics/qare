@@ -55,13 +55,18 @@ export async function reportPipelineFailure(
     url?: string | undefined
     recordedVerdict?: string | undefined
     pipeline?: string[] | undefined
+    reporter?: string | undefined
   },
 ): Promise<PipelineFailureOutcome> {
   const jobs = await client.listRunJobs(run.id, run.attempt)
   const recordedVerdict = run.recordedVerdict === '' ? undefined : run.recordedVerdict
   const failure = classifyPipelineFailure(
     jobs.map((job) => ({ name: job.name, conclusion: job.conclusion, steps: job.steps ?? [] })),
-    { verdictRecorded: recordedVerdict !== undefined, ...(run.pipeline === undefined ? {} : { pipeline: run.pipeline }) },
+    {
+      verdictRecorded: recordedVerdict !== undefined,
+      ...(run.pipeline === undefined ? {} : { pipeline: run.pipeline }),
+      ...(run.reporter === undefined ? {} : { reporter: run.reporter }),
+    },
   )
   if (failure === undefined) return { kind: 'nothing-failed' }
   if (await verdictPostedFor(client, run.pr, run.headSha, run.author ?? DEFAULT_AUTHOR)) return { kind: 'verdict-kept' }

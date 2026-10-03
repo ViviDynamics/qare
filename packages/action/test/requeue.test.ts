@@ -5,7 +5,7 @@ import { expect, test } from 'vitest'
 import { stubIssueMarker } from '@qare/core'
 import type { RunResult } from '@qare/core'
 import { GitHubClient } from '../src/github.js'
-import { requeueUnblocked, stubKeysFromDiffText, REQUEUE_COMMENT } from '../src/requeue.js'
+import { requeueUnblocked, stubDiffArgs, stubKeysFromDiffText, REQUEUE_COMMENT } from '../src/requeue.js'
 import { main } from '../src/index.js'
 import { FAKE_TOKEN, startFakeGithub, type FakeGithub } from './fake-github.js'
 
@@ -42,6 +42,17 @@ test('stubKeysFromDiffText reads hosts from added lines only, deduped and sorted
     '+    hosts: ["smtp.mailpit.example"]',
   ].join('\n')
   expect(stubKeysFromDiffText(diff)).toEqual([HOST_A, 'api.stripe.example', 'smtp.mailpit.example'])
+})
+
+// #145: a repository calling the reusable pipeline names its own profile
+// path, and the merged stubs are read from under that path.
+test('the stub diff is read under the profile the caller names, .qa by default', () => {
+  expect(stubDiffArgs('aaa...bbb')).toEqual(['diff', '--unified=0', 'aaa...bbb', '--', '.qa/'])
+  expect(stubDiffArgs('aaa...bbb', 'services/web/qa')).toEqual(['diff', '--unified=0', 'aaa...bbb', '--', 'services/web/qa/'])
+  expect(stubDiffArgs('aaa...bbb', 'qa/')).toEqual(['diff', '--unified=0', 'aaa...bbb', '--', 'qa/'])
+  // A path is data, never an option or a way out of the repository.
+  for (const profile of ['', '--output=x', '/etc', '../elsewhere', 'a/../../b'])
+    expect(() => stubDiffArgs('aaa...bbb', profile), JSON.stringify(profile)).toThrow(/--profile/)
 })
 
 test('stubKeysFromDiffText returns nothing for diffs without stub hosts', () => {

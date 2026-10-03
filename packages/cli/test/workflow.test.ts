@@ -4,7 +4,11 @@ import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
-const workflowPath = join(repoRoot, '.github', 'workflows', 'qare.yml')
+// The pipeline is a reusable workflow (#145): its jobs live in pipeline.yml,
+// and qare.yml is the caller that holds the triggers. pipeline-caller.test.ts
+// holds the two together.
+const workflowPath = join(repoRoot, '.github', 'workflows', 'pipeline.yml')
+const callerPath = join(repoRoot, '.github', 'workflows', 'qare.yml')
 const workflow = readFileSync(workflowPath, 'utf8')
 const lines = workflow.split('\n')
 
@@ -38,7 +42,7 @@ test('secret hygiene: the model-key job never holds a GitHub token', () => {
   // The whole point of collect: it reads the issue, so the job that talks to a
   // model needs no token, and the secret map in the header stays true.
   const plan = section('plan')
-  expect(plan).toContain('${{ secrets.QARE_PLANNER_KEY }}')
+  expect(plan).toContain('${{ secrets.model-key }}')
   expect(plan).not.toContain('GITHUB_TOKEN')
   expect(plan).not.toContain('secrets.GITHUB_TOKEN')
 })
@@ -46,8 +50,8 @@ test('secret hygiene: the model-key job never holds a GitHub token', () => {
 test('secret hygiene: collect holds the token and no model key', () => {
   const collect = section('collect')
   expect(collect).toContain('${{ secrets.GITHUB_TOKEN }}')
-  expect(collect).not.toContain('QARE_PLANNER_KEY')
-  expect(collect).not.toContain('QARE_MODEL_KEY')
+  expect(collect).not.toContain('model-key')
+  expect(collect).not.toContain('MODEL_KEY')
 })
 
 test('secret hygiene: the job that runs pull request code holds nothing', () => {
@@ -56,7 +60,7 @@ test('secret hygiene: the job that runs pull request code holds nothing', () => 
 
 test('judge holds the model key and the token, and nothing else does', () => {
   const judge = section('judge')
-  expect(judge).toContain('${{ secrets.QARE_PLANNER_KEY }}')
+  expect(judge).toContain('${{ secrets.model-key }}')
   expect(judge).toContain('${{ secrets.GITHUB_TOKEN }}')
 })
 
@@ -64,7 +68,7 @@ test('the step that talks to the verifier model holds no GitHub token', () => {
   const judge = section('judge')
   const start = judge.indexOf('- name: Judge the result')
   const step = judge.slice(start, judge.indexOf('- name:', start + 1))
-  expect(step).toContain('secrets.QARE_PLANNER_KEY')
+  expect(step).toContain('secrets.model-key')
   expect(step).not.toContain('GITHUB_TOKEN')
 })
 
@@ -83,7 +87,7 @@ test('plan and judge run the same image, whose nare is pinned in one place (#88)
   const recipe = readFileSync(join(repoRoot, 'images', 'core', 'Dockerfile'), 'utf8')
   expect(recipe).toMatch(/NARE_WHEEL=/)
   const refs = [section('plan'), section('judge')].map(
-    (job) => job.match(/ghcr\.io\/vividynamics\/qare-core:\$version/)?.[0],
+    (job) => job.match(/ghcr\.io\/vividynamics\/qare-core:\$QARE_VERSION/)?.[0],
   )
   expect(refs[0]).toBeDefined()
   expect(refs[1]).toBe(refs[0])
@@ -169,7 +173,8 @@ test('judge posts the evidence with the token alone, linking only to the uploade
   expect(step).toContain('--result judged-result.json')
   expect(step).toContain('--evidence evidence')
   expect(step).toContain('secrets.GITHUB_TOKEN')
-  expect(step).not.toContain('QARE_PLANNER_KEY')
+  expect(step).not.toContain('model-key')
+  expect(step).not.toContain('MODEL_KEY')
   expect(step).toContain('needs.execute.outputs.evidence-url')
   expect(judge).toContain('checks: write')
   expect(section('execute')).toContain('evidence-url: ${{ steps.evidence.outputs.artifact-url }}')
@@ -191,7 +196,7 @@ test('judge can push qa-assets: contents write on the token-holding job only', (
 test('repository CI ignores pushes to qa-assets', () => {
   const ci = readFileSync(join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8')
   const release = readFileSync(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8')
-  const qare = readFileSync(workflowPath, 'utf8')
+  const qare = readFileSync(callerPath, 'utf8')
   // Each push trigger names only main or tags, so a qa-assets push matches
   // nothing, and no push trigger names qa-assets itself.
   expect(pushTrigger(ci)).toContain('branches: [main]')
@@ -221,7 +226,8 @@ test('execute redacts the evidence, and uploads it only when redaction succeeded
   expect(step).toContain('id: redact')
   // Always, so a crashed run's leftovers are redacted too.
   expect(step).toContain('if: always()')
-  expect(step).toContain('qare redact --evidence evidence --profile .qa')
+  expect(step).toContain('qare redact --evidence evidence --profile "$PROFILE"')
+  expect(step).toContain('PROFILE: ${{ inputs.profile }}')
   const uploadStep = execute.slice(upload, execute.indexOf('- name:', upload + 1) === -1 ? undefined : execute.indexOf('- name:', upload + 1))
   expect(uploadStep).toContain("if: always() && steps.redact.outcome == 'success'")
 })
@@ -235,24 +241,67 @@ test('judge reads the profile the run used from the artifact, as data only', () 
 
 test('secret-holding jobs run qare from the base commit, not the pull request tree', () => {
   // Rule 7: the pull request contributes data only. A job holding a secret
-  // runs qare from a revision the pull request cannot change: collect builds
-  // the base commit, and plan and judge pull the published image for the
-  // base revision's version (#88), after checking that revision out.
+  // sees the repository at its base commit, and runs qare from a revision
+  // the pull request cannot change: the one the caller pinned (#145), which
+  // is a release for a repository that calls the pipeline and the base
+  // commit for qare itself (pipeline-caller.test.ts holds that). collect
+  // builds it, and plan and judge pull the published image for its version
+  // (#88), which collect read from it.
   for (const job of ['collect', 'plan', 'judge']) {
     const jobSection = section(job)
     const checkout = jobSection.indexOf('actions/checkout@v4')
     const ref = jobSection.indexOf('ref: ${{ github.event.pull_request.base.sha }}')
     expect(ref, `${job} must check out the base commit`).toBeGreaterThan(checkout)
+    expect(jobSection, `${job} must never check out the pull request's head`).not.toMatch(/ref: \$\{\{ github\.event\.pull_request\.head/)
   }
   for (const job of ['plan', 'judge']) {
     const jobSection = section(job)
     expect(jobSection, `${job} installs nothing from a tree`).not.toContain('pnpm install')
+    expect(jobSection, `${job} reads no version from a tree`).not.toContain('package.json')
+    expect(jobSection).toContain('QARE_VERSION: ${{ needs.collect.outputs.qare-version }}')
     const pull = jobSection.indexOf('docker pull')
-    expect(pull, `${job} must pull the image for the base revision's version`)
+    expect(pull, `${job} must pull the image for the pinned revision's version`)
       .toBeGreaterThan(jobSection.indexOf('ref: ${{ github.event.pull_request.base.sha }}'))
   }
   const collect = section('collect')
-  expect(collect.indexOf('pnpm install')).toBeGreaterThan(collect.indexOf('ref: ${{ github.event.pull_request.base.sha }}'))
+  const pinned = collect.indexOf('repository: ViviDynamics/qare\n          ref: ${{ inputs.qare-ref }}\n          path: .qare-pipeline')
+  expect(pinned, 'collect must check out qare at the pinned revision, beside the tree').toBeGreaterThan(0)
+  expect(collect.indexOf('pnpm --dir .qare-pipeline install --frozen-lockfile')).toBeGreaterThan(pinned)
+  // The qare collect runs is the one it built there, never the tree's own.
+  expect(collect).toContain('node .qare-pipeline/packages/cli/dist/index.js linked-issues')
+  expect(collect).toContain('node .qare-pipeline/packages/cli/dist/index.js issue-criteria')
+  expect(collect).not.toMatch(/node packages\//)
+  // The version every image job pulls is read from that same checkout.
+  expect(collect).toContain('qare-version: ${{ steps.qare.outputs.version }}')
+  expect(collect).toMatch(/jq -r '\.version \/\/ empty' \.qare-pipeline\/package\.json/)
+})
+
+test('no job runs a qare that the repository under test carries', () => {
+  // A repository that calls the pipeline has no qare in its tree (#145): every
+  // qare a job runs comes from the image or from the pinned checkout. In
+  // report the pinned checkout is the whole workspace, so its path is bare.
+  for (const job of ['collect', 'plan', 'execute', 'judge', 'requeue'])
+    expect(section(job), job).not.toMatch(/node packages\/(cli|action)\/dist/)
+  for (const job of ['collect', 'requeue'])
+    expect(section(job)).toMatch(/node \.qare-pipeline\/packages\/(cli|action)\/dist\/index\.js/)
+  expect(section('judge')).toMatch(/"\$IMAGE_REF" qare metrics record/)
+})
+
+test('the planner diff leaves out the paths the caller names, read as words', () => {
+  const collect = section('collect')
+  expect(collect).toContain('PLANNER_DIFF_EXCLUDE: ${{ inputs.planner-diff-exclude }}')
+  // read -a splits without expanding a pattern against the runner's files.
+  expect(collect).toContain('read -r -a patterns <<< "${PLANNER_DIFF_EXCLUDE:-}"')
+  expect(collect).toContain('excludes+=(":(exclude)$pattern")')
+  expect(collect).toMatch(/git diff "\$\{BASE_SHA\}\.\.\.\$\{HEAD_SHA\}" -- \. "\$\{excludes\[@\]\}" > change-planner\.diff/)
+})
+
+test('requeue reads the merged stubs under the profile the caller names', () => {
+  const requeue = section('requeue')
+  expect(requeue).toContain('--profile "$PROFILE"')
+  expect(requeue).toContain('PROFILE: ${{ inputs.profile }}')
+  // A private repository cannot be checked out without it.
+  expect(requeue).toContain('contents: read')
 })
 
 test('execute is the only job that checks out the pull request tree', () => {
@@ -404,21 +453,46 @@ test("execute resolves its runtime image from the base revision's version (#194)
   // Rule 7 for the runtime too: the pull request contributes data only. A
   // version-bumping pull request must ship green before its own release
   // exists, so the image version comes from the base revision, exactly as it
-  // does for plan and judge, and never from the pull request tree.
+  // does for plan and judge, and never from the pull request tree. Since
+  // #145 that revision is the one the caller pinned: collect reads its
+  // version, and qare's own caller pins the base commit
+  // (pipeline-caller.test.ts), so execute, the one job holding the pull
+  // request's tree, reads no version from any file in it.
   const execute = section('execute')
-  expect(execute).toMatch(/git show "\$BASE_SHA":package\.json/)
-  expect(execute).not.toContain('version="$(jq -r .version package.json)"')
-  // The version is only the base revision's if the image step itself wires
-  // BASE_SHA to the pull request's base commit and pulls the object into the
-  // object store before the version is read: removing either line fails the
-  // run at runtime while the assertions above stayed green.
-  //
-  // The offline scan forbids the word the workflow line starts with, so the
-  // line is built from fragments here and in the release test below (#196).
-  const gitPull = ['git ', 'fe', 'tch'].join('')
+  expect(execute).not.toContain('package.json')
   const image = execute.slice(execute.indexOf('Pull the flavour image'), execute.indexOf('\n      - name:', execute.indexOf('Pull the flavour image')))
-  expect(image).toContain('BASE_SHA: ${{ github.event.pull_request.base.sha }}')
-  expect(image).toContain(gitPull + ' origin "$BASE_SHA"')
+  expect(image).toContain('QARE_VERSION: ${{ needs.collect.outputs.qare-version }}')
+  expect(image).toContain('ref="ghcr.io/vividynamics/qare-$FLAVOUR:$QARE_VERSION"')
+  expect(execute).toContain('needs: [collect, plan]')
+})
+
+test('the job that runs pull request code is left no token to find (rule 7)', () => {
+  // actions/checkout keeps its token in .git/config unless told not to, and
+  // execute hands its workspace to a container that runs pull request code.
+  // So the checkout is the job's one reach into the repository: it leaves no
+  // credential, and it brings the merge commit's parents (the base and the
+  // head the run names) with it, so no later step needs the network for them.
+  //
+  // The offline scan forbids the word the depth key starts with, so it is
+  // built from fragments here and in the release test below (#196).
+  const execute = section('execute')
+  const depth = ['fe', 'tch-depth: 2'].join('')
+  expect(execute).toContain(`- uses: actions/checkout@v4\n        with:\n          persist-credentials: false\n          ${depth}\n`)
+  expect(execute.match(/actions\/checkout@v4/g)).toHaveLength(1)
+  expect(execute).not.toContain(['git ', 'fe', 'tch'].join(''))
+  expect(execute).toContain('--base "$BASE_SHA"')
+  // The base the pull request recorded can be older than the commit the
+  // merge was made against, and then it is not among the merge's parents.
+  // The job cannot ask the repository for it, so the base side (#147) is the
+  // merge's own base, said in the summary, before the base tree is checked out.
+  const absent = execute.indexOf('if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then')
+  expect(absent).toBeGreaterThan(0)
+  expect(execute).toContain(`merge_base="$(git rev-parse --verify --quiet 'HEAD^1' || true)"`)
+  expect(execute).toContain('BASE_SHA="$merge_base"')
+  expect(execute.indexOf('git worktree add --detach "$base_dir" "$BASE_SHA"')).toBeGreaterThan(absent)
+  // The planner's container is handed plan's workspace too, and that job
+  // holds the model key, so its checkout leaves no token either.
+  expect(section('plan')).toMatch(/actions\/checkout@v4\n\s+with:\n\s+persist-credentials: false/)
 })
 
 test('release refuses to publish a tag that is not on the default branch (#194)', () => {
@@ -470,23 +544,28 @@ test('a report job explains a pipeline that published no verdict', () => {
     expect(report).toContain(flag)
   // requeue (push only) and report itself are not the pipeline it describes.
   expect(report).toContain('--pipeline collect,plan,execute,judge')
+  // The pipeline is the one this report job sits in, whatever else the
+  // caller's workflow runs under the same job names (#145).
+  expect(report).toContain('--reporter report')
   // Checked but unpublished is told apart from never evaluated.
   expect(report).toContain('RECORDED_VERDICT: ${{ needs.execute.outputs.verdict }}')
 })
 
-test('the report job holds the GitHub token only and runs qare from the base commit', () => {
+test('the report job holds the GitHub token only and runs qare from the pinned revision', () => {
   const report = section('report')
   expect(report).toContain('${{ secrets.GITHUB_TOKEN }}')
-  expect(report).not.toContain('QARE_PLANNER_KEY')
-  expect(report).not.toContain('QARE_MODEL_KEY')
+  expect(report).not.toContain('model-key')
+  expect(report).not.toContain('MODEL_KEY')
   // Reading the run's jobs needs actions: read; posting needs the rest.
   for (const permission of ['actions: read', 'checks: write', 'issues: write', 'pull-requests: write'])
     expect(report).toContain(permission)
   expect(report).not.toContain('contents: write')
+  // The pinned qare is the whole workspace (#145): the base commit for qare
+  // itself, a release for a caller, and never the pull request's tree.
   const checkout = report.indexOf('actions/checkout@v4')
-  const ref = report.indexOf('ref: ${{ github.event.pull_request.base.sha }}')
-  expect(ref, 'report must check out the base commit').toBeGreaterThan(checkout)
-  expect(report).toMatch(/actions\/checkout@v4\n\s+with:\n\s+persist-credentials: false/)
+  const ref = report.indexOf('repository: ViviDynamics/qare\n          ref: ${{ inputs.qare-ref }}\n          persist-credentials: false')
+  expect(ref, 'report must check out qare at the pinned revision').toBeGreaterThan(checkout)
+  expect(report.match(/actions\/checkout@v4/g)).toHaveLength(1)
   expect(report.indexOf('pnpm install')).toBeGreaterThan(ref)
 })
 

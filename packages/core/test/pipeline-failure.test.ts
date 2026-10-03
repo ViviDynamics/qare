@@ -53,6 +53,55 @@ test('a pipeline scope keeps jobs outside it out of the failure and the skipped 
   expect(classifyPipelineFailure([{ name: 'plan', conclusion: 'failure', steps: [] }], { pipeline: ['plan'] })?.job).toBe('plan')
 })
 
+// #145: the pipeline ships as a reusable workflow, and the jobs API lists a
+// called workflow's jobs under the calling job's name, `qare / plan (...)`.
+test('a pipeline job listed under a calling job is still the pipeline job', () => {
+  const jobs: PipelineJob[] = [
+    { name: 'qare / requeue (GitHub token only)', conclusion: 'skipped', steps: [] },
+    { name: 'qare / collect (GitHub token only)', conclusion: 'success', steps: [] },
+    { name: 'qare / plan (model key only)', conclusion: 'failure', steps: [{ name: 'Pull the core image', conclusion: 'failure' }] },
+    { name: 'qare / execute (no secrets)', conclusion: 'skipped', steps: [] },
+    { name: 'qare / report (GitHub token only)', conclusion: 'failure', steps: [] },
+  ]
+  expect(classifyPipelineFailure(jobs, { pipeline: ['collect', 'plan', 'execute', 'judge'] })).toEqual({
+    job: 'qare / plan (model key only)',
+    step: 'Pull the core image',
+    skipped: ['qare / execute (no secrets)'],
+  })
+  // The calling job's own name is not a pipeline job, whatever it is called.
+  expect(classifyPipelineFailure([{ name: 'plan / lint', conclusion: 'failure', steps: [] }], { pipeline: ['plan'] })).toBeUndefined()
+})
+
+// A caller's workflow may call other reusable workflows too, and one of them
+// may have a job with a pipeline job's name (`infra / plan`). The report job
+// is the one still running, so the calling job it sits under says which jobs
+// are this pipeline's.
+test('another called workflow with a job of the same name is not this pipeline', () => {
+  const jobs: PipelineJob[] = [
+    { name: 'infra / plan', conclusion: 'failure', steps: [{ name: 'terraform plan', conclusion: 'failure' }] },
+    { name: 'infra / execute', conclusion: 'skipped', steps: [] },
+    { name: 'qare / collect (GitHub token only)', conclusion: 'success', steps: [] },
+    { name: 'qare / plan (model key only)', conclusion: 'failure', steps: [{ name: 'Plan the QA run', conclusion: 'failure' }] },
+    { name: 'qare / execute (no secrets)', conclusion: 'skipped', steps: [] },
+    { name: 'qare / report (GitHub token only)', conclusion: null, steps: [] },
+  ]
+  expect(classifyPipelineFailure(jobs, { pipeline: ['collect', 'plan', 'execute', 'judge'], reporter: 'report' })).toEqual({
+    job: 'qare / plan (model key only)',
+    step: 'Plan the QA run',
+    skipped: ['qare / execute (no secrets)'],
+  })
+  // The same holds when the pipeline's jobs sit in the workflow itself and
+  // the other workflow is the called one.
+  const inline: PipelineJob[] = [
+    { name: 'infra / plan', conclusion: 'failure', steps: [] },
+    { name: 'plan (model key only)', conclusion: 'failure', steps: [{ name: 'Pull the core image', conclusion: 'failure' }] },
+    { name: 'report (GitHub token only)', conclusion: null, steps: [] },
+  ]
+  expect(classifyPipelineFailure(inline, { pipeline: ['plan'], reporter: 'report' })?.job).toBe('plan (model key only)')
+  // No running reporter to place the pipeline by: every match counts, as before.
+  expect(classifyPipelineFailure(jobs.slice(0, 2), { pipeline: ['plan', 'execute'], reporter: 'report' })?.job).toBe('infra / plan')
+})
+
 test('the check run summary keeps job and step names inert', () => {
   const summary = renderPipelineFailureCheckRun({ job: 'plan [x](javascript:alert(1))', step: '<b>step</b>', skipped: [] }).summary
   expect(summary).toContain('`plan [x](javascript:alert(1))`')

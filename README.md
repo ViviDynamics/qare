@@ -43,6 +43,13 @@ with a stated proof type and an observable outcome, plus worked rewrites and
 what `qare ingest` can and cannot infer, is in
 [docs/writing-criteria.md](https://github.com/ViviDynamics/qare/blob/main/docs/writing-criteria.md).
 
+## Running it in your repository
+
+The pull request pipeline is a reusable workflow: a repository calls it from a
+workflow of about ten lines, pinned to a qare release tag. The caller
+workflow, its inputs, the one secret and how to upgrade are in
+[docs/pipeline.md](docs/pipeline.md).
+
 ## Extending the images
 
 Images are layered: a project starts from the base and adds what it needs. The

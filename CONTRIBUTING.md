@@ -64,7 +64,10 @@ contributions to license.
 Releases are CalVer and the tag is the version itself: `YYYY.M.PATCH`, like
 `2026.9.0`, matching nare. The root `package.json` version is the single
 source of truth; `scripts/sync-version.mjs` keeps the workspace packages and
-the CLI's version in step with it.
+the CLI's version in step with it, and stamps the release into the reusable
+pipeline (`.github/workflows/pipeline.yml`) and the caller `docs/pipeline.md`
+shows, so the tag a repository pins carries a pipeline that runs that same
+release.
 
 To cut a release: run `node scripts/sync-version.mjs 2026.M.PATCH`, commit,
 tag the commit with the same version, and push the tag. The release workflow
