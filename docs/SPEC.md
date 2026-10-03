@@ -127,7 +127,7 @@ Execute stages, per side (base, head):
 
 1. Boot from the `.qa/` recipe (compose, command, or preview URL); prove the app is up with a health check the harness runs.
 2. Seed fixtures, log in test accounts.
-3. Run `command` checks (exit code and output), `flow` checks (a fixed action set driven by a client driver, or existing suites), `visual` checks (named screenshots at named widths and themes), and `mail` checks (a message waited for and read). Each `command` check also writes `command.json` beside its streams: the command as run, its outcome, and the exit code it closed with. A check that passes silently (`test -f`, `grep -q`) saves no output, so the streams alone read as a check that never ran; the record is the evidence that the harness ran it and captured its result.
+3. Run `command` checks (exit code and output), `flow` checks (a fixed action set driven by a client driver, or existing suites), `visual` checks (a page captured at named widths and themes; the head's captures are compared with the base side's, see [Visual checks](#visual-checks)), and `mail` checks (a message waited for and read). Each `command` check also writes `command.json` beside its streams: the command as run, its outcome, and the exit code it closed with. A check that passes silently (`test -f`, `grep -q`) saves no output, so the streams alone read as a check that never ran; the record is the evidence that the harness ran it and captured its result.
 4. Record every outbound connection attempt. Anything outside the stub map is a `refused: missing stub` finding.
 
 Exploration (#87). When the planner explores a running application, an exploration tool server runs inside the execute sandbox beside the booted app, and the plan step's model session connects to it over the network: the only thing that crosses is tool calls and their results. The server holds no secret — the sandbox environment is built from an allowlist that carries only what an app needs to run, so the model key and every token stay out — and it serves exactly four read-only tools, `observe`, `snapshot`, `navigate` and `capture`; nothing that writes files or runs commands is reachable over the channel, whatever the plan, the profile or a tool result asks for. Every tool result is treated as untrusted input: it is handed to the model fenced as data, and nothing in it can change the plan's schema or the run's policy. Exploring the merge base or a deployed target needs no sandbox split, because there is no PR code beside the app there; the channel is on by default wherever it is available, and off wherever it is not.
@@ -136,7 +136,7 @@ Judge:
 
 - Criterion verdicts come from executed results only.
 - Regressions are computed from both sides (#147). `result.json` carries what the base showed for each criterion, so the judge is handed a base wherever a result is judged (`qare run`, `qare judge`, replay, this job), and it alone decides what regressed.
-- Visual diffs are advisory evidence for the human, never the sole basis for a pass.
+- A visual check's outcome is computed from its captures and diffs (#143): a difference between base and head fails it, and a capture or a comparison that could not be made leaves it unverified. No model reads a screenshot to decide it.
 - The verifier model gets the criteria, diff and evidence in a fresh context and reports only criteria the evidence does not actually show. Its findings can downgrade a verdict, never upgrade one. A verifier that gives no readable answer leaves the criteria it was asked about unverified, so the run blocks rather than passing unchecked.
 - A blocked run whose every unverified criterion is one the planner could not plan, whose planned command cannot run without a shell, or whose check could not start at all (the planner named an executable the runner does not have), reports the criteria by name and the check run comes out neutral: the gap is in the planning vocabulary, and nothing was disproven. Any other blocked run — a check that could not reach the app, an environment that would not boot — is a fault and stays red.
 - A planner whose plan the loader rejects through its correction round ends in the same neutral path: the plan command writes every criterion as `unplannable` naming the rejection, and the run reports rather than fails red.
@@ -320,6 +320,60 @@ takes down a named run's project, or — with no names, the quiescent sweep —
 every running compose project named `qare-*` and nothing else. A stuck run is
 reaped rather than holding the queue, and a sweep is for when no qare run is
 left working, because it downs active runs too.
+
+### Visual checks
+
+A `visual` check (#143) captures one page at each width and theme and, when
+the run has two sides, compares each capture with the same page at the base.
+The plan names the screenshot, the page, and the widths and themes the
+criterion is about; a check that names no width or theme takes the profile's
+`visual` section, and one with no theme anywhere is captured in `light`, the
+browser's default colour scheme.
+
+```json
+{ "kind": "visual", "name": "dashboard on a phone", "screenshot": "dashboard", "url": "/dashboard", "widths": [390], "themes": ["light"] }
+```
+
+`url` is a path on the app: below the target URL on a target run, and on the
+origin the run proved healthy on a run that booted the app, so the base and
+the head each capture their own app. It may be a full URL and may carry run
+values. Without it the check captures the app's root. The page is opened at
+the URL as written, at a viewport of the width named.
+
+The base screenshots are the ones the base side of the run saved (#147).
+There is no other way to get one: the base side captures into `base/`, is
+torn down, and the head side reads those captures and diffs its own against
+them, pixel for pixel. Baselines are never kept between runs.
+
+| What happened | Outcome |
+| --- | --- |
+| Every capture taken, every pair identical | `proven` |
+| A pair differs at any width and theme | `failed`, with the diff image as evidence |
+| A screenshot could not be taken, or the backend did not start | `unverified`, naming why |
+| The base side saved no screenshots (it did not boot, the profile's `base` limits left the criterion out, the page could not be captured there) | `unverified`, naming why, never `failed` |
+| The two sides were masked differently | `unverified`: a region masked on one side only would show as a difference |
+| The run has one side (a target, #122, or a run nobody asked a base of) | `proven` from the head's captures alone; the record says there was nothing to compare with |
+
+The outcome is computed in code from the captures and the diffs. Which
+differences a change intended is not decided yet (#40), so any difference
+fails the criterion, and a difference against the base is a regression by the
+rule above: proven at the base, failed at the head. An outcome that only says
+the base had no screenshots this time is not cached (#47).
+
+Masks (#119) are the same at both sides: the head profile's `redact.masks`
+are in force at the base too, beside the base profile's own, so a mask the
+change adds never shows as a difference.
+
+Evidence, under the check's directory: `visual.json` (the page, the side,
+each capture with the masks in force for it, each diff, the outcome and its
+reason), `head/<width>x<theme>.png`, and on a compared run
+`base/<width>x<theme>.png` and `diff/<width>x<theme>.png` for each pair that
+differs. The diff image is the head, dimmed to grey, with every differing
+pixel in red. On a target run `outbound.json` records what the screenshot
+browser reached, and a host the profile does not declare refuses the run, as
+it does for a flow (#122). The text of the record is redacted like any other
+evidence; the images are masked at capture, and the pipeline's sweep (#52)
+accepts them as images.
 
 ### Mail checks
 
@@ -576,9 +630,11 @@ told there is no diff and, for a target profile, where the app runs; the
 verifier is told there is no diff too. A criterion the planner cannot plan is
 `unverified` with the planner's reason, and a planner that cannot run at all
 leaves every criterion `unverified`, naming why; nothing is dropped. A
-criterion planned with a check the runner does not execute yet (visual) is
-`unverified` saying so, even when its other checks pass: half a proof is not a
-proof. What the verifier overturned is reported on stderr, as `qare judge`
+criterion one of whose checks could not run is `unverified` saying so, even
+when its other checks pass: half a proof is not a proof. A `visual` check here
+captures the head only, because a sentence checked against the app as it runs
+has no second side; the criterion is proven by the captures, and qare says on
+stderr that nothing was compared (#143). What the verifier overturned is reported on stderr, as `qare judge`
 reports it. Evidence goes to `--evidence`, or by default to a directory of its
 own under `qare-evidence/` where qare runs, never into the repository
 checked. The
@@ -1051,7 +1107,7 @@ Fork PRs are refused outright in the Action.
   screenshot, so fixture data never reaches the pixels text rules cannot read.
   The same masks apply to base and head screenshots alike, so masking never
   shows as a visual difference, and the evidence names the masks that applied
-  to each screenshot. What a mask cannot cover, text redaction still covers.
+  to each screenshot: a flow's action log, and a visual check's `visual.json`. What a mask cannot cover, text redaction still covers.
 - `result.json` is the machine contract other harnesses consume.
 - Both artifact schemas are documented in [schemas.md](./schemas.md); the
   orchestrator contract (invocation, exit codes and reaction per verdict) in

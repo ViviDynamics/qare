@@ -62,7 +62,12 @@ Out:
   boot, the profile's limits left the criterion out, the capture failed
   there) leaves the visual check `unverified`, never `failed` and never
   proven: a comparison was asked for and could not be made. That outcome is
-  not cached, because the next run's base may boot.
+  not cached, because the next run's base may boot. This includes a profile
+  that sets `base.criteria: none` or `ledger`: the issue names only the base
+  that will not boot, and the limits are read the same way because the
+  alternative, proving a visual criterion on a booted profile without ever
+  comparing it, is the quieter failure. A profile owner who wants visual
+  criteria proven keeps them in the base side.
 - A one-sided run is different: nothing was asked to be compared. Head
   captures alone prove the criterion and `visual.json` records
   `comparison: none` with the reason.
@@ -87,12 +92,12 @@ Out:
 
 ## Tasks
 
-- [ ] 1. PNG reader, writer and pixel differ: `packages/core/test/png.test.ts`.
-- [ ] 2. `runVisualCheck` takes a differ that can answer "identical": `packages/core/test/visual.test.ts`.
-- [ ] 3. The screenshot backend reports what its browser reached: `packages/core/test/visual-playwright.test.ts`.
-- [ ] 4. The plan's visual check carries `url`: `packages/core/test/plan.test.ts`, `plan-lock.test.ts`, `plan-step.test.ts`.
-- [ ] 5. The job carries a visual check, and the notes stop naming it: `packages/core/test/job-from-plan.test.ts`, `run.test.ts`.
-- [ ] 6. `runJob` runs it on a one-sided run: `packages/core/test/visual-run.test.ts`.
-- [ ] 7. Both sides: base captures, head diffs, masks agree: `packages/core/test/visual-run.test.ts`.
-- [ ] 8. `qare check` names the missing comparison: `packages/cli/test/check-command.test.ts`.
-- [ ] 9. SPEC, schemas, writing-criteria.
+- [x] 1. PNG reader, writer and pixel differ: `packages/core/test/png.test.ts`.
+- [x] 2. `runVisualCheck` takes a differ that can answer "identical": `packages/core/test/visual.test.ts`.
+- [x] 3. The screenshot backend reports what its browser reached: `packages/core/test/visual-playwright.test.ts`.
+- [x] 4. The plan's visual check carries `url`: `packages/core/test/plan.test.ts`, `plan-lock.test.ts`, `plan-step.test.ts`.
+- [x] 5. The job carries a visual check, and the notes stop naming it: `packages/core/test/job-from-plan.test.ts`, `run.test.ts`.
+- [x] 6. `runJob` runs it on a one-sided run: `packages/core/test/visual-run.test.ts`.
+- [x] 7. Both sides: base captures, head diffs, masks agree: `packages/core/test/visual-run.test.ts`.
+- [x] 8. `qare check` names the missing comparison: `packages/cli/test/check-command.test.ts`.
+- [x] 9. SPEC, schemas, writing-criteria.
