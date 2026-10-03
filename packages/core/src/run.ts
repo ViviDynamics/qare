@@ -10,7 +10,7 @@ import { Artefacts, type ArtefactField } from './artefacts.js'
 import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
 import { bootApp, CANCEL_DOWN_TIMEOUT_MS, clientCellStarter, clientExecutablePath, inPlaceBuild, killActiveCompose, stopApp, type BootOpts, type BootedClient } from './boot.js'
 import { removeLiveInstalls } from './provision.js'
-import { detectHost, placementProblem, requirementsOf, unmetReason, unmetRequirements, type HostProbes, type Requirements } from './placement.js'
+import { detectHost, placementProblem, rememberProbes, requirementsOf, unmetReason, unmetRequirements, type HostProbes, type Requirements } from './placement.js'
 import { hasMintedProject, isolatedHealthUrl, isolateRun, type RunIsolation } from './isolation.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
 import { runFlowCheck, runSuiteCheck, undeclaredCheckKinds, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
@@ -328,10 +328,18 @@ export interface RunJobOutcome {
  * way whatever the caller asked for.
  */
 export async function runJob(job: Job, opts: RunJobOpts = {}): Promise<RunJobOutcome> {
-  const { base: request, ...asked } = opts
-  // Where the run can execute is settled first (#76), before either side
-  // starts: no base checkout, no build, no install and no boot happens on a
-  // host the run then turns out not to be able to use.
+  const { base: request, ...given } = opts
+  // One host for the whole run (#76): every app and both sides are held to
+  // it, and it is asked each thing once. The cell and the display a client
+  // profile implies are asked through the seams the boot already had.
+  const cell = given.clientCell?.problem
+  const asked: SideOpts = {
+    ...given,
+    host: rememberProbes({ ...(cell === undefined ? {} : { cell }), display: () => electronDisplayProblem(given.clientEnv), ...given.host }),
+  }
+  // Where the run can execute is settled first, before either side starts:
+  // no base checkout, no build, no install and no boot happens on a host
+  // the run then turns out not to be able to use.
   const placed = await placeRun(job, asked)
   if ('refused' in placed) return placed.refused
   const sideOpts = placed.opts
@@ -385,28 +393,41 @@ async function placeRun(job: Job, opts: SideOpts): Promise<{ refused: RunJobOutc
   const startedAt = new Date().toISOString()
   const execution = opts.execution ?? detectExecution()
   const host = detectHost(opts.host)
+  // A profile that cannot be read requires nothing anyone can name: the
+  // side refuses the run for it, or throws, exactly as it did.
+  const readable = (ref: JobProfileRef): Promise<QaProfile | undefined> => resolveProfileRef(job.repoPath, ref).catch(() => undefined)
   const misplaced = placementProblem(host, opts.host?.env)
   if (misplaced !== undefined) {
+    // The refusal still says what each profile required (#76): reading a
+    // profile provisions nothing, and the record is the same either way.
     const reason = `refused: placement: ${misplaced}`
-    if ('profiles' in job) return { refused: await refuseEveryApp(job, opts, () => reason, execution, startedAt) }
-    return { refused: await refuseRun(job, opts, BUILTIN_REDACTION_RULES, reason, undefined, undefined, execution, startedAt) }
+    if ('profiles' in job) {
+      const required = new Map<string, Requirements>()
+      for (const group of job.profiles) {
+        const profile = await readable(group.profile)
+        if (profile !== undefined && Object.keys(requirementsOf(profile)).length > 0) required.set(group.name, requirementsOf(profile))
+      }
+      return { refused: await refuseEveryApp(job, opts, () => reason, execution, startedAt, required) }
+    }
+    const profile = await readable(job.profile)
+    return {
+      refused: await refuseRun(
+        job,
+        opts,
+        profile === undefined ? BUILTIN_REDACTION_RULES : profileRules(profile),
+        reason,
+        profile === undefined ? undefined : profileNote(profile),
+        undefined,
+        execution,
+        startedAt,
+      ),
+    }
   }
   if ('profiles' in job) return { opts }
-  let profile: QaProfile
-  try {
-    profile = await resolveProfileRef(job.repoPath, job.profile)
-  } catch {
-    // A profile that cannot be read requires nothing anyone can name: the
-    // side refuses the run for it, or throws, exactly as it did.
-    return { opts }
-  }
+  const profile = await readable(job.profile)
+  if (profile === undefined) return { opts }
   const requirements = requirementsOf(profile)
-  const cell = opts.clientCell?.problem
-  const missing = await unmetRequirements(requirements, host, {
-    ...(cell === undefined ? {} : { cell }),
-    display: () => electronDisplayProblem(opts.clientEnv),
-    ...opts.host,
-  })
+  const missing = await unmetRequirements(requirements, host, opts.host)
   if (missing.length > 0)
     return { refused: await refuseRun(job, opts, profileRules(profile), unmetReason(missing), profileNote(profile), undefined, execution, startedAt) }
   // The host can make a cell, and the boot is not asked a second time.
@@ -910,6 +931,7 @@ async function refuseEveryApp(
   reasonFor: (group: JobProfileGroup) => string,
   execution: ExecutionKind,
   startedAt: string,
+  required: ReadonlyMap<string, Requirements> = new Map(),
 ): Promise<RunJobOutcome> {
   const criteria = job.profiles.flatMap((group) =>
     group.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified' as const, reason: reasonFor(group) })),
@@ -926,6 +948,7 @@ async function refuseEveryApp(
         verdict: 'refused' as const,
         criteria: group.criteria.map((criterion) => criterion.id),
         profile: group.profile,
+        ...(required.has(group.name) ? { requirements: required.get(group.name) as Requirements } : {}),
       })),
     },
     BUILTIN_REDACTION_RULES,

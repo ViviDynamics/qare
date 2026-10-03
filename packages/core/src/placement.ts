@@ -133,10 +133,12 @@ export function describeHost(host: HostKind): string {
 
 const ADB_TIMEOUT_MS = 10_000
 
-function adbDevices(): Promise<{ code: number; stdout: string }> {
+function adbDevices(): Promise<{ code: number; stdout: string; timedOut?: boolean }> {
   return new Promise((resolve) => {
     execFile('adb', ['devices'], { timeout: ADB_TIMEOUT_MS }, (error, stdout) => {
       if (error === null) resolve({ code: 0, stdout: String(stdout) })
+      // A child killed at the timeout carries no exit code: it is reported as the timeout it was.
+      else if (error.killed === true) resolve({ code: 1, stdout: String(stdout), timedOut: true })
       else resolve({ code: typeof error.code === 'number' ? error.code : 127, stdout: String(stdout) })
     })
   })
@@ -148,8 +150,10 @@ function adbDevices(): Promise<{ code: number; stdout: string }> {
  * what `virtualisation` is required for, and starting one belongs to the
  * driver (#73).
  */
-export async function attachedAndroidDevices(run: () => Promise<{ code: number; stdout: string }> = adbDevices): Promise<AttachedDevices> {
+export async function attachedAndroidDevices(run: () => Promise<{ code: number; stdout: string; timedOut?: boolean }> = adbDevices): Promise<AttachedDevices> {
   const listed = await run()
+  // An adb that hangs is there and not answering, which is a different thing to fix from one that is not installed.
+  if (listed.timedOut === true) return { attached: [], detail: `adb devices did not answer within ${ADB_TIMEOUT_MS / 1000} s, so no attached device can be seen` }
   if (listed.code !== 0) return { attached: [], detail: `no adb answered (adb devices exited ${listed.code}), so no attached device can be seen` }
   const attached = listed.stdout
     .split('\n')
@@ -168,6 +172,29 @@ export function virtualisationProblem(host: HostKind, probes: HostProbes = {}): 
 
 const DEVICE_PROBES: Record<DeviceKind, () => Promise<AttachedDevices>> = {
   android: () => attachedAndroidDevices(),
+}
+
+/**
+ * The same probes, each asking the host once and remembering the answer. A
+ * run holds every app and both sides to one host, and a probe that hangs
+ * costs its whole timeout each time it is asked: asked once, it costs it
+ * once. What is remembered is the devices of each kind and whether a cell
+ * can be made; the rest is read from the process and costs nothing.
+ */
+export function rememberProbes(probes: HostProbes = {}): HostProbes {
+  const devices = probes.devices ?? ((kind: DeviceKind): Promise<AttachedDevices> => DEVICE_PROBES[kind]())
+  const cell = probes.cell ?? ((): Promise<string | undefined> => clientCellProblem())
+  const seen = new Map<DeviceKind, Promise<AttachedDevices>>()
+  let made: Promise<string | undefined> | undefined
+  return {
+    ...probes,
+    devices: (kind) => {
+      const known = seen.get(kind) ?? devices(kind)
+      seen.set(kind, known)
+      return known
+    },
+    cell: () => (made ??= cell()),
+  }
 }
 
 /**

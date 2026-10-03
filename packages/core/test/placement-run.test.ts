@@ -258,9 +258,12 @@ test('a public repository on a self-hosted runner is refused before anything run
     ...LINUX,
     env: { QARE_RUNNER_ENVIRONMENT: 'self-hosted', QARE_REPOSITORY_VISIBILITY: 'public', ...extra },
   })
-  const job = await jobFor(target())
+  const job = await jobFor(target({ os: 'linux' }))
   const { result } = await runJob(job, { ...provisioningBothSides(touched), host: selfHosted() })
   expect(result.verdict).toBe('refused')
+  // What the profile required is recorded here too, though it is not why the run was refused.
+  expect(result.requirements).toEqual({ os: 'linux' })
+  expect(result.target).toEqual({ url: TARGET_URL, comparison: 'none' })
   expect(result.criteria[0]?.reason).toBe(
     'refused: placement: this repository is public and the run landed on a self-hosted runner: a public repository keeps its runs on GitHub-hosted runners, because a runner that outlives its job keeps whatever a pull request left on it; to use your own capacity anyway, opt in with the pipeline input self-hosted: allow',
   )
@@ -280,7 +283,7 @@ test('a public repository on a self-hosted runner is refused before anything run
     baseRef: 'main',
     headRef: 'HEAD',
     profiles: [
-      { name: 'admin', profile: { inline: app() }, criteria: [{ id: 'admin-greets', text: 'the admin greets', checks: ECHO }] },
+      { name: 'admin', profile: { inline: app({ os: 'linux' }) }, criteria: [{ id: 'admin-greets', text: 'the admin greets', checks: ECHO }] },
       { name: 'web', profile: { inline: app() }, criteria: [{ id: 'web-greets', text: 'the web app greets', checks: ECHO }] },
     ],
     evidenceDir: join(repoPath, 'evidence'),
@@ -291,9 +294,42 @@ test('a public repository on a self-hosted runner is refused before anything run
   expect(whole.result.verdict).toBe('refused')
   expect(whole.result.criteria.map((criterion) => criterion.outcome)).toEqual(['unverified', 'unverified'])
   expect(whole.result.criteria[0]).toMatchObject({ reason: expect.stringMatching(/^refused: placement: this repository is public/) })
-  expect(whole.result.profiles?.map((entry) => [entry.name, entry.verdict])).toEqual([
-    ['admin', 'refused'],
-    ['web', 'refused'],
+  // Each app still carries what its own profile required.
+  expect(whole.result.profiles?.map((entry) => [entry.name, entry.verdict, entry.requirements])).toEqual([
+    ['admin', 'refused', { os: 'linux' }],
+    ['web', 'refused', undefined],
   ])
   expect(touched).toEqual([])
+})
+
+test('the host is asked about a device once for the whole run: every app, and both sides (#76)', async () => {
+  const asked: string[] = []
+  const repoPath = await repo()
+  const baseRepo = await repo()
+  const job: Job = {
+    id: 'job-placement-once',
+    repoPath,
+    baseRef: 'main',
+    headRef: 'HEAD',
+    profiles: [
+      { name: 'phone', profile: { inline: app({ devices: ['android'] }) }, criteria: [{ id: 'phone-greets', text: 'the phone app greets', checks: ECHO }] },
+      { name: 'tablet', profile: { inline: app({ devices: ['android'] }) }, criteria: [{ id: 'tablet-greets', text: 'the tablet app greets', checks: ECHO }] },
+    ],
+    evidenceDir: join(repoPath, 'evidence'),
+    post: 'none',
+  }
+  const { result } = await runJob(job, {
+    ...provisioning([]),
+    host: {
+      ...LINUX,
+      devices: async (kind) => {
+        asked.push(kind)
+        return { attached: [], detail: 'adb devices did not answer within 10 s, so no attached device can be seen' }
+      },
+    },
+    base: { repoPath: baseRepo },
+  })
+  expect(result.profiles?.map((entry) => entry.verdict)).toEqual(['refused', 'refused'])
+  // Two apps on two sides would be four probes of ten seconds each against an adb that hangs.
+  expect(asked).toEqual(['android'])
 })

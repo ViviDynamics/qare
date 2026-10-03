@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { attachedAndroidDevices, detectHost, describeHost, placementProblem, requirementsOf, unmetRequirements, validateProfileConfig, type HostProbes } from '../src/index.js'
+import { attachedAndroidDevices, detectHost, describeHost, placementProblem, rememberProbes, requirementsOf, unmetRequirements, validateProfileConfig, type HostProbes } from '../src/index.js'
 
 // Test files carry no network literals (the offline scanner), so the URL is joined at runtime.
 const TARGET_URL = ['https:', '//staging.example.test'].join('')
@@ -100,6 +100,35 @@ test('attached android devices are what adb lists in the device state, emulators
     detail: 'adb lists no attached device in the device state',
   })
   expect(await attachedAndroidDevices(adb('', 127))).toEqual({ attached: [], detail: 'no adb answered (adb devices exited 127), so no attached device can be seen' })
+  // An adb that hangs is not an adb that is missing, and the refusal says which.
+  expect(await attachedAndroidDevices(async () => ({ code: 1, stdout: '', timedOut: true }))).toEqual({
+    attached: [],
+    detail: 'adb devices did not answer within 10 s, so no attached device can be seen',
+  })
+})
+
+test('a host is asked each thing once, however many profiles and sides ask it (#76)', async () => {
+  const asked: string[] = []
+  const probes = rememberProbes({
+    ...LINUX,
+    devices: async (kind) => {
+      asked.push(`devices ${kind}`)
+      return { attached: [], detail: 'adb lists no attached device in the device state' }
+    },
+    cell: async () => {
+      asked.push('cell')
+      return undefined
+    },
+  })
+  const host = detectHost(probes)
+  for (let round = 0; round < 3; round += 1) {
+    expect(await unmetRequirements({ devices: ['android'], cell: true }, host, probes)).toEqual([
+      'an attached android device (requires.devices): adb lists no attached device in the device state',
+    ])
+  }
+  expect(asked).toEqual(['devices android', 'cell'])
+  // The real host is remembered the same way: the defaults are what is asked, once.
+  expect(Object.keys(rememberProbes())).toEqual(expect.arrayContaining(['devices', 'cell']))
 })
 
 test('a public repository stays on hosted runners unless its caller opts in (#76)', () => {
