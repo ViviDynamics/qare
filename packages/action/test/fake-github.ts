@@ -49,6 +49,8 @@ export interface FakeComment {
   body: string
   /** Who wrote it; the fake token comments as github-actions[bot]. */
   author?: string
+  /** How GitHub relates the author to the repository (OWNER, MEMBER, NONE, ...); NONE when unset. */
+  association?: string
   /** An edit to this comment answers with this status. */
   failEditWith?: number
 }
@@ -275,7 +277,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
           200,
           mine
             .slice((page - 1) * perPage, page * perPage)
-            .map((record) => ({ id: record.id, body: record.body, user: { login: record.author ?? TOKEN_LOGIN } })),
+            .map((record) => ({ id: record.id, body: record.body, user: { login: record.author ?? TOKEN_LOGIN }, author_association: record.association ?? 'NONE' })),
         )
         return
       }

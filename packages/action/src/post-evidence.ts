@@ -1,5 +1,6 @@
 import { redactResult, renderCheckRun, renderComment, renderQuestion } from '@qare/core'
 import type { CheckRunPayload, EvidencePoster, ResolutionQuestion, RunResult } from '@qare/core'
+import { advisoryData } from './advisory-replies.js'
 import { GitHubApiError, GitHubClientError, type GitHubClient } from './github.js'
 import type { ScreenshotPusher } from './qa-assets.js'
 
@@ -85,9 +86,13 @@ export async function postEvidence(
 ): Promise<void> {
   const screenshots =
     opts.push === undefined || opts.evidenceDir === undefined ? undefined : await opts.push.push(result, opts.evidenceDir)
+  const redacted = redactResult(result)
   const comment =
-    renderComment(redactResult(result), { kind: 'artifact', url: opts.artifactUrl, screenshots }) +
-    renderQuestionSection(opts.questions ?? [])
+    renderComment(redacted, { kind: 'artifact', url: opts.artifactUrl, screenshots }) +
+    renderQuestionSection(opts.questions ?? []) +
+    // The advisory findings again, as data (#150): a reply names one by id,
+    // and qare reads it back from this comment to dismiss or promote it.
+    advisoryData(redacted, screenshots)
   await poster.postComment(comment)
   await poster.createCheckRun(renderCheckRun(result))
 }

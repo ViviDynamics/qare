@@ -16,6 +16,8 @@ export interface GitHubComment {
   id: number
   body?: string
   user?: { login?: string } | null
+  /** How GitHub relates the author to the repository: OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE and so on. */
+  author_association?: string
 }
 
 export interface GitHubCheckRun {
