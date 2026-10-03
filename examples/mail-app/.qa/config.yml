@@ -1,0 +1,14 @@
+app:
+  boot: { compose: examples/mail-app/compose.yaml, service: web }
+  health: { http: "http://localhost:{{run.app_port}}/up", timeout: 180s }
+  seed: { command: "true" }
+  login: { fixture: fixtures/users.yml, role: reader }
+stubs: []
+visual:
+  widths: [1440]
+  themes: [light]
+suites: []
+# Where a mail check reads from: the Mailpit catcher in the stack, which the
+# app serves under /mailpit on the port this run published.
+mail:
+  source: { kind: mailpit, url: "http://localhost:{{run.app_port}}/mailpit" }

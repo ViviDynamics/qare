@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "1",
+  "criteria": [
+    {
+      "id": "signup-sends-confirmation",
+      "text": "Signing up sends a confirmation message to the address that signed up",
+      "checks": [
+        {
+          "kind": "command",
+          "name": "sign-up",
+          "command": "node examples/compose-app/page-has.mjs http://localhost:{{run.app_port}}/signup?email={{run.mail_address}} sent"
+        },
+        {
+          "kind": "mail",
+          "name": "confirmation",
+          "address": "{{run.mail_address}}",
+          "from": "no-reply@mail-app.example",
+          "subject": "Confirm your account",
+          "timeoutMs": 30000,
+          "singleUse": true,
+          "code": {}
+        }
+      ]
+    },
+    {
+      "id": "link-confirms-account",
+      "text": "The link in the confirmation message confirms the account",
+      "checks": [
+        {
+          "kind": "command",
+          "name": "follow-link",
+          "command": "node examples/compose-app/page-has.mjs {{mail.confirmation.link}} confirmed"
+        }
+      ]
+    }
+  ]
+}
