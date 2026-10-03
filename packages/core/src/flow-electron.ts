@@ -304,7 +304,7 @@ export async function makeElectronFlowSession(opts: {
   // a line does, and a log of half lines reads as nothing.
   const flushers: Array<() => void> = []
   const follow = (stream: ElectronAppProcess['stdout'], label: string): void => {
-    let pending = ''
+    let partial = ''
     const emit = (line: string): void => {
       const text = line.replace(/\r$/, '')
       if (text === '') return
@@ -316,13 +316,13 @@ export async function makeElectronFlowSession(opts: {
       record(`[${label}] ${text}`)
     }
     stream?.on('data', (chunk) => {
-      const parts = (pending + String(chunk)).split('\n')
-      pending = parts.pop() ?? ''
+      const parts = (partial + String(chunk)).split('\n')
+      partial = parts.pop() ?? ''
       for (const part of parts) emit(part)
     })
     flushers.push(() => {
-      if (pending !== '') emit(pending)
-      pending = ''
+      if (partial !== '') emit(partial)
+      partial = ''
     })
   }
   follow(child.stdout, 'main stdout')
