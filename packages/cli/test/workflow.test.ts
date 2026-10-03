@@ -38,6 +38,30 @@ test('the artifact handoff names are pinned', () => {
     expect(workflow).toContain(`name: ${name}`)
 })
 
+test('execute takes the builds a client profile installs from an artifact the caller names, and no other job does (#75)', () => {
+  // An input, empty by default: a caller that provisions nothing is untouched.
+  expect(workflow).toMatch(/\n {6}artefacts:\n {8}description: >-\n[\s\S]*?\n {8}type: string\n {8}default: ''\n/)
+  const execute = section('execute')
+  expect(execute).toContain("if: inputs.artefacts != ''")
+  // The artifact lands in one reserved directory, whatever it is named: an
+  // artifact called "." or ".qa" cannot be laid over the checkout.
+  expect(execute).toContain('name: ${{ inputs.artefacts }}\n          path: qare-artefacts\n')
+  expect(execute).not.toContain('path: ${{ inputs.artefacts }}')
+  // And the checkout may not already carry that directory.
+  const reserve = execute.indexOf('name: Reserve the client artefacts directory')
+  expect(reserve).toBeGreaterThan(-1)
+  expect(reserve).toBeLessThan(execute.indexOf('name: Download the client artefacts'))
+  expect(execute).toContain('if [ -e qare-artefacts ] || [ -L qare-artefacts ]; then')
+  // The plan is downloaded after the builds, so nothing a pull request built
+  // can stand in for the plan the planner wrote.
+  const builds = execute.indexOf('name: Download the client artefacts')
+  const plan = execute.indexOf('name: Download plan.json')
+  expect(builds).toBeGreaterThan(-1)
+  expect(builds).toBeLessThan(plan)
+  // The builds are pull request code: only the job that holds nothing takes them.
+  for (const job of ['collect', 'plan', 'judge']) expect(section(job)).not.toContain('inputs.artefacts')
+})
+
 test('secret hygiene: the model-key job never holds a GitHub token', () => {
   // The whole point of collect: it reads the issue, so the job that talks to a
   // model needs no token, and the secret map in the header stays true.

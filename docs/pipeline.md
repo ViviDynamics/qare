@@ -96,6 +96,7 @@ UX review".
 | `runs-on` | `"ubuntu-latest"` | Where every job runs, as JSON: one label, or a list of labels for your own runners. |
 | `execute-runs-on` | empty | Where execute runs, in the same JSON form, when it should not share runners with the jobs that hold secrets. Empty means `runs-on`. See "Your own runners". |
 | `planner-diff-exclude` | empty | Space-separated git pathspecs left out of the planner's copy of the diff, for a diff too large to plan from whole. execute and judge still read the full diff. |
+| `artefacts` | empty | The name of a workflow artifact that holds the builds a client profile installs, uploaded by an earlier job of your workflow. execute downloads it into `qare-artefacts/` at the repository root before the run. See "Profiles that install a build". |
 | `qare-ref` | the release | The qare revision the pipeline runs. It defaults to the release the workflow file ships in. Leave it alone and pin the release in `uses:`. |
 
 ## Secrets
@@ -261,6 +262,98 @@ included. Images the stack built stay in the runner's cache.
 [`examples/compose-app`](../examples/compose-app) is a small profile of this
 shape. qare's CI runs the pipeline's own execute steps against it on every
 change, so this path is exercised and not only described.
+
+## Profiles that install a build
+
+A desktop application is not booted: it is a build that qare installs,
+launches and removes again. The profile names the build as an artefact, for
+the head and, when you want regressions found, for the base:
+
+```yaml
+# .qa/config.yml
+client:
+  driver: electron
+  args: [--no-sandbox]
+  artefact:
+    kind: archive                           # a tar; or `directory` for an unpacked build
+    executable: my-app/my-app               # inside the installed artefact
+    head: { path: qare-artefacts/head.tar } # from the repository root
+    base: { path: qare-artefacts/base.tar } # optional: gives the run its base side
+  health: { timeout: 30s }                  # how long the first window may take
+flavour: web
+```
+
+Building is your pipeline's step, not qare's: execute runs in the qare image,
+which carries no toolchain of yours, and it reaches nothing outside the run.
+So a job of your workflow builds the artefacts and uploads them as one
+artifact, and the pipeline is told its name. execute downloads the artifact
+into `qare-artefacts/` at the repository root, whatever the artifact is named (the checkout must not carry a path of that name), which is where the
+profile's paths above find it:
+
+```yaml
+name: QARE
+on:
+  pull_request:
+jobs:
+  qare:
+    needs: build
+    permissions:
+      actions: read
+      checks: write
+      contents: write
+      issues: write
+      pull-requests: write
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.4
+    with:
+      nare-model: gpt-4.1-mini
+      artefacts: qare-artefacts
+    secrets:
+      model-key: ${{ secrets.OPENAI_API_KEY }}
+  build:
+    runs-on: ubuntu-latest
+    # This job runs pull request code: give it no secret.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: make package && mkdir -p qare-artefacts && cp out/my-app.tar qare-artefacts/head.tar
+      # The build of the base: whatever your pipeline already keeps for the
+      # default branch, fetched here, or built here from the base commit.
+      - run: make fetch-base-build && cp out/base/my-app.tar qare-artefacts/base.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qare-artefacts
+          path: qare-artefacts/
+```
+
+The run then provisions each side: it takes the artefact that is there (a
+base build that already exists is installed as it is, with no checkout of the
+base and nothing rebuilt), installs it into a directory of its own, launches
+it once to prove it comes up, runs the plan against it, and removes it. Each
+side's `provision.log` in the evidence says what was installed, by the hash
+of the file, and that it was removed. qare cannot tell which revision a
+prebuilt file was built from: the job that produced it vouches for that.
+
+A provisioning that fails is `blocked`, never a failed criterion: an artefact
+that is not there, will not install, or does not come up stops the run with a
+reason that names the artefact, and the log is attached. A base artefact that
+cannot be provisioned never blocks the head: the base is reported as not
+checked, naming the artefact, and every criterion as not compared.
+
+`client.artefact.<side>.build` names a command that produces a side's
+artefact when it is not there. It is spawned with no shell, in the tree of
+its side, and told where to write in `QARE_ARTEFACT`. It runs where the run
+does, so it is of use to `qare run` on a host that has your toolchain, and
+rarely inside the pipeline's image.
+
+`client.executable`, the earlier shape, still names a build that is already
+unpacked in the checkout and is launched in place, one side only.
+
+[`examples/electron-app`](../examples/electron-app) carries a profile of this
+shape (`profiles/desktop-provisioned`). qare's CI packages a base and a head
+build of it and runs the pipeline's own execute step against them on every
+change (`scripts/client-provision.sh`). The `artefacts` input itself is a
+plain artifact download and is not exercised there.
 
 ## Profiles whose application sends mail
 

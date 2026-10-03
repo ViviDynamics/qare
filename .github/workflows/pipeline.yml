@@ -137,6 +137,17 @@ on:
           reaches execute and judge.
         type: string
         default: ''
+      artefacts:
+        description: >-
+          The name of a workflow artifact that holds the builds a client
+          profile installs (`client.artefact`), uploaded by an earlier job of
+          the calling workflow. execute downloads it, before the run, into
+          `qare-artefacts/` at the repository root, whatever the artifact is
+          named, which is where the profile's paths find it; the checkout
+          must not carry a path of that name. Empty means the profile
+          installs nothing the pipeline has to fetch.
+        type: string
+        default: ''
       qare-ref:
         description: >-
           The qare revision the pipeline runs: its source for the token-only
@@ -491,6 +502,29 @@ jobs:
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
+      # The builds a client profile installs (#75): a build of the head and,
+      # for a comparison, a build of the base, produced by a job of the
+      # calling workflow and uploaded as one artifact. They are pull request
+      # code like the checkout they land in, and this job holds nothing. They
+      # land in one reserved directory, whatever the artifact is named, which
+      # the checkout must not already carry: nothing in the artifact can
+      # replace the profile, the sources or the plan, which is downloaded
+      # after it.
+      - name: Reserve the client artefacts directory
+        if: inputs.artefacts != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -e qare-artefacts ] || [ -L qare-artefacts ]; then
+            echo "the checkout already carries qare-artefacts, which is where the pipeline puts the builds a client profile installs: remove it from the repository, so a downloaded build can never be laid over a file of the checkout (#75)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Download the client artefacts
+        if: inputs.artefacts != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artefacts }}
+          path: qare-artefacts
       - name: Download plan.json
         uses: actions/download-artifact@v4
         with:

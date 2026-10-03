@@ -4,10 +4,26 @@ import https from 'node:https'
 import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { electronDisplayProblem, type ElectronHost } from './flow-electron.js'
-import type { ProfileApp, ProfileClient, QaProfile } from './profile.js'
+import { clientExecutableName, type ProfileApp, type ProfileClient, type QaProfile } from './profile.js'
 import { VERSION } from './version.js'
 import { parseDurationMs } from './duration.js'
 import { composeEnv, hasMintedProject, mintIsolation, type RunIsolation } from './isolation.js'
+import { DEFAULT_CLIENT_HEALTH_TIMEOUT, electronHealthCheck, provisionClient, type ProvisionOpts, type ProvisionSide, type ProvisionedArtefact } from './provision.js'
+
+/**
+ * The build a client profile's flows launch (#72, #75): where it is, what it
+ * was provisioned from when the run installed it, and how it is taken away.
+ */
+export interface BootedClient {
+  /** What the driver launches: the build in the checkout, or the one the run installed. */
+  executable: string
+  /** What the side was provisioned from; absent for a build launched in place. */
+  artefact?: ProvisionedArtefact
+  /** The provisioning log so far; a teardown appends to it. */
+  log: () => string
+  /** Remove what the run installed, leaving nothing; a build launched in place has nothing to remove. */
+  teardown: () => Promise<{ ok: boolean; reason?: string }>
+}
 
 export interface BootOutcome {
   kind: 'up' | 'blocked'
@@ -20,6 +36,10 @@ export interface BootOutcome {
    * no isolation.
    */
   isolation?: RunIsolation
+  /** The build to launch, when the profile names a client and it came up (#75). */
+  client?: BootedClient
+  /** What a blocked provisioning got as far as obtaining (#75). */
+  artefact?: ProvisionedArtefact
 }
 
 export interface BootOpts {
@@ -57,6 +77,14 @@ export interface BootOpts {
   root?: string
   /** The environment a client build is launched into (#72); the process's own by default. */
   clientEnv?: ElectronHost
+  /** Which side of the comparison a client artefact is provisioned for (#75); the head by default. */
+  side?: ProvisionSide
+  /** The tree a side's build command runs in (#75): a checkout of the base for the base side. `root` by default. */
+  buildRoot?: string
+  /** What a build command and the health check's launch are run with (#91): `minimal` on a host. */
+  clientEnvironment?: 'inherit' | 'minimal'
+  /** The provisioning seams (#75): installers by kind, the command runner, the health check, where installs go. */
+  provision?: Pick<ProvisionOpts, 'installers' | 'runCommand' | 'health' | 'installRoot'>
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 500
@@ -238,7 +266,7 @@ async function probeTarget(profile: QaProfile, opts: BootOpts): Promise<BootOutc
 
 /** Where a client profile's executable is, resolved from the repository the run checks (#72). */
 export function clientExecutablePath(client: ProfileClient, root: string = process.cwd()): string {
-  return resolve(root, client.executable)
+  return resolve(root, clientExecutableName(client))
 }
 
 /**
@@ -246,10 +274,27 @@ export function clientExecutablePath(client: ProfileClient, root: string = proce
  * each flow check starts the build for itself. What the launch needs is
  * checked once, here, so a build that is not there or a host that cannot show
  * a window blocks the run by name instead of leaving every check to find out.
- * Building, fetching or installing the artefact is provisioning (#75), which
- * is the project's own step until that lands.
+ * A profile that names an artefact is provisioned instead (#75): obtained,
+ * installed and proven up, with every step in the log the outcome carries.
  */
 async function probeClient(client: ProfileClient, opts: BootOpts): Promise<BootOutcome> {
+  if (client.artefact !== undefined) {
+    const provision = await provisionClient(client, {
+      root: opts.root ?? process.cwd(),
+      ...(opts.side === undefined ? {} : { side: opts.side }),
+      ...(opts.buildRoot === undefined ? {} : { buildRoot: opts.buildRoot }),
+      ...(opts.clientEnvironment === undefined ? {} : { environment: opts.clientEnvironment }),
+      ...(opts.clientEnv === undefined ? {} : { host: opts.clientEnv }),
+      ...opts.provision,
+    })
+    if (provision.kind === 'blocked')
+      return { kind: 'blocked', reason: provision.reason, logs: provision.log(), ...(provision.artefact === undefined ? {} : { artefact: provision.artefact }) }
+    return {
+      kind: 'up',
+      logs: provision.log(),
+      client: { executable: provision.executable, artefact: provision.artefact, log: provision.log, teardown: provision.teardown },
+    }
+  }
   const path = clientExecutablePath(client, opts.root)
   let isFile = false
   try {
@@ -278,7 +323,33 @@ async function probeClient(client: ProfileClient, opts: BootOpts): Promise<BootO
     }
   const display = electronDisplayProblem(opts.clientEnv)
   if (display !== undefined) return { kind: 'blocked', reason: display, logs: '' }
-  return { kind: 'up', logs: '' }
+  // The health check a profile asks for (#75): the build is launched once
+  // and held to opening its first window. A #72 profile that does not ask is
+  // launched by its first flow check, as before.
+  const lines: string[] = []
+  if (client.health !== undefined) {
+    const health = opts.provision?.health ?? electronHealthCheck(opts.clientEnv, opts.clientEnvironment)
+    const timeout = client.health.timeout ?? DEFAULT_CLIENT_HEALTH_TIMEOUT
+    let healthy: Awaited<ReturnType<typeof health>>
+    try {
+      healthy = await health({ executable: path, args: client.args, timeoutMs: parseDurationMs(timeout) })
+    } catch (error) {
+      healthy = { ok: false, reason: error instanceof Error ? error.message : String(error) }
+    }
+    for (const line of healthy.lines ?? []) lines.push(`[health] ${line}`)
+    if (!healthy.ok) {
+      lines.push(`[health] the build did not come up: ${healthy.reason}`)
+      return {
+        kind: 'blocked',
+        reason: `the client build ${client.executable} is there, but it did not come up within ${timeout}: ${healthy.reason}`,
+        logs: `${lines.join('\n')}\n`,
+      }
+    }
+    lines.push(`[health] the build came up within ${timeout}`)
+  }
+  // Nothing was installed: the build is launched where it is, by path, and
+  // there is nothing for a teardown to remove.
+  return { kind: 'up', logs: lines.length === 0 ? '' : `${lines.join('\n')}\n` }
 }
 
 export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<BootOutcome> {

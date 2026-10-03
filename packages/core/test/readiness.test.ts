@@ -316,6 +316,28 @@ test('a client profile launches a build, so it has no boot or stub gaps either, 
   expect(buildReadinessReport(inventory)).toContain('- electron build dist/app/app: launched by the run, so qare boots nothing')
 })
 
+test('a client profile that installs an artefact reports each side it names, and a missing artefact is not a gap (#75)', async () => {
+  const artefact = (base: string[]): string =>
+    ['client:', '  driver: electron', '  artefact:', '    kind: archive', '    executable: greeter/greeter', '    head: { path: artefacts/head.tar.gz }', ...base].join('\n')
+  const two = await repoWith({ '.qa/QA.md': '# QA\n', '.qa/config.yml': artefact(['    base: { path: artefacts/base.tar.gz }']) })
+  const inventory = await readinessInventory(two)
+  // The pipeline produces the artefacts: a checkout that has none yet is ready.
+  expect(inventory.gaps).toEqual([])
+  expect(inventory.profile.client).toEqual({
+    driver: 'electron',
+    executable: 'greeter/greeter',
+    artefact: { kind: 'archive', head: 'artefacts/head.tar.gz', base: 'artefacts/base.tar.gz' },
+  })
+  const report = buildReadinessReport(inventory)
+  expect(report).toContain('- electron build greeter/greeter: installed by the run from the archive artefacts/head.tar.gz and removed afterwards, so qare boots nothing')
+  expect(report).toContain('- base side: the build installed from artefacts/base.tar.gz, so a criterion that worked there and fails at the head is a regression')
+
+  const one = await repoWith({ '.qa/QA.md': '# QA\n', '.qa/config.yml': artefact([]) })
+  expect(buildReadinessReport(await readinessInventory(one))).toContain(
+    '- base side: none, because the profile names no build of the base (client.artefact.base), so no regression is looked for',
+  )
+})
+
 test('a profile that boots from a compose file the repository does not have is a gap', async () => {
   const dir = await repoWith({ 'docker-compose.yml': 'services:\n  admin:\n    healthcheck: {}\n' })
   await withProfile(dir)

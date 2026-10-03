@@ -8,7 +8,8 @@ import { prepareBaseCheckout, type BaseCheckout, type BaseCheckoutInput, type Ba
 import { collectCriterionFiles, criterionCacheKey, FileCheckCache, planFingerprint, profileFingerprint, resolveRefSha } from './cache.js'
 import { Artefacts, type ArtefactField } from './artefacts.js'
 import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
-import { bootApp, CANCEL_DOWN_TIMEOUT_MS, clientExecutablePath, killActiveCompose, stopApp, type BootOpts } from './boot.js'
+import { bootApp, CANCEL_DOWN_TIMEOUT_MS, clientExecutablePath, killActiveCompose, stopApp, type BootOpts, type BootedClient } from './boot.js'
+import { removeLiveInstalls } from './provision.js'
 import { hasMintedProject, isolatedHealthUrl, isolateRun, type RunIsolation } from './isolation.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
 import { runFlowCheck, runSuiteCheck, undeclaredCheckKinds, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
@@ -24,7 +25,7 @@ import { FileLedgerStore } from './ledger.js'
 import { mailReader, mailSourceOf, type DeclaredMailSource, type MailSource } from './mail-source.js'
 import { extractCode, mailEvidence, runMailCheck, type MailProof, type ReadMail } from './mailbox.js'
 import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCapabilities, mcpDriverServer, type McpToolResult } from './mcp.js'
-import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
+import { ProfileMissingError, clientExecutableName, loadProfile, pathOnTarget, validateProfileConfig, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, mailEvidenceRules, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
@@ -158,12 +159,23 @@ export type FlowSessionFactory = (opts: { masks: string[] }) => Promise<{
  * every flow check. Undefined for a profile with no client, which takes the
  * MCP mapping or the browser.
  */
-function clientSessionFactory(profile: QaProfile, repoPath: string, clientEnv: BootOpts['clientEnv'], execution: ExecutionKind): FlowSessionFactory | undefined {
+function clientSessionFactory(
+  profile: QaProfile,
+  repoPath: string,
+  clientEnv: BootOpts['clientEnv'],
+  execution: ExecutionKind,
+  booted?: BootedClient,
+  seam?: (executable: string) => FlowSessionFactory,
+): FlowSessionFactory | undefined {
   const client = profile.client
   if (client === undefined) return undefined
+  // A build the run installed is launched from where it was installed (#75);
+  // one the profile names in the checkout is launched in place.
+  const executable = booted?.executable ?? clientExecutablePath(client, repoPath)
+  if (seam !== undefined) return seam(executable)
   return ({ masks }) =>
     makeElectronFlowSession({
-      executable: clientExecutablePath(client, repoPath),
+      executable,
       args: client.args,
       masks,
       ...clientEnv,
@@ -219,6 +231,12 @@ export type RunJobOpts = BootOpts & {
   /** How a declared mail source becomes an adapter (#65); the adapter its kind names by default. */
   mailSource?: MailSourceFactory
   flowSession?: FlowSessionFactory
+  /**
+   * How the build a client profile launches becomes a flow session (#75):
+   * handed the executable the run resolved or installed for the side it is
+   * checking. The client driver's own launch by default.
+   */
+  clientSession?: (executable: string) => FlowSessionFactory
   /** Where the run's visual checks get their screenshots (#143); the Playwright backend by default. */
   visualSession?: VisualSessionFactory
   /** What the driver behind this run's flows declares (#70); the browser driver by default. */
@@ -360,7 +378,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
       ? { target: { url: profile.target.url, comparison: 'none' as const } }
       : profile.client !== undefined
         ? // A build the run launches has one side too, and the result names it (#72).
-          { client: { driver: profile.client.driver, executable: profile.client.executable, comparison: 'none' as const } }
+          { client: { driver: profile.client.driver, executable: clientExecutableName(profile.client), comparison: 'none' as const } }
         : {}
   // The seeded second-factor secret and any backup code never reach the
   // evidence either: they sweep alongside the profile's own rules (#64).
@@ -404,19 +422,67 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
   // A canceled run tears its own project down before the process exits (#53),
   // and the disposer is released when the run finishes either way.
   const cancelCleanup = isolation === undefined ? undefined : installCancelCleanup(bootedProfile, { ...opts, isolation })
+  // A client artefact is installed for the run and removed with it (#75): a
+  // cancelled run exits through the hook that removes what it installed.
+  const cancelProvision = profile.client?.artefact === undefined ? undefined : installProvisionCancel()
+  let client: BootedClient | undefined
+  // The run tears a provisioned client down itself, and says so in the log
+  // it publishes. Safe to call on every path out of the run.
+  const releaseClient = async (): Promise<void> => {
+    if (client === undefined) return
+    const released = client
+    client = undefined
+    const torn = await released.teardown()
+    if (!torn.ok) {
+      // State left behind is part of the record: the result names it, so the
+      // comment never says an install was removed when it was not.
+      const leftover = torn.reason ?? 'the install could not be removed'
+      console.error(`teardown left state behind: ${leftover}`)
+      if (targetNote.client?.artefact !== undefined) targetNote.client = { ...targetNote.client, artefact: { ...targetNote.client.artefact, leftover } }
+    }
+    await writeProvisionLog(job.evidenceDir, released.log(), rules)
+  }
   try {
     if (isolation !== undefined) side?.booted.push({ profile: bootedProfile, isolation })
-    const boot = await bootApp(bootedProfile, { ...opts, isolation, root: job.repoPath })
+    const boot = await bootApp(bootedProfile, {
+      ...opts,
+      isolation,
+      root: job.repoPath,
+      ...(profile.client === undefined
+        ? {}
+        : {
+            side: side?.name ?? ('head' as const),
+            ...(side?.buildRoot === undefined ? {} : { buildRoot: side.buildRoot }),
+            // A build command and the health check's launch are pull request
+            // code: on a host they get the minimal environment (#91).
+            clientEnvironment: execution === 'native' ? ('minimal' as const) : ('inherit' as const),
+          }),
+    })
+    client = boot.client
+    // What the side was provisioned from, or got as far as obtaining (#75).
+    const obtained = boot.client?.artefact ?? boot.artefact
+    if (targetNote.client !== undefined && obtained !== undefined) {
+      const { side: _side, ...named } = obtained
+      void _side
+      targetNote.client = { ...targetNote.client, artefact: named }
+    }
     if (boot.kind === 'blocked') {
+      // A provisioning failure is blocked with its log attached (#75), never
+      // a failed criterion: nothing was checked, and the log says why.
+      const attached = await writeProvisionLog(job.evidenceDir, boot.logs, rules)
       const criteria: CriterionResult[] = job.criteria.map((criterion) => ({
         id: criterion.id,
         outcome: 'unverified',
         reason: boot.reason ?? 'boot did not come up',
+        ...(attached ? { evidence: [PROVISION_LOG] } : {}),
       }))
       const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria, startedAt, ...targetNote }, rules, values, execution)
       await feedIfOptedIn(opts, job, finished.result)
       return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
     }
+    // Written as soon as the build is up, so a run that dies half way still
+    // left what it installed and how; rewritten with the teardown at the end.
+    if (client !== undefined) await writeProvisionLog(job.evidenceDir, client.log(), rules)
 
     const mail = mailContextOf(profile, values, opts)
     // Single-use artefacts are a per-run ledger: what was consumed in this run
@@ -430,7 +496,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     if (side !== undefined) side.ran = true
     const visual = visualContextOf(profile, profile.redact?.masks ?? [], opts.visualSession, side)
     const flow = {
-      session: opts.flowSession ?? clientSessionFactory(profile, job.repoPath, opts.clientEnv, execution),
+      session: opts.flowSession ?? clientSessionFactory(profile, job.repoPath, opts.clientEnv, execution, boot.client, opts.clientSession),
       masks: profile.redact?.masks ?? [],
       suites: profile.suites,
       target,
@@ -448,6 +514,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     await cleanMail(mail, values.mail_address, job.evidenceDir, 'mail-cleanup.json', rules)
     await persistQuarantine(policy)
     await writeCacheHits(job.evidenceDir, cache?.hits ?? [])
+    await releaseClient()
     // The judge is the verdict decision. Base execution and egress interception
     // of a booted stack land with the orchestrator; a target run records what its
     // browser reached, and a host the profile does not declare refuses the run.
@@ -457,7 +524,58 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     await feedIfOptedIn(opts, job, finished.result)
     return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
   } finally {
+    // Whatever stopped the run, what it installed does not outlive it (#75).
+    await releaseClient().catch((error: unknown) => console.error(`teardown failed: ${error instanceof Error ? error.message : String(error)}`))
+    cancelProvision?.()
     cancelCleanup?.()
+  }
+}
+
+/** The provisioning log's name in a side's evidence (#75). */
+const PROVISION_LOG = 'provision.log'
+/** What the published log keeps: a boot's output is the application's, and it is bounded like any other evidence. */
+const MAX_PROVISION_LOG_CHARACTERS = 256 * 1024
+
+/**
+ * Publish what provisioning did (#75), swept by the run's redaction rules
+ * like everything else in the evidence. An empty log writes nothing, and the
+ * caller is told, so nothing links to a file that is not there (rule 4).
+ */
+async function writeProvisionLog(evidenceDir: string, log: string, rules: readonly RedactionRule[], name: string = PROVISION_LOG): Promise<boolean> {
+  if (log.trim() === '') return false
+  const kept =
+    log.length <= MAX_PROVISION_LOG_CHARACTERS
+      ? log
+      : `[the log is cut to its last ${MAX_PROVISION_LOG_CHARACTERS} characters]\n${log.slice(-MAX_PROVISION_LOG_CHARACTERS)}`
+  await mkdir(evidenceDir, { recursive: true })
+  await writeFile(join(evidenceDir, name), redactText(kept.endsWith('\n') ? kept : `${kept}\n`, rules))
+  return true
+}
+
+/**
+ * A cancelled run that installed a client exits through the process's exit
+ * hooks (#75), which remove every install it still has and end the build it
+ * launched. Without a handler a signal ends the process with no hook run.
+ */
+function installProvisionCancel(): () => void {
+  const stop = (): void => {
+    removeLiveInstalls()
+    // The exit is the shared one (#53): this run's part is done at once, and
+    // it joins the stops other runs in this process still have pending, so a
+    // compose down a neighbouring run queued on the same signal is waited
+    // for. Every listener of the signal has run by the next turn of the loop.
+    const entry = new Promise<void>((resolve) => setImmediate(resolve))
+    pendingStops.add(entry)
+    void entry.finally(() => {
+      pendingStops.delete(entry)
+      if (pendingStops.size === 0) process.exit(4)
+    })
+  }
+  process.once('SIGINT', stop)
+  process.once('SIGTERM', stop)
+  return () => {
+    process.removeListener('SIGINT', stop)
+    process.removeListener('SIGTERM', stop)
   }
 }
 
@@ -747,8 +865,11 @@ async function runProfileGroup(
     if (isolation !== undefined) side?.booted.push({ profile: bootedProfile, isolation })
     const boot = await bootApp(bootedProfile, { ...opts, isolation, root: job.repoPath })
     if (boot.kind === 'blocked') {
+      // Each app's provisioning log is its own, named for the app (#75).
+      const logName = `provision-${group.name}.log`
+      const attached = await writeProvisionLog(job.evidenceDir, boot.logs, rules, logName)
       return {
-        criteria: unverifiedAll(boot.reason ?? 'boot did not come up'),
+        criteria: unverifiedAll(boot.reason ?? 'boot did not come up').map((criterion) => (attached ? { ...criterion, evidence: [logName] } : criterion)),
         verdict: 'blocked',
         values,
         ...(isolation === undefined ? {} : { isolation }),
@@ -1070,6 +1191,8 @@ interface SideContext {
   visualBase?: Extract<VisualComparison, { with: 'base' }>
   /** The base boots from the base tree: where a compose path of the profile lands there. */
   composePath?: (path: string) => string
+  /** The tree a client artefact's build command runs in on this side (#75): a checkout of the base, at the base. */
+  buildRoot?: string
   gate?: (criterion: JobCriterion) => string | undefined
 }
 
@@ -1114,7 +1237,10 @@ function a11yContextOf(profile: QaProfile, comparison: VisualComparison, side: S
 }
 
 /** The base side as the comparison reads it: the raw result of a base that ran, or why none did. */
-type BaseSideOutcome = { status: 'executed'; result: RunResult } | { status: 'not-executed'; reason: string }
+type BaseSideOutcome =
+  | { status: 'executed'; result: RunResult }
+  /** `evidence` is what the base side saved on its way to not running: the log of a provisioning that blocked (#75). */
+  | { status: 'not-executed'; reason: string; evidence?: string[] }
 
 const NOT_RUN_AT_BASE = 'not run at the base: '
 
@@ -1126,7 +1252,9 @@ const NOT_RUN_AT_BASE = 'not run at the base: '
 async function hasSecondSide(job: Job): Promise<boolean> {
   if ('profiles' in job) return true
   try {
-    return (await resolveProfileRef(job.repoPath, job.profile)).app !== undefined
+    const profile = await resolveProfileRef(job.repoPath, job.profile)
+    // A client has a second side when its profile names a build of the base (#75).
+    return profile.app !== undefined || profile.client?.artefact?.base !== undefined
   } catch {
     return false
   }
@@ -1239,6 +1367,51 @@ async function runBaseSide(
     // checkout, no boot, and the result says the run had one side.
     if (profiles.length > 0 && profiles.every(({ profile }) => profile.base?.criteria === 'none'))
       return { status: 'not-executed', reason: 'the profile runs no criteria at the base (base.criteria: none)' }
+    // A client's base side is a build of the base, installed from the
+    // artefact the profile names (#75). The profile and the artefact's path
+    // are the head's, the run's own configuration; a checkout of the base is
+    // made only when that artefact is not there and has to be built.
+    const clientBase = 'profiles' in job ? undefined : profiles[0]?.profile.client?.artefact?.base
+    if (clientBase !== undefined) {
+      let buildRoot: string | undefined
+      if (clientBase.build !== undefined && !(await exists(resolve(job.repoPath, clientBase.path)))) {
+        const built = await (request.checkout ?? prepareBaseCheckout)({
+          repoPath: job.repoPath,
+          baseRef: job.baseRef,
+          headRef: job.headRef,
+          ...(request.repoPath === undefined ? {} : { given: request.repoPath }),
+        })
+        if (!built.ok)
+          return {
+            status: 'not-executed',
+            reason: `the base artefact ${clientBase.path} is not there, and the base revision could not be checked out to build it: ${built.reason}`,
+          }
+        checkout = built.checkout
+        buildRoot = checkout.path
+      }
+      const limits = await baseLimits(profiles, buildRoot ?? job.repoPath)
+      const side: SideContext = {
+        name: 'base',
+        tracesRoot: resolve(job.evidenceDir, '..', 'traces', 'base'),
+        booted,
+        ran: false,
+        extraRules: headRules,
+        gate: limits.gate,
+        ...(buildRoot === undefined ? {} : { buildRoot }),
+      }
+      const baseOpts: SideOpts = { ...opts }
+      delete baseOpts.ledgerFeed
+      delete baseOpts.quarantineDir
+      if (opts.cacheDir !== undefined) baseOpts.cacheDir = join(opts.cacheDir, 'base')
+      const { result } = await runSide({ ...job, evidenceDir: join(job.evidenceDir, 'base') }, baseOpts, side)
+      if (side.ran) return { status: 'executed', result }
+      const first = result.criteria.find((criterion) => criterion.outcome === 'unverified')
+      return {
+        status: 'not-executed',
+        reason: first?.outcome === 'unverified' ? first.reason : `the base side reached no check (verdict ${result.verdict})`,
+        ...(first?.evidence === undefined ? {} : { evidence: first.evidence }),
+      }
+    }
     const outcome = await (request.checkout ?? prepareBaseCheckout)({
       repoPath: job.repoPath,
       baseRef: job.baseRef,
@@ -1354,7 +1527,12 @@ function compareSides(job: Job, head: RunResult, base: BaseSideOutcome, startedA
   const under = (side: 'base' | 'head', paths: string[]): string[] => paths.map((path) => `${side}/${path}`)
   const atBase = new Map((base.status === 'executed' ? base.result.criteria : []).map((criterion) => [criterion.id, criterion]))
   const baseOf = (id: string): CriterionBase => {
-    if (base.status === 'not-executed') return { outcome: 'not-compared', reason: `the base side did not run: ${base.reason}` }
+    if (base.status === 'not-executed')
+      return {
+        outcome: 'not-compared',
+        reason: `the base side did not run: ${base.reason}`,
+        ...(base.evidence === undefined || base.evidence.length === 0 ? {} : { evidence: under('base', base.evidence) }),
+      }
     const criterion = atBase.get(id)
     if (criterion === undefined) return { outcome: 'not-compared', reason: 'the base side reported nothing for this criterion' }
     const evidence = under('base', evidenceOf(criterion))
@@ -1377,8 +1555,22 @@ function compareSides(job: Job, head: RunResult, base: BaseSideOutcome, startedA
   )
   const status: RunBase =
     base.status === 'executed' ? { ref: job.baseRef, status: 'executed' } : { ref: job.baseRef, status: 'not-executed', reason: base.reason }
+  // A client's two sides are two builds (#75): the result names the one the
+  // base was provisioned from, and claims a comparison only when it ran.
+  const baseArtefact = base.status === 'executed' ? base.result.client?.artefact : undefined
+  const client =
+    head.client === undefined
+      ? {}
+      : {
+          client: {
+            ...head.client,
+            comparison: base.status === 'executed' ? ('base' as const) : ('none' as const),
+            ...(baseArtefact === undefined ? {} : { base: baseArtefact }),
+          },
+        }
   return {
     ...head,
+    ...client,
     criteria: criteria.map((criterion) => {
       if (criterion.outcome !== 'failed') return criterion
       if (regressed.has(criterion.id)) return { ...criterion, regression: true }

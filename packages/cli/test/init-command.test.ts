@@ -188,6 +188,18 @@ test('on a repository with no compose file, init --target writes a target profil
   expect(judged.target).toEqual({ url: target, comparison: 'none' })
 })
 
+test('a repository with a client profile gets its workflow, and its profile is left as it was written (#75)', async () => {
+  const config = ['client:', '  driver: electron', '  artefact:', '    kind: archive', '    executable: greeter/greeter', '    head: { path: artefacts/head.tar.gz }', ''].join('\n')
+  const repo = await repoWith({ '.qa/QA.md': '# QA\n', '.qa/config.yml': config })
+  const { code, out, err } = await run(['init', repo])
+  expect(err).toBe('')
+  expect(code).toBe(0)
+  expect(out).toContain('kept .qa/ (its client profile names the build the run launches, and init writes no profile for a client)')
+  expect(out).not.toContain('it would have written')
+  expect(existsSync(join(repo, '.github', 'workflows', 'qare.yml'))).toBe(true)
+  expect(await readFile(join(repo, '.qa', 'config.yml'), 'utf8')).toBe(config)
+})
+
 test('with no compose file and no target, init writes nothing and names the flag', async () => {
   const repo = await repoWith({ 'README.md': 'hello\n' })
   const { code, out, err } = await run(['init', repo])

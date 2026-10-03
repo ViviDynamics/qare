@@ -125,10 +125,11 @@ and the artifacts execute uploaded.
 
 Execute stages, per side (base, head):
 
-1. Boot from the `.qa/` recipe (compose, command, or preview URL); prove the app is up with a health check the harness runs.
+1. Provision the application under test from the `.qa/` profile (#75): boot a server from its compose recipe, install a client build from the artefact the profile names for this side, or reach a preview URL. Then prove it is up with a health check the harness runs: an HTTP probe for a server, a launch that opens its first window for a desktop build. A provisioning that fails is `blocked`, with its log attached as `provision.log`, and no criterion is `failed`. See [Provisioning](#provisioning).
 2. Seed fixtures, log in test accounts.
 3. Run `command` checks (exit code and output), `flow` checks (a fixed action set driven by a client driver, or existing suites), `visual` checks (a page captured at named widths and themes; the head's captures are compared with the base side's, see [Visual checks](#visual-checks)), and `mail` checks (a message waited for and read). Each `command` check also writes `command.json` beside its streams: the command as run, its outcome, and the exit code it closed with. A check that passes silently (`test -f`, `grep -q`) saves no output, so the streams alone read as a check that never ran; the record is the evidence that the harness ran it and captured its result.
 4. Record every outbound connection attempt. Anything outside the stub map is a `refused: missing stub` finding.
+5. Tear down what was provisioned. A client build the run installed is removed when its side's checks are done; a booted stack is left up for its logs and taken down by the pipeline when the run ends.
 
 Exploration (#87). When the planner explores a running application, an exploration tool server runs inside the execute sandbox beside the booted app, and the plan step's model session connects to it over the network: the only thing that crosses is tool calls and their results. The server holds no secret — the sandbox environment is built from an allowlist that carries only what an app needs to run, so the model key and every token stay out — and it serves exactly four read-only tools, `observe`, `snapshot`, `navigate` and `capture`; nothing that writes files or runs commands is reachable over the channel, whatever the plan, the profile or a tool result asks for. Every tool result is treated as untrusted input: it is handed to the model fenced as data, and nothing in it can change the plan's schema or the run's policy. Exploring the merge base or a deployed target needs no sandbox split, because there is no PR code beside the app there; the channel is on by default wherever it is available, and off wherever it is not.
 
@@ -1178,6 +1179,97 @@ client, installing an artefact for another, and launching a binary for a third.
 And some clients can only run in certain places, so a target declares what it
 requires and a run refuses to start where that is unmet, naming what is missing.
 
+### Provisioning
+
+Getting the application in front of its driver is one lifecycle whatever the
+client is (#75), and each side of a comparison goes through it:
+
+| Step | A server (`app`) | A build the run installs (`client.artefact`) |
+| --- | --- | --- |
+| Obtain | The compose recipe in the side's tree | The artefact the profile names for the side: the file the pipeline already put in the workspace, or, when it is not there, the output of the build command the profile declares |
+| Install | `docker compose up`, under the run's own project | Unpacked into a directory of the run's own, outside the checkout and the evidence |
+| Health | An HTTP probe of `app.health.http` | The driver launches the build once and waits for its first window, within `client.health.timeout` |
+| Teardown | `docker compose down`, by the pipeline when the run ends, so the stack's logs can still be read | Removed by the run when the side's checks are done, on a blocked provisioning, and on a cancelled run |
+| When a step fails | `blocked`, with what compose said attached | `blocked`, naming the artefact, with the provisioning log attached |
+
+A provisioning failure is never a failed criterion: nothing was checked, so
+every criterion is `unverified` with the reason, and carries `provision.log`
+as its evidence. The log is written into the side's evidence directory, swept
+by the same redaction as every other file there, and for a build the run
+installed it records each step: the artefact's size and SHA-256, the
+installer's own output, what the build wrote while the health check launched
+it, and the teardown.
+
+A profile names an artefact in its `client` section:
+
+```yaml
+client:
+  driver: electron
+  args: [--no-sandbox]
+  artefact:
+    kind: archive                          # what the driver's installer takes: archive (a tar) or directory
+    executable: my-app/my-app              # inside the installed artefact
+    head: { path: qare-artefacts/head.tar }
+    base: { path: qare-artefacts/base.tar }   # optional: gives the run its base side
+    timeout: 10m                           # optional: the bound on a build or an install; 10m by default
+  health: { timeout: 30s }                 # optional; 30s by default
+flavour: web
+```
+
+Both paths are inside the repository the run checks, held to the rule
+`client.executable` has: relative, never climbing out, and what they resolve
+to must be inside the checkout, so a profile, which a pull request can edit,
+never points the run at another file on the host. The execute step reaches
+nothing outside the run and holds no token, so qare downloads nothing: a
+prebuilt artefact is a file the project's own pipeline put in the workspace
+(the reusable pipeline's `artefacts` input fetches one workflow artifact for
+that, see docs/pipeline.md).
+
+`base` is what gives a client a second side. With it the run installs the
+base build and runs the plan against it, removes it, then does the same with
+the head build, and the comparison is the one a booted profile gets (#147):
+`base/` and `head/` evidence, what the base showed for each criterion, and
+`regression` on a criterion the base build proved and the head build fails.
+A base artefact that is already there is installed as it is: no checkout of
+the base is made and nothing is rebuilt. Both paths are read from the head
+profile, the one the run was configured with, as the base side's cost limits
+are. qare records the hash of each file it installed and cannot tell which
+revision a prebuilt file was built from: the pipeline that produced it
+vouches for that. A profile's `base` section bounds a client's base side
+with `criteria: all | none` and `budget`; `criteria: ledger` reads the ledger
+of a base checkout, which a prebuilt base does not have, and is refused.
+
+A base that cannot be provisioned never blocks the head. The base is reported
+as not executed, naming the artefact, `base/provision.log` is kept and listed
+as each criterion's base evidence, and every criterion is `not-compared`.
+Only the head's provisioning can block the run.
+
+`<side>.build` is a command that produces the side's artefact when it is not
+there: `head: { path: dist/app.tar, build: node scripts/package.mjs }`. It is
+spawned with no shell, split on whitespace like a declared command, in the
+tree of its side (the head checkout, or a checkout of the base revision made
+as for a booted profile), and it is told where to write in `QARE_ARTEFACT`.
+It is pull request code: on a host it gets the minimal environment (#91). An
+artefact that already exists is never rebuilt. qare knows nothing about how
+to build anything; building in the pipeline is the project's own job.
+
+The installer is the seam a platform plugs into: it is keyed by artefact
+kind, puts the artefact where the driver can launch it, says what the driver
+launches (a path for a desktop build, an application id on a device), and
+says how to remove it. The Electron driver ships `archive` and `directory`.
+The Android and iOS drivers (#73, #74) add their package kinds behind the
+same seam; that path is exercised by a fake installer in the test suite and
+by nothing real, so installing on a device or an emulator, and a health
+check there, are not proven. A profile cannot name a kind no shipped driver
+installs.
+
+What provisioning does not do: it does not combine a booted stack with a
+client build (`app` and `client` stay exclusive, so a desktop application
+that needs its own backend booted is not covered), it does not run a client
+profile inside a several-app run, and its cache key does not carry the
+artefact's hash, so a pipeline that produces two different builds from one
+revision should not cache.
+
 ### The Electron driver
 
 The second driver, shipped (#72). A desktop shell is a browser in a window, so
@@ -1201,9 +1293,12 @@ flavour: web
 The run boots nothing. Before any check runs it holds the build to being
 there and the host to being able to show a window, and a run that fails either
 is `blocked`, naming the path or the display, with no criterion marked
-`failed`. Building the artefact is the project's own step: provisioning it,
-for one side or for both, is not this section's to do (#75). The build is the
-repository's own: `executable` is a path inside the repository the run
+`failed`. This shape launches a build that is already unpacked in the
+checkout, in place, for one side; a profile that declares `client.health`
+has it launched once first and held to opening its first window. A build the
+run installs, for one side or for both, is named with `client.artefact`
+instead (see [Provisioning](#provisioning)); a profile names one or the
+other. The build is the repository's own: `executable` is a path inside the repository the run
 checks, an absolute path or one that climbs out is refused when the profile
 loads, and a path that resolves through a link to somewhere outside the
 checkout blocks the run, so a profile can never point the run at another
@@ -1257,7 +1352,7 @@ when it loads and again before a run boots, naming the check and the driver:
 | Run a `visual` check | A capture is taken at named widths and themes, and a desktop window is sized by its window manager, not a viewport | The plan is refused; a client profile that names widths or themes is refused when it loads; the planner is not offered the kind |
 | Run an `a11y` check | The audit resizes and re-themes the page the same way | The plan is refused; a client profile with an `a11y` section is refused when it loads |
 | Open a full URL | A desktop shell has no address bar | The plan is refused naming the action |
-| Compare with a base revision | Nothing provisions a build of the base (#75) | The run has one side: the result carries `client: { driver, executable, comparison: "none" }` and the comment says so. A run over several apps refuses a client profile, which runs on its own |
+| Compare with a base revision without a build of it | A build launched in place (`client.executable`), or a `client.artefact` with no `base`, is one build | The run has one side: the result carries `client: { driver, executable, comparison: "none" }` and the comment says so. A profile that names `client.artefact.base` has two (#75): `comparison: "base"`, with the artefact each side was installed from. A run over several apps refuses a client profile, which runs on its own |
 | List or limit the hosts a run reached | The main process reaches the network without a page seeing it | No `outbound.json` is written, and nothing is claimed about egress. Like a command check or a suite, the build runs with the network its step has: containing it is the step's sandbox's to do, and is not done yet (#223) |
 | Seed a second factor | A client profile has no `app.login` | A flow that types a `totp` or `backupCode` is `unverified` before it runs, naming the gap |
 | Drive a build that turns remote debugging off | The driver attaches over the endpoint `--remote-debugging-port` opens | The flow is `unverified`, naming it, with the application's output |
@@ -1364,7 +1459,8 @@ new enough to install it, so a too-old interpreter is named before pip refuses
 the wheel; once nare is installed the interpreter is only reported, because
 nare may run under its own. A display is required only by a profile that names
 a desktop client (#72), which opens real windows: a running one, or an Xvfb
-the driver can start. The browser driver runs headless. Devices are reported
+the driver can start. A profile that installs an archive (`client.artefact`,
+#75) requires `tar`, which unpacks it. The browser driver runs headless. Devices are reported
 but never required: they arrive through the profile's registered MCP servers. A profile that is there but broken is a caller
 mistake, named on the error stream.
 

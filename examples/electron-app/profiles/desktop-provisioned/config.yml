@@ -1,0 +1,29 @@
+# The desktop target, provisioned (#75). Nothing in the checkout is launched:
+# the run installs the build the pipeline packaged, proves it comes up, drives
+# it, and removes it again. It does that for both sides of the comparison, so
+# a criterion that worked in the base build and fails in the head build is a
+# regression, as it is for an app qare boots.
+#
+# Both paths resolve from the repository root, where the pipeline runs, and
+# both artefacts are made before the run by the project's own step:
+#
+#   node examples/electron-app/package.mjs --archive examples/electron-app/artefacts/head.tar
+#   node examples/electron-app/package.mjs --archive examples/electron-app/artefacts/base.tar --app <base checkout>/examples/electron-app/app
+#
+# A base artefact that is already there is installed as it is, with no
+# checkout of the base and nothing rebuilt.
+client:
+  driver: electron
+  # Chromium's own sandbox needs privileges that neither a container nor a
+  # hosted runner gives it; the run is already inside the pipeline's sandbox.
+  args: [--no-sandbox]
+  artefact:
+    kind: archive
+    # Inside the installed artefact.
+    executable: qare-example/qare-example
+    head: { path: examples/electron-app/artefacts/head.tar }
+    base: { path: examples/electron-app/artefacts/base.tar }
+  # The harness launches each installed build once and waits for its first
+  # window before any check runs.
+  health: { timeout: 30s }
+flavour: web

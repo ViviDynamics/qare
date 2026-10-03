@@ -53,7 +53,8 @@ export interface InitFile {
 }
 
 export interface InitPlan {
-  kind: 'app' | 'target'
+  /** `client` is a profile that is already there and names a build to launch (#75): init writes its workflow and no profile. */
+  kind: 'app' | 'target' | 'client'
   /** The files of `.qa/`, config.yml first. */
   profile: InitFile[]
   workflow: InitFile
@@ -79,6 +80,19 @@ export async function planInit(repoPath: string, opts: InitOptions = {}): Promis
   if (opts.health !== undefined && !/^\/[^\s"\\]*$/.test(opts.health))
     throw new InitError(`--health ${JSON.stringify(opts.health)} is not a path: it starts with "/" and carries no space or quote`)
 
+  // A client profile that is already there says what the run launches (#75).
+  // It is written by hand, so init leaves it as it is and writes only the
+  // workflow, whatever compose file lies beside it. Nothing is stubbed for a
+  // client, so nothing is re-queued for want of a stub.
+  if (opts.target === undefined && inventory.profile.client !== undefined)
+    return {
+      kind: 'client',
+      profile: [],
+      workflow: { path: INIT_WORKFLOW_PATH, content: callerWorkflow({ model }) },
+      secret: INIT_MODEL_SECRET,
+      inventory,
+    }
+
   let kind: InitPlan['kind']
   let config: string
   // A target profile that is already there says where the app runs, so a
@@ -98,7 +112,7 @@ export async function planInit(repoPath: string, opts: InitOptions = {}): Promis
     const compose = own === undefined ? inventory.boot[0]?.file : `./${own.compose.replace(/^\.\//, '')}`
     if (compose === undefined)
       throw new InitError(
-        'no compose file found, so there is nothing for qare to boot: name the running app to check with --target <url>',
+        'no compose file found, so there is nothing for qare to boot: name the running app to check with --target <url>; a desktop build is checked through a client profile, which is written by hand (docs/SPEC.md, Clients)',
       )
     kind = 'app'
     const service = await chooseService(inventory.repoPath, compose, opts.service ?? own?.service)

@@ -183,6 +183,37 @@ test('with no compose file and no target there is nothing to write, and init say
   await expect(planInit(repo)).rejects.toThrow(InitError)
   await expect(planInit(repo)).rejects.toThrow(/no compose file.*--target <url>/)
   await expect(planInit(repo, { target: 'staging' })).rejects.toThrow(/target\.url/)
+  // A desktop build is the third shape, and init says where it is described.
+  await expect(planInit(repo)).rejects.toThrow(/a desktop build is checked through a client profile, which is written by hand \(docs\/SPEC\.md, Clients\)/)
+})
+
+test('a client profile that is already there holds: init writes the workflow and leaves the profile alone (#75)', async () => {
+  const repo = await repoWith({
+    '.qa/QA.md': '# QA\n',
+    '.qa/config.yml': [
+      'client:',
+      '  driver: electron',
+      '  artefact:',
+      '    kind: archive',
+      '    executable: greeter/greeter',
+      '    head: { path: artefacts/head.tar.gz }',
+      '    base: { path: artefacts/base.tar.gz }',
+    ].join('\n'),
+  })
+  // No compose file and no --target: the profile says what the run launches.
+  const plan = await planInit(repo)
+  expect(plan.kind).toBe('client')
+  expect(plan.profile).toEqual([])
+  expect(plan.workflow.path).toBe(INIT_WORKFLOW_PATH)
+  // Nothing is stubbed for a client, so nothing is re-queued for want of a stub.
+  expect(plan.workflow.content).not.toContain('requeue')
+  // A compose file kept for development does not turn it into a booted profile.
+  const beside = await repoWith({
+    '.qa/QA.md': '# QA\n',
+    '.qa/config.yml': 'client:\n  driver: electron\n  executable: dist/app/app\n',
+    'docker-compose.yml': COMPOSE,
+  })
+  expect((await planInit(beside)).kind).toBe('client')
 })
 
 test('the caller workflow pins this release, and re-queues refused pull requests only for a booted profile', async () => {

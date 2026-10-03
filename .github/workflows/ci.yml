@@ -111,6 +111,13 @@ jobs:
   # second window the application opens is driven and closed. The Electron
   # runtime is the example's own pinned dev dependency, installed here and
   # nowhere else. Same checkout as compose-boot, for the same reasons.
+  #
+  # The same job then provisions the build (#75): the example is packaged as
+  # archives for the base commit and for the head, and the plan runs against
+  # a profile that names both. The job fails unless the run installs both
+  # prebuilt artefacts and proves each one up, names a defect planted in the
+  # head build a regression, and reports a head artefact that is not an
+  # archive as blocked, naming it, with the provisioning log attached.
   electron-driver:
     runs-on: ubuntu-latest
     steps:
@@ -131,6 +138,8 @@ jobs:
         run: docker build -f images/web/Dockerfile --build-arg QARE_IMAGE=qare-core:ci -t qare-web:ci .
       - name: Drive the example desktop build with the browser's flow
         run: scripts/electron-driver.sh qare-web:ci
+      - name: Provision prebuilt base and head builds, and block on a failed install
+        run: scripts/client-provision.sh qare-web:ci
       - name: Upload the run's evidence
         if: always()
         uses: actions/upload-artifact@v4

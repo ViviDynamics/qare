@@ -157,6 +157,25 @@ export async function runDoctor(opts: DoctorOpts = {}): Promise<DoctorReport> {
               : `${displayProblem} (this profile launches a desktop build, so a display is required)`,
           install: displayProblem === undefined ? undefined : 'install Xvfb, which the driver starts for each launch, or name a running display in DISPLAY',
         },
+    // An archive the run installs is unpacked with the host's tar (#75); a
+    // profile that installs nothing, or copies a directory, needs none.
+    ...(profile?.client?.artefact?.kind !== 'archive'
+      ? []
+      : [
+          ((): DoctorFinding => {
+            const tar = which('tar')
+            return {
+              name: 'tar',
+              ok: tar !== undefined,
+              required: true,
+              detail:
+                tar !== undefined
+                  ? `tar at ${tar}`
+                  : 'tar is not on PATH (this profile installs an archive (client.artefact.kind), which is unpacked with tar)',
+              install: tar !== undefined ? undefined : 'install tar, or name a build that is already unpacked with client.artefact.kind: directory',
+            }
+          })(),
+        ]),
     {
       name: 'devices',
       ok: true,

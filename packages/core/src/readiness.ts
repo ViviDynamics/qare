@@ -2,7 +2,7 @@ import { lstat, readFile, readdir, stat } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { matchesStub } from './egress.js'
-import { loadProfile } from './profile.js'
+import { clientExecutableName, loadProfile } from './profile.js'
 
 export const READINESS_MAX_FILES = 2000
 export const READINESS_MAX_FILE_BYTES = 1024 * 1024
@@ -35,7 +35,7 @@ export interface ReadinessProfileInfo {
   /** The running app a target profile checks (#122); such a profile boots nothing. */
   target?: { url: string; hosts: string[] }
   /** The build a client profile launches (#72); such a profile boots nothing either. */
-  client?: { driver: string; executable: string }
+  client?: { driver: string; executable: string; artefact?: { kind: string; head: string; base?: string } }
   /** The compose file and service a booted profile names (#146). */
   boot?: { compose: string; service: string }
   stubs: Array<{ service: string; hosts: string[]; composeService?: string }>
@@ -373,7 +373,23 @@ async function loadProfileInfo(repo: string): Promise<ReadinessProfileInfo> {
       present: true,
       healthUrl: typeof healthUrl === 'string' ? healthUrl : undefined,
       ...(profile.target === undefined ? {} : { target: { url: profile.target.url, hosts: [...profile.target.hosts] } }),
-      ...(profile.client === undefined ? {} : { client: { driver: profile.client.driver, executable: profile.client.executable } }),
+      ...(profile.client === undefined
+        ? {}
+        : {
+            client: {
+              driver: profile.client.driver,
+              executable: clientExecutableName(profile.client),
+              ...(profile.client.artefact === undefined
+                ? {}
+                : {
+                    artefact: {
+                      kind: profile.client.artefact.kind,
+                      head: profile.client.artefact.head.path,
+                      ...(profile.client.artefact.base === undefined ? {} : { base: profile.client.artefact.base.path }),
+                    },
+                  }),
+            },
+          }),
       ...(profile.app === undefined ? {} : { boot: { compose: profile.app.boot.compose, service: profile.app.boot.service } }),
       stubs: (profile.stubs ?? []).map((stub) => ({
         service: stub.service,
@@ -471,7 +487,21 @@ export function buildReadinessReport(inventory: ReadinessInventory): string {
     lines.push(`- target ${target.url}: already running, so qare boots nothing`)
     lines.push(target.hosts.length === 0 ? '- other hosts its checks may reach: none' : `- other hosts its checks may reach: ${target.hosts.join(', ')}`)
   } else if (inventory.profile.client !== undefined) {
-    lines.push(`- ${inventory.profile.client.driver} build ${inventory.profile.client.executable}: launched by the run, so qare boots nothing`)
+    const client = inventory.profile.client
+    if (client.artefact === undefined) {
+      lines.push(`- ${client.driver} build ${client.executable}: launched by the run, so qare boots nothing`)
+    } else {
+      // A provisioned build (#75): what is installed for each side. Whether
+      // the artefact is there yet is the pipeline's business, not a gap.
+      lines.push(
+        `- ${client.driver} build ${client.executable}: installed by the run from the ${client.artefact.kind} ${client.artefact.head} and removed afterwards, so qare boots nothing`,
+      )
+      lines.push(
+        client.artefact.base === undefined
+          ? '- base side: none, because the profile names no build of the base (client.artefact.base), so no regression is looked for'
+          : `- base side: the build installed from ${client.artefact.base}, so a criterion that worked there and fails at the head is a regression`,
+      )
+    }
   } else if (inventory.boot.length === 0) {
     lines.push('- no compose file found')
   } else {
