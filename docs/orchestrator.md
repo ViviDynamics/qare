@@ -95,6 +95,7 @@ The evidence directory holds everything a run produced:
 <evidenceDir>/
   result.json                      # the machine contract, at the root
   isolation.json                   # an app run: the compose project, run id and port it booted under (#53)
+  provision.log                    # what provisioning did (#75): a client build's install, health check and removal; or what a boot that blocked said
   checks/<criterion id>/<n>/       # one directory per executed check
     stdout.txt
     stderr.txt
@@ -109,7 +110,10 @@ A run against a target (a profile naming `target` rather than `app`) carries
 revision, so no regression was looked for.
 
 `qare run` on a profile that boots an app checks both sides (#147): the same
-plan against the app booted from `baseRef`, then against the head. Each side
+plan against the app booted from `baseRef`, then against the head. A client
+profile that names a build of the base (`client.artefact.base`, #75) has both
+sides too: the base build is installed and checked, then the head build, and
+`client.comparison` in the result is `"base"`. Each side
 keeps a directory of its own, laid out as above, and the root `result.json` is
 the comparison of the two:
 

@@ -53,6 +53,13 @@ In:
   `client.comparison`), the comment says which builds were compared, and
   `qare doctor`, `qare readiness`, `qare init`'s guidance and the docs
   describe the new shape.
+- **A way for prebuilt artefacts to reach the pipeline's execute job.** The
+  reusable workflow has no step of the caller's, so it gains one input,
+  `artefacts`: the name of a workflow artifact an earlier job of the caller
+  uploaded, which execute downloads into a directory of that name before the
+  run. Found while writing the docs: without it a client profile could only
+  be provisioned by `qare run` on a host. The run itself still downloads
+  nothing.
 - The proof on the one real non-server client there is: `examples/electron-app`
   packaged as archives for base and head, run through the pipeline's own
   execute step, locally and in CI's `electron-driver` job.
@@ -123,25 +130,25 @@ Out:
 
 ## Tasks
 
-- [ ] 1. Profile `client.artefact` and `client.health`: shape, sides, build
+- [x] 1. Profile `client.artefact` and `client.health`: shape, sides, build
       command, kind per driver, path safety, exclusivity with `executable`,
       the `base` section (`profile-client.test.ts`).
-- [ ] 2. The lifecycle and the installers: obtain, build when absent, install
+- [x] 2. The lifecycle and the installers: obtain, build when absent, install
       (`archive`, `directory`), health, teardown, the log; a fake device
       installer through the seam (`provision.test.ts`).
-- [ ] 3. `bootApp` provisions a client artefact and reports what it launched;
+- [x] 3. `bootApp` provisions a client artefact and reports what it launched;
       a legacy `executable` profile is untouched (`boot.test.ts`).
-- [ ] 4. The run: flows drive the installed build, `provision.log` is written
+- [x] 4. The run: flows drive the installed build, `provision.log` is written
       swept, a blocked provisioning attaches it and fails no criterion, the
       install is removed afterwards, a blocked compose boot attaches its
       output (`client-provision-run.test.ts`, `run.test.ts`).
-- [ ] 5. Both sides: `client.artefact.base` gives the run a base side without
+- [x] 5. Both sides: `client.artefact.base` gives the run a base side without
       a checkout, regressions are computed, a base that cannot be provisioned
       is `not-executed` naming the artefact (`client-provision-run.test.ts`,
       `result.test.ts`, `evidence.test.ts`).
-- [ ] 6. `qare doctor`, `qare readiness`, `qare init` guidance and the CLI's
+- [x] 6. `qare doctor`, `qare readiness`, `qare init` guidance and the CLI's
       messages name the new shape (`doctor.test.ts`, `readiness.test.ts`).
-- [ ] 7. The example: archives for base and head, the provisioned profile,
+- [x] 7. The example: archives for base and head, the provisioned profile,
       `scripts/client-provision.sh` run by the `electron-driver` job
       (`examples/test/electron-app.test.mjs`).
-- [ ] 8. SPEC, schemas, pipeline and image docs.
+- [x] 8. SPEC, schemas, pipeline and image docs.
