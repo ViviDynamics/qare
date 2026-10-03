@@ -115,7 +115,7 @@ describe('blaming the change', () => {
     expect(direct.fallback?.why).toContain('no pull request brought the 2 commit(s)')
     const quiet = blameMainFinding(finding(), range([], 0), undefined)
     expect(quiet.mentions).toEqual([])
-    expect(quiet.fallback).toEqual({ why: 'no commit landed on the checked revision since the criterion last passed (run run-9, 2026-09-28T04:17:00.000Z)' })
+    expect(quiet.fallback).toEqual({ why: 'no commit landed on the checked revision since the criterion last passed (run `run-9`, `2026-09-28T04:17:00.000Z`)' })
   })
 
   test('at most ten people are mentioned on one issue, and the rest are counted', () => {

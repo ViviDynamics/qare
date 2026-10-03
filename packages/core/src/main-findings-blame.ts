@@ -1,3 +1,4 @@
+import { codeSpan } from './evidence.js'
 import type { MainFinding } from './main-findings.js'
 
 /**
@@ -139,11 +140,11 @@ function pointedAt(finding: MainFinding, pulls: RangePull[]): Pick<Blame, 'point
     .sort((a, b) => b.files.length - a.files.length)
   const top = touched[0]
   if (top === undefined || top.files.length === 0)
-    return { unpointed: `none of them touched the files the failing checks cover (${paths.join(', ')})` }
+    return { unpointed: `none of them touched the files the failing checks cover (${paths.map(codeSpan).join(', ')})` }
   const level = touched.filter((entry) => entry.files.length === top.files.length)
   if (level.length > 1)
     return { unpointed: `${joinPulls(level.map((entry) => entry.pull))} each touched ${top.files.length} file(s) the failing checks cover, so the files cannot tell them apart` }
-  const named = top.files.slice(0, 3).join(', ')
+  const named = top.files.slice(0, 3).map(codeSpan).join(', ')
   const more = top.files.length > 3 ? ` and ${top.files.length - 3} more` : ''
   return { pointed: { pull: top.pull, why: `it touched ${top.files.length} file(s) the failing checks cover (${named}${more}), more than any other pull request in the range` } }
 }
@@ -174,7 +175,8 @@ export function blameMainFinding(finding: MainFinding, range: BlameRange | undef
         ? "the ledger has no record of this criterion's last pass, so there is no range of commits to read"
         : 'the ledger has no record of this criterion ever passing, so there is no change to blame',
     )
-  const since = `the criterion last passed (run ${proven.run}, ${proven.at})`
+  // The run id and the timestamp are the ledger's own text: in code spans, where nothing in them renders.
+  const since = `the criterion last passed (run ${codeSpan(proven.run)}, ${codeSpan(proven.at)})`
   if (range.commits.length === 0) return fallbackTo(config, `no commit landed on the checked revision since ${since}`)
   if (range.pulls.length === 0)
     return fallbackTo(config, `no pull request brought the ${range.commits.length} commit(s) that landed since ${since}`)
