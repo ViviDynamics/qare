@@ -60,7 +60,13 @@ titled `QARE: not evaluated (qare or environment failure)`. Both name the job
 and step that failed and say the failure is on qare's side or the runner's,
 not the project's. The check fails closed: not reaching a verdict never
 passes. A failed or blocked verdict is never reported this way. It is in
-`result.json`, and judge publishes it even though it left execute red.
+`result.json`, and judge publishes it even though it left execute red. When
+execute recorded a verdict and judge then failed before posting it, the report
+says so instead: the comment is headed `QARE run: verdict not published (qare
+failed after checking)`, names the recorded verdict and the step that kept it
+from the pull request, and points to the evidence artifact that holds it. A run
+whose execute step recorded no readable verdict fails execute, so it can never
+leave the pipeline green with nothing posted.
 
 ## Pipeline
 

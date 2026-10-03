@@ -106,7 +106,7 @@ export interface RunResult {
 }
 
 const CRITERION_OUTCOMES: CriterionOutcome[] = ['proven', 'failed', 'unverified']
-const RUN_VERDICTS: RunVerdict[] = ['passed', 'failed', 'blocked', 'refused', 'waived']
+export const RUN_VERDICTS: readonly RunVerdict[] = ['passed', 'failed', 'blocked', 'refused', 'waived']
 
 export class ResultValidationError extends Error {
   readonly field: string

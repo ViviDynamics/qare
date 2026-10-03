@@ -377,12 +377,19 @@ jobs:
         id: recorded
         if: always()
         shell: bash
+        # No readable verdict fails this step (rule 6): judge is skipped, so a
+        # run that recorded nothing must not leave the pipeline green with
+        # nothing posted. The report job names the failure instead.
         run: |
+          verdict=""
           if [ -f evidence/result.json ]; then
-            echo "verdict=$(jq -r '.verdict // empty' evidence/result.json 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
-          else
-            echo "no evidence/result.json: the run recorded no verdict, so nothing was evaluated" >> "$GITHUB_STEP_SUMMARY"
+            verdict="$(jq -r '.verdict // empty' evidence/result.json 2>/dev/null || true)"
           fi
+          if [ -z "$verdict" ]; then
+            echo "no readable verdict in evidence/result.json: the run recorded none, so nothing was evaluated" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
       # Evidence is published, so it is redacted before it leaves this
       # machine, and a redaction that fails uploads nothing (#52). The run
       # already redacts what it writes; this also covers files a crashed run
@@ -676,11 +683,15 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Empty when execute recorded no verdict (nothing was evaluated);
+          # set when it did and judge failed to publish it.
+          RECORDED_VERDICT: ${{ needs.execute.outputs.verdict }}
         run: |
           set -euo pipefail
           node packages/action/dist/index.js report-failure \
             --run-id "$RUN_ID" --attempt "$RUN_ATTEMPT" \
             --pr "$PR_NUMBER" --sha "$HEAD_SHA" --run-url "$RUN_URL" \
+            --recorded-verdict "$RECORDED_VERDICT" \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
   # label: requeue (GitHub token only)

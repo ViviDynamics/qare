@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
-import { loadResult, VERSION } from '@qare/core'
+import { loadResult, RUN_VERDICTS, VERSION } from '@qare/core'
 import { GitHubClient, GitHubClientError } from './github.js'
 import { GitHubQaAssetsPusher } from './qa-assets.js'
 import { fileRefusalStubs, GitHubStubIssuePoster } from './stub-issues.js'
@@ -188,13 +188,19 @@ async function reportFailureCommand(argv: string[], out: Writer): Promise<number
   const runUrl = flags.string('run-url') || undefined
   if (runUrl !== undefined && !/^https:\/\/[^\s<>`]+$/.test(runUrl))
     throw new GitHubClientError(`--run-url must be an https URL (got ${JSON.stringify(runUrl)})`)
+  // Execute's verdict output, passed as is: empty when it recorded none.
+  const recordedVerdict = flags.string('recorded-verdict') || undefined
+  if (recordedVerdict !== undefined && !(RUN_VERDICTS as readonly string[]).includes(recordedVerdict))
+    throw new GitHubClientError(
+      `--recorded-verdict must be a run verdict (${RUN_VERDICTS.join(', ')}) or empty (got ${JSON.stringify(recordedVerdict)})`,
+    )
   const client = new GitHubClient({
     repository: flags.string('repository'),
     apiRoot: flags.string('api-root'),
     tokenEnv: flags.string('token-env'),
   })
   const poster = new GitHubEvidencePoster(client, pr, headSha, flags.string('author') || undefined)
-  const failure = await reportPipelineFailure(client, poster, { id: runId, attempt, url: runUrl })
+  const failure = await reportPipelineFailure(client, poster, { id: runId, attempt, url: runUrl, recordedVerdict })
   if (failure === undefined) {
     out.write(`no job in run ${runId} failed: nothing to report\n`)
     return 0

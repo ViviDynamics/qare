@@ -109,3 +109,39 @@ test('the check run fails closed and names the failed job and step', () => {
     conclusion: 'failure',
   })
 })
+
+// Judge can fail after execute checked the criteria (the verifier did not
+// answer, the post was refused). Saying nothing was evaluated would then be
+// false: the criteria were checked, and the verdict was not published. A
+// failed verdict leaves execute red too, but that red is the verdict, not the
+// fault, so the failure named is the later one.
+const judgeFailed: PipelineJob[] = [
+  { name: 'execute (no secrets)', conclusion: 'failure', steps: [{ name: 'Run the plan', conclusion: 'failure' }] },
+  { name: 'judge (model key + GitHub token only)', conclusion: 'failure', steps: [{ name: 'Judge the result', conclusion: 'failure' }] },
+]
+
+test('with a recorded verdict, the failure named is the last one, after the verdict', () => {
+  expect(classifyPipelineFailure(judgeFailed, { verdictRecorded: true })).toEqual({
+    job: 'judge (model key + GitHub token only)',
+    step: 'Judge the result',
+    skipped: [],
+  })
+  expect(classifyPipelineFailure(judgeFailed)?.job).toBe('execute (no secrets)')
+})
+
+test('a verdict execute recorded but nobody published is reported as unpublished, not unevaluated', () => {
+  const failure = classifyPipelineFailure(judgeFailed, { verdictRecorded: true })
+  if (failure === undefined) throw new Error('expected a failure')
+  const comment = renderPipelineFailureComment(failure, { recordedVerdict: 'failed' })
+  expect(comment.split('\n')[0]).toBe('## QARE run: verdict not published (qare failed after checking)')
+  expect(comment).toContain('qare checked the acceptance criteria and recorded the verdict `failed`')
+  expect(comment).toContain("in the run's evidence artifact")
+  expect(comment).toContain('`judge (model key + GitHub token only)`')
+  expect(comment).not.toContain('No acceptance criterion was evaluated')
+  expect(renderPipelineFailureCheckRun(failure, { recordedVerdict: 'failed' })).toEqual({
+    title: 'QARE: verdict not published (qare failure)',
+    summary:
+      "qare recorded the verdict failed but did not publish it: judge (model key + GitHub token only) failed at Judge the result. The verdict is in the run's evidence artifact.",
+    conclusion: 'failure',
+  })
+})

@@ -91,6 +91,44 @@ test('a pipeline that failed before a verdict posts a not-evaluated comment and 
   expect(out.join('')).toContain('reported plan (model key only) failing at Install nare at the pinned release on pull request #12')
 })
 
+test('a verdict execute recorded but judge never posted is reported as unpublished, naming judge', async () => {
+  fake.runJobs.set('77/1', [
+    { name: 'execute (no secrets)', conclusion: 'failure', steps: [{ name: 'Run the plan', conclusion: 'failure' }] },
+    { name: 'judge (model key + GitHub token only)', conclusion: 'failure', steps: [{ name: 'Judge the result', conclusion: 'failure' }] },
+  ])
+  process.env.QARE_TEST_TOKEN = FAKE_TOKEN
+
+  const code = await run([
+    'report-failure', '--run-id', '77', '--pr', '12', '--sha', SHA,
+    '--recorded-verdict', 'failed', '--token-env', 'QARE_TEST_TOKEN',
+  ])
+
+  expect(err.join('')).toBe('')
+  expect(code).toBe(0)
+  const [comment] = fake.issues.get(12)?.comments ?? []
+  expect(comment?.startsWith(`${EVIDENCE_MARKER}\n## QARE run: verdict not published (qare failed after checking)`)).toBe(true)
+  expect(comment).toContain('`Judge the result`')
+  expect((fake.checkRuns[0] as { output: { title: string } }).output.title).toBe('QARE: verdict not published (qare failure)')
+})
+
+// The workflow passes execute's output as is, which is empty when execute
+// recorded nothing: that is "not evaluated", never a verdict named "".
+test('an empty recorded verdict means nothing was evaluated', async () => {
+  fake.runJobs.set('77/1', nareInstallFailed)
+  process.env.QARE_TEST_TOKEN = FAKE_TOKEN
+
+  const code = await run(['report-failure', '--run-id', '77', '--pr', '12', '--sha', SHA, '--recorded-verdict', '', '--token-env', 'QARE_TEST_TOKEN'])
+
+  expect(code).toBe(0)
+  expect(fake.issues.get(12)?.comments[0]).toContain('## QARE run: not evaluated')
+})
+
+test('a recorded verdict qare does not know is refused', async () => {
+  process.env.QARE_TEST_TOKEN = FAKE_TOKEN
+  expect(await run(['report-failure', '--run-id', '77', '--pr', '12', '--sha', SHA, '--recorded-verdict', 'green`<b>', '--token-env', 'QARE_TEST_TOKEN'])).toBe(1)
+  expect(err.join('')).toContain('--recorded-verdict must be a run verdict')
+})
+
 test('a run with no failed job posts nothing', async () => {
   fake.runJobs.set('77/1', [{ name: 'plan', conclusion: 'success', steps: [] }])
   process.env.QARE_TEST_TOKEN = FAKE_TOKEN

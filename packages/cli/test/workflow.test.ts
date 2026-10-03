@@ -466,8 +466,10 @@ test('a report job explains a pipeline that published no verdict', () => {
   expect(postStep.indexOf('echo "posted=true" >> "$GITHUB_OUTPUT"')).toBeGreaterThan(postStep.indexOf('post-evidence'))
   expect(report).toContain("contains(needs.*.result, 'failure')")
   expect(report).toContain('report-failure')
-  for (const flag of ['--run-id "$RUN_ID"', '--attempt "$RUN_ATTEMPT"', '--pr "$PR_NUMBER"', '--sha "$HEAD_SHA"', '--run-url "$RUN_URL"'])
+  for (const flag of ['--run-id "$RUN_ID"', '--attempt "$RUN_ATTEMPT"', '--pr "$PR_NUMBER"', '--sha "$HEAD_SHA"', '--run-url "$RUN_URL"', '--recorded-verdict "$RECORDED_VERDICT"'])
     expect(report).toContain(flag)
+  // Checked but unpublished is told apart from never evaluated.
+  expect(report).toContain('RECORDED_VERDICT: ${{ needs.execute.outputs.verdict }}')
 })
 
 test('the report job holds the GitHub token only and runs qare from the base commit', () => {
@@ -497,6 +499,9 @@ test('judge runs whenever execute recorded a verdict, not only when execute pass
   const step = execute.slice(execute.lastIndexOf('- name:', recorded), execute.indexOf('- name:', recorded))
   expect(step).toContain('if: always()')
   expect(step).toContain('evidence/result.json')
+  // Rule 6: a run that recorded no readable verdict never falls through to a
+  // green pipeline with nothing posted. The step fails, and report says why.
+  expect(step).toMatch(/if \[ -z "\$verdict" \]; then\n(?:.*\n)*?\s+exit 1\n/)
   expect(section('judge')).toContain("if: always() && needs.execute.outputs.verdict != ''")
   expect(section('judge')).not.toContain("needs.execute.result == 'success'")
 })
