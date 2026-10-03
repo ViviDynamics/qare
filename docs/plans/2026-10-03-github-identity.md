@@ -72,7 +72,7 @@ Out:
 - [x] 3. `GitHubClient` asks its identity for the token of each request, and
   writes check runs with the token that may. (`github.test.ts`,
   `identity.test.ts`)
-- [ ] 4. Posting commands find their own sticky comment under any identity,
+- [x] 4. Posting commands find their own sticky comment under any identity,
   and `ingest-deliver` refuses the Actions token. (`identity-commands.test.ts`)
 - [ ] 5. The pipeline declares the identity secrets and hands them to the
   posting steps only; qare's caller and the sweep pass them.

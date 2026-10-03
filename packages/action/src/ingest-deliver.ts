@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { integrityOf, parseLedgerEntries } from '@qare/core'
 import type { GitHubClient } from './github.js'
+import { APP_ID_ENV, APP_PRIVATE_KEY_ENV, PERSONAL_TOKEN_ENV } from './identity.js'
 
 export class IngestDeliveryError extends Error {
   constructor(message: string) {
@@ -43,6 +44,11 @@ export interface IngestDelivery {
  * issue is left alone. The one thing the delivery refuses is a stale payload,
  * because a proposal built on a ledger that has since moved would silently
  * drop whatever moved in between.
+ *
+ * A proposal is never opened with the Actions token (#61): a pull request
+ * that token opens triggers no workflows, so it would reach its reviewer
+ * with no checks on it. The delivery stops before it writes anything and
+ * names the two identities that can open one.
  */
 export async function deliverIngest(opts: {
   proposalPath: string
@@ -50,6 +56,11 @@ export async function deliverIngest(opts: {
   base: string
   client: GitHubClient
 }): Promise<IngestDelivery> {
+  if (opts.client.identity.kind === 'actions') {
+    throw new IngestDeliveryError(
+      `a pull request opened with the Actions token (GITHUB_TOKEN) triggers no workflows, so this proposal would arrive with no checks: open it as the GitHub App (${APP_ID_ENV} and ${APP_PRIVATE_KEY_ENV}) or with a personal access token (${PERSONAL_TOKEN_ENV})`,
+    )
+  }
   const proposal = parseProposalPayload(JSON.parse(await readFile(opts.proposalPath, 'utf8')))
   const comments = opts.commentsPath === undefined ? [] : parseCommentPayload(JSON.parse(await readFile(opts.commentsPath, 'utf8')))
 
