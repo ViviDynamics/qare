@@ -54,16 +54,60 @@ export const CLIENT_DRIVERS = ['electron'] as const
 export type ClientDriver = (typeof CLIENT_DRIVERS)[number]
 
 /**
+ * The artefact kinds each client driver installs (#75). A desktop build is an
+ * archive or an unpacked directory; a device driver (#73, #74) adds the
+ * package its platform installs when it lands.
+ */
+export const CLIENT_ARTEFACT_KINDS: Record<ClientDriver, readonly string[]> = {
+  electron: ['archive', 'directory'],
+}
+
+/**
+ * The build of one side of a comparison (#75): where it is, in the
+ * repository the run checks, and the command that produces it there when it
+ * is not there yet. A side whose artefact already exists is never rebuilt.
+ */
+export interface ProfileArtefactSide {
+  path: string
+  build?: string
+}
+
+/**
+ * The artefact a run installs and launches (#75): what kind it is, the
+ * executable inside it once installed, and the build of each side. `base`
+ * names a build of the base revision, which gives the run its second side.
+ */
+export interface ProfileClientArtefact {
+  kind: string
+  executable: string
+  head: ProfileArtefactSide
+  base?: ProfileArtefactSide
+  /** The bound on each provisioning command (a build, an install), as a duration; ten minutes by default. */
+  timeout?: string
+}
+
+/**
  * A build qare launches rather than a server it boots or a URL it reaches
- * (#72): a desktop application, driven through its own windows. `executable`
- * resolves from the repository the run checks. Naming the binary is the
- * minimum a driver needs; building, fetching and installing it is
- * provisioning (#75), which is not this section's to do.
+ * (#72): a desktop application, driven through its own windows. The build is
+ * named one way. `executable` is a binary already in the checkout, launched
+ * in place, one side only. `artefact` is a build the run provisions (#75):
+ * obtained, installed, proven up and removed again, for one side or both.
  */
 export interface ProfileClient {
   driver: ClientDriver
-  executable: string
+  executable?: string
+  artefact?: ProfileClientArtefact
+  /** The health check the harness runs on the build (#75): how long its first window may take. */
+  health?: { timeout: string }
   args: string[]
+}
+
+/**
+ * The executable as the profile names it: the binary in the checkout (#72),
+ * or the one inside the artefact the run installs (#75).
+ */
+export function clientExecutableName(client: ProfileClient): string {
+  return client.executable ?? client.artefact?.executable ?? ''
 }
 
 export interface ProfileStub {
@@ -527,9 +571,14 @@ function validateClientConfig(config: Record<string, unknown>): QaProfile {
     fail('client', 'a profile names one of app (a stack qare boots), target (an app already running) or client (a build qare launches), not two')
   if (config.stubs !== undefined && !(Array.isArray(config.stubs) && config.stubs.length === 0))
     fail('stubs', 'a client profile boots no stack, so it has no stubs')
-  if (config.base !== undefined)
-    fail('base', 'a client profile has one side only, so it has no base side to bound; remove the base section')
   const client = parseClient(config.client)
+  // A client profile has a second side exactly when it names a build of the
+  // base (#75), and only then is there a base side to bound.
+  if (config.base !== undefined && client.artefact?.base === undefined)
+    fail('base', 'a client profile that names no base artefact has one side only, so it has no base side to bound; name a build of the base in client.artefact.base, or remove the base section')
+  const base = config.base === undefined ? undefined : parseProfileBase(config.base)
+  if (base?.criteria === 'ledger')
+    fail('base.criteria', 'a client profile\'s base side is installed from an artefact, with no base checkout to read a ledger from; use "all" or "none"')
   const visual = config.visual === undefined ? { widths: [], themes: [] } : parseVisual(config.visual)
   if (visual.widths.length > 0 || visual.themes.length > 0)
     fail('visual', `the ${client.driver} driver declares no visual check, so a client profile names no widths and no themes to capture at`)
@@ -549,35 +598,116 @@ function validateClientConfig(config: Record<string, unknown>): QaProfile {
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
     ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
     ...(config.commands === undefined ? {} : { commands: parseCommands(config.commands) }),
+    ...(base === undefined ? {} : { base }),
     ...(config.ux === undefined ? {} : { ux: parseUx(config.ux) }),
     ...(config.findings === undefined ? {} : { findings: parseFindings(config.findings) }),
   }
 }
 
-function parseClient(value: unknown): ProfileClient {
-  if (!isRecord(value)) fail('client', 'client must be a YAML object with driver, executable and args')
+/**
+ * A path the run can vouch for (#72, #75): relative, never climbing out of
+ * what it is inside, and nameable in published evidence.
+ */
+function containedPath(value: unknown, field: string, label: string, inside: string, out: string): string {
+  const path = nonEmptyString(value, field, label)
+  if (path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\'))
+    fail(field, `${label} ${JSON.stringify(path)} must be a path inside ${inside}, not an absolute one`)
+  if (path.split(/[\\/]/).includes('..')) fail(field, `${label} ${JSON.stringify(path)} climbs out of ${out} (".." is not allowed)`)
+  // Evidence is published, and the path is named in it.
+  if (/[\x00-\x1f\x7f]/.test(path)) fail(field, `${label} carries control characters`)
+  return path
+}
+
+const CLIENT_KEYS = ['driver', 'executable', 'artefact', 'health', 'args']
+
+/**
+ * The build of one side (#75). The path is held to the rule the #72
+ * executable has: the artefact is in the repository the run checks, so a
+ * profile, which a pull request can edit, never points the run at a file
+ * elsewhere on the host. The build command is spawned with no shell.
+ */
+function parseArtefactSide(value: unknown, field: string, side: string): ProfileArtefactSide {
+  if (!isRecord(value)) fail(field, `${field} must be a YAML object with path, and build when the run may produce it`)
+  for (const key of Object.keys(value)) if (key !== 'path' && key !== 'build') fail(`${field}.${key}`, `${field} takes path and build, not ${JSON.stringify(key)}`)
+  const path = containedPath(value.path, `${field}.path`, `the ${side} artefact`, 'the repository the run checks', 'the repository')
+  if (value.build === undefined) return { path }
+  const build = nonEmptyString(value.build, `${field}.build`, `the ${side} build command`)
+  const character = shellCharacter(build)
+  if (character !== undefined)
+    fail(
+      `${field}.build`,
+      `build ${JSON.stringify(build)} carries ${JSON.stringify(character)}, which a shell would interpret: the command is split on whitespace and spawned with no shell`,
+    )
+  return { path, build }
+}
+
+function durationField(value: unknown, field: string, label: string): string {
+  const text = nonEmptyString(value, field, label)
+  try {
+    parseDurationMs(text)
+  } catch (error) {
+    fail(field, `${field} ${error instanceof Error ? error.message : String(error)}`)
+  }
+  return text
+}
+
+function parseClientArtefact(value: unknown, driver: ClientDriver): ProfileClientArtefact {
+  if (!isRecord(value)) fail('client.artefact', 'client.artefact must be a YAML object with kind, executable, head, and base when there is a build of the base')
   for (const key of Object.keys(value))
-    if (!['driver', 'executable', 'args'].includes(key)) fail(`client.${key}`, `client takes driver, executable and args, not ${JSON.stringify(key)}`)
+    if (!['kind', 'executable', 'head', 'base', 'timeout'].includes(key))
+      fail(`client.artefact.${key}`, `client.artefact takes kind, executable, head, base and timeout, not ${JSON.stringify(key)}`)
+  const kinds = CLIENT_ARTEFACT_KINDS[driver]
+  if (typeof value.kind !== 'string' || !kinds.includes(value.kind))
+    fail(
+      'client.artefact.kind',
+      `the ${driver} driver installs ${kinds.map((kind) => (/^[aeiou]/.test(kind) ? `an ${kind}` : `a ${kind}`)).join(' or ')}, not ${JSON.stringify(value.kind)}`,
+    )
+  const executable = containedPath(value.executable, 'client.artefact.executable', 'the executable', 'the installed artefact', 'the installed artefact')
+  if (value.head === undefined) fail('client.artefact.head', 'client.artefact.head names the build the run checks: a YAML object with path')
+  const head = parseArtefactSide(value.head, 'client.artefact.head', 'head')
+  const base = value.base === undefined ? undefined : parseArtefactSide(value.base, 'client.artefact.base', 'base')
+  const timeout = value.timeout === undefined ? undefined : durationField(value.timeout, 'client.artefact.timeout', 'provisioning timeout')
+  return { kind: value.kind, executable, head, ...(base === undefined ? {} : { base }), ...(timeout === undefined ? {} : { timeout }) }
+}
+
+function parseClientHealth(value: unknown): { timeout: string } {
+  if (!isRecord(value)) fail('client.health', 'client.health must be a YAML object with timeout')
+  for (const key of Object.keys(value)) if (key !== 'timeout') fail(`client.health.${key}`, `client.health takes timeout, not ${JSON.stringify(key)}`)
+  return { timeout: durationField(value.timeout, 'client.health.timeout', 'health timeout') }
+}
+
+function parseClient(value: unknown): ProfileClient {
+  if (!isRecord(value)) fail('client', 'client must be a YAML object with driver, and executable or artefact')
+  for (const key of Object.keys(value))
+    if (!CLIENT_KEYS.includes(key)) fail(`client.${key}`, `client takes ${CLIENT_KEYS.slice(0, -1).join(', ')} and ${CLIENT_KEYS.at(-1)}, not ${JSON.stringify(key)}`)
   if (typeof value.driver !== 'string' || !(CLIENT_DRIVERS as readonly string[]).includes(value.driver))
     fail('client.driver', `client.driver must be one of ${CLIENT_DRIVERS.join(', ')}, not ${JSON.stringify(value.driver)}`)
-  const executable = nonEmptyString(value.executable, 'client.executable', 'client executable')
+  const driver = value.driver as ClientDriver
+  if (value.executable !== undefined && value.artefact !== undefined)
+    fail('client', 'client names the build one way: executable (a build already in the checkout, launched in place) or artefact (a build the run installs), not both')
   // The build is the repository's own (#72): a path that leaves the
   // repository names some other binary on the host, and a profile is a file
-  // a pull request can edit. Provisioning an artefact from elsewhere is #75's.
-  if (executable.startsWith('/') || /^[A-Za-z]:[\\/]/.test(executable) || executable.startsWith('\\'))
-    fail('client.executable', `client executable ${JSON.stringify(executable)} must be a path inside the repository the run checks, not an absolute one`)
-  if (executable.split(/[\\/]/).includes('..'))
-    fail('client.executable', `client executable ${JSON.stringify(executable)} climbs out of the repository (".." is not allowed)`)
-  // Evidence is published, and the path is named in it.
-  if (/[\x00-\x1f\x7f]/.test(executable)) fail('client.executable', 'client executable carries control characters')
+  // a pull request can edit.
+  const executable =
+    value.artefact === undefined
+      ? containedPath(value.executable, 'client.executable', 'client executable', 'the repository the run checks', 'the repository')
+      : undefined
+  const artefact = value.artefact === undefined ? undefined : parseClientArtefact(value.artefact, driver)
+  const health = value.health === undefined ? undefined : parseClientHealth(value.health)
   if (value.args !== undefined && !Array.isArray(value.args)) fail('client.args', 'client.args must be an array of arguments, each a string')
   const args = value.args === undefined ? [] : stringArray(value.args, 'client.args', 'client argument')
   for (const [index, arg] of args.entries()) {
     const owned = DRIVER_OWNED_ARGS.find((name) => arg === name || arg.startsWith(`${name}=`))
     if (owned !== undefined)
-      fail(`client.args[${index}]`, `${owned} is not the profile's to pass: the ${value.driver} driver sets it for every launch`)
+      fail(`client.args[${index}]`, `${owned} is not the profile's to pass: the ${driver} driver sets it for every launch`)
   }
-  return { driver: value.driver as ClientDriver, executable, args }
+  return {
+    driver,
+    ...(executable === undefined ? {} : { executable }),
+    ...(artefact === undefined ? {} : { artefact }),
+    ...(health === undefined ? {} : { health }),
+    args,
+  }
 }
 
 /**

@@ -4,7 +4,7 @@ import https from 'node:https'
 import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { electronDisplayProblem, type ElectronHost } from './flow-electron.js'
-import type { ProfileApp, ProfileClient, QaProfile } from './profile.js'
+import { clientExecutableName, type ProfileApp, type ProfileClient, type QaProfile } from './profile.js'
 import { VERSION } from './version.js'
 import { parseDurationMs } from './duration.js'
 import { composeEnv, hasMintedProject, mintIsolation, type RunIsolation } from './isolation.js'
@@ -238,7 +238,7 @@ async function probeTarget(profile: QaProfile, opts: BootOpts): Promise<BootOutc
 
 /** Where a client profile's executable is, resolved from the repository the run checks (#72). */
 export function clientExecutablePath(client: ProfileClient, root: string = process.cwd()): string {
-  return resolve(root, client.executable)
+  return resolve(root, clientExecutableName(client))
 }
 
 /**

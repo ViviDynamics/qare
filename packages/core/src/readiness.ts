@@ -2,7 +2,7 @@ import { lstat, readFile, readdir, stat } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { matchesStub } from './egress.js'
-import { loadProfile } from './profile.js'
+import { clientExecutableName, loadProfile } from './profile.js'
 
 export const READINESS_MAX_FILES = 2000
 export const READINESS_MAX_FILE_BYTES = 1024 * 1024
@@ -373,7 +373,7 @@ async function loadProfileInfo(repo: string): Promise<ReadinessProfileInfo> {
       present: true,
       healthUrl: typeof healthUrl === 'string' ? healthUrl : undefined,
       ...(profile.target === undefined ? {} : { target: { url: profile.target.url, hosts: [...profile.target.hosts] } }),
-      ...(profile.client === undefined ? {} : { client: { driver: profile.client.driver, executable: profile.client.executable } }),
+      ...(profile.client === undefined ? {} : { client: { driver: profile.client.driver, executable: clientExecutableName(profile.client) } }),
       ...(profile.app === undefined ? {} : { boot: { compose: profile.app.boot.compose, service: profile.app.boot.service } }),
       stubs: (profile.stubs ?? []).map((stub) => ({
         service: stub.service,

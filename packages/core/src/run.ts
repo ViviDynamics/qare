@@ -24,7 +24,7 @@ import { FileLedgerStore } from './ledger.js'
 import { mailReader, mailSourceOf, type DeclaredMailSource, type MailSource } from './mail-source.js'
 import { extractCode, mailEvidence, runMailCheck, type MailProof, type ReadMail } from './mailbox.js'
 import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCapabilities, mcpDriverServer, type McpToolResult } from './mcp.js'
-import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
+import { ProfileMissingError, clientExecutableName, loadProfile, pathOnTarget, validateProfileConfig, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, mailEvidenceRules, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
@@ -360,7 +360,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
       ? { target: { url: profile.target.url, comparison: 'none' as const } }
       : profile.client !== undefined
         ? // A build the run launches has one side too, and the result names it (#72).
-          { client: { driver: profile.client.driver, executable: profile.client.executable, comparison: 'none' as const } }
+          { client: { driver: profile.client.driver, executable: clientExecutableName(profile.client), comparison: 'none' as const } }
         : {}
   // The seeded second-factor secret and any backup code never reach the
   // evidence either: they sweep alongside the profile's own rules (#64).
