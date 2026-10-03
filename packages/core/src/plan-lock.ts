@@ -41,6 +41,7 @@ function canonicalCheck(check: PlanCheck): PlanCheck {
     if (check.timeoutMs !== undefined) canonical.timeoutMs = check.timeoutMs
   } else if (check.kind === 'visual') {
     canonical.screenshot = check.screenshot
+    if (check.url !== undefined) canonical.url = check.url
     if (check.widths !== undefined) canonical.widths = [...check.widths]
     if (check.themes !== undefined) canonical.themes = [...check.themes]
   }

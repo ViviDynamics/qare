@@ -151,6 +151,21 @@ test('an element reference is a role with its name or a test id, never both, nev
   expect(selector.message).toContain('role')
 })
 
+test('a visual check names the page it captures, and the page is a string (#143)', () => {
+  const check = { kind: 'visual', name: 'article', screenshot: 'ada', url: '/wiki/Ada_Lovelace', widths: [390, 1440] }
+  const plan = parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [check] }] })
+  expect(plan.criteria[0]).toMatchObject({ checks: [check] })
+
+  // Without one the check captures the app's root, so it stays optional.
+  const rootOnly = parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ kind: 'visual', name: 'home', screenshot: 'home' }] }] })
+  expect(rootOnly.criteria[0]).toMatchObject({ checks: [{ kind: 'visual', name: 'home', screenshot: 'home' }] })
+
+  for (const url of ['', 7]) {
+    const error = planError(() => parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ ...check, url }] }] }))
+    expect(error.field).toBe('criteria[0].checks[0].url')
+  }
+})
+
 test('visual check themes become evidence file names, so they cannot escape the evidence dir', () => {
   const check = { kind: 'visual', name: 'n', screenshot: 'shot', themes: ['../../escape'] }
   const error = planError(() =>

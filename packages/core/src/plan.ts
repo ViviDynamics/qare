@@ -32,6 +32,8 @@ export interface VisualCheck {
   kind: 'visual'
   name: string
   screenshot: string
+  /** The page to capture (#143): a path on the app, or a URL. The app's root when absent. */
+  url?: string
   widths?: number[]
   themes?: string[]
   inferred?: boolean
@@ -360,6 +362,7 @@ function parseCheck(value: unknown, base: string, extraFlowActions: readonly str
     }
     case 'visual': {
       const screenshot = nonEmptyString(value.screenshot, `${base}.screenshot`, 'screenshot')
+      const url = value.url === undefined ? undefined : nonEmptyString(value.url, `${base}.url`, 'url')
       const widths = value.widths === undefined ? undefined : numberArray(value.widths, `${base}.widths`, 'widths')
       const themes = value.themes === undefined ? undefined : stringArray(value.themes, `${base}.themes`, 'themes')
       if (themes !== undefined)
@@ -369,7 +372,7 @@ function parseCheck(value: unknown, base: string, extraFlowActions: readonly str
               `${base}.themes[${index}]`,
               `theme ${JSON.stringify(theme)} must not contain path separators, ".." or control characters; themes become evidence file names`,
             )
-      return finish({ kind: 'visual', name, screenshot, ...(widths !== undefined ? { widths } : {}), ...(themes !== undefined ? { themes } : {}) }, inferred)
+      return finish({ kind: 'visual', name, screenshot, ...(url !== undefined ? { url } : {}), ...(widths !== undefined ? { widths } : {}), ...(themes !== undefined ? { themes } : {}) }, inferred)
     }
     case 'mail': {
       const address = nonEmptyString(value.address, `${base}.address`, 'address')
