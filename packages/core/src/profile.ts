@@ -183,6 +183,22 @@ export interface QaProfile {
    * and no flow is audited without one.
    */
   a11y?: ProfileA11y
+  /**
+   * The advisory UX review (#150): whether it runs, and the house rules it
+   * holds screens to. Absent, the review runs with no house rules.
+   */
+  ux?: ProfileUx
+}
+
+/**
+ * The profile's `ux` section (#150). The review is advisory whatever this
+ * says: nothing here can make a finding part of a verdict.
+ */
+export interface ProfileUx {
+  /** `false` turns the review off for this profile's screens. */
+  review?: boolean
+  /** House rules, one sentence each: a design system, voice and tone, patterns to hold to. */
+  rules?: string[]
 }
 
 export interface ProfileBase {
@@ -414,6 +430,7 @@ export function validateProfileConfig(config: unknown): QaProfile {
     ...(config.commands === undefined ? {} : { commands: parseCommands(config.commands) }),
     ...(config.base === undefined ? {} : { base: parseProfileBase(config.base) }),
     ...(config.a11y === undefined ? {} : { a11y: parseA11y(config.a11y) }),
+    ...(config.ux === undefined ? {} : { ux: parseUx(config.ux) }),
   }
 }
 
@@ -443,6 +460,7 @@ function validateTargetConfig(config: Record<string, unknown>): QaProfile {
     ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
     ...(config.commands === undefined ? {} : { commands: parseCommands(config.commands) }),
     ...(config.a11y === undefined ? {} : { a11y: parseA11y(config.a11y) }),
+    ...(config.ux === undefined ? {} : { ux: parseUx(config.ux) }),
   }
 }
 
@@ -651,6 +669,27 @@ function parseA11y(value: unknown): ProfileA11y {
     ...(impacts === undefined ? {} : { fail: impacts }),
     ...(value.standing === undefined ? {} : { standing: value.standing as boolean }),
     ...(accept === undefined ? {} : { accept }),
+  }
+}
+
+/**
+ * The profile's `ux` section (#150): whether the advisory review runs, and
+ * the house rules it is given. A field nobody knows is refused, because a
+ * misspelt `review` would otherwise quietly leave the review on.
+ */
+function parseUx(value: unknown): ProfileUx {
+  if (!isRecord(value)) fail('ux', 'ux must be a YAML object with review and rules')
+  for (const key of Object.keys(value))
+    if (!['review', 'rules'].includes(key)) fail(`ux.${key}`, `ux takes review and rules, not ${JSON.stringify(key)}`)
+  if (value.review !== undefined && typeof value.review !== 'boolean') fail('ux.review', 'ux.review must be a boolean')
+  let rules: string[] | undefined
+  if (value.rules !== undefined) {
+    if (!Array.isArray(value.rules)) fail('ux.rules', 'ux.rules must be an array of house rules, one sentence each')
+    rules = value.rules.map((rule: unknown, index) => nonEmptyString(rule, `ux.rules[${index}]`, 'house rule'))
+  }
+  return {
+    ...(value.review === undefined ? {} : { review: value.review as boolean }),
+    ...(rules === undefined ? {} : { rules }),
   }
 }
 
