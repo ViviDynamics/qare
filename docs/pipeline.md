@@ -139,6 +139,15 @@ the default branch, so the `qa-assets` pushes judge makes do not start a run.
 Call the pipeline once per workflow run. Its artifacts have fixed names, so
 two calls in one run would overwrite each other.
 
+## What does not work yet
+
+execute runs the plan inside the published image. A profile that names a
+`target` (an application already running) works there today. A profile that
+boots its own application with compose (`app.boot`) does not yet: the run's
+container has no `docker compose` and cannot reach the runner's docker
+daemon. That is tracked in
+[#209](https://github.com/ViviDynamics/qare/issues/209).
+
 ## Upgrading
 
 Change the tag in `uses:`. That one line moves the pipeline, the qare the
