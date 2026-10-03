@@ -77,14 +77,15 @@ export function isMentionable(name: string): boolean {
   return LOGIN.test(name) || TEAM.test(name)
 }
 
-function isBot(person: RangePerson, config: BlameConfig | undefined): boolean {
+/** Whether an account is a bot: GitHub says so, its login does, or the profile lists it. */
+export function isBotAccount(person: RangePerson, config: BlameConfig | undefined): boolean {
   if (person.bot || person.login.endsWith('[bot]')) return true
   const named = person.login.toLowerCase()
   return (config?.bots ?? []).some((bot) => bot.toLowerCase() === named)
 }
 
 function human(person: RangePerson | undefined, config: BlameConfig | undefined): string | undefined {
-  if (person === undefined || isBot(person, config) || !LOGIN.test(person.login)) return undefined
+  if (person === undefined || isBotAccount(person, config) || !LOGIN.test(person.login)) return undefined
   return person.login
 }
 
@@ -96,7 +97,7 @@ function human(person: RangePerson | undefined, config: BlameConfig | undefined)
 function personOf(pull: RangePull, config: BlameConfig | undefined): BlamedPerson {
   const author = human(pull.author, config)
   if (author !== undefined) return { pull: pull.number, login: author, role: 'author' }
-  const bot = pull.author !== undefined && isBot(pull.author, config) ? { bot: pull.author.login } : {}
+  const bot = pull.author !== undefined && isBotAccount(pull.author, config) ? { bot: pull.author.login } : {}
   const merger = human(pull.mergedBy, config)
   if (merger !== undefined) return { pull: pull.number, login: merger, role: 'merged', ...bot }
   for (const approver of pull.approvers) {
