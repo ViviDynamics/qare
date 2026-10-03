@@ -17,7 +17,7 @@ every path fails closed.
 All engine access goes through the CLI (or the MCP server, or the GitHub
 Action). From this plugin you only use the CLI:
 
-- `qare init` — prepare a repo's `.qa/` profile and readiness state (forthcoming; not in the CLI yet).
+- `qare init [path] [--target <url>] [--health <path>]`: onboard a repo. It writes a starting `.qa/` profile and the workflow that calls the qare pipeline, never overwrites either, and ends with the gaps `qare readiness` still reports. A repo with no compose file needs `--target <url>`, and `--health <path>` when the app's root answers with a redirect. The `TODO(qare init):` lines it leaves are for a person who knows the app; do not invent their answers.
 - `qare check "<criterion>"... [--profile <dir>]`: check criteria stated in plain words. It plans them through nare, runs and judges them, prints each outcome, the verdict and the evidence directory, and exits like `qare run`. Use it for "check that this works" when there is no issue or diff. The MCP server's `check` tool is the same entry.
 - `qare run` — plan, execute and judge; writes evidence and `result.json`.
 - `qare judge` — re-judge from existing evidence. Its verifier needs `--plan` and `--diff`; `--runner none` judges without it.

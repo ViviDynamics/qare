@@ -82,25 +82,49 @@ export function parseStubIssueMarkers(text: string): string[] {
   return [...markers].sort((a, b) => compareStrings(a, b))
 }
 
-export function stubIssueDraft(missing: MissingStub): StubIssueDraft {
+/**
+ * Where a draft comes from when no run was refused yet (#146): the readiness
+ * scan read the host in these files, and the profile may already declare the
+ * stub whose compose service is the part still missing.
+ */
+export interface StubIssueScan {
+  files: string[]
+  service?: string
+  composeService?: string
+}
+
+export function stubIssueDraft(missing: MissingStub, scan?: StubIssueScan): StubIssueDraft {
   const key = missing.host
   const title = `Stub needed for ${missing.host}`
   const lines: string[] = []
   lines.push('## Calls made')
   lines.push('')
-  lines.push(`- ${missing.host}:${missing.port} (${missing.protocol}) — ${missing.count} attempt(s)`)
+  lines.push(
+    scan === undefined
+      ? `- ${missing.host}:${missing.port} (${missing.protocol}) — ${missing.count} attempt(s)`
+      : `- ${missing.host}:${missing.port} (${missing.protocol}) — ${missing.count} reference(s) in the source: ${scan.files.join(', ')}`,
+  )
   lines.push('')
   lines.push('## What the stub must answer')
   lines.push('')
   lines.push(`The app reaches \`${missing.host}\` over ${missing.protocol} on port ${missing.port}.`)
-  lines.push('QARE refuses the run until a stub provides it. Add this entry to the profile stub map:')
-  lines.push('')
-  lines.push('```yaml')
-  lines.push('stubs:')
-  lines.push(`  - service: ${suggestService(missing.host)}`)
-  lines.push(`    hosts: ["${missing.host}"]`)
-  lines.push(`    provided_by: { compose_service: ${suggestComposeService(missing.host)} }`)
-  lines.push('```')
+  if (scan?.service !== undefined && scan.composeService !== undefined) {
+    lines.push(
+      `The profile already declares the stub \`${scan.service}\`, provided by the compose service \`${scan.composeService}\`, which the compose file does not define yet.`,
+    )
+    lines.push(
+      `Add that service, answering what the app asks of \`${missing.host}\`. If the app never calls it at runtime, remove the stub from the profile instead.`,
+    )
+  } else {
+    lines.push('QARE refuses the run until a stub provides it. Add this entry to the profile stub map:')
+    lines.push('')
+    lines.push('```yaml')
+    lines.push('stubs:')
+    lines.push(`  - service: ${suggestService(missing.host)}`)
+    lines.push(`    hosts: ["${missing.host}"]`)
+    lines.push(`    provided_by: { compose_service: ${suggestComposeService(missing.host)} }`)
+    lines.push('```')
+  }
   lines.push('')
   lines.push('## Linking')
   lines.push('')

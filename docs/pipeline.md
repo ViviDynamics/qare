@@ -38,7 +38,10 @@ jobs:
 ```
 
 That is the whole installation, beside the profile in `.qa/` that says how
-your application boots and what its suites are.
+your application boots and what its suites are. `qare init` writes both: this
+workflow, pinned to the release of the qare that ran it, and a starting
+profile, and it lists what is left for you to fill in. It adds the push
+trigger described under "Triggers" when the profile boots an application.
 
 A repository with its own runners, a model behind an OpenAI-compatible
 endpoint, a profile somewhere other than `.qa`, and stubs that should

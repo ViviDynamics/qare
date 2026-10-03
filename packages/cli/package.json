@@ -21,6 +21,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@qare/action": "workspace:*",
     "@qare/core": "workspace:*"
   },
   "devDependencies": {

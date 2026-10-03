@@ -166,3 +166,43 @@ test('StubIssuePoster is an interface: a conforming implementation type-checks a
   expect(issue).toBe(42)
   expect(posted).toEqual([{ issue: 42, pr: 7 }])
 })
+
+// #146: `qare init` drafts the same issue before any run was refused, from
+// what the readiness scan read. The key is the host either way, so the issue
+// a refused run would file later is this one, not a duplicate.
+test('a draft from the readiness scan names the files, and the stub the profile already declares', () => {
+  const missing = { host: 'api.billing-vendor.example', port: '443', protocol: 'https', count: 2 }
+  const draft = stubIssueDraft(missing, {
+    files: ['./app/pay.rb', './config/billing.yml'],
+    service: 'billing',
+    composeService: 'billing-stub',
+  })
+  expect(draft.key).toBe(stubIssueDraft(missing).key)
+  expect(draft.title).toBe('Stub needed for api.billing-vendor.example')
+  expect(draft.body).toBe(
+    [
+      '## Calls made',
+      '',
+      '- api.billing-vendor.example:443 (https) — 2 reference(s) in the source: ./app/pay.rb, ./config/billing.yml',
+      '',
+      '## What the stub must answer',
+      '',
+      'The app reaches `api.billing-vendor.example` over https on port 443.',
+      'The profile already declares the stub `billing`, provided by the compose service `billing-stub`, which the compose file does not define yet.',
+      'Add that service, answering what the app asks of `api.billing-vendor.example`. If the app never calls it at runtime, remove the stub from the profile instead.',
+      '',
+      '## Linking',
+      '',
+      'Dedup key: qare-stub: api.billing-vendor.example',
+      'Refused PRs are registered here as `qare-refused: #<pr>` lines; when the stub PR merges, those PRs are re-queued.',
+      '',
+    ].join('\n'),
+  )
+})
+
+test('a draft from the scan for a host no stub covers still proposes the stub entry', () => {
+  const draft = stubIssueDraft({ host: 'api.example.com', port: '80', protocol: 'http', count: 1 }, { files: ['./a.md'] })
+  expect(draft.body).toContain('— 1 reference(s) in the source: ./a.md')
+  expect(draft.body).toContain('Add this entry to the profile stub map:')
+  expect(draft.body).toContain('  - service: api')
+})

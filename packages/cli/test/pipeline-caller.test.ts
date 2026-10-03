@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
 import { parse } from 'yaml'
+import { INIT_DEFAULT_MODEL, INIT_MODEL_SECRET, PIPELINE_WORKFLOW, VERSION, callerWorkflow } from '@qare/core'
 
 // #145: the pipeline ships as a reusable workflow, and a repository calls it
 // in about ten lines. These tests hold the two sides together: what the
@@ -241,4 +242,48 @@ test('the documented caller fits the interface and pins the current release', ()
   expect(Math.min(...sizes.map((size) => size.file))).toBeLessThanOrEqual(16)
   // Every input and the secret are documented by name.
   for (const name of [...Object.keys(call.inputs), ...Object.keys(call.secrets)]) expect(doc).toContain(`\`${name}\``)
+})
+
+test('the caller qare init writes fits the interface, pins the current release, and is the documented one', () => {
+  // #146: init writes the caller, so it is a third copy of the interface,
+  // held to the pipeline the same way qare's own caller and the documented
+  // one are. A new required input, a renamed secret or a permission a job
+  // starts to need fails here, not in the first repository that runs init.
+  const generated = {
+    'for a target profile': callerWorkflow({ model: INIT_DEFAULT_MODEL }),
+    'for a booted profile': callerWorkflow({ model: INIT_DEFAULT_MODEL, requeue: { branch: 'main' } }),
+  }
+  for (const [where, text] of Object.entries(generated)) {
+    const caller = parse(text) as Workflow
+    expect(Object.keys(caller.jobs), where).toEqual(['qare'])
+    const job = caller.jobs.qare as Job
+    expect(job.uses, where).toBe(`ViviDynamics/qare/${PIPELINE}@${version}`)
+    expect(job.uses, where).toBe(`${PIPELINE_WORKFLOW}@${VERSION}`)
+    expectCallFits(job, `the caller init writes ${where}`)
+    expectCeilingCovers(job.permissions, `the caller init writes ${where}`)
+    expect(Object.keys(job.with ?? {}), where).not.toContain('qare-ref')
+    expect(Object.keys(caller.on), where).toContain('pull_request')
+    // The secret init tells the person to add is the one the workflow reads,
+    // and the variable the pipeline hands it to the provider in by default.
+    expect((job.secrets as Record<string, string>)['model-key'], where).toBe(`\${{ secrets.${INIT_MODEL_SECRET} }}`)
+    expect(call.inputs['model-key-env']?.default, where).toBe(INIT_MODEL_SECRET)
+  }
+  // Re-queueing runs on a push to the default branch that touches the
+  // profile, which is where the pipeline's `profile` input points by default.
+  const push = (parse(generated['for a booted profile']) as Workflow).on.push as { branches: string[]; paths: string[] }
+  expect(push).toEqual({ branches: ['main'], paths: [`${String(call.inputs.profile?.default)}/**`] })
+
+  // The smallest caller the documentation shows is, byte for byte, what
+  // init writes: the two cannot tell a new repository different things.
+  const doc = readFileSync(join(repoRoot, 'docs', 'pipeline.md'), 'utf8')
+  const documented = [...doc.matchAll(/```yaml\n([\s\S]*?)```/g)].map((match) => match[1] ?? '')
+  expect(documented).toContain(generated['for a target profile'])
+
+  // The pin is the build's VERSION, which the release stamps from
+  // package.json: the generator carries no release of its own to forget.
+  const source = readFileSync(join(repoRoot, 'packages', 'core', 'src', 'init.ts'), 'utf8')
+  expect(source).not.toMatch(/20\d{2}\.\d+\.\d+/)
+  expect(source).toContain('`    uses: ${PIPELINE_WORKFLOW}@${VERSION}`')
+  expect(VERSION).toBe(version)
+  expect(readFileSync(join(repoRoot, 'scripts', 'sync-version.mjs'), 'utf8')).toContain("'packages', 'core', 'src', 'version.ts'")
 })

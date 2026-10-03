@@ -4,6 +4,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { dirname, join, relative, resolve } from 'node:path'
+import { initCommand } from './init.js'
 import {
   BranchLedgerStore,
   FileLedgerStore,
@@ -127,6 +128,7 @@ export async function main(
   if (argv[0] === 'ledger') return runLedgerCommand(argv.slice(1), out, err)
   if (argv[0] === 'ingest') return ingestCommand(argv.slice(1), out, err)
   if (argv[0] === 'select') return selectCommand(argv.slice(1), out, err)
+  if (argv[0] === 'init') return initCommand(argv.slice(1), out, err)
   if (argv[0] === 'readiness') return readinessCommand(argv.slice(1), out, err)
   if (argv[0] === 'profiles') return profilesCommand(argv.slice(1), out, err)
   if (argv[0] === 'doctor') return doctorCommand(argv.slice(1), out, err)
@@ -135,7 +137,7 @@ export async function main(
   if (argv[0] === 'metrics') return metricsCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) [--base-repo <dir>] [--workers <n>] | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare sweep [--ledger <dir>] [--json] [--out <file>] | qare metrics <record|note> | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) [--base-repo <dir>] [--workers <n>] | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare init [path] [--target <url>] [--health <path>] [--service <name>] [--model <name>] [--file-issues <owner/name>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare sweep [--ledger <dir>] [--json] [--out <file>] | qare metrics <record|note> | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
