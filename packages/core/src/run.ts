@@ -1,6 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { lstat, mkdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { a11yConfigOf, type A11yCounts, type ProfileA11y } from './a11y.js'
+import { DEFAULT_A11Y_THEME, settleA11y, type A11yContext } from './a11y-run.js'
 import { parseDurationMs, shellCharacter } from './duration.js'
 import { prepareBaseCheckout, type BaseCheckout, type BaseCheckoutInput, type BaseCheckoutOutcome } from './base-checkout.js'
 import { collectCriterionFiles, criterionCacheKey, FileCheckCache, planFingerprint, profileFingerprint, resolveRefSha } from './cache.js'
@@ -389,6 +391,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     const totp =
       login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
     if (side !== undefined) side.ran = true
+    const visual = visualContextOf(profile, profile.redact?.masks ?? [], opts.visualSession, side)
     const flow = {
       session: opts.flowSession,
       masks: profile.redact?.masks ?? [],
@@ -396,7 +399,8 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
       target,
       totp,
       mcp: profile.mcp,
-      visual: visualContextOf(profile, profile.redact?.masks ?? [], opts.visualSession, side),
+      visual,
+      a11y: a11yContextOf(profile, visual.comparison, side, job.criteria),
       ...(side === undefined ? {} : { tracesRoot: side.tracesRoot }),
     }
     const criteria = await runCriteriaAcrossLanes(
@@ -479,7 +483,7 @@ async function runSeveralProfiles(
           ...new Set(
             (group.criteria ?? []).flatMap((criterion) =>
               (criterion.checks ?? []).flatMap((check) =>
-                check.kind === 'flow' ? (check.actions ?? []).filter((action) => !driver.actions.includes(action.action)) : [],
+                check.kind === 'flow' || check.kind === 'a11y' ? (check.actions ?? []).filter((action) => !driver.actions.includes(action.action)) : [],
               ),
             ),
           ),
@@ -711,6 +715,7 @@ async function runProfileGroup(
     // The masks are the union of every app's, built before any app ran, so
     // one app's screenshots cannot publish another app's secret region (#55).
     if (side !== undefined) side.ran = true
+    const visual = visualContextOf(profile, masks, opts.visualSession, side)
     const flow = {
       session: opts.flowSession,
       masks,
@@ -718,7 +723,8 @@ async function runProfileGroup(
       target,
       totp,
       mcp: profile.mcp,
-      visual: visualContextOf(profile, masks, opts.visualSession, side),
+      visual,
+      a11y: a11yContextOf(profile, visual.comparison, side, group.criteria),
       ...(side === undefined ? {} : { tracesRoot: side.tracesRoot }),
     }
     const criteria = await runCriteriaAcrossLanes(
@@ -763,6 +769,8 @@ interface FlowContext {
   session?: FlowSessionFactory
   masks: string[]
   visual: VisualContext
+  /** What the accessibility audits of its flows and `a11y` checks run with (#149). */
+  a11y: A11yContext
   suites: ProfileSuite[]
   target?: FlowTargetContext
   totp?: FlowTotpConfig
@@ -936,6 +944,13 @@ interface SideContext {
    * black out the same regions, so masking never shows as a difference.
    */
   extraMasks?: readonly string[]
+  /**
+   * What the head profile audits accessibility under, by criterion (#149).
+   * It is in force at the base too: the two sides are compared under one
+   * rule set, so a pull request that turns the audit on finds the old debt
+   * at the base instead of failing on it.
+   */
+  headA11y?: (criterionId: string) => { a11y?: ProfileA11y; visual: QaProfile['visual'] } | undefined
   /** On the head side: where the base side saved its screenshots, and why a criterion has none (#143). */
   visualBase?: Extract<VisualComparison, { with: 'base' }>
   /** The base boots from the base tree: where a compose path of the profile lands there. */
@@ -963,6 +978,23 @@ function visualContextOf(profile: QaProfile, masks: readonly string[], session: 
     comparison: side === undefined ? oneSided : side.name === 'base' ? { with: 'base-side' } : (side.visualBase ?? oneSided),
     ...(profile.app === undefined ? {} : { appHealth: profile.app.health.http }),
     ...(profile.target === undefined ? {} : { targetUrl: profile.target.url }),
+  }
+}
+
+/**
+ * What a side's accessibility audits run with (#149): the profile's `a11y`
+ * section with its defaults, the widths and themes of its `visual` section,
+ * and the comparison its visual checks use. The base side takes the head
+ * profile's, so both sides are audited under the same rules.
+ */
+function a11yContextOf(profile: QaProfile, comparison: VisualComparison, side: SideContext | undefined, criteria: readonly JobCriterion[]): A11yContext {
+  const head = side?.name === 'base' ? criteria.map((criterion) => side.headA11y?.(criterion.id)).find((entry) => entry !== undefined) : undefined
+  const section = head === undefined ? profile.a11y : head.a11y
+  return {
+    config: a11yConfigOf(section),
+    defaults: head === undefined ? profile.visual : head.visual,
+    standing: section?.standing === true,
+    comparison,
   }
 }
 
@@ -1114,6 +1146,10 @@ async function runBaseSide(
       ran: false,
       extraRules: headRules,
       extraMasks: profiles.flatMap(({ profile }) => profile.redact?.masks ?? []),
+      headA11y: (criterionId) => {
+        const owner = profiles.find(({ criteria }) => criteria.some((criterion) => criterion.id === criterionId))?.profile
+        return owner === undefined ? undefined : { ...(owner.a11y === undefined ? {} : { a11y: owner.a11y }), visual: owner.visual }
+      },
       composePath: (path) => intoBaseTree(job.repoPath, basePath, resolve(path)) ?? (isAbsolute(path) ? path : resolve(basePath, path)),
       gate: limits.gate,
     }
@@ -1188,7 +1224,7 @@ async function runBothSides(job: Job, opts: SideOpts, request: BaseSideRequest):
 function noBaseScreenshots(base: BaseSideOutcome, criterionId: string): string {
   if (base.status === 'not-executed') return `the base side did not run: ${base.reason}`
   const criterion = base.result.criteria.find((entry) => entry.id === criterionId)
-  if (criterion?.outcome !== 'unverified') return 'the base side saved no screenshots for this check'
+  if (criterion?.outcome !== 'unverified') return 'the base side saved nothing for this check'
   return criterion.reason.startsWith(NOT_RUN_AT_BASE) ? criterion.reason : `unverified at the base: ${criterion.reason}`
 }
 
@@ -1352,7 +1388,14 @@ function validatePlanValues(criteria: JobCriterion[], profile: QaProfile, values
         }
         continue
       }
-      if (check.kind === 'flow') {
+      if (check.kind === 'a11y' && check.url !== undefined) {
+        // The page an a11y check audits is named as a visual check names
+        // its page (#149): it may carry run values, and stays on the target.
+        validateValueReferences(check.url, values, `${base}.url`)
+        if (profile.target !== undefined && check.url.startsWith('/') && pathOnTarget(profile.target.url, check.url) === undefined)
+          throw new JobValidationError(`${base}.url`, `the path ${JSON.stringify(check.url)} climbs out of the target ${profile.target.url}; a path on the target stays below its URL`)
+      }
+      if (check.kind === 'flow' || check.kind === 'a11y') {
         // Flow strings and the command of the suite a flow names carry run
         // values too, such as {{run.target_url}} (#122), and may read a mail
         // check's one-time code or link (#64). Braces that are neither are
@@ -1376,6 +1419,7 @@ function validatePlanValues(criteria: JobCriterion[], profile: QaProfile, values
           if (profile.target !== undefined && action.action === 'open' && action.url.startsWith('/') && pathOnTarget(profile.target.url, action.url) === undefined)
             throw new JobValidationError(`${base}.actions[${actionIndex}].url`, `the path ${JSON.stringify(action.url)} climbs out of the target ${profile.target.url}; a path on the target stays below its URL`)
         }
+        if (check.kind === 'a11y') continue
         const suiteIndex = check.suite === undefined ? -1 : profile.suites.findIndex((suite) => suite.name === check.suite)
         const suite = profile.suites[suiteIndex]
         if (suite !== undefined) validateRunReferences(suite.command, values, `suites[${suiteIndex}].command`)
@@ -1667,6 +1711,11 @@ async function runCriterion(
   // run only (#143): the next run's base may boot, so the cache must not
   // serve this run's missing comparison back to it.
   let notCacheable = false
+  // What the accessibility audits found, per check (#149): the counts the
+  // result carries, and why an audit failed a check, which names the rule
+  // and the element so the failure reads without opening the record.
+  const a11yCounts = new Map<number, A11yCounts>()
+  const failedReasons = new Map<number, string>()
   // The values a run publishes or consumes — a mail message's link, its
   // one-time code — are secrets like any other: they join the profile's
   // redaction rules for every piece of evidence written after them (#64).
@@ -1745,7 +1794,7 @@ async function runCriterion(
       foldCriterion(fold)
       continue
     }
-    if (substituted.kind === 'flow') {
+    if (substituted.kind === 'flow' || substituted.kind === 'a11y') {
       // A flow can read a mail check's one-time code or link the way a command
       // does, at run time and per run (#64). Resolution happens per attempt:
       // a single-use artefact is spent by the attempt that reads it, and the
@@ -1754,12 +1803,43 @@ async function runCriterion(
       // the first one consumed. An artefact that is gone skips the flow
       // unverified, and the flow never runs.
       const fold = await settleCheck(async (attempt) => {
-        const resolvedActions = resolveFlowArtefacts(substituted.actions ?? [], artefacts, criterion.id)
+        // An a11y check is a flow whose pages are audited (#149): the page it
+        // names is the page it opens, resolved as a visual check's is, so
+        // each side of a run audits its own app. A flow is audited when the
+        // profile makes the audit standing; a suite runs a browser of its
+        // own, which nothing here can audit.
+        let authored = substituted.actions
+        if (substituted.kind === 'a11y' && authored === undefined) {
+          const page = visualPageUrl(substituted.url, flow.visual, values)
+          if (!page.ok) return { status: 'unverified' as const, reason: page.reason.replace("the visual check's url", "the a11y check's url").replace('a visual check has no page to capture', 'an a11y check has no page to audit') }
+          authored = [{ action: 'open', url: page.url }]
+        }
+        const audited = substituted.kind === 'a11y' || (flow.a11y.standing && substituted.actions !== undefined)
+        const named = substituted.kind === 'a11y' ? { widths: substituted.widths, themes: substituted.themes } : {}
+        const themes = named.themes ?? flow.a11y.defaults.themes
+        const a11y: A11yRun | undefined = audited
+          ? {
+              context: flow.a11y,
+              widths: named.widths ?? flow.a11y.defaults.widths,
+              themes: themes.length === 0 ? [DEFAULT_A11Y_THEME] : themes,
+              standing: substituted.kind === 'flow',
+              criterionId: criterion.id,
+              index,
+            }
+          : undefined
+        const resolvedActions = resolveFlowArtefacts(authored ?? [], artefacts, criterion.id)
         if (!resolvedActions.ok) return { status: 'unverified' as const, reason: resolvedActions.reason }
         // The flow types what it read from mail: those values join the sweep.
         if (resolvedActions.values.length > 0) sweepRules.push(...valueRules(resolvedActions.values))
         const outcome = await runFlowCheckJob(
-          { ...substituted, actions: resolvedActions.actions },
+          substituted.kind === 'flow'
+            ? { ...substituted, actions: resolvedActions.actions }
+            : {
+                kind: 'flow',
+                ...(substituted.name === undefined ? {} : { name: substituted.name }),
+                actions: resolvedActions.actions,
+                ...(substituted.timeoutMs === undefined ? {} : { timeoutMs: substituted.timeoutMs }),
+              },
           flow.suites,
           flow.session,
           flow.target,
@@ -1775,8 +1855,15 @@ async function runCriterion(
           execution,
           flow.mcp,
           flow.tracesRoot,
+          a11y,
         )
         evidence.push(...outcome.evidence)
+        if (outcome.transient === true) notCacheable = true
+        // Each attempt audits afresh: the counts are the last attempt's.
+        if (outcome.a11y !== undefined) a11yCounts.set(index, outcome.a11y)
+        if (outcome.status === 'failed' && outcome.reason !== undefined && outcome.a11yFailed === true)
+          failedReasons.set(index, redactText(outcome.reason, sweepRules))
+        else failedReasons.delete(index)
         // A repair is recorded with the criterion and check it happened in (#83),
         // so the comment can name it. Its free text is swept by the run's own
         // dynamic rules first — mail values and generated codes included —
@@ -1922,13 +2009,23 @@ async function runCriterion(
     foldCriterion(fold)
   }
 
+  // The audits' counts, summed over the criterion's checks (#149). A
+  // criterion nothing audited carries none.
+  const audited: { a11y?: A11yCounts } = {}
+  if (a11yCounts.size > 0) {
+    const sum: A11yCounts = { new: 0, existing: 0, accepted: 0, reported: 0, uncompared: 0 }
+    for (const counts of a11yCounts.values()) for (const key of Object.keys(sum) as Array<keyof A11yCounts>) sum[key] += counts[key]
+    audited.a11y = sum
+  }
   let composed: CriterionResult
   if (failed) {
     composed = {
       id: criterion.id,
       outcome: 'failed',
       evidence,
+      ...(failedReasons.size === 0 ? {} : { reason: [...failedReasons.values()].join('; ') }),
       ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }),
+      ...audited,
     }
   } else if (unverifiedReason !== undefined) {
     composed = {
@@ -1936,6 +2033,7 @@ async function runCriterion(
       outcome: 'unverified',
       reason: unverifiedReason,
       ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }),
+      ...audited,
     }
   } else if (criterion.skipped !== undefined) {
     // Everything that ran passed, but the plan asked for more than ran.
@@ -1945,9 +2043,10 @@ async function runCriterion(
       reason: criterion.skipped,
       evidence,
       ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }),
+      ...audited,
     }
   } else {
-    composed = { id: criterion.id, outcome: 'proven', evidence, ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }) }
+    composed = { id: criterion.id, outcome: 'proven', evidence, ...(criterionRepairs.length === 0 ? {} : { repairs: criterionRepairs }), ...audited }
   }
   // What ran this time is what the cache stores (#47): the criterion's
   // published result and every evidence file it wrote, under a key over the
@@ -2024,6 +2123,12 @@ function substituteCheck(check: JobCheck, values: RunValues): JobCheck {
     }
   }
   if (check.kind === 'visual') return check.url === undefined ? check : { ...check, url: substituteValues(check.url, values) }
+  if (check.kind === 'a11y')
+    return {
+      ...check,
+      ...(check.url === undefined ? {} : { url: substituteValues(check.url, values) }),
+      ...(check.actions === undefined ? {} : { actions: check.actions.map((action) => mapFlowStrings(action, (value) => substituteValues(value, values))) }),
+    }
   if (check.kind === 'tool') {
     // A tool check's strings — argument values and matcher text alike — may
     // name run values, exactly as a command's do (#94).
@@ -2060,6 +2165,30 @@ interface ResolvedArtefacts {
   consumed: { source: string; artefact: string }[]
 }
 
+/** What auditing one flow takes (#149): the side's context, the widths and themes, and where the check sits. */
+interface A11yRun {
+  context: A11yContext
+  widths: readonly number[]
+  themes: readonly string[]
+  /** The profile made the audit standing; no plan asked for it. */
+  standing: boolean
+  criterionId: string
+  index: number
+}
+
+interface FlowJobOutcome {
+  status: 'passed' | 'failed' | 'unverified'
+  reason?: string
+  evidence: string[]
+  repairs?: FlowRepairRecord[]
+  /** What the flow's audits counted, when it was audited (#149). */
+  a11y?: A11yCounts
+  /** The flow itself passed, and the audit is what failed the check. */
+  a11yFailed?: true
+  /** The outcome is this run's only: the base had no audit to compare with. */
+  transient?: true
+}
+
 /**
  * Execute one flow check (#121). A suite flow runs the suite's command from the
  * profile and records the outcome in `suite.txt`; an actions flow drives the
@@ -2085,7 +2214,8 @@ async function runFlowCheckJob(
   execution: ExecutionKind,
   mcp?: ProfileMcpServer[],
   tracesRoot?: string,
-): Promise<{ status: 'passed' | 'failed' | 'unverified'; reason?: string; evidence: string[]; repairs?: FlowRepairRecord[] }> {
+  a11y?: A11yRun,
+): Promise<FlowJobOutcome> {
   const inEvidence = (names: readonly string[]): string[] => names.map((name) => `${checkDir}/${name}`)
   if (check.suite !== undefined) {
     const suite = suites.find((entry) => entry.name === check.suite)
@@ -2166,6 +2296,7 @@ async function runFlowCheckJob(
       totp,
       generatedCodes,
       codesOnPage: mailCodes.length > 0,
+      ...(a11y === undefined ? {} : { a11y: { tags: a11y.context.config.tags, widths: a11y.widths, themes: a11y.themes } }),
     })
     // The losing branch of the race is drained, so a flow that finishes late
     // after a timeout does not crash the run with an unhandled rejection.
@@ -2184,6 +2315,25 @@ async function runFlowCheckJob(
       stopped = (error as Error).message
     }
     const evidence = outcome === undefined ? [] : inEvidence(outcome.evidence)
+    // The audits the flow made are settled into an outcome and a record
+    // (#149), in code. A flow that timed out hands back no audits, and the
+    // timeout is then what the check reports.
+    let settled: Awaited<ReturnType<typeof settleA11y>> | undefined
+    if (a11y !== undefined && outcome?.a11y !== undefined) {
+      settled = await settleA11y({
+        check: { ...(check.name === undefined ? {} : { name: check.name }), standing: a11y.standing },
+        audited: outcome.a11y,
+        context: a11y.context,
+        criterionId: a11y.criterionId,
+        index: a11y.index,
+        evidenceDir,
+        checkDir,
+        // The codes the flow put on the page are swept from the record too.
+        rules: [...rules, ...valueRules(generatedCodes)],
+      })
+      evidence.push(...settled.evidence)
+    }
+    const audited = settled === undefined ? {} : { a11y: settled.counts }
     // Recorded however the flow ended: a flow that timed out has still
     // reached whatever it reached.
     if (target !== undefined) {
@@ -2196,6 +2346,7 @@ async function runFlowCheckJob(
           reason: `refused: undeclared host: ${undeclared.join(', ')}; the target profile does not list it in target.hosts`,
           evidence,
           ...(outcome?.repairs === undefined ? {} : { repairs: outcome.repairs }),
+          ...audited,
         }
       }
     }
@@ -2206,12 +2357,26 @@ async function runFlowCheckJob(
         reason: outcome.reason,
         evidence,
         ...(outcome.repairs === undefined ? {} : { repairs: outcome.repairs }),
+        ...audited,
+      }
+    // The flow decides first: a failed assert is the check's failure whatever
+    // the audits found. A flow that passed takes the audit's outcome (#149).
+    if (outcome.outcome === 'passed' && settled !== undefined && settled.status !== 'passed')
+      return {
+        status: settled.status,
+        ...(settled.reason === undefined ? {} : { reason: settled.reason }),
+        ...(outcome.repairs === undefined ? {} : { repairs: outcome.repairs }),
+        evidence,
+        ...audited,
+        ...(settled.status === 'failed' ? { a11yFailed: true as const } : {}),
+        ...(settled.transient === true ? { transient: true as const } : {}),
       }
     return {
       status: outcome.outcome,
       ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
       ...(outcome.repairs === undefined ? {} : { repairs: outcome.repairs }),
       evidence,
+      ...audited,
     }
   } finally {
     await started.dispose()

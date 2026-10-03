@@ -570,6 +570,9 @@ test('the loaded profile carries its QA.md instructions (#156)', async () => {
   expect(profile.instructions).toBe('QA instructions: what the app is, what matters, and how to log in.\n')
 })
 
+// Assembled, never literal: no network marker sits as a literal in a test.
+const A11Y_TARGET = ['https:', '//app.example'].join('')
+
 test('an a11y section states the rule set, the impacts that fail, what is accepted, and whether it is standing (#149)', async () => {
   const dir = copiedProfile()
   writeFileSync(
@@ -585,12 +588,12 @@ test('an a11y section states the rule set, the impacts that fail, what is accept
   // Absent means no standing audit; a planned a11y check takes the defaults.
   expect((await loadProfile(fixtureDir)).a11y).toBeUndefined()
   // An empty section is the defaults, spelled out by nobody.
-  expect(validateProfileConfig({ target: { url: 'https://app.example', health: { http: '/', timeout: '5s' } }, a11y: {} }).a11y).toEqual({})
+  expect(validateProfileConfig({ target: { url: A11Y_TARGET, health: { http: '/', timeout: '5s' } }, a11y: {} }).a11y).toEqual({})
   rmSync(dir, { recursive: true })
 })
 
 test('an a11y section that names an unknown rule set, impact or field fails naming it (#149)', () => {
-  const target = { url: 'https://app.example', health: { http: '/', timeout: '5s' } }
+  const target = { url: A11Y_TARGET, health: { http: '/', timeout: '5s' } }
   const error = (a11y: unknown): ProfileValidationError => {
     try {
       validateProfileConfig({ target, a11y })

@@ -1,3 +1,4 @@
+import type { A11yCounts } from './a11y.js'
 import type { RunEnvironment, RunImage } from './environment.js'
 import { parseProfileRef, type JobProfileRef } from './job.js'
 import type { ModelUsage } from './metrics.js'
@@ -35,6 +36,13 @@ export interface CriterionBase {
 interface CriterionComparison {
   base?: CriterionBase
   regression?: boolean
+  /**
+   * What the accessibility audits of this criterion's checks counted (#149):
+   * violations new at the head, ones the base already had, ones the profile
+   * accepts, ones reported below the failing impacts, and ones nothing could
+   * be compared with. Absent when nothing was audited.
+   */
+  a11y?: A11yCounts
 }
 
 export interface ProvenCriterionResult extends CriterionComparison {
@@ -455,7 +463,8 @@ function parseCriterionResult(value: unknown, index: number): CriterionResult {
     fail(`${base}.cached`, 'cached must be true when present')
   const cached = value.cached === undefined ? undefined : ({ cached: true } as const)
   const comparison = parseComparison(value, base, outcome as CriterionOutcome)
-  const withCached = <T>(record: T): T => ({ ...record, ...(cached ?? {}), ...comparison })
+  const a11y = value.a11y === undefined ? undefined : parseA11yCounts(value.a11y, `${base}.a11y`)
+  const withCached = <T>(record: T): T => ({ ...record, ...(cached ?? {}), ...comparison, ...(a11y === undefined ? {} : { a11y }) })
 
   switch (outcome as CriterionOutcome) {
     case 'proven':
@@ -486,6 +495,17 @@ function parseCriterionResult(value: unknown, index: number): CriterionResult {
       )
     }
   }
+}
+
+/** What a criterion's accessibility audits counted (#149): five whole numbers, none below zero. */
+function parseA11yCounts(value: unknown, base: string): A11yCounts {
+  if (!isRecord(value)) fail(base, 'a11y must be a JSON object counting new, existing, accepted, reported and uncompared violations')
+  const count = (key: keyof A11yCounts): number => {
+    const entry = value[key]
+    if (typeof entry !== 'number' || !Number.isInteger(entry) || entry < 0) fail(`${base}.${key}`, `a11y.${key} must be a whole number of at least 0`)
+    return entry
+  }
+  return { new: count('new'), existing: count('existing'), accepted: count('accepted'), reported: count('reported'), uncompared: count('uncompared') }
 }
 
 /** The repairs a criterion result may carry (#83), each named for its check and action. */
