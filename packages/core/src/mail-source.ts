@@ -69,17 +69,17 @@ function afterMoment(after: string | undefined): number | undefined {
  */
 export function inboxSource(inbox: string, fetchImpl: typeof fetch = fetch): MailSource {
   const listInbox = httpMailbox(inbox, fetchImpl)
+  // Keyed by what the message is, so a wait that polls for a minute holds
+  // each message once, not once per poll.
   const listed = new Map<string, MailMessage>()
-  let serial = 0
   return {
     kind: 'inbox',
     describe: `inbox at ${inbox}`,
     async list(filter, signal) {
       // The contract has always taken a moment; without one, everything is asked for.
       const messages = await listInbox(filter.address, filter.after ?? new Date(0).toISOString(), signal)
-      return messages.map((message) => {
-        serial += 1
-        const id = `inbox-${serial}`
+      return messages.map((message, index) => {
+        const id = `${filter.address}#${index}@${message.received_at}`
         listed.set(id, message)
         return { id, received_at: message.received_at }
       })

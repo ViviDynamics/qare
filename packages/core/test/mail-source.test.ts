@@ -103,3 +103,14 @@ test('a declared source builds the adapter its kind names', () => {
   expect(mailSourceOf({ kind: 'mailpit', url: MAILPIT_URL }).describe).toBe(`mailpit at ${MAILPIT_URL}`)
   expect(mailSourceOf({ kind: 'inbox', url: INBOX_URL }).describe).toBe(`inbox at ${INBOX_URL}`)
 })
+
+test('an inbox polled again names the same message the same way, so a wait holds nothing it has already seen twice', async () => {
+  const stored = { from: 'App <no-reply@app.test>', subject: 'Welcome', body: 'hello', received_at: '2026-10-03T16:52:30.702Z' }
+  const source = inboxSource(INBOX_URL, answering(() => Response.json({ messages: [stored] })))
+  const first = await source.list({ address: 'qa@localhost' })
+  const second = await source.list({ address: 'qa@localhost' })
+  expect(second).toEqual(first)
+  // Another address's listing does not disturb a read that is still to come.
+  await source.list({ address: 'other@localhost' })
+  expect((await source.read(first[0]?.id ?? '')).subject).toBe('Welcome')
+})
