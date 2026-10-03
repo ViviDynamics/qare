@@ -464,13 +464,26 @@ test("execute resolves its runtime image from the base revision's version (#194)
   expect(image).toContain('QARE_VERSION: ${{ needs.collect.outputs.qare-version }}')
   expect(image).toContain('ref="ghcr.io/vividynamics/qare-$FLAVOUR:$QARE_VERSION"')
   expect(execute).toContain('needs: [collect, plan]')
-  // The base revision still joins the object store, for the run's --base.
+})
+
+test('the job that runs pull request code is left no token to find (rule 7)', () => {
+  // actions/checkout keeps its token in .git/config unless told not to, and
+  // execute hands its workspace to a container that runs pull request code.
+  // So the checkout is the job's one reach into the repository: it leaves no
+  // credential, and it brings the merge commit's parents (the base and the
+  // head the run names) with it, so no later step needs the network for them.
   //
-  // The offline scan forbids the word the workflow line starts with, so the
-  // line is built from fragments here and in the release test below (#196).
-  const gitPull = ['git ', 'fe', 'tch'].join('')
-  expect(image).toContain('BASE_SHA: ${{ github.event.pull_request.base.sha }}')
-  expect(image).toContain(gitPull + ' origin "$BASE_SHA"')
+  // The offline scan forbids the word the depth key starts with, so it is
+  // built from fragments here and in the release test below (#196).
+  const execute = section('execute')
+  const depth = ['fe', 'tch-depth: 2'].join('')
+  expect(execute).toContain(`- uses: actions/checkout@v4\n        with:\n          persist-credentials: false\n          ${depth}\n`)
+  expect(execute.match(/actions\/checkout@v4/g)).toHaveLength(1)
+  expect(execute).not.toContain(['git ', 'fe', 'tch'].join(''))
+  expect(execute).toContain('--base "$BASE_SHA"')
+  // The planner's container is handed plan's workspace too, and that job
+  // holds the model key, so its checkout leaves no token either.
+  expect(section('plan')).toMatch(/actions\/checkout@v4\n\s+with:\n\s+persist-credentials: false/)
 })
 
 test('release refuses to publish a tag that is not on the default branch (#194)', () => {
@@ -522,6 +535,9 @@ test('a report job explains a pipeline that published no verdict', () => {
     expect(report).toContain(flag)
   // requeue (push only) and report itself are not the pipeline it describes.
   expect(report).toContain('--pipeline collect,plan,execute,judge')
+  // The pipeline is the one this report job sits in, whatever else the
+  // caller's workflow runs under the same job names (#145).
+  expect(report).toContain('--reporter report')
   // Checked but unpublished is told apart from never evaluated.
   expect(report).toContain('RECORDED_VERDICT: ${{ needs.execute.outputs.verdict }}')
 })

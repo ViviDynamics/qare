@@ -82,6 +82,7 @@ jobs:
 | `model-key-env` | `OPENAI_API_KEY` | The environment variable the provider reads its key from. Set it to `ANTHROPIC_API_KEY` with `nare-provider: anthropic`. |
 | `profile` | `.qa` | The directory that holds the QA profile. |
 | `runs-on` | `"ubuntu-latest"` | Where every job runs, as JSON: one label, or a list of labels for your own runners. |
+| `execute-runs-on` | empty | Where execute runs, in the same JSON form, when it should not share runners with the jobs that hold secrets. Empty means `runs-on`. See "Your own runners". |
 | `planner-diff-exclude` | empty | Space-separated git pathspecs left out of the planner's copy of the diff, for a diff too large to plan from whole. execute and judge still read the full diff. |
 | `qare-ref` | the release | The qare revision the pipeline runs. It defaults to the release the workflow file ships in. Leave it alone and pin the release in `uses:`. |
 
@@ -127,6 +128,35 @@ A GitHub-hosted runner has all of it. Your own runner needs `docker`, `git`,
 plan, execute and judge run qare and nare inside the published images
 (`ghcr.io/vividynamics/qare-core` and the flavour the profile names), and
 the three jobs that hold only the GitHub token set up node themselves.
+
+## Your own runners
+
+qare's rule is that secrets never share a machine with pull request code.
+On GitHub-hosted runners every job gets a fresh machine, so the rule holds
+by construction. A runner that outlives its job is different: execute runs
+the pull request's code with the docker socket in reach, and whatever that
+code leaves behind is still there when a later plan or judge job, holding
+the model key or a token that can write, lands on the same machine.
+
+So with your own runners, do one of these:
+
+- use runners that are created for one job and destroyed after it, or
+- give execute a pool of its own with `execute-runs-on`, one that never
+  runs plan, judge or any other job that holds a secret:
+
+  ```yaml
+      runs-on: '["self-hosted", "linux", "x64"]'
+      execute-runs-on: '["self-hosted", "linux", "x64", "untrusted"]'
+  ```
+
+One pool of long-lived runners for every job works, and is what a single
+`runs-on` gives you, but it is weaker than the rule: treat it as trusting
+every pull request author in the repository with the model key.
+
+Inside each job the boundary holds either way: execute's checkout leaves no
+token on disk, plan's checkout leaves none either, and the model key is
+handed to the planner and the verifier in a file outside the workspace that
+is removed when the step ends.
 
 ## Triggers
 

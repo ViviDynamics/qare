@@ -212,6 +212,9 @@ async function reportFailureCommand(argv: string[], out: Writer): Promise<number
     // The workflow's pipeline job ids: jobs outside them (one gated on push,
     // the report job itself) are neither the failure nor skipped by it.
     pipeline: flags.list('pipeline'),
+    // The id of the job asking, which is still running: the calling job it
+    // is listed under is the one whose jobs are this pipeline's (#145).
+    reporter: flags.string('reporter'),
   })
   if (outcome.kind === 'nothing-failed') {
     out.write(`no job in run ${runId} failed: nothing to report\n`)

@@ -84,6 +84,7 @@ test('the pipeline is a reusable workflow and nothing else triggers it', () => {
 
 test('the interface a caller sees: its inputs, their defaults, and the one secret', () => {
   expect(Object.keys(call.inputs).sort()).toEqual([
+    'execute-runs-on',
     'model-key-env',
     'nare-base-url',
     'nare-model',
@@ -119,8 +120,14 @@ test('every input the pipeline declares is one it reads', () => {
 })
 
 test('the caller chooses the runners for every job', () => {
-  for (const [id, job] of Object.entries(pipeline.jobs))
+  for (const [id, job] of Object.entries(pipeline.jobs)) {
+    if (id === 'execute') continue
     expect(job['runs-on'], `${id} must run where the caller says`).toBe('${{ fromJSON(inputs.runs-on) }}')
+  }
+  // Rule 7 is about machines: execute runs pull request code, so a caller
+  // whose runners outlive a job can keep it off the ones that hold secrets.
+  expect(pipeline.jobs.execute?.['runs-on']).toBe('${{ fromJSON(inputs.execute-runs-on || inputs.runs-on) }}')
+  expect(call.inputs['execute-runs-on']?.default).toBe('')
 })
 
 test('the pipeline pins the release it ships in, so a caller pins one tag', () => {
@@ -155,6 +162,23 @@ test('a missing model key stops the run by name rather than reaching the model w
     const step = pipeline.jobs[id]?.steps?.find((candidate) => candidate.name === name)
     expect(step?.run, `${id} must fail closed without a key`).toMatch(/if \[ -z "\$MODEL_KEY" \]; then\n(?:.*\n)*?\s*exit 1\n/)
     expect(step?.run).toContain('model-key')
+  }
+})
+
+test('the model key never becomes a variable of the step that passes it on', () => {
+  // The caller names the variable the provider reads. Exported into the
+  // step's own shell, a name like IMAGE_REF would put the key where an image
+  // name is expected. It goes to the container in a file outside the
+  // workspace, and the shell's own variables stay what they were.
+  for (const [id, name] of [['plan', 'Plan the QA run'], ['judge', 'Judge the result']] as const) {
+    const run = pipeline.jobs[id]?.steps?.find((candidate) => candidate.name === name)?.run ?? ''
+    expect(run, id).not.toMatch(/export "\$MODEL_KEY_ENV/)
+    expect(run, id).toContain('key_file="$(mktemp "$RUNNER_TEMP/model-key.XXXXXX")"')
+    expect(run, id).toContain(`trap 'rm -f "$key_file"' EXIT`)
+    expect(run, id).toContain('--env-file "$key_file"')
+    expect(run, id).toMatch(/\[\[ ! "\$MODEL_KEY_ENV" =~ \^\[A-Za-z_\]\[A-Za-z0-9_\]\*\$ \]\]/)
+    // Never as an argument either: the key's value is not on a command line.
+    expect(run, id).not.toMatch(/-e "?\$MODEL_KEY/)
   }
 })
 

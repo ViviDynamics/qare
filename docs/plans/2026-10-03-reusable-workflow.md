@@ -11,9 +11,13 @@ In:
   `on: workflow_call` with typed inputs and one named secret.
 - `.github/workflows/qare.yml` becomes a caller of it (`uses:
   ./.github/workflows/pipeline.yml`), so qare runs the pipeline it ships.
-- The caller interface: `runs-on`, `profile`, `nare-provider`,
-  `nare-base-url`, `nare-model`, `model-key-env`, `planner-diff-exclude`,
-  `qare-ref`; secret `model-key`.
+- The caller interface: `runs-on`, `execute-runs-on`, `profile`,
+  `nare-provider`, `nare-base-url`, `nare-model`, `model-key-env`,
+  `planner-diff-exclude`, `qare-ref`; secret `model-key`.
+- From review: execute and plan leave no checkout token on disk, the model
+  key goes to its container in a file and never into the step's shell,
+  execute can have runners of its own, and the failure report places the
+  pipeline by the calling job its own report job sits under.
 - A release pin: `qare-ref` defaults to the release the workflow file ships
   in, held to `package.json` by a test and stamped by `scripts/sync-version.mjs`,
   so a caller pins one tag in `uses:` and upgrading is that one line.

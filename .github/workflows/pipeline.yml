@@ -103,6 +103,14 @@ on:
           git, jq and the gh CLI.
         type: string
         default: '"ubuntu-latest"'
+      execute-runs-on:
+        description: >-
+          Where execute runs, in the same JSON form, when it should not share
+          runners with the jobs that hold secrets. execute runs pull request
+          code, so on runners that outlive a job give it a pool of its own.
+          Empty means runs-on.
+        type: string
+        default: ''
       planner-diff-exclude:
         description: >-
           Paths left out of the planner's copy of the diff, as space-separated
@@ -274,9 +282,12 @@ jobs:
       # The base revision: the pull request contributes data only, and this
       # job holds the model key. The tree supplies the profile the planner
       # reads; the image is the published core for the pinned qare's version
-      # (#88), so nothing here builds qare from source.
+      # (#88), so nothing here builds qare from source. No token is left in
+      # .git/config: the planner's container is handed this workspace, and
+      # the job that holds the model key must hold no GitHub token.
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           ref: ${{ github.event.pull_request.base.sha }}
       - name: Pull the core image
         id: image
@@ -319,11 +330,18 @@ jobs:
             echo "model-key-env must be the name of an environment variable (got '$MODEL_KEY_ENV')" | tee -a "$GITHUB_STEP_SUMMARY" >&2
             exit 1
           fi
-          # The key travels to the container by name, under the variable the
-          # provider reads, and never as an argument. An endpoint is handed
-          # on only when the caller named one.
-          export "$MODEL_KEY_ENV=$MODEL_KEY"
-          model_env=(-e "$MODEL_KEY_ENV" -e NARE_PROVIDER -e NARE_MODEL)
+          # The key travels to the container in a file only this step can
+          # read, outside the workspace, under the variable the provider
+          # reads: never as an argument, and never as a variable of this
+          # shell, so a name that collides with one of the step's own
+          # (IMAGE_REF, say) cannot put the key where an image name or a path
+          # is expected. An endpoint is handed on only when the caller named
+          # one.
+          key_file="$(mktemp "$RUNNER_TEMP/model-key.XXXXXX")"
+          trap 'rm -f "$key_file"' EXIT
+          chmod 600 "$key_file"
+          printf '%s=%s\n' "$MODEL_KEY_ENV" "$MODEL_KEY" > "$key_file"
+          model_env=(--env-file "$key_file" -e NARE_PROVIDER -e NARE_MODEL)
           if [ -n "$NARE_BASE_URL" ]; then
             model_env+=(-e NARE_BASE_URL)
           fi
@@ -373,7 +391,10 @@ jobs:
     name: execute (no secrets)
     needs: [collect, plan]
     if: needs.collect.outputs.criteria == 'present' && needs.plan.result == 'success'
-    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    # Its own runners when the caller names them: this is the job that runs
+    # pull request code, and rule 7 keeps that off a machine that holds, or
+    # will later hold, a secret.
+    runs-on: ${{ fromJSON(inputs.execute-runs-on || inputs.runs-on) }}
     outputs:
       # Where the evidence was uploaded, the one place the posted comment may
       # link to (CONSTITUTION rule 4). Empty when nothing was uploaded.
@@ -383,8 +404,16 @@ jobs:
       # evaluated, judge is skipped, and the report job says why.
       verdict: ${{ steps.recorded.outputs.verdict }}
     steps:
-      # actions/checkout checks out the PR merge ref on pull_request events
+      # actions/checkout checks out the PR merge ref on pull_request events.
+      # No token is left in .git/config (rule 7): the run's container is
+      # handed this workspace and executes pull request code, so the job
+      # reaches the repository once, here, and never again. Two commits
+      # deep, so the merge commit's parents, the base and the head the run
+      # names with --base and --head, are in the object store without it.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
       # The flavour the profile targets (#88): the profile names it, and
       # execute pulls that image, not the runner's own stack. Absent means
       # the base image is enough, which a profile of command and mail
@@ -408,12 +437,8 @@ jobs:
         env:
           QARE_VERSION: ${{ needs.collect.outputs.qare-version }}
           FLAVOUR: ${{ steps.flavour.outputs.flavour }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          # The base revision joins the object store, as it has since #194:
-          # the run names it with --base.
-          git fetch origin "$BASE_SHA" --depth=1
           # The runtime is pipeline infrastructure, resolved exactly as plan
           # and judge resolve theirs (#88, rule 7): from the qare revision
           # the caller pinned, which collect read, and never from the pull
@@ -677,8 +702,12 @@ jobs:
             echo "model-key-env must be the name of an environment variable (got '$MODEL_KEY_ENV')" | tee -a "$GITHUB_STEP_SUMMARY" >&2
             exit 1
           fi
-          export "$MODEL_KEY_ENV=$MODEL_KEY"
-          model_env=(-e "$MODEL_KEY_ENV" -e NARE_PROVIDER -e NARE_MODEL)
+          # In a file, never in this shell: see the plan step.
+          key_file="$(mktemp "$RUNNER_TEMP/model-key.XXXXXX")"
+          trap 'rm -f "$key_file"' EXIT
+          chmod 600 "$key_file"
+          printf '%s=%s\n' "$MODEL_KEY_ENV" "$MODEL_KEY" > "$key_file"
+          model_env=(--env-file "$key_file" -e NARE_PROVIDER -e NARE_MODEL)
           if [ -n "$NARE_BASE_URL" ]; then
             model_env+=(-e NARE_BASE_URL)
           fi
@@ -856,7 +885,7 @@ jobs:
             --run-id "$RUN_ID" --attempt "$RUN_ATTEMPT" \
             --pr "$PR_NUMBER" --sha "$HEAD_SHA" --run-url "$RUN_URL" \
             --recorded-verdict "$RECORDED_VERDICT" \
-            --pipeline collect,plan,execute,judge \
+            --pipeline collect,plan,execute,judge --reporter report \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
   # label: requeue (GitHub token only)

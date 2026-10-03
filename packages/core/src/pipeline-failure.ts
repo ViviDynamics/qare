@@ -42,6 +42,12 @@ export interface PipelineFailure {
 // confusion this report exists to remove.
 const FAILED_JOB = new Set(['failure', 'timed_out'])
 
+/** The calling job a job is listed under, separator included: `qare / `, or nothing for a job of the workflow itself. */
+function callerOf(job: PipelineJob): string {
+  const at = job.name.lastIndexOf(' / ')
+  return at === -1 ? '' : job.name.slice(0, at + 3)
+}
+
 /**
  * The failed job and its first failed step, or undefined when no job failed.
  * Jobs are taken in the order given, which is the order the jobs API lists
@@ -53,7 +59,7 @@ const FAILED_JOB = new Set(['failure', 'timed_out'])
  */
 export function classifyPipelineFailure(
   allJobs: PipelineJob[],
-  opts: { verdictRecorded?: boolean; pipeline?: string[] } = {},
+  opts: { verdictRecorded?: boolean; pipeline?: string[]; reporter?: string } = {},
 ): PipelineFailure | undefined {
   // A workflow carries jobs that are not the pipeline (one gated on push, the
   // report job itself). A job is in the pipeline when its name is a listed
@@ -62,13 +68,26 @@ export function classifyPipelineFailure(
   // listed under the calling job, `qare / plan (model key only)`, so the name
   // that counts is the part after the last separator.
   const pipeline = opts.pipeline
+  const named = (job: PipelineJob, id: string): boolean => {
+    const own = job.name.slice(callerOf(job).length)
+    return own === id || own.startsWith(`${id} (`)
+  }
+  // Another workflow called from the same file may have a job of the same
+  // name (`infra / plan`). The reporter is the job still running, the one
+  // asking, so the calling job it is listed under is this pipeline's, and
+  // only jobs listed under it count. With no running reporter to place the
+  // pipeline by, every match counts.
+  const reporter = opts.reporter
+  const callers =
+    reporter === undefined
+      ? []
+      : allJobs.filter((job) => job.conclusion === null && named(job, reporter)).map(callerOf)
   const jobs =
     pipeline === undefined
       ? allJobs
-      : allJobs.filter((job) => {
-          const own = job.name.split(' / ').at(-1) ?? job.name
-          return pipeline.some((id) => own === id || own.startsWith(`${id} (`))
-        })
+      : allJobs.filter(
+          (job) => pipeline.some((id) => named(job, id)) && (callers.length === 0 || callers.includes(callerOf(job))),
+        )
   const failures = jobs.filter((job) => job.conclusion !== null && FAILED_JOB.has(job.conclusion))
   const failed = opts.verdictRecorded === true ? failures.at(-1) : failures[0]
   if (failed === undefined) return undefined
