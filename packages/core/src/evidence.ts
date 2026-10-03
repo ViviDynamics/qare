@@ -190,11 +190,6 @@ function escapeLinkText(text: string): string {
 }
 
 /**
- * A profile name is repository content, so it is escaped before it becomes a
- * heading: a name that carries Markdown or HTML cannot reshape the comment or
- * inject markup into it (#55).
- */
-/**
  * What a profile required of the host, in a sentence (#76). Whether the host
  * offers hardware virtualisation is said beside the requirement for it,
  * because nothing else in the comment names that fact.
@@ -208,6 +203,11 @@ function requirementLines(requirements: Requirements, subject: string, host: Hos
   return [`${subject} requires ${list}${offers}.`]
 }
 
+/**
+ * A profile name is repository content, so it is escaped before it becomes a
+ * heading: a name that carries Markdown or HTML cannot reshape the comment or
+ * inject markup into it (#55).
+ */
 function escapeHeading(text: string): string {
   return (
     text
