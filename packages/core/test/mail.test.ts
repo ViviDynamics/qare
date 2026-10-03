@@ -311,3 +311,41 @@ test('extractCode never publishes the whole match when an optional group did not
   expect(extractCode('the body has no code in it', '.*(\\d{6})?')).toBeUndefined()
   expect(extractCode('code 551234', 'code (\\d{6})?')).toBe('551234')
 })
+
+const MAILPIT_TEMPLATE = ['http:', '//localhost:{{run.app_port}}/mailpit'].join('')
+
+function profileField(mail: unknown): string {
+  try {
+    validateProfileConfig({ ...INLINE_PROFILE, mail })
+  } catch (error) {
+    return `${(error as { field?: string }).field}: ${(error as Error).message}`
+  }
+  throw new Error('expected the profile to be refused')
+}
+
+test('a profile declares its mail source by kind, and the domain addresses are minted on (#65)', () => {
+  const profile = validateProfileConfig({
+    ...INLINE_PROFILE,
+    mail: { source: { kind: 'mailpit', url: MAILPIT_TEMPLATE }, domain: 'qa.example.test' },
+  })
+  // The URL may name run values, so a stack can publish its catcher behind
+  // the one port a run mints.
+  expect(profile.mail).toEqual({ source: { kind: 'mailpit', url: MAILPIT_TEMPLATE }, domain: 'qa.example.test' })
+  expect(validateProfileConfig({ ...INLINE_PROFILE, mail: { source: { kind: 'inbox', url: INBOX_URL } } }).mail).toEqual({
+    source: { kind: 'inbox', url: INBOX_URL },
+  })
+})
+
+test('a mail section that names no source, two sources, or an unknown kind is refused with the field named (#65)', () => {
+  expect(profileField({})).toMatch(/^mail: .*inbox or source/)
+  expect(profileField({ domain: 'qa.example.test' })).toMatch(/^mail: .*inbox or source/)
+  expect(profileField({ inbox: INBOX_URL, source: { kind: 'mailpit', url: INBOX_URL } })).toMatch(/^mail: .*not both/)
+  expect(profileField({ source: { kind: 'imap', url: INBOX_URL } })).toMatch(/^mail\.source\.kind: .*"mailpit" or "inbox"/)
+  expect(profileField({ source: { kind: 'mailpit', url: ['ftp:', '//mailpit.local'].join('') } })).toMatch(/^mail\.source\.url: .*http or https URL/)
+  expect(profileField({ source: { kind: 'mailpit' } })).toMatch(/^mail\.source\.url: /)
+})
+
+test('a mail domain that is not a host name is refused, naming the field (#65)', () => {
+  for (const domain of ['', 'has space.test', 'someone@qa.test', '-qa.test', 'QA.Example.test/'])
+    expect(profileField({ inbox: INBOX_URL, domain })).toMatch(/^mail\.domain: /)
+})
