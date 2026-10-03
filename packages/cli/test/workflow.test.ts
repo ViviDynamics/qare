@@ -507,3 +507,23 @@ test('judge runs whenever execute recorded a verdict, not only when execute pass
   expect(section('judge')).toContain("if: always() && needs.execute.outputs.verdict != ''")
   expect(section('judge')).not.toContain("needs.execute.result == 'success'")
 })
+
+test('execute hands qare run a checkout of the base commit, so both sides run with no secrets (#147)', () => {
+  const execute = section('execute')
+  const step = execute.slice(execute.indexOf('- name: Run the plan'), execute.indexOf('- name: Read the recorded verdict'))
+  // The run image carries no git, so the base tree is checked out on the
+  // runner, outside the head's checkout, where the head's checks never see it.
+  expect(step).toContain('base_dir="$RUNNER_TEMP/qare-base"')
+  expect(step).toContain('git worktree add --detach "$base_dir" "$BASE_SHA"')
+  // Mounted at its own path, like the workspace, so the compose paths qare
+  // names for the base line up with the daemon's.
+  expect(step).toContain('base_mount=(-v "$base_dir:$base_dir")')
+  expect(step).toContain('base_args=(--base-repo "$base_dir")')
+  expect(step).toContain('"${base_mount[@]}"')
+  expect(step).toContain('"${base_args[@]}"')
+  // A base that cannot be checked out is said, and the head is still run.
+  expect(step).toMatch(/else\n\s+echo "the base commit could not be checked out/)
+  // Both sides run in the one job that holds nothing.
+  expect(execute).not.toContain('secrets.')
+  expect(step).not.toMatch(/-e [A-Z_]*(KEY|TOKEN)/)
+})

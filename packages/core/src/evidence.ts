@@ -63,7 +63,7 @@ function unverifiedCause(criterion: CriterionResult): UnverifiedCause {
   return 'environment'
 }
 
-function reasonCell(criterion: CriterionResult): string {
+function outcomeReason(criterion: CriterionResult): string {
   if (criterion.outcome === 'unverified') {
     const cause = unverifiedCause(criterion)
     if (cause === 'waived') return `waived (human): ${criterion.reason}`
@@ -74,6 +74,32 @@ function reasonCell(criterion: CriterionResult): string {
   return failedReason(criterion)
 }
 
+const REGRESSION = 'regression: proven at the base, failed at the head'
+
+/**
+ * What the base side says about a criterion (#147), in the words the table
+ * shows. A regression is named as one; a failure that failed at the base too
+ * is named as behaviour that does not work yet; a criterion the base side
+ * left out is not compared, with its reason. When the whole base side did
+ * not run the comment says so once, above the table, and the rows stay quiet.
+ */
+function comparisonNote(criterion: CriterionResult, baseRan: boolean): string {
+  if (criterion.regression === true)
+    return criterion.outcome === 'failed' ? REGRESSION : `${REGRESSION}, which a waiver does not cover`
+  if (criterion.regression === false) return 'not a regression: it failed at the base too, so this is behaviour that does not work yet'
+  if (baseRan && criterion.base?.outcome === 'not-compared') return `not compared with the base: ${criterion.base.reason ?? 'no reason was recorded'}`
+  return ''
+}
+
+function reasonCell(criterion: CriterionResult, baseRan: boolean): string {
+  return [outcomeReason(criterion), comparisonNote(criterion, baseRan)].filter((part) => part !== '').join('; ')
+}
+
+/** A regression rests on two pieces of evidence: what the base saved for it is listed beside the head's. */
+function regressionBaseEvidence(criterion: CriterionResult): string[] {
+  return criterion.regression === true ? (criterion.base?.evidence ?? []).filter((path) => path !== '') : []
+}
+
 function detailLinks(criteria: CriterionResult[]): string[] {
   const lines: string[] = []
   for (const criterion of criteria) {
@@ -82,6 +108,8 @@ function detailLinks(criteria: CriterionResult[]): string[] {
       // angle brackets keep destinations intact for paths with spaces or parens
       .map(path => `[${escapeLinkText(basename(path))}](<${path}>)`)
     if (links.length > 0) lines.push(`- ${escapeLinkText(criterion.id)}: ${links.join(', ')}`)
+    const atBase = regressionBaseEvidence(criterion).map(path => `[${escapeLinkText(basename(path))}](<${path}>)`)
+    if (atBase.length > 0) lines.push(`- ${escapeLinkText(criterion.id)} at the base: ${atBase.join(', ')}`)
   }
   return lines
 }
@@ -98,6 +126,9 @@ function detailNames(criteria: CriterionResult[], screenshots: Record<string, st
         return url === undefined ? codeSpan(path) : `[${escapeLinkText(basename(path))}](<${url}>)`
       })
     if (names.length > 0) lines.push(`- ${codeSpan(criterion.id)}: ${names.join(', ')}`)
+    // Base evidence is named, never linked: only head screenshots are pushed.
+    const atBase = regressionBaseEvidence(criterion).map(path => codeSpan(path))
+    if (atBase.length > 0) lines.push(`- ${codeSpan(criterion.id)} at the base: ${atBase.join(', ')}`)
   }
   return lines
 }
@@ -156,11 +187,28 @@ function escapeHeading(text: string): string {
 export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 'relative' }): string {
   const posted = links.kind === 'artifact'
   const cell = posted ? cellSpan : escapeCell
+  const baseRan = result.base?.status === 'executed'
   const table = (criteria: CriterionResult[]): string[] => [
     '| criterion | outcome | reason |',
     '| --- | --- | --- |',
-    ...criteria.map(criterion => `| ${cell(criterion.id)} | ${criterion.outcome}${criterion.cached === true ? ' (cached)' : ''} | ${cell(reasonCell(criterion))} |`),
+    ...criteria.map(
+      criterion =>
+        `| ${cell(criterion.id)} | ${criterion.outcome}${criterion.regression === true ? ' (regression)' : ''}${criterion.cached === true ? ' (cached)' : ''} | ${cell(reasonCell(criterion, baseRan))} |`,
+    ),
   ]
+  // Two sides (#147): say which base the head was compared with, or that it
+  // was not, so nobody reads a plain failure as one that was compared. The
+  // reason quotes what stopped the base, so on a pull request it is a code
+  // span like every other piece of run text.
+  const baseLines =
+    result.base === undefined
+      ? []
+      : result.base.status === 'executed'
+        ? [`The plan ran on both sides: at the base ${codeSpan(result.base.ref)} and at the head. A criterion that passed at the base and fails at the head is a regression.`, '']
+        : [
+            `The base ${codeSpan(result.base.ref)} was not checked (${posted ? codeSpan(result.base.reason ?? '') : (result.base.reason ?? '')}), so nothing was compared with it and no regression was looked for.`,
+            '',
+          ]
   const job = result.job === undefined ? '' : ` (job ${posted ? codeSpan(result.job.id) : result.job.id})`
   const imageLines = (image: NonNullable<typeof result.environment>['image']): string[] =>
     image === undefined
@@ -186,6 +234,7 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
     ...(result.target === undefined
       ? []
       : [`Checked against the running target ${codeSpan(result.target.url)}. Nothing ran at a base revision, so there is no base comparison and no regression was looked for.`, '']),
+    ...baseLines,
     // Where the run executed and what it ran with (issue #91): a host run and
     // an image run are readable side by side.
     ...environment,
@@ -259,9 +308,12 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
 export function renderCheckRun(result: RunResult): CheckRunPayload {
   const counts = { proven: 0, failed: 0, unverified: 0 }
   for (const criterion of result.criteria) counts[criterion.outcome] += 1
+  // Regressions are named apart from the failures they are among (#147).
+  const regressions = result.criteria.filter((criterion) => criterion.regression === true).length
+  const regressed = regressions === 0 ? '' : `; ${regressions} regression${regressions === 1 ? '' : 's'} against the base`
   return {
     title: 'QARE',
-    summary: `verdict ${result.verdict}: ${counts.proven} proven, ${counts.failed} failed, ${counts.unverified} unverified`,
+    summary: `verdict ${result.verdict}: ${counts.proven} proven, ${counts.failed} failed, ${counts.unverified} unverified${regressed}`,
     conclusion: CHECK_RUN_CONCLUSIONS[result.verdict],
   }
 }

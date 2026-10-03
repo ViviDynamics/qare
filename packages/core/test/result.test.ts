@@ -373,3 +373,62 @@ test('a run carries the verifier model spend the judge stamps on it (#51)', () =
   expect(() => parseResult({ ...base, judgeUsage: { inputTokens: -12, outputTokens: 3 } })).toThrow(/at least 0/)
   expect(() => parseResult({ ...base, judgeUsage: { inputTokens: Number.NaN, outputTokens: 3 } })).toThrow(/at least 0/)
 })
+
+test('a two-sided run carries what the base showed, per run and per criterion (#147)', () => {
+  const result = parseResult({
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'failed',
+    base: { ref: 'origin/main', status: 'executed' },
+    criteria: [
+      { id: 'old', outcome: 'failed', evidence: ['head/checks/old/0/stdout.txt'], regression: true, base: { outcome: 'proven', evidence: ['base/checks/old/0/stdout.txt'] } },
+      { id: 'new', outcome: 'failed', evidence: ['head/checks/new/0/stdout.txt'], regression: false, base: { outcome: 'failed', evidence: ['base/checks/new/0/stdout.txt'] } },
+      { id: 'kept', outcome: 'proven', evidence: ['head/checks/kept/0/stdout.txt'], base: { outcome: 'not-compared', reason: 'not run at the base: the budget was spent' } },
+    ],
+  })
+  expect(result.base).toEqual({ ref: 'origin/main', status: 'executed' })
+  expect(result.criteria[0]).toMatchObject({ regression: true, base: { outcome: 'proven', evidence: ['base/checks/old/0/stdout.txt'] } })
+  expect(result.criteria[1]).toMatchObject({ regression: false, base: { outcome: 'failed' } })
+  expect(result.criteria[2]).toMatchObject({ base: { outcome: 'not-compared', reason: 'not run at the base: the budget was spent' } })
+  expect('regression' in (result.criteria[2] as object)).toBe(false)
+})
+
+test('a base side that did not execute names why, and a result without one still loads (#147)', () => {
+  const plain = { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [] }
+  expect(parseResult(plain).base).toBeUndefined()
+  expect(parseResult({ ...plain, base: { ref: 'main', status: 'not-executed', reason: 'the base did not boot' } }).base).toEqual({
+    ref: 'main',
+    status: 'not-executed',
+    reason: 'the base did not boot',
+  })
+  expect(resultError(() => parseResult({ ...plain, base: { ref: 'main', status: 'not-executed' } })).field).toBe('base.reason')
+  expect(resultError(() => parseResult({ ...plain, base: { ref: 'main', status: 'skipped' } })).field).toBe('base.status')
+  expect(resultError(() => parseResult({ ...plain, base: { status: 'executed' } })).field).toBe('base.ref')
+})
+
+test('a regression is only ever claimed over a base that proved the criterion (#147)', () => {
+  const withCriterion = (criterion: unknown) => ({ schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'failed', criteria: [criterion] })
+  // No base record at all: nothing ran at the base, so nothing regressed.
+  expect(resultError(() => parseResult(withCriterion({ id: 'c', outcome: 'failed', evidence: ['a.txt'], regression: true }))).field).toBe('criteria[0].regression')
+  // The base failed too: that is behaviour that does not work yet.
+  expect(
+    resultError(() => parseResult(withCriterion({ id: 'c', outcome: 'failed', evidence: ['a.txt'], regression: true, base: { outcome: 'failed' } }))).field,
+  ).toBe('criteria[0].regression')
+  // A head that proved the criterion did not regress it.
+  expect(
+    resultError(() => parseResult(withCriterion({ id: 'c', outcome: 'proven', evidence: ['a.txt'], regression: true, base: { outcome: 'proven' } }))).field,
+  ).toBe('criteria[0].regression')
+  // Not compared says why, and base evidence stays inside the evidence directory.
+  expect(resultError(() => parseResult(withCriterion({ id: 'c', outcome: 'proven', evidence: ['a.txt'], base: { outcome: 'not-compared' } }))).field).toBe(
+    'criteria[0].base.reason',
+  )
+  expect(
+    resultError(() => parseResult(withCriterion({ id: 'c', outcome: 'proven', evidence: ['a.txt'], base: { outcome: 'proven', evidence: ['../x'] } }))).field,
+  ).toBe('criteria[0].base.evidence[0]')
+  expect(resultError(() => parseResult(withCriterion({ id: 'c', outcome: 'proven', evidence: ['a.txt'], base: { outcome: 'unverified' } }))).field).toBe(
+    'criteria[0].base.outcome',
+  )
+  // A waived criterion keeps the executed fact: it regressed, and the waiver does not cover that.
+  expect(
+    parseResult(withCriterion({ id: 'c', outcome: 'unverified', reason: 'waived by human', regression: true, base: { outcome: 'proven' } })).criteria[0],
+  ).toMatchObject({ regression: true })
+})

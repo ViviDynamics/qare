@@ -9,7 +9,35 @@ export type CriterionOutcome = 'proven' | 'failed' | 'unverified'
 
 export type RunVerdict = 'passed' | 'failed' | 'blocked' | 'refused' | 'waived'
 
-export interface ProvenCriterionResult {
+/**
+ * What the base side showed for one criterion (#147): the same checks, run
+ * against the app booted from the base revision. `proven` and `failed` are
+ * what the executed checks decided there. `not-compared` is everything else,
+ * with the reason named: a base that did not boot, a check that could not
+ * run there, a criterion the profile's limits left out. Not compared is
+ * never passed, and never a regression.
+ */
+export interface CriterionBase {
+  outcome: 'proven' | 'failed' | 'not-compared'
+  /** Why nothing is compared; carried exactly when the outcome is `not-compared`. */
+  reason?: string
+  /** The evidence the base side saved for it, under `base/`. */
+  evidence?: string[]
+}
+
+/**
+ * The comparison a two-sided run records on a criterion (#147). `regression`
+ * is decided in code from the executed outcomes of both sides: true when the
+ * base proved the criterion and the head failed it, false when it failed at
+ * the base too (behaviour that does not work yet), and absent when nothing
+ * was compared.
+ */
+interface CriterionComparison {
+  base?: CriterionBase
+  regression?: boolean
+}
+
+export interface ProvenCriterionResult extends CriterionComparison {
   id: string
   outcome: 'proven'
   evidence: string[]
@@ -19,7 +47,7 @@ export interface ProvenCriterionResult {
   cached?: true
 }
 
-export interface FailedCriterionResult {
+export interface FailedCriterionResult extends CriterionComparison {
   id: string
   outcome: 'failed'
   evidence: string[]
@@ -31,7 +59,7 @@ export interface FailedCriterionResult {
   cached?: true
 }
 
-export interface UnverifiedCriterionResult {
+export interface UnverifiedCriterionResult extends CriterionComparison {
   id: string
   outcome: 'unverified'
   reason: string
@@ -71,6 +99,18 @@ export interface RunTarget {
   comparison: 'none'
 }
 
+/**
+ * The base side of a two-sided run (#147): the ref the job named as "before",
+ * and whether the plan executed there. A base that did not execute (no
+ * checkout, no profile, a boot that never came up) names why, and every
+ * criterion of the run is then `not-compared`.
+ */
+export interface RunBase {
+  ref: string
+  status: 'executed' | 'not-executed'
+  reason?: string
+}
+
 export interface RunResult {
   schemaVersion: string
   verdict: RunVerdict
@@ -78,6 +118,8 @@ export interface RunResult {
   job?: { id: string }
   waived?: Array<{ criterionId: string; by: string }>
   target?: RunTarget
+  /** The base side this run compared the head against (#147); absent on a one-sided run. */
+  base?: RunBase
   /** Where and with which versions this run executed (issue #91). */
   environment?: RunEnvironment
   /**
@@ -184,6 +226,7 @@ export function parseResult(input: unknown): RunResult {
   const job = parseJobSummary(input.job)
   const waived = parseWaived(input.waived)
   const target = parseTarget(input.target)
+  const base = parseRunBase(input.base)
   const environment = parseEnvironment(input.environment)
   const profiles = parseProfiles(input.profiles)
   const timestamps = parseTimestamps(input)
@@ -196,6 +239,7 @@ export function parseResult(input: unknown): RunResult {
     ...(job === undefined ? {} : { job }),
     ...(waived === undefined ? {} : { waived }),
     ...(target === undefined ? {} : { target }),
+    ...(base === undefined ? {} : { base }),
     ...(environment === undefined ? {} : { environment }),
     ...(profiles === undefined ? {} : { profiles }),
     ...(timestamps === undefined ? {} : { startedAt: timestamps.startedAt, finishedAt: timestamps.finishedAt }),
@@ -327,6 +371,52 @@ function parseTarget(value: unknown): RunTarget | undefined {
   return { url, comparison: 'none' }
 }
 
+/**
+ * The base side is optional, so a one-sided result and one written before the
+ * field existed still load (#147). A base that did not execute says why.
+ */
+function parseRunBase(value: unknown): RunBase | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) fail('base', 'result.json base must be a JSON object with ref and status')
+  const ref = nonEmptyString(value.ref, 'base.ref', 'base ref')
+  if (value.status !== 'executed' && value.status !== 'not-executed')
+    fail('base.status', `unknown base status ${JSON.stringify(value.status)} (expected "executed" or "not-executed")`)
+  if (value.status === 'executed')
+    return value.reason === undefined ? { ref, status: 'executed' } : { ref, status: 'executed', reason: nonEmptyString(value.reason, 'base.reason', 'reason') }
+  if (value.reason === undefined) fail('base.reason', 'a base side that did not execute names why')
+  return { ref, status: 'not-executed', reason: nonEmptyString(value.reason, 'base.reason', 'reason') }
+}
+
+/**
+ * What the base showed for a criterion, and whether the criterion regressed
+ * (#147). A regression is only ever carried over a base that proved the
+ * criterion and a head that did not: a hand-written result cannot claim one
+ * the two sides do not show.
+ */
+function parseComparison(value: Record<string, unknown>, field: string, outcome: CriterionOutcome): { base?: CriterionBase; regression?: boolean } {
+  let base: CriterionBase | undefined
+  if (value.base !== undefined) {
+    const record = value.base
+    if (!isRecord(record)) fail(`${field}.base`, 'base must be a JSON object with an outcome')
+    if (record.outcome !== 'proven' && record.outcome !== 'failed' && record.outcome !== 'not-compared')
+      fail(`${field}.base.outcome`, `unknown base outcome ${JSON.stringify(record.outcome)} (expected "proven", "failed" or "not-compared")`)
+    if (record.outcome === 'not-compared' && record.reason === undefined)
+      fail(`${field}.base.reason`, 'a criterion that was not compared with the base names why')
+    base = {
+      outcome: record.outcome,
+      ...(record.reason === undefined ? {} : { reason: nonEmptyString(record.reason, `${field}.base.reason`, 'reason') }),
+      ...(record.evidence === undefined ? {} : { evidence: relativePathArray(record.evidence, `${field}.base.evidence`, 'base evidence') }),
+    }
+  }
+  if (value.regression === undefined) return base === undefined ? {} : { base }
+  if (typeof value.regression !== 'boolean') fail(`${field}.regression`, 'regression must be a boolean')
+  if (value.regression && (base?.outcome !== 'proven' || outcome === 'proven'))
+    fail(`${field}.regression`, 'a regression is a criterion the base proved and the head did not; this one carries no such pair')
+  if (!value.regression && base?.outcome !== 'failed')
+    fail(`${field}.regression`, 'regression is false only for a criterion that failed at the base too')
+  return { ...(base === undefined ? {} : { base }), regression: value.regression }
+}
+
 function parseWaived(value: unknown): Array<{ criterionId: string; by: string }> | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) fail('waived', 'result.json waived must be an array of { criterionId, by }')
@@ -364,7 +454,8 @@ function parseCriterionResult(value: unknown, index: number): CriterionResult {
   if (value.cached !== undefined && value.cached !== true)
     fail(`${base}.cached`, 'cached must be true when present')
   const cached = value.cached === undefined ? undefined : ({ cached: true } as const)
-  const withCached = <T>(record: T): T => (cached === undefined ? record : { ...record, ...cached })
+  const comparison = parseComparison(value, base, outcome as CriterionOutcome)
+  const withCached = <T>(record: T): T => ({ ...record, ...(cached ?? {}), ...comparison })
 
   switch (outcome as CriterionOutcome) {
     case 'proven':

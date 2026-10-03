@@ -45,6 +45,32 @@ test('the valid .qa/ fixture loads with the expected profile shape', async () =>
   ])
 })
 
+test('a base section states what the base side costs: which criteria, and how long (#147)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\nbase:\n  criteria: ledger\n  budget: 10m\n`)
+  expect((await loadProfile(dir)).base).toEqual({ criteria: 'ledger', budget: '10m' })
+  // Absent means the whole plan runs at the base, unbounded.
+  expect((await loadProfile(fixtureDir)).base).toBeUndefined()
+
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\nbase:\n  criteria: some\n`)
+  const criteria = await profileError(() => loadProfile(dir))
+  expect(criteria.field).toBe('base.criteria')
+  expect(criteria.message).toContain('"all", "ledger" or "none"')
+
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\nbase:\n  budget: soon\n`)
+  expect((await profileError(() => loadProfile(dir))).field).toBe('base.budget')
+
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\nbase:\n  budgett: 10m\n`)
+  expect((await profileError(() => loadProfile(dir))).field).toBe('base.budgett')
+  rmSync(dir, { recursive: true })
+})
+
+test('a target profile has one side, so it takes no base section (#147)', () => {
+  expect(() =>
+    validateProfileConfig({ target: { url: ['https:', '//example.test'].join(''), health: { http: '/', timeout: '5s' } }, base: { budget: '1m' } }),
+  ).toThrow(/one side/)
+})
+
 test('a profile without QA.md fails naming QA.md', async () => {
   const dir = copiedProfile()
   rmSync(join(dir, 'QA.md'))

@@ -578,3 +578,63 @@ test('a result without timestamps judges to one without them: an old artifact st
   expect(result.finishedAt).toBeUndefined()
   expect(result.judgeUsage).toBeUndefined()
 })
+
+const twoSided = (): RunResult => ({
+  schemaVersion: RESULT_SCHEMA_VERSION,
+  verdict: 'failed',
+  base: { ref: 'origin/main', status: 'executed' },
+  criteria: [
+    { id: 'old', outcome: 'failed', evidence: ['head/checks/old/0/stdout.txt'], base: { outcome: 'proven', evidence: ['base/checks/old/0/stdout.txt'] } },
+    { id: 'new', outcome: 'failed', evidence: ['head/checks/new/0/stdout.txt'], base: { outcome: 'failed' } },
+    { id: 'kept', outcome: 'proven', evidence: ['head/checks/kept/0/stdout.txt'], base: { outcome: 'proven' } },
+    { id: 'unseen', outcome: 'failed', evidence: ['head/checks/unseen/0/stdout.txt'], base: { outcome: 'not-compared', reason: 'unverified at the base: check timed out' } },
+  ],
+})
+
+test('judging a two-sided result hands the judge a base, and the regressions are computed from it (#147)', async () => {
+  // The executed result carries no regression flags here: judge decides them
+  // from the two sides, never from a claim the result makes about itself.
+  const { result } = await judgeExecuted(twoSided(), { texts: {}, diff: NO_DIFF })
+  expect(result.verdict).toBe('failed')
+  expect(result.base).toEqual({ ref: 'origin/main', status: 'executed' })
+  expect(result.criteria).toEqual([
+    { id: 'old', outcome: 'failed', evidence: ['head/checks/old/0/stdout.txt'], regression: true, base: { outcome: 'proven', evidence: ['base/checks/old/0/stdout.txt'] } },
+    { id: 'new', outcome: 'failed', evidence: ['head/checks/new/0/stdout.txt'], regression: false, base: { outcome: 'failed' } },
+    { id: 'kept', outcome: 'proven', evidence: ['head/checks/kept/0/stdout.txt'], base: { outcome: 'proven' } },
+    { id: 'unseen', outcome: 'failed', evidence: ['head/checks/unseen/0/stdout.txt'], base: { outcome: 'not-compared', reason: 'unverified at the base: check timed out' } },
+  ])
+})
+
+test('a criterion the verifier fails is failed, never a regression: no model output creates one (#147)', async () => {
+  const { result } = await judgeExecuted(twoSided(), {
+    texts: { kept: 'The old page still loads.' },
+    diff: NO_DIFF,
+    verifier: scriptedVerifier(JSON.stringify({ findings: [{ criterionId: 'kept', problem: 'the log shows a 500' }] })),
+  })
+  const kept = result.criteria.find((criterion) => criterion.id === 'kept')
+  expect(kept).toMatchObject({ outcome: 'failed', reason: 'verifier: the log shows a 500', base: { outcome: 'proven' } })
+  expect('regression' in (kept as object)).toBe(false)
+})
+
+test('a waived criterion that regressed keeps the flag, and the regression still fails the run (#147)', async () => {
+  const executed: RunResult = {
+    ...twoSided(),
+    waived: [
+      { criterionId: 'old', by: 'jason' },
+      { criterionId: 'new', by: 'jason' },
+      { criterionId: 'unseen', by: 'jason' },
+    ],
+  }
+  const { result } = await judgeExecuted(executed, { texts: {}, diff: NO_DIFF })
+  expect(result.verdict).toBe('failed')
+  expect(result.criteria[0]).toMatchObject({ id: 'old', outcome: 'unverified', reason: 'waived by human', regression: true, base: { outcome: 'proven' } })
+  // A waived failure that is not a regression is just waived.
+  expect('regression' in (result.criteria[1] as object)).toBe(false)
+})
+
+test('a one-sided result judges with an empty base, as it always did (#147)', async () => {
+  const executed: RunResult = { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'failed', criteria: [{ id: 'c1', outcome: 'failed', evidence: ['checks/c1/0/stdout.txt'] }] }
+  const { result } = await judgeExecuted(executed, { texts: {}, diff: NO_DIFF })
+  expect(result.base).toBeUndefined()
+  expect(result.criteria).toEqual([{ id: 'c1', outcome: 'failed', evidence: ['checks/c1/0/stdout.txt'] }])
+})

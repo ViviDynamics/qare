@@ -212,12 +212,14 @@ async function dispatchTool(
       evidenceDir,
     })
     // Notes say what the run could not execute for; dropping them here would hide it.
-    const { result } = await runJob(built.job, deps.boot ?? {})
+    // Both sides, as qare run does (#147): the base the caller named is
+    // checked too, so a regression is told apart from a new failure.
+    const { result } = await runJob(built.job, { ...(deps.boot ?? {}), base: {} })
     return { evidenceDir: built.job.evidenceDir, result, notes: built.notes }
   }
   if (name === 'submit_job') {
     const job = parseJob(record.job)
-    const { result } = await runJob(job, deps.boot ?? {})
+    const { result } = await runJob(job, { ...(deps.boot ?? {}), base: {} })
     return result
   }
   if (name === 'get_result') {

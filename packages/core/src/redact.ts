@@ -360,9 +360,12 @@ export function redactResult(result: RunResult, rules: readonly RedactionRule[] 
     ...result,
     // A target URL can carry credentials in its userinfo or query.
     ...(result.target === undefined ? {} : { target: { ...result.target, url: redactText(result.target.url, rules) } }),
+    // Why a base side did not run quotes what stopped it (#147).
+    ...(result.base?.reason === undefined ? {} : { base: { ...result.base, reason: redactText(result.base.reason, rules) } }),
     criteria: result.criteria.map((criterion) => ({
       ...criterion,
       ...('reason' in criterion && typeof criterion.reason === 'string' ? { reason: redactText(criterion.reason, rules) } : {}),
+      ...(criterion.base?.reason === undefined ? {} : { base: { ...criterion.base, reason: redactText(criterion.base.reason, rules) } }),
       // A repair record quotes element references: free text the snapshot
       // read back, swept like every other reason (#83).
       ...('repairs' in criterion && criterion.repairs !== undefined
