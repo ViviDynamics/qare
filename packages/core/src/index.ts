@@ -375,6 +375,8 @@ export {
   parseRefusedRegistry,
   requeueTargets,
 } from './stub-issues.js'
+export { INIT_DEFAULT_MODEL, INIT_MODEL_SECRET, INIT_WORKFLOW_PATH, InitError, PIPELINE_WORKFLOW, callerWorkflow, planInit } from './init.js'
+export type { InitFile, InitOptions, InitPlan } from './init.js'
 export type { MissingStub, StubIssueDraft, StubIssueScan, StubIssueRefusedEntry, StubIssuePoster } from './stub-issues.js'
 export { CheckInputError, checkCriteria, defaultCheckEvidenceDir, nareRunners } from './check.js'
 export type { CheckOptions, CheckOutcome } from './check.js'
