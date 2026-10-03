@@ -1,6 +1,6 @@
 import { mergeVerdicts } from './egress.js'
 import { BUILTIN_REDACTION_RULES, redactResult, type RedactionRule } from './redact.js'
-import { RESULT_SCHEMA_VERSION, type CriterionOutcome, type CriterionResult, type RunResult, type RunVerdict } from './result.js'
+import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionOutcome, type CriterionResult, type RunResult, type RunVerdict } from './result.js'
 import type { ModelUsage } from './metrics.js'
 import type { AgentRunRequest, AgentRunner } from './runner.js'
 
@@ -381,8 +381,22 @@ export function judgedResult(
   verdict: RunVerdict,
   criteria: CriterionVerdict[],
   evidenceById: Map<string, string[]>,
+  regressed: ReadonlySet<string> = new Set(),
 ): RunResult {
   const executed = new Map(loaded.criteria.map((criterion) => [criterion.id, criterion]))
+  // What the base showed survives judging, and the regression flag is set
+  // here from the judge's own computation over the executed outcomes of both
+  // sides (#147), never copied from the result being judged: proven at the
+  // base and failed at the head is a regression, failed at both is behaviour
+  // that does not work yet, and a criterion the verifier failed after its
+  // check passed is neither, because no model output creates a regression.
+  const comparisonOf = (criterion: CriterionVerdict): { base?: CriterionBase; regression?: boolean } => {
+    const before = executed.get(criterion.criterionId)
+    if (before?.base === undefined) return {}
+    if (regressed.has(criterion.criterionId)) return { base: before.base, regression: true }
+    if (criterion.outcome === 'failed' && before.outcome === 'failed' && before.base.outcome === 'failed') return { base: before.base, regression: false }
+    return { base: before.base }
+  }
   // Judging can only downgrade a criterion, so an app summary computed at run
   // time can go stale: it is recomputed from the final criteria of its subset
   // — the job's order and names kept — or the per-app heading would contradict
@@ -398,12 +412,14 @@ export function judgedResult(
     verdict,
     criteria: criteria.map((criterion) => {
       const evidence = evidenceById.get(criterion.criterionId) ?? []
+      const comparison = comparisonOf(criterion)
       if (criterion.outcome === 'unverified')
         return {
           id: criterion.criterionId,
           outcome: 'unverified',
           reason: criterion.reason,
           ...(evidence.length === 0 ? {} : { evidence }),
+          ...comparison,
         }
       if (criterion.outcome === 'failed') {
         // A check that failed speaks through its evidence. A criterion judge
@@ -414,10 +430,10 @@ export function judgedResult(
         const reason =
           before?.outcome !== 'failed' ? criterion.reason : 'reason' in before ? before.reason : undefined
         return reason === undefined
-          ? { id: criterion.criterionId, outcome: 'failed', evidence }
-          : { id: criterion.criterionId, outcome: 'failed', evidence, reason }
+          ? { id: criterion.criterionId, outcome: 'failed', evidence, ...comparison }
+          : { id: criterion.criterionId, outcome: 'failed', evidence, reason, ...comparison }
       }
-      return { id: criterion.criterionId, outcome: criterion.outcome, evidence }
+      return { id: criterion.criterionId, outcome: criterion.outcome, evidence, ...comparison }
     }),
     ...(loaded.job === undefined ? {} : { job: { id: loaded.job.id } }),
     ...(loaded.waived === undefined ? {} : { waived: loaded.waived }),
@@ -428,6 +444,8 @@ export function judgedResult(
     ...(loaded.finishedAt === undefined ? {} : { finishedAt: loaded.finishedAt }),
     ...(loaded.judgeUsage === undefined ? {} : { judgeUsage: loaded.judgeUsage }),
     ...(loaded.target === undefined ? {} : { target: loaded.target }),
+    // Which base the run compared against, and whether it executed (#147).
+    ...(loaded.base === undefined ? {} : { base: loaded.base }),
     // Where the run executed is evidence like the verdict is, so judging it
     // again does not erase it (issue #91).
     ...(loaded.environment === undefined ? {} : { environment: loaded.environment }),
@@ -486,7 +504,10 @@ export async function judgeExecuted(
   opts: JudgeExecutedOptions,
 ): Promise<{ result: RunResult; changed: CriterionVerdict[]; judgeUsage: ModelUsage | undefined }> {
   const waived = executed.waived?.map((entry) => entry.criterionId) ?? []
-  const judged = judgeRun({ base: [], head: toSideResults(executed), waived })
+  // Both sides (#147): the base rides the executed result, so the judge is
+  // handed it wherever the result is judged, and it computes the regressions.
+  const judged = judgeRun({ base: toBaseSideResults(executed), head: toSideResults(executed), waived })
+  const regressed = new Set(judged.regressions.map((regression) => regression.criterionId))
   const evidenceById = new Map(executed.criteria.map((criterion) => [criterion.id, evidenceOf(criterion)]))
   let criteria = judged.criteria
   let judgeUsage: ModelUsage | undefined
@@ -502,7 +523,7 @@ export async function judgeExecuted(
   // A refused run executed nothing, so there is nothing to judge: recomputing
   // it from all-unverified criteria would read it back as blocked.
   const verdict = executed.verdict === 'refused' ? 'refused' : verdictOf(criteria, judged.regressions, waived)
-  const result = redactResult(judgedResult(executed, verdict, criteria, evidenceById), opts.rules ?? BUILTIN_REDACTION_RULES)
+  const result = redactResult(judgedResult(executed, verdict, criteria, evidenceById, regressed), opts.rules ?? BUILTIN_REDACTION_RULES)
   // What the verifier model spent (#51): part of the run's metrics, riding
   // the judged result the same way the plan's spend rides the plan.
   const full = { ...result, ...(judgeUsage === undefined ? {} : { judgeUsage }) }
