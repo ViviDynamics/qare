@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { A11Y_IMPACTS, A11Y_STANDARDS, type A11yAccepted, type A11yImpact, type ProfileA11y } from './a11y.js'
 import { parseDurationMs, shellCharacter } from './duration.js'
+import { MAIL_SOURCE_KINDS, type DeclaredMailSource, type MailSourceKind } from './mail-source.js'
 import { channelToolName } from './mcp.js'
 import { RedactionError, redactionRules, validateMaskSelectors, type ProfileRedaction } from './redact.js'
 
@@ -245,8 +246,15 @@ function parseProfilePaths(value: unknown, field: string): string[] {
   return paths
 }
 
+/**
+ * Where a run reads the mail its checks wait for (#65). A profile names one
+ * source: `inbox`, the listing contract of #67, or `source`, an adapter by
+ * kind. `domain` is the domain the per-run address is minted on.
+ */
 export interface ProfileMail {
-  inbox: string
+  inbox?: string
+  source?: DeclaredMailSource
+  domain?: string
 }
 
 const SUITE_KINDS: ProfileSuiteKind[] = ['command', 'flow', 'visual']
@@ -668,10 +676,34 @@ function parseSuite(value: unknown, index: number): ProfileSuite {
 }
 
 function parseMail(value: unknown): ProfileMail {
-  if (!isRecord(value)) fail('mail', 'mail must be a YAML object with inbox')
-  const inbox = nonEmptyString(value.inbox, 'mail.inbox', 'mail inbox')
-  httpUrl(inbox, 'mail.inbox', 'mail inbox')
-  return { inbox }
+  if (!isRecord(value)) fail('mail', 'mail must be a YAML object with inbox or source')
+  if (value.inbox !== undefined && value.source !== undefined)
+    fail('mail', 'mail names one place its messages are read from: inbox or source, not both')
+  if (value.inbox === undefined && value.source === undefined)
+    fail('mail', 'mail names where its messages are read from: inbox or source')
+  const domain = value.domain === undefined ? {} : { domain: parseMailDomain(value.domain) }
+  if (value.source === undefined) {
+    const inbox = nonEmptyString(value.inbox, 'mail.inbox', 'mail inbox')
+    httpUrl(inbox, 'mail.inbox', 'mail inbox')
+    return { inbox, ...domain }
+  }
+  if (!isRecord(value.source)) fail('mail.source', 'mail.source must be a YAML object with kind and url')
+  const kind = value.source.kind
+  if (typeof kind !== 'string' || !(MAIL_SOURCE_KINDS as readonly string[]).includes(kind))
+    fail('mail.source.kind', `unknown mail source kind ${JSON.stringify(kind)} (expected ${MAIL_SOURCE_KINDS.map((name) => JSON.stringify(name)).join(' or ')})`)
+  const url = nonEmptyString(value.source.url, 'mail.source.url', 'mail source URL')
+  // The URL may name run values ({{run.app_port}}), which the run substitutes
+  // and validates; here each stands for a value that leaves a URL a URL.
+  httpUrl(url.replace(/\{\{run\.[A-Za-z_][A-Za-z0-9_]*\}\}/g, '1'), 'mail.source.url', 'mail source URL')
+  return { source: { kind: kind as MailSourceKind, url }, ...domain }
+}
+
+const MAIL_DOMAIN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/
+
+function parseMailDomain(value: unknown): string {
+  if (typeof value !== 'string' || !MAIL_DOMAIN.test(value))
+    fail('mail.domain', `mail domain ${JSON.stringify(value)} must be a lower-case host name, such as qa-mail.example.com: it is what follows the @ of every address a run mints`)
+  return value
 }
 
 function validatePlaceholders(run: string, base: string): void {

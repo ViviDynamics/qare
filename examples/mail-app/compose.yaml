@@ -1,0 +1,18 @@
+# The stack the example profile boots: an app that sends mail, and the
+# catcher that receives it. qare hands compose the port it picked for this
+# run as QARE_APP_PORT, and that is the only port published: the app serves
+# the catcher's web interface under /mailpit, so every run has a catcher of
+# its own and reads no other run's.
+services:
+  web:
+    build: .
+    ports:
+      - "127.0.0.1:${QARE_APP_PORT:-3000}:3000"
+    depends_on:
+      - mailpit
+  # The project's stack provides the catcher, like any other stub. It accepts
+  # any recipient, and holds what it caught in memory until the stack is gone.
+  mailpit:
+    image: axllent/mailpit:v1.27
+    environment:
+      MP_WEBROOT: mailpit

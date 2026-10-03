@@ -293,6 +293,26 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
       }),
     )
   }
+  // The message that proved a criterion (#65), as the harness read it. Every
+  // cell is the app's own text, so on a pull request it is a code span: a
+  // link in it is named, never written as one, because a comment links only
+  // to files that were uploaded.
+  const messages = result.criteria.flatMap((criterion) => (criterion.mail ?? []).map((message) => ({ criterion: criterion.id, ...message })))
+  if (messages.length > 0) {
+    lines.push(
+      '',
+      '## Mail',
+      '',
+      'The message each mail check read, as the harness read it from the mail source: the sender, the subject, an excerpt and the links in it. Addresses and one-time codes are redacted, and the links are what the harness extracted, not what a model claimed.',
+      '',
+      '| criterion | check | sender | subject | excerpt | links |',
+      '| --- | --- | --- | --- | --- | --- |',
+      ...messages.map(
+        (message) =>
+          `| ${cell(message.criterion)} | ${cell(message.check)} | ${cell(message.from)} | ${cell(message.subject)} | ${cell(message.excerpt)} | ${message.links.map((link) => cell(link)).join(' ')} |`,
+      ),
+    )
+  }
   if (links.kind === 'relative') {
     const details = detailLinks(result.criteria)
     if (details.length > 0) lines.push('', 'Details:', '', ...details)

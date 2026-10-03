@@ -19,14 +19,15 @@ import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type
 import type { FlowActionStep } from './plan.js'
 import { feedRunLedger } from './ledger-feed.js'
 import { FileLedgerStore } from './ledger.js'
-import { extractCode, httpMailbox, mailEvidence, runMailCheck, type ReadMail } from './mailbox.js'
+import { mailReader, mailSourceOf, type DeclaredMailSource, type MailSource } from './mail-source.js'
+import { extractCode, mailEvidence, runMailCheck, type MailProof, type ReadMail } from './mailbox.js'
 import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCapabilities, mcpDriverServer, type McpToolResult } from './mcp.js'
 import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
-import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
+import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, mailEvidenceRules, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
 import { runVisualCheckJob, visualPageUrl, type VisualComparison, type VisualContext, type VisualSessionFactory } from './visual-run.js'
-import { mintRunValues, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
+import { mintRunValues, mintedMailAddress, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
 import {
   addQuarantineRecord,
   checkFingerprint,
@@ -185,6 +186,8 @@ interface FlowTargetContext {
 export type RunJobOpts = BootOpts & {
   ledgerFeed?: { dir: string }
   readMail?: ReadMail
+  /** How a declared mail source becomes an adapter (#65); the adapter its kind names by default. */
+  mailSource?: MailSourceFactory
   flowSession?: FlowSessionFactory
   /** Where the run's visual checks get their screenshots (#143); the Playwright backend by default. */
   visualSession?: VisualSessionFactory
@@ -318,6 +321,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     ...(profile.target === undefined ? {} : { targetUrl: profile.target.url }),
     ...(isolation === undefined ? {} : { runId: isolation.runId }),
     ...(isolation?.port === undefined ? {} : { appPort: String(isolation.port) }),
+    ...(profile.mail?.domain === undefined ? {} : { mailDomain: profile.mail.domain }),
   })
   // A run against a target has one side only, and the result says so rather
   // than implying a base comparison it never made (#122).
@@ -378,10 +382,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
       return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
     }
 
-    const mail = {
-      inbox: profile.mail?.inbox,
-      readMail: opts.readMail ?? (profile.mail?.inbox === undefined ? undefined : httpMailbox(profile.mail.inbox)),
-    }
+    const mail = mailContextOf(profile, values, opts)
     // Single-use artefacts are a per-run ledger: what was consumed in this run
     // says nothing about any other run (#69).
     const artefacts = new Artefacts()
@@ -408,6 +409,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
       shardCriteria(job.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
       { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy, opts, ...(side?.gate === undefined ? {} : { gate: side.gate }) },
     )
+    await cleanMail(mail, values.mail_address, job.evidenceDir, 'mail-cleanup.json', rules)
     await persistQuarantine(policy)
     await writeCacheHits(job.evidenceDir, cache?.hits ?? [])
     // The judge is the verdict decision. Base execution and egress interception
@@ -452,6 +454,7 @@ async function runSeveralProfiles(
   opts: BootOpts & {
     ledgerFeed?: { dir: string }
     readMail?: ReadMail
+    mailSource?: MailSourceFactory
     flowSession?: FlowSessionFactory
     visualSession?: VisualSessionFactory
     flowDriver?: FlowDriverCapabilities
@@ -616,6 +619,7 @@ async function runProfileGroup(
   opts: BootOpts & {
     ledgerFeed?: { dir: string }
     readMail?: ReadMail
+    mailSource?: MailSourceFactory
     flowSession?: FlowSessionFactory
     visualSession?: VisualSessionFactory
     flowDriver?: FlowDriverCapabilities
@@ -662,6 +666,7 @@ async function runProfileGroup(
     ...(profile.target === undefined ? {} : { targetUrl: profile.target.url }),
     ...(isolation === undefined ? {} : { runId: isolation.runId }),
     ...(isolation?.port === undefined ? {} : { appPort: String(isolation.port) }),
+    ...(profile.mail?.domain === undefined ? {} : { mailDomain: profile.mail.domain }),
   })
   // One isolation file per app, written before validation, so a refusal still
   // names the compose project a leftover stack runs under — the caller holds
@@ -702,10 +707,7 @@ async function runProfileGroup(
         ...(isolation === undefined ? {} : { isolation }),
       }
     }
-    const mail = {
-      inbox: profile.mail?.inbox,
-      readMail: opts.readMail ?? (profile.mail?.inbox === undefined ? undefined : httpMailbox(profile.mail.inbox)),
-    }
+    const mail = mailContextOf(profile, values, opts)
     // Single-use artefacts are a per-run ledger; per app, the ledger starts
     // empty, so one app's checks cannot spend another app's artefacts (#69).
     const artefacts = new Artefacts()
@@ -732,6 +734,7 @@ async function runProfileGroup(
       shardCriteria(group.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
       { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy, opts, ...(side?.gate === undefined ? {} : { gate: side.gate }) },
     )
+    await cleanMail(mail, values.mail_address, job.evidenceDir, `mail-cleanup-${group.name}.json`, rules)
     const egressRefused = target !== undefined && target.undeclared.length > 0
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
     return { criteria, verdict, values, ...(isolation === undefined ? {} : { isolation }), egressRefused, ...(cache === undefined ? {} : { cacheHits: cache.hits }) }
@@ -779,19 +782,79 @@ interface FlowContext {
   tracesRoot?: string
 }
 
+/**
+ * Where a run's mail checks read from (#65): the source the profile declares,
+ * addressed with the run's values, behind the reader a mail check waits on.
+ * `label` is what a reason calls it.
+ */
+interface MailContext {
+  label?: string
+  readMail?: ReadMail
+  source?: MailSource
+  /** Every address a mail check of this run waited at, for the cleanup. */
+  waited: Set<string>
+}
+
+/** How a run turns the source a profile declares into an adapter; tests hand in one that reads a fake. */
+export type MailSourceFactory = (declared: DeclaredMailSource) => MailSource
+
+function mailContextOf(profile: QaProfile, values: RunValues, opts: { readMail?: ReadMail; mailSource?: MailSourceFactory }): MailContext {
+  const injected = opts.readMail
+  const declared: DeclaredMailSource | undefined =
+    profile.mail?.source ?? (profile.mail?.inbox === undefined ? undefined : { kind: 'inbox', url: profile.mail.inbox })
+  const waited = new Set<string>()
+  if (declared === undefined) return { ...(injected === undefined ? {} : { readMail: injected }), waited }
+  const source = (opts.mailSource ?? mailSourceOf)({ kind: declared.kind, url: substituteValues(declared.url, values) })
+  return {
+    // The inbox contract has always been named by its URL alone.
+    label: profile.mail?.inbox ?? source.describe,
+    readMail: injected ?? mailReader(source),
+    source,
+    waited,
+  }
+}
+
+const MAIL_CLEANUP_TIMEOUT_MS = 10_000
+
+/**
+ * Delete the mail a run leaves behind (#65), so the address it minted is
+ * never found again with stale mail behind it. Only the address the run
+ * minted is cleaned: a literal address may be shared, and another run may be
+ * waiting at it. What happened is recorded beside the evidence. Cleanup
+ * decides nothing: a source that cannot delete is named in the record, and
+ * the verdict stands.
+ */
+async function cleanMail(mail: MailContext, minted: string | undefined, evidenceDir: string, file: string, rules: readonly RedactionRule[]): Promise<void> {
+  if (mail.source === undefined || mail.waited.size === 0) return
+  const addresses: Array<{ address: string; deleted?: number; left?: string; error?: string }> = []
+  for (const address of mail.waited) {
+    if (address !== minted) {
+      addresses.push({ address, left: 'not an address this run minted' })
+      continue
+    }
+    try {
+      addresses.push({ address, deleted: await mail.source.delete({ address }, AbortSignal.timeout(MAIL_CLEANUP_TIMEOUT_MS)) })
+    } catch (error) {
+      addresses.push({ address, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  await mkdir(evidenceDir, { recursive: true })
+  await writeFile(join(evidenceDir, file), `${JSON.stringify(redactValue({ source: mail.source.describe, addresses }, rules), null, 2)}\n`)
+}
+
 interface LaneContext {
   job: Job
   profile: QaProfile
   rules: readonly RedactionRule[]
   values: RunValues
-  mail: { inbox?: string; readMail?: ReadMail }
+  mail: MailContext
   artefacts: Artefacts
   flow: FlowContext
   execution: ExecutionKind
   cache: RunCacheContext | undefined
   /** The run's flake policy (#50): every criterion in every lane consults the same one. */
   policy: FlakePolicy
-  opts: BootOpts & { ledgerFeed?: { dir: string }; readMail?: ReadMail; flowSession?: FlowSessionFactory; flowDriver?: FlowDriverCapabilities; workers?: number }
+  opts: BootOpts & { ledgerFeed?: { dir: string }; readMail?: ReadMail; mailSource?: MailSourceFactory; flowSession?: FlowSessionFactory; flowDriver?: FlowDriverCapabilities; workers?: number }
   /**
    * The base side's limits (#147): a reason a criterion does not run at all,
    * asked just before it would. A gated criterion is unverified with that
@@ -838,7 +901,7 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
   const shardValues: RunValues = {
     ...ctx.values,
     id: shardIsolation.runId,
-    mail_address: `qare-${shardIsolation.runId}@localhost`,
+    mail_address: mintedMailAddress(shardIsolation.runId, profile.mail?.domain),
     ...(shardIsolation.port === undefined ? {} : { app_port: String(shardIsolation.port) }),
   }
   const bootedShard = {
@@ -851,7 +914,12 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
     if (boot.kind === 'blocked') return { id: criterion.id, outcome: 'unverified', reason: boot.reason ?? 'boot did not come up' }
     // The criterion's artefact ledger starts empty: what its flow checks
     // publish or spend belongs to this app alone, never the run's (#69).
-    return await runCriterion(criterion, job, ctx.rules, shardValues, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands)
+    // The criterion's app carries its own catcher, published on its own port:
+    // the source is addressed with the shard's values, not the run's (#65).
+    const shardMail = mailContextOf(profile, shardValues, opts)
+    const result = await runCriterion(criterion, job, ctx.rules, shardValues, shardMail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands)
+    await cleanMail(shardMail, shardValues.mail_address, job.evidenceDir, `mail-cleanup-${criterion.id}.json`, ctx.rules)
+    return result
   } finally {
     // The criterion's app is torn down with the criterion: a sharded run
     // leaves no stack of its own holding a port or a volume the next
@@ -1369,6 +1437,8 @@ function validatePlanValues(criteria: JobCriterion[], profile: QaProfile, values
     // The health URL may name the port the run publishes the app on (#53).
     validateValueReferences(profile.app.health.http, values, 'app.health.http')
   }
+  // A mail source may be published behind a port the run mints (#65).
+  if (profile.mail?.source !== undefined) validateValueReferences(profile.mail.source.url, values, 'mail.source.url')
   // Mail artefact names are validated in walk order: a check may only read an
   // artefact from a mail check that has already waited for its message (#69),
   // and only for the fields that check actually exposes (#64).
@@ -1651,7 +1721,7 @@ async function runCriterion(
   job: Job,
   rules: readonly RedactionRule[],
   values: RunValues,
-  mail: { inbox?: string; readMail?: ReadMail },
+  mail: MailContext,
   artefacts: Artefacts,
   flow: FlowContext,
   execution: ExecutionKind,
@@ -1715,6 +1785,9 @@ async function runCriterion(
   // result carries, and why an audit failed a check, which names the rule
   // and the element so the failure reads without opening the record.
   const a11yCounts = new Map<number, A11yCounts>()
+  // The messages the criterion's mail checks read (#65), carried onto its
+  // result so the comment can show the message that proved it.
+  const criterionMail: MailProof[] = []
   const failedReasons = new Map<number, string>()
   // The values a run publishes or consumes — a mail message's link, its
   // one-time code — are secrets like any other: they join the profile's
@@ -1725,6 +1798,10 @@ async function runCriterion(
   // every attempt a check was given and never overwrites one with another.
   const dirFor = (index: number, attempt: number): string =>
     attempt === 0 ? join('checks', criterion.id, String(index)) : join('checks', criterion.id, `${index}-attempt${attempt + 1}`)
+  // When this criterion's checks began: the moment its mail checks' window
+  // opens, so the message an earlier check of the criterion caused counts,
+  // and one from before the criterion, an earlier run's included, never does.
+  const criterionStartedAt = Date.now()
   for (const [index, check] of checks.entries()) {
     const substituted = substituteCheck(check, values)
     // A check whose attempts failed and then passed is unstable (#50): the run
@@ -1749,13 +1826,16 @@ async function runCriterion(
       } else if (fold.kind === 'unverified' && unverifiedReason === undefined) unverifiedReason = fold.reason
     }
     if (substituted.kind === 'mail') {
+      mail.waited.add(substituted.address)
       const fold = await settleCheck(async (attempt) => {
         const checkDir = dirFor(index, attempt)
         const outcome = await runMailCheck(
           substituted,
-          mail.inbox,
+          mail.label,
           mail.readMail,
           substituted.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
+          undefined,
+          criterionStartedAt,
         )
         if (outcome.status === 'unverified') return { status: 'unverified', reason: outcome.reason }
         await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
@@ -1782,7 +1862,27 @@ async function runCriterion(
         // follows in this criterion, not just here (#64).
         const published = [...(messageEvidence.links[0] === undefined ? [] : [messageEvidence.links[0]]), ...(code === undefined ? [] : [code])]
         if (published.length > 0) sweepRules.push(...valueRules(published))
-        const text = JSON.stringify(redactValue(messageEvidence, sweepRules), null, 2)
+        // What is published is the message swept (#65): the body loses its
+        // addresses and codes before the excerpt is cut and the links are
+        // read from it, so nothing straddles the cut. The sender is the
+        // app's own sending identity, which the evidence shows. The artefact
+        // a later check reads stays the link and the code as they were sent.
+        const mailRules = [...sweepRules, ...mailEvidenceRules()]
+        const swept = redactValue(
+          mailEvidence(
+            {
+              ...outcome.message,
+              from: redactText(outcome.message.from, sweepRules),
+              subject: redactText(outcome.message.subject, mailRules),
+              body: redactText(outcome.message.body, mailRules),
+            },
+            outcome.waitMs,
+            outcome.polls,
+          ),
+          sweepRules,
+        )
+        criterionMail.push({ check: substituted.name ?? String(index), from: swept.from, subject: swept.subject, excerpt: swept.excerpt, links: swept.links })
+        const text = JSON.stringify(swept, null, 2)
         await writeFile(join(job.evidenceDir, checkDir, 'message.json'), `${text}\n`)
         evidence.push(`${checkDir}/message.json`)
         // The artefact a later `{{mail.<name>.link}}` reference reads is the first
@@ -2011,7 +2111,7 @@ async function runCriterion(
 
   // The audits' counts, summed over the criterion's checks (#149). A
   // criterion nothing audited carries none.
-  const audited: { a11y?: A11yCounts } = {}
+  const audited: { a11y?: A11yCounts; mail?: MailProof[] } = criterionMail.length === 0 ? {} : { mail: criterionMail }
   if (a11yCounts.size > 0) {
     const sum: A11yCounts = { new: 0, existing: 0, accepted: 0, reported: 0, uncompared: 0 }
     for (const counts of a11yCounts.values()) for (const key of Object.keys(sum) as Array<keyof A11yCounts>) sum[key] += counts[key]

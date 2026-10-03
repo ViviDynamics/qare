@@ -427,3 +427,38 @@ test('the check run counts the regressions, and a one-sided run reads as it did 
   expect(renderCheckRun(mixed).summary).toBe('verdict failed: 1 proven, 1 failed, 1 unverified')
   expect(renderComment(mixed)).not.toContain('base')
 })
+
+test('the comment shows the message that proved a criterion: sender, subject, an excerpt and its links (#65)', () => {
+  const link = ['https:', '//app.example.test/confirm?id=7'].join('')
+  const run = result('passed', [
+    {
+      id: 'signup-mail',
+      outcome: 'proven',
+      evidence: ['checks/signup-mail/1/message.json'],
+      mail: [
+        {
+          check: 'confirmation',
+          from: 'App <no-reply@app.example.test>',
+          subject: 'Confirm your account',
+          excerpt: `Hello [redacted].\r\nOpen ${link} to confirm | or ignore this.`,
+          links: [link, ['https:', '//app.example.test/help'].join('')],
+        },
+      ],
+    },
+    { id: 'no-mail', outcome: 'proven', evidence: ['checks/no-mail/0/stdout.txt'] },
+  ])
+  const body = renderComment(run, { kind: 'artifact' })
+  expect(body).toContain('## Mail')
+  expect(body).toContain('as the harness read it from the mail source')
+  expect(body).toContain('| criterion | check | sender | subject | excerpt | links |')
+  // Message text is a code span: a link, an @mention or a pipe in it renders
+  // as text, and a link is only ever written for a file that was uploaded.
+  expect(body).toContain(
+    `| \`signup-mail\` | \`confirmation\` | \`App <no-reply@app.example.test>\` | \`Confirm your account\` | \`Hello [redacted].  Open ${link} to confirm \\| or ignore this.\` | \`${link}\` \`${['https:', '//app.example.test/help'].join('')}\` |`,
+  )
+  expect(body).not.toContain('| `no-mail` | `')
+})
+
+test('a run that read no mail renders no mail section (#65)', () => {
+  expect(renderComment(allProven)).not.toContain('## Mail')
+})

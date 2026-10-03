@@ -13,17 +13,28 @@ export type RunValues = Record<string, string>
  * reference to it there fails closed at plan time. A run that boots its own
  * app also carries `app_port`, the host port its compose project publishes the
  * app on (#53), and profiles bind it with `ports: ["${QARE_APP_PORT:-3000}:3000"]`.
+ * The mail address is minted on the profile's `mail.domain` when it names one
+ * (#65).
  */
-export function mintRunValues(opts: { targetUrl?: string; appPort?: string; runId?: string } = {}): RunValues {
+export function mintRunValues(opts: { targetUrl?: string; appPort?: string; runId?: string; mailDomain?: string } = {}): RunValues {
   const id = opts.runId ?? randomUUID()
   return {
     id,
     started_at: new Date().toISOString(),
-    mail_address: `qare-${id}@localhost`,
+    mail_address: mintedMailAddress(id, opts.mailDomain),
     // No trailing slash, so {{run.target_url}}/path never doubles one.
     ...(opts.targetUrl === undefined ? {} : { target_url: opts.targetUrl.replace(/\/+$/, '') }),
     ...(opts.appPort === undefined ? {} : { app_port: opts.appPort }),
   }
+}
+
+/**
+ * The address a run's mail is sent to (#65): the run's id on the domain the
+ * profile names for test mail, or on `localhost` for a sink that accepts any
+ * recipient. One address per run, so no run ever reads another's mail.
+ */
+export function mintedMailAddress(runId: string, domain = 'localhost'): string {
+  return `qare-${runId}@${domain}`
 }
 
 export const REFERENCE = /\{\{([^{}]*)\}\}/g

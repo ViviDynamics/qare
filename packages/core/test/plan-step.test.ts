@@ -1140,3 +1140,15 @@ test('a plan that runs a program the image does not carry is corrected (#198)', 
   expect(runner.requests).toHaveLength(2)
   expect(runner.requests[1].prompt).toContain('the program npm is neither')
 })
+
+test('the prompt tells the planner where a mail check waits and what comes before it (#65)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+  await planRun(runner, INPUTS)
+
+  const [request] = runner.requests
+  // The address is the run's own, never one a person reads.
+  expect(request.prompt).toContain('"kind":"mail","name":...,"address":"{{run.mail_address}}"')
+  expect(request.prompt).toContain('never the address of a person or a shared inbox')
+  // The check that makes the app send sits before the mail check, in the same criterion.
+  expect(request.prompt).toContain('before the mail check, in the same criterion')
+})

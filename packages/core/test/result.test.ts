@@ -444,3 +444,16 @@ test('a criterion result may carry what its accessibility audits counted (#149)'
   expect(resultError(() => parseResult(withCriterion({ id: 'c', outcome: 'proven', evidence: ['a.txt'], a11y: { ...counts, existing: -1 } }))).field).toBe('criteria[0].a11y.existing')
   expect(resultError(() => parseResult(withCriterion({ id: 'c', outcome: 'proven', evidence: ['a.txt'], a11y: { new: 1 } }))).field).toBe('criteria[0].a11y.existing')
 })
+
+test('a criterion result may carry the messages its mail checks read (#65)', () => {
+  const withCriterion = (criterion: unknown) => ({ schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [criterion] })
+  const mail = [{ check: 'confirmation', from: 'App <no-reply@app.test>', subject: 'Confirm', excerpt: 'Hello.', links: ['/confirm'] }]
+  expect(parseResult(withCriterion({ id: 'c', outcome: 'proven', evidence: ['message.json'], mail })).criteria[0]?.mail).toEqual(mail)
+  // Absent on a criterion that read no mail.
+  expect('mail' in parseResult(withCriterion({ id: 'c', outcome: 'proven', evidence: ['a.txt'] })).criteria[0]!).toBe(false)
+  const field = (broken: unknown) => resultError(() => parseResult(withCriterion({ id: 'c', outcome: 'proven', evidence: ['a.txt'], mail: broken }))).field
+  expect(field('a message')).toBe('criteria[0].mail')
+  expect(field([{ ...mail[0], subject: 7 }])).toBe('criteria[0].mail[0].subject')
+  expect(field([{ ...mail[0], links: ['ok', 3] }])).toBe('criteria[0].mail[0].links')
+  expect(field([{ check: 'confirmation' }])).toBe('criteria[0].mail[0].from')
+})
