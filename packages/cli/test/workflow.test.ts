@@ -481,6 +481,15 @@ test('the job that runs pull request code is left no token to find (rule 7)', ()
   expect(execute.match(/actions\/checkout@v4/g)).toHaveLength(1)
   expect(execute).not.toContain(['git ', 'fe', 'tch'].join(''))
   expect(execute).toContain('--base "$BASE_SHA"')
+  // The base the pull request recorded can be older than the commit the
+  // merge was made against, and then it is not among the merge's parents.
+  // The job cannot ask the repository for it, so the base side (#147) is the
+  // merge's own base, said in the summary, before the base tree is checked out.
+  const absent = execute.indexOf('if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then')
+  expect(absent).toBeGreaterThan(0)
+  expect(execute).toContain(`merge_base="$(git rev-parse --verify --quiet 'HEAD^1' || true)"`)
+  expect(execute).toContain('BASE_SHA="$merge_base"')
+  expect(execute.indexOf('git worktree add --detach "$base_dir" "$BASE_SHA"')).toBeGreaterThan(absent)
   // The planner's container is handed plan's workspace too, and that job
   // holds the model key, so its checkout leaves no token either.
   expect(section('plan')).toMatch(/actions\/checkout@v4\n\s+with:\n\s+persist-credentials: false/)

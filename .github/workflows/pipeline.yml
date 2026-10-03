@@ -478,6 +478,34 @@ jobs:
           # containers the plan boots (execute holds no secrets), and the
           # workspace maps to itself, so the compose paths the runner names
           # line up with the daemon's.
+          #
+          # The base side (#147): a profile that boots an app is checked at
+          # the base commit too, so a criterion that worked there and fails
+          # here is reported as a regression. The image carries no git, so
+          # the base tree is checked out here, outside the head's checkout,
+          # and mounted at its own path like the workspace. The checkout
+          # brought the merge commit's parents, and the base is the first of
+          # them. The base the pull request recorded can be an older commit
+          # of the base branch than the one this merge was made against;
+          # then the merge's own base is the base, because this job reaches
+          # the repository once and holds no credential to ask for another
+          # commit. Both sides run in this job, and it holds no secret.
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            merge_base="$(git rev-parse --verify --quiet 'HEAD^1' || true)"
+            if [ -n "$merge_base" ]; then
+              echo "the base this pull request recorded ($BASE_SHA) is not the commit its merge was made against; the base side is that commit, $merge_base" >> "$GITHUB_STEP_SUMMARY"
+              BASE_SHA="$merge_base"
+            fi
+          fi
+          base_dir="$RUNNER_TEMP/qare-base"
+          base_args=()
+          base_mount=()
+          if git worktree add --detach "$base_dir" "$BASE_SHA"; then
+            base_args=(--base-repo "$base_dir")
+            base_mount=(-v "$base_dir:$base_dir")
+          else
+            echo "the base commit could not be checked out, so qare checks the head alone and reports every criterion as not compared" >> "$GITHUB_STEP_SUMMARY"
+          fi
           code=0
           docker run --rm \
             -u "$(id -u):$(id -g)" \
@@ -485,6 +513,7 @@ jobs:
             -e QARE_IMAGE_REF="$IMAGE_REF" \
             -e QARE_IMAGE_DIGEST="$IMAGE_DIGEST" \
             -v "$PWD:$PWD" -w "$PWD" \
+            "${base_mount[@]}" \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v /usr/bin/docker:/usr/bin/docker:ro \
             "$IMAGE_REF" qare run --plan plan.json \
@@ -493,6 +522,7 @@ jobs:
             --base "$BASE_SHA" \
             --head "$HEAD_SHA" \
             --profile "$PROFILE" \
+            "${base_args[@]}" \
             --evidence evidence || code=$?
           # 3 is refused: this repository has no profile or no stubs, so
           # qare will not pretend to have checked it. That is an outcome about
