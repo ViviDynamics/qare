@@ -53,6 +53,25 @@ test('a pipeline scope keeps jobs outside it out of the failure and the skipped 
   expect(classifyPipelineFailure([{ name: 'plan', conclusion: 'failure', steps: [] }], { pipeline: ['plan'] })?.job).toBe('plan')
 })
 
+// #145: the pipeline ships as a reusable workflow, and the jobs API lists a
+// called workflow's jobs under the calling job's name, `qare / plan (...)`.
+test('a pipeline job listed under a calling job is still the pipeline job', () => {
+  const jobs: PipelineJob[] = [
+    { name: 'qare / requeue (GitHub token only)', conclusion: 'skipped', steps: [] },
+    { name: 'qare / collect (GitHub token only)', conclusion: 'success', steps: [] },
+    { name: 'qare / plan (model key only)', conclusion: 'failure', steps: [{ name: 'Pull the core image', conclusion: 'failure' }] },
+    { name: 'qare / execute (no secrets)', conclusion: 'skipped', steps: [] },
+    { name: 'qare / report (GitHub token only)', conclusion: 'failure', steps: [] },
+  ]
+  expect(classifyPipelineFailure(jobs, { pipeline: ['collect', 'plan', 'execute', 'judge'] })).toEqual({
+    job: 'qare / plan (model key only)',
+    step: 'Pull the core image',
+    skipped: ['qare / execute (no secrets)'],
+  })
+  // The calling job's own name is not a pipeline job, whatever it is called.
+  expect(classifyPipelineFailure([{ name: 'plan / lint', conclusion: 'failure', steps: [] }], { pipeline: ['plan'] })).toBeUndefined()
+})
+
 test('the check run summary keeps job and step names inert', () => {
   const summary = renderPipelineFailureCheckRun({ job: 'plan [x](javascript:alert(1))', step: '<b>step</b>', skipped: [] }).summary
   expect(summary).toContain('`plan [x](javascript:alert(1))`')

@@ -57,12 +57,18 @@ export function classifyPipelineFailure(
 ): PipelineFailure | undefined {
   // A workflow carries jobs that are not the pipeline (one gated on push, the
   // report job itself). A job is in the pipeline when its name is a listed
-  // job id, or that id followed by its label: `plan (model key only)`.
+  // job id, or that id followed by its label: `plan (model key only)`. The
+  // pipeline is a reusable workflow (#145), and a called workflow's jobs are
+  // listed under the calling job, `qare / plan (model key only)`, so the name
+  // that counts is the part after the last separator.
   const pipeline = opts.pipeline
   const jobs =
     pipeline === undefined
       ? allJobs
-      : allJobs.filter((job) => pipeline.some((id) => job.name === id || job.name.startsWith(`${id} (`)))
+      : allJobs.filter((job) => {
+          const own = job.name.split(' / ').at(-1) ?? job.name
+          return pipeline.some((id) => own === id || own.startsWith(`${id} (`))
+        })
   const failures = jobs.filter((job) => job.conclusion !== null && FAILED_JOB.has(job.conclusion))
   const failed = opts.verdictRecorded === true ? failures.at(-1) : failures[0]
   if (failed === undefined) return undefined
