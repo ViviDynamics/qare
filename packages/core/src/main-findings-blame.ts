@@ -169,6 +169,8 @@ function fallbackTo(config: BlameConfig | undefined, why: string): Blame {
  */
 export function blameMainFinding(finding: MainFinding, range: BlameRange | undefined, config: BlameConfig | undefined): Blame {
   const proven = finding.lastProven
+  if (proven !== undefined && range === undefined)
+    return fallbackTo(config, 'the ledger dates its last pass in a way that cannot be read, so there is no range of commits to read')
   if (proven === undefined || range === undefined)
     return fallbackTo(
       config,

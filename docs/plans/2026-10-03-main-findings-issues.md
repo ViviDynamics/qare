@@ -77,6 +77,9 @@ Out:
   recovery comments name nobody.
 - At most ten people are mentioned on one issue; the rest of the range is
   listed without a mention, and the issue says so.
+- One run opens at most ten new issues, and leaves the rest for the next
+  run: a first run over a ledger with much failing must not bury a
+  repository in issues.
 - No fallback in the profile and nobody to blame: the issue mentions nobody
   and says how to name a fallback.
 - An environment finding blames no change: it mentions the fallback.

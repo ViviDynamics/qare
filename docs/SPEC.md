@@ -1064,7 +1064,8 @@ the executed result and the ledger. No model has a say in any of it.
   opened names the person who merged it, else one who approved it, because a
   bot cannot act on a notification; the profile's `findings.bots` lists the
   logins GitHub does not itself mark as bots. At most ten people are
-  mentioned on one issue.
+  mentioned on one issue, and one run opens at most ten new issues: the
+  rest are left for the next run, and the step says which.
 - **Nobody to blame.** When the ledger has no record of a pass, or nothing
   but direct pushes or bots is in the range, the issue mentions the profile's
   `findings.fallback`, a person or a team, and says why no author is named.

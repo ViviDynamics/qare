@@ -110,6 +110,11 @@ describe('blaming the change', () => {
     expect(unrecorded.fallback?.why).toBe("the ledger has no record of this criterion's last pass, so there is no range of commits to read")
   })
 
+  test('a recorded pass whose range could not be read falls back, saying so', () => {
+    const blame = blameMainFinding(finding(), undefined, { fallback: 'octocat' })
+    expect(blame.fallback).toEqual({ login: 'octocat', why: 'the ledger dates its last pass in a way that cannot be read, so there is no range of commits to read' })
+  })
+
   test('a range that holds no pull request falls back, and no fallback means nobody is mentioned', () => {
     const direct = blameMainFinding(finding(), range([], 2), { fallback: 'octocat' })
     expect(direct.mentions).toEqual(['octocat'])

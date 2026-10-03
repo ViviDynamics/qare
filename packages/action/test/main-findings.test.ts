@@ -415,6 +415,47 @@ test('a marker anyone else wrote finds nothing: only an issue this identity open
   }
 })
 
+test('a last pass the ledger dates in no readable way reads no range and falls back', async () => {
+  const fake = await startFakeGithub()
+  try {
+    mergeBy(fake, 12, 'alice')
+    const undated: LedgerDocument = {
+      entries: ledger().entries,
+      changes: appendChange([], { kind: 'verify', actor: 'run-9', timestamp: 'some time last week', reason: 'run run-9: pass', criteria: ['BIL-014'] }),
+    }
+    await publishMainFindings(client(fake), input(failing(), { ledger: undated, findings: { fallback: 'octocat' } }))
+    const issue = onlyIssue(fake)
+    expect(fake.calls.some((call) => call.path.endsWith('/commits'))).toBe(false)
+    expect(mentionsIn(issue.body)).toEqual(['octocat'])
+    expect(issue.body).toContain('the ledger dates its last pass in a way that cannot be read')
+  } finally {
+    await fake.close()
+  }
+})
+
+test('one run opens at most ten new issues, says how many it left, and the next run takes up the rest', async () => {
+  const fake = await startFakeGithub()
+  try {
+    const ids = Array.from({ length: 13 }, (_, index) => `BULK-${String(index).padStart(2, '0')}`)
+    const many = parseResult({
+      schemaVersion: '1',
+      verdict: 'failed',
+      criteria: ids.map((id) => ({ id, outcome: 'failed', evidence: [`checks/${id}/0/stdout.txt`] })),
+    })
+    const bulk: LedgerDocument = { entries: ids.map((id) => entry(id)), changes: [] }
+    const first = await publishMainFindings(client(fake), input(many, { ledger: bulk }))
+    expect(first.actions.filter((action) => action.action === 'opened')).toHaveLength(10)
+    expect(first.actions.filter((action) => action.action === 'deferred').map((action) => action.criterion)).toEqual(['BULK-10', 'BULK-11', 'BULK-12'])
+    expect(fake.issues.size).toBe(10)
+    const second = await publishMainFindings(client(fake), input(many, { ledger: bulk }))
+    expect(second.actions.filter((action) => action.action === 'updated')).toHaveLength(10)
+    expect(second.actions.filter((action) => action.action === 'opened')).toHaveLength(3)
+    expect(fake.issues.size).toBe(13)
+  } finally {
+    await fake.close()
+  }
+})
+
 test('a dry run says what it would do and writes nothing', async () => {
   const fake = await startFakeGithub()
   try {

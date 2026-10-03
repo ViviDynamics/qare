@@ -43,6 +43,12 @@ const MAX_COMMITS = 100
 const MAX_PULLS = 20
 /** The most changed files of one pull request that are read. */
 const MAX_FILES = 300
+/**
+ * The most issues one run opens. A first run over a ledger with much failing
+ * must not bury a repository, or its people, in issues: the rest are left
+ * for the next run, which opens the next ten.
+ */
+export const MAX_NEW_ISSUES = 10
 
 export interface MainFindingsInput {
   /** The judged result of a run on `main`. */
@@ -69,6 +75,8 @@ export type MainFindingAction =
   | { action: 'opened'; kind: 'regression' | 'failure' | 'environment'; criterion?: string; fingerprint: string; issue?: number; mentions: string[] }
   | { action: 'updated' | 'reopened'; criterion?: string; fingerprint: string; issue: number }
   | { action: 'closed'; criterion?: string; issue: number }
+  /** A finding with no issue yet that this run did not open one for: the run had opened its share. */
+  | { action: 'deferred'; criterion: string; fingerprint: string }
 
 export interface MainFindingsOutcome {
   actions: MainFindingAction[]
@@ -172,7 +180,8 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
   const ranges = new Map<string, BlameRange>()
   const rangeSince = async (finding: MainFinding): Promise<BlameRange | undefined> => {
     const since = finding.lastProven?.at
-    if (since === undefined) return undefined
+    // A timestamp GitHub could not read as one names no range.
+    if (since === undefined || Number.isNaN(Date.parse(since))) return undefined
     const known = ranges.get(since)
     if (known !== undefined) return known
     // What GitHub says about the range is published, so it is redacted like the rest.
@@ -181,6 +190,7 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
     return range
   }
 
+  let opened = 0
   for (const finding of classified.findings) {
     const existing = open.find((issue) => issue.fingerprint === finding.fingerprint)
     if (existing !== undefined) {
@@ -198,6 +208,11 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
       actions.push({ action: 'reopened', criterion: finding.criterionId, fingerprint: finding.fingerprint, issue: closed.number })
       continue
     }
+    if (opened >= MAX_NEW_ISSUES) {
+      actions.push({ action: 'deferred', criterion: finding.criterionId, fingerprint: finding.fingerprint })
+      continue
+    }
+    opened += 1
     const range = await rangeSince(finding)
     const blame = blameMainFinding(finding, range, input.findings)
     const draft = renderMainFindingIssue(finding, blame, range, context, rules)

@@ -14,7 +14,7 @@ import { loadQuestions, postQuestions } from './post-questions.js'
 import { parseSweepPayload, publishSweep } from './sweep-report.js'
 import { reportPipelineFailure } from './report-failure.js'
 import { carryOutAdvisoryReplies } from './advisory-replies.js'
-import { publishMainFindings, type MainFindingAction } from './main-findings.js'
+import { MAX_NEW_ISSUES, publishMainFindings, type MainFindingAction } from './main-findings.js'
 // The GitHub client and the stub issue poster, for `qare init --file-issues`
 // (#146): the CLI files a stub issue the way the pipeline does.
 export { GitHubClient, GitHubClientError } from './github.js'
@@ -359,6 +359,7 @@ function describeMainFindingAction(action: MainFindingAction, dryRun: boolean): 
       ? `would open an issue for ${about} (${label}), ${who}`
       : `opened #${action.issue} for ${about} (${label}), ${who}`
   }
+  if (action.action === 'deferred') return `left ${about} for the next run: this run opened its ${MAX_NEW_ISSUES} issues`
   const still = action.criterion === undefined ? 'still down' : 'still failing'
   if (action.action === 'updated') return `${dryRun ? 'would comment' : 'commented'} on #${action.issue} for ${about}: ${still}`
   if (action.action === 'reopened') return `${dryRun ? 'would reopen' : 'reopened'} #${action.issue} for ${about}: closed while ${still}`
