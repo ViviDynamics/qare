@@ -124,7 +124,7 @@ test('a build that is not there, or a host with no display, blocks the run by na
   )
 
   const headless = await clientJob()
-  const dark = await runJob(headless, { clientEnv: { env: {}, platform: 'linux' }, flowSession: desktopSession(events) })
+  const dark = await runJob(headless, { clientEnv: { env: {}, platform: 'linux', xvfb: () => undefined }, flowSession: desktopSession(events) })
   expect(dark.result.verdict).toBe('blocked')
   expect(dark.result.criteria[0]?.reason).toMatch(/the electron driver needs a display/)
   expect(events).toEqual([])

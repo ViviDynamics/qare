@@ -138,7 +138,7 @@ export async function runDoctor(opts: DoctorOpts = {}): Promise<DoctorReport> {
 
   // A desktop build opens real windows (#72): a profile that names a client
   // needs a display, where the browser driver needs none.
-  const displayProblem = profile?.client === undefined ? undefined : (probes.display ?? electronDisplayProblem)()
+  const displayProblem = profile?.client === undefined ? undefined : (probes.display ?? ((): string | undefined => electronDisplayProblem()))()
   findings.push(
     profile?.client === undefined
       ? {
@@ -155,7 +155,7 @@ export async function runDoctor(opts: DoctorOpts = {}): Promise<DoctorReport> {
             displayProblem === undefined
               ? `a display is available for the ${profile.client.driver} driver`
               : `${displayProblem} (this profile launches a desktop build, so a display is required)`,
-          install: displayProblem === undefined ? undefined : 'start a virtual display and name it in DISPLAY: Xvfb :99 & export DISPLAY=:99',
+          install: displayProblem === undefined ? undefined : 'install Xvfb, which the driver starts for each launch, or name a running display in DISPLAY',
         },
     {
       name: 'devices',

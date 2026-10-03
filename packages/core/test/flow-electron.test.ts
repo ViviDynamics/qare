@@ -1,7 +1,10 @@
 import { EventEmitter } from 'node:events'
 import { existsSync } from 'node:fs'
+import { chmod, mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { expect, test } from 'vitest'
-import { ELECTRON_FLOW_DRIVER, ElectronFlowSessionError, electronDisplayProblem, makeElectronFlowSession, pathInApplication } from '../src/flow-electron.js'
+import { ELECTRON_FLOW_DRIVER, ElectronFlowSessionError, electronDisplayProblem, makeElectronFlowSession, pathInApplication, startVirtualDisplay } from '../src/flow-electron.js'
 
 const ENDPOINT = 'ws://127.0.0.1:41000/devtools/browser/abc'
 const HOME = 'file:///opt/app/resources/app/renderer/index.html'
@@ -69,11 +72,21 @@ function fakeWindow(events: string[], title: string, url: string, shows: string[
 }
 
 function harness(
-  opts: { windows?: FakeWindow[]; announce?: boolean | 'crash'; env?: Record<string, string>; platform?: NodeJS.Platform; masks?: string[]; launchTimeoutMs?: number; findTimeoutMs?: number } = {},
+  opts: {
+    windows?: FakeWindow[]
+    announce?: boolean | 'crash'
+    env?: Record<string, string>
+    platform?: NodeJS.Platform
+    masks?: string[]
+    launchTimeoutMs?: number
+    findTimeoutMs?: number
+    xvfb?: string
+  } = {},
 ) {
   const events: string[] = []
   const process = new FakeProcess()
-  const spawned: Array<{ command: string; args: string[] }> = []
+  const spawned: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv }> = []
+  const displays: string[] = []
   const windows: FakeWindow[] = opts.windows ?? []
   const onPage: Array<(page: unknown) => void> = []
   const context = {
@@ -100,8 +113,8 @@ function harness(
       args: ['--no-sandbox'],
       ...(opts.masks === undefined ? {} : { masks: opts.masks }),
       loadPlaywright: async () => playwright as never,
-      spawnApp: (command, args) => {
-        spawned.push({ command, args })
+      spawnApp: (command, args, env) => {
+        spawned.push({ command, args, env })
         // Whatever the application does, it does once the driver is listening.
         setTimeout(() => {
           if (opts.announce === 'crash') {
@@ -116,6 +129,11 @@ function harness(
       },
       env: opts.env ?? WITH_DISPLAY,
       platform: opts.platform ?? 'linux',
+      xvfb: () => opts.xvfb,
+      startDisplay: async (xvfb) => {
+        displays.push(`start ${xvfb}`)
+        return { display: ':42', stop: async () => void displays.push('stop') }
+      },
       // Generous by default, so a loaded machine cannot time a passing test out;
       // the tests that wait a timeout out name a short one.
       launchTimeoutMs: opts.launchTimeoutMs ?? 2_000,
@@ -127,7 +145,7 @@ function harness(
     windows.push(window)
     for (const handler of onPage) handler(window.page)
   }
-  return { events, process, spawned, windows, session, open }
+  return { events, process, spawned, windows, session, open, displays }
 }
 
 test('the session starts the build itself, attaches over the endpoint it opens, and gives each launch a user data directory of its own (#72)', async () => {
@@ -174,14 +192,58 @@ test('the backend that is not installed, and a host with no display, are named b
   await expect(missing).rejects.toThrow('playwright-core is not installed; the electron driver attaches to the application through it')
 
   const headless = harness({ env: {} })
-  await expect(headless.session()).rejects.toThrow(/the electron driver needs a display, and neither DISPLAY nor WAYLAND_DISPLAY is set/)
+  await expect(headless.session()).rejects.toThrow(
+    'the electron driver needs a display: neither DISPLAY nor WAYLAND_DISPLAY is set, and no Xvfb is on PATH to start a virtual one (the web image ships it)',
+  )
   expect(headless.spawned).toEqual([])
 
-  expect(electronDisplayProblem({}, 'linux')).toMatch(/needs a display/)
-  expect(electronDisplayProblem({ WAYLAND_DISPLAY: 'wayland-0' }, 'linux')).toBeUndefined()
+  const none = (): undefined => undefined
+  expect(electronDisplayProblem({ env: {}, platform: 'linux', xvfb: none })).toMatch(/needs a display/)
+  expect(electronDisplayProblem({ env: { WAYLAND_DISPLAY: 'wayland-0' }, platform: 'linux', xvfb: none })).toBeUndefined()
+  expect(electronDisplayProblem({ env: { DISPLAY: ':0' }, platform: 'linux', xvfb: none })).toBeUndefined()
+  // A host that can start a virtual display has one.
+  expect(electronDisplayProblem({ env: {}, platform: 'linux', xvfb: () => '/usr/bin/Xvfb' })).toBeUndefined()
   // Only Linux names its display in the environment.
-  expect(electronDisplayProblem({}, 'darwin')).toBeUndefined()
-  expect(electronDisplayProblem({}, 'win32')).toBeUndefined()
+  expect(electronDisplayProblem({ env: {}, platform: 'darwin', xvfb: none })).toBeUndefined()
+  expect(electronDisplayProblem({ env: {}, platform: 'win32', xvfb: none })).toBeUndefined()
+})
+
+test('a host with no display but an Xvfb gets a virtual one for the launch, stopped with the session (#72)', async () => {
+  const { session, spawned, displays } = harness({ windows: [fakeWindow([], 'Greeter', HOME)], env: {}, xvfb: '/usr/bin/Xvfb' })
+  const started = await session()
+  expect(displays).toEqual(['start /usr/bin/Xvfb'])
+  expect(spawned[0]?.env.DISPLAY).toBe(':42')
+  await started.dispose()
+  expect(displays).toEqual(['start /usr/bin/Xvfb', 'stop'])
+
+  // A display the host already has is the one the application opens on.
+  const own = harness({ windows: [fakeWindow([], 'Greeter', HOME)], xvfb: '/usr/bin/Xvfb' })
+  await (await own.session()).dispose()
+  expect(own.displays).toEqual([])
+  expect(own.spawned[0]?.env.DISPLAY).toBe(':99')
+
+  // A start that fails stops the display it started.
+  const crashed = harness({ announce: 'crash', env: {}, xvfb: '/usr/bin/Xvfb' })
+  await expect(crashed.session()).rejects.toThrow(/exited with code 1/)
+  expect(crashed.displays).toEqual(['start /usr/bin/Xvfb', 'stop'])
+})
+
+test('the virtual display is an Xvfb on a number of its own choosing, and one that will not start is named (#72)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-xvfb-'))
+  const script = async (name: string, body: string): Promise<string> => {
+    const path = join(dir, name)
+    await writeFile(path, `#!/bin/sh\n${body}\n`)
+    await chmod(path, 0o755)
+    return path
+  }
+  // Xvfb writes the display number it took to the descriptor it was handed.
+  const working = await script('Xvfb', 'echo "$@" > "$0.args"\necho 42 >&3\nexec sleep 30')
+  const display = await startVirtualDisplay(working)
+  expect(display.display).toBe(':42')
+  await display.stop()
+
+  const broken = await script('broken', 'echo "cannot open the screen" >&2\nexit 1')
+  await expect(startVirtualDisplay(broken)).rejects.toThrow(/the virtual display did not start: .*broken exited with code 1.*cannot open the screen/)
 })
 
 test('an application that exits, or never opens its endpoint, fails the start with its own output named (#72)', async () => {

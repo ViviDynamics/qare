@@ -166,7 +166,7 @@ function clientSessionFactory(profile: QaProfile, repoPath: string, clientEnv: B
       executable: clientExecutablePath(client, repoPath),
       args: client.args,
       masks,
-      ...(clientEnv === undefined ? {} : { env: clientEnv.env, platform: clientEnv.platform }),
+      ...clientEnv,
     })
 }
 

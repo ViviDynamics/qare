@@ -3,7 +3,7 @@ import http from 'node:http'
 import https from 'node:https'
 import { stat } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { electronDisplayProblem } from './flow-electron.js'
+import { electronDisplayProblem, type ElectronHost } from './flow-electron.js'
 import type { ProfileApp, ProfileClient, QaProfile } from './profile.js'
 import { VERSION } from './version.js'
 import { parseDurationMs } from './duration.js'
@@ -56,7 +56,7 @@ export interface BootOpts {
    */
   root?: string
   /** The environment a client build is launched into (#72); the process's own by default. */
-  clientEnv?: { env: NodeJS.ProcessEnv; platform: NodeJS.Platform }
+  clientEnv?: ElectronHost
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 500
@@ -263,7 +263,7 @@ async function probeClient(client: ProfileClient, opts: BootOpts): Promise<BootO
       reason: `the client build is not there to launch: client.executable ${client.executable} resolves to ${path}, which is not a file; building it is the project's own step, before the run`,
       logs: '',
     }
-  const display = electronDisplayProblem(opts.clientEnv?.env, opts.clientEnv?.platform)
+  const display = electronDisplayProblem(opts.clientEnv)
   if (display !== undefined) return { kind: 'blocked', reason: display, logs: '' }
   return { kind: 'up', logs: '' }
 }

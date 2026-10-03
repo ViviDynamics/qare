@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process'
+import { accessSync, constants } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { describeElement, type FlowDriverCapabilities, type FlowElement, type FlowPage, type FlowTrace } from './flow.js'
 import { resolveFlowElement } from './flow-playwright.js'
 import { pathOnTarget } from './profile.js'
@@ -58,15 +59,89 @@ export interface ElectronAppProcess {
   kill(signal?: NodeJS.Signals): boolean
 }
 
+/** The host a desktop build is launched on, as far as showing a window goes (#72). */
+export interface ElectronHost {
+  env?: NodeJS.ProcessEnv
+  platform?: NodeJS.Platform
+  /** Where the host's Xvfb is, when it has one; looked up on PATH by default. */
+  xvfb?: () => string | undefined
+}
+
+/** Whether Linux has a display for a window to open on. */
+function hasDisplay(env: NodeJS.ProcessEnv): boolean {
+  return (env.DISPLAY ?? '') !== '' || (env.WAYLAND_DISPLAY ?? '') !== ''
+}
+
+function xvfbOnPath(env: NodeJS.ProcessEnv): string | undefined {
+  for (const dir of (env.PATH ?? '').split(delimiter)) {
+    if (dir === '') continue
+    const candidate = join(dir, 'Xvfb')
+    try {
+      accessSync(candidate, constants.X_OK)
+      return candidate
+    } catch {
+      // Not in this directory.
+    }
+  }
+  return undefined
+}
+
 /**
  * Why a desktop window cannot be shown here, or undefined when it can (#72).
  * Only Linux names its display in the environment; the other platforms have
- * a session or they do not, which the launch itself reports.
+ * a session or they do not, which the launch itself reports. A Linux host
+ * with no display still has one when it carries Xvfb, because the driver
+ * starts a virtual display for each launch.
  */
-export function electronDisplayProblem(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | undefined {
-  if (platform !== 'linux') return undefined
-  if ((env.DISPLAY ?? '') !== '' || (env.WAYLAND_DISPLAY ?? '') !== '') return undefined
-  return 'the electron driver needs a display, and neither DISPLAY nor WAYLAND_DISPLAY is set: start a virtual one (Xvfb, which the web image ships) and name it in DISPLAY'
+export function electronDisplayProblem(host: ElectronHost = {}): string | undefined {
+  const env = host.env ?? process.env
+  if ((host.platform ?? process.platform) !== 'linux' || hasDisplay(env)) return undefined
+  if ((host.xvfb ?? ((): string | undefined => xvfbOnPath(env)))() !== undefined) return undefined
+  return 'the electron driver needs a display: neither DISPLAY nor WAYLAND_DISPLAY is set, and no Xvfb is on PATH to start a virtual one (the web image ships it)'
+}
+
+/** How long Xvfb is given to say which display it took. */
+const DISPLAY_START_TIMEOUT_MS = 10_000
+
+/**
+ * Start a virtual display for one launch (#72): an Xvfb that picks a free
+ * display number itself and writes it to the descriptor it is handed, so two
+ * launches on one host never share a display. `stop` ends it.
+ */
+export function startVirtualDisplay(xvfb: string): Promise<{ display: string; stop: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(xvfb, ['-displayfd', '3', '-screen', '0', '1280x800x24', '-nolisten', 'tcp'], { stdio: ['ignore', 'ignore', 'pipe', 'pipe'] })
+    let settled = false
+    let stderr = ''
+    let number = ''
+    const gone = new Promise<void>((done) => child.on('exit', () => done()))
+    const fail = (why: string): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.kill('SIGKILL')
+      reject(new ElectronFlowSessionError(`the virtual display did not start: ${why}${stderr.trim() === '' ? '' : `: ${stderr.trim()}`}`))
+    }
+    const timer = setTimeout(() => fail(`${xvfb} named no display within ${DISPLAY_START_TIMEOUT_MS} ms`), DISPLAY_START_TIMEOUT_MS)
+    child.stderr?.on('data', (chunk) => {
+      stderr = `${stderr}${String(chunk)}`.slice(-2_000)
+    })
+    child.stdio[3]?.on('data', (chunk) => {
+      number += String(chunk)
+      if (settled || !number.includes('\n')) return
+      settled = true
+      clearTimeout(timer)
+      resolve({
+        display: `:${number.trim()}`,
+        stop: async () => {
+          child.kill('SIGTERM')
+          await gone
+        },
+      })
+    })
+    child.on('error', (error) => fail(`${xvfb} could not be started (${error.message})`))
+    child.on('exit', (code, signal) => fail(`${xvfb} exited with ${code === null ? `signal ${signal ?? 'unknown'}` : `code ${code}`}`))
+  })
 }
 
 /**
@@ -124,9 +199,13 @@ export async function makeElectronFlowSession(opts: {
   args?: readonly string[]
   masks?: string[]
   loadPlaywright?: () => Promise<PlaywrightModule>
-  spawnApp?: (command: string, args: string[]) => ElectronAppProcess
+  /** Starts the build; `env` is the environment it is launched into, with the display it opens on. */
+  spawnApp?: (command: string, args: string[], env: NodeJS.ProcessEnv) => ElectronAppProcess
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
+  xvfb?: () => string | undefined
+  /** Starts the virtual display a host with none gets; an Xvfb by default. */
+  startDisplay?: (xvfb: string) => Promise<{ display: string; stop: () => Promise<void> }>
   launchTimeoutMs?: number
   findTimeoutMs?: number
   pollIntervalMs?: number
@@ -151,8 +230,19 @@ export async function makeElectronFlowSession(opts: {
     const code = (error as NodeJS.ErrnoException | null)?.code
     throw new ElectronFlowSessionError(code === 'ERR_MODULE_NOT_FOUND' ? NOT_INSTALLED_MESSAGE : LOAD_FAILED_MESSAGE, { cause: error })
   }
-  const display = electronDisplayProblem(opts.env, opts.platform)
-  if (display !== undefined) throw new ElectronFlowSessionError(display)
+  const host: ElectronHost = { ...(opts.env === undefined ? {} : { env: opts.env }), ...(opts.platform === undefined ? {} : { platform: opts.platform }), ...(opts.xvfb === undefined ? {} : { xvfb: opts.xvfb }) }
+  const displayProblem = electronDisplayProblem(host)
+  if (displayProblem !== undefined) throw new ElectronFlowSessionError(displayProblem)
+  // A Linux host with no display gets a virtual one for this launch alone,
+  // stopped when the session is: the application opens real windows, and
+  // nothing else on the host has to have started a display for it.
+  const hostEnv = opts.env ?? process.env
+  let virtual: { display: string; stop: () => Promise<void> } | undefined
+  if ((opts.platform ?? process.platform) === 'linux' && !hasDisplay(hostEnv)) {
+    const xvfb = (opts.xvfb ?? ((): string | undefined => xvfbOnPath(hostEnv)))()
+    if (xvfb !== undefined) virtual = await (opts.startDisplay ?? startVirtualDisplay)(xvfb)
+  }
+  const appEnv: NodeJS.ProcessEnv = { ...process.env, ...opts.env, ...(virtual === undefined ? {} : { DISPLAY: virtual.display }) }
 
   // The application's own output and its windows' lifecycle, in the order
   // they happened. Bounded, so a build that logs in a loop cannot grow the
@@ -170,11 +260,12 @@ export async function makeElectronFlowSession(opts: {
 
   const userDataDir = await mkdtemp(join(tmpdir(), 'qare-electron-'))
   const spawnApp =
-    opts.spawnApp ?? ((command: string, args: string[]): ElectronAppProcess => spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...opts.env } }))
+    opts.spawnApp ?? ((command: string, args: string[], env: NodeJS.ProcessEnv): ElectronAppProcess => spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], env }))
   let child: ElectronAppProcess
   try {
-    child = spawnApp(opts.executable, [...(opts.args ?? []), '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`])
+    child = spawnApp(opts.executable, [...(opts.args ?? []), '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`], appEnv)
   } catch (error) {
+    await virtual?.stop().catch(() => {})
     await rm(userDataDir, { recursive: true, force: true }).catch(() => {})
     throw new ElectronFlowSessionError(`the application at ${opts.executable} could not be started: ${String(error)}`, { cause: error })
   }
@@ -247,6 +338,7 @@ export async function makeElectronFlowSession(opts: {
       }
     }
     await browser?.close().catch(() => {})
+    await virtual?.stop().catch(() => {})
     await rm(userDataDir, { recursive: true, force: true, maxRetries: 3 }).catch(() => {})
   }
   const failStart = async (message: string): Promise<never> => {

@@ -303,6 +303,19 @@ test('a target profile still names its placeholders, though it has no boot or st
   ])
 })
 
+test('a client profile launches a build, so it has no boot or stub gaps either, and the report names the build (#72)', async () => {
+  const dir = await repoWith({
+    '.qa/QA.md': '# QA\n',
+    '.qa/config.yml': ['client:', '  driver: electron', '  executable: dist/app/app'].join('\n'),
+    'src/billing.ts': `export const api = '${url('api.billing-vendor.example')}'\n`,
+  })
+  const inventory = await readinessInventory(dir)
+  expect(inventory.gaps).toEqual([])
+  expect(inventory.stubGaps).toEqual([])
+  expect(inventory.profile.client).toEqual({ driver: 'electron', executable: 'dist/app/app' })
+  expect(buildReadinessReport(inventory)).toContain('- electron build dist/app/app: launched by the run, so qare boots nothing')
+})
+
 test('a profile that boots from a compose file the repository does not have is a gap', async () => {
   const dir = await repoWith({ 'docker-compose.yml': 'services:\n  admin:\n    healthcheck: {}\n' })
   await withProfile(dir)
