@@ -103,9 +103,11 @@ test('the release workflow runs the android preboot check both ways', async () =
 })
 
 test('the pipeline pulls the image family instead of building qare from source', async () => {
-  const workflow = await readFile(join(ROOT, '.github', 'workflows', 'qare.yml'), 'utf8')
-  assert.match(workflow, /ghcr\.io\/vividynamics\/qare-core:\$version/, 'plan and judge pull the core image for the version they run')
-  assert.match(workflow, /ghcr\.io\/vividynamics\/qare-\$\{\{ steps\.flavour\.outputs\.flavour \}\}:\$version/, 'execute pulls the flavour the profile targets')
+  // The jobs live in the reusable pipeline (#145); qare.yml only calls it.
+  const workflow = await readFile(join(ROOT, '.github', 'workflows', 'pipeline.yml'), 'utf8')
+  assert.match(workflow, /ghcr\.io\/vividynamics\/qare-core:\$QARE_VERSION/, 'plan and judge pull the core image for the version they run')
+  assert.match(workflow, /FLAVOUR: \$\{\{ steps\.flavour\.outputs\.flavour \}\}/, 'execute reads the flavour the profile targets')
+  assert.match(workflow, /ghcr\.io\/vividynamics\/qare-\$FLAVOUR:\$QARE_VERSION/, 'execute pulls the flavour the profile targets')
   assert.match(workflow, /QARE_IMAGE_REF/, 'the run names the image ref in its evidence')
   assert.match(workflow, /QARE_IMAGE_DIGEST/, 'the run names the image digest in its evidence')
   const sections = workflow.split('\n  # label: ')

@@ -1,0 +1,909 @@
+name: QARE pipeline
+
+# The qare pipeline as a reusable workflow (#145): a repository calls it from
+# a workflow of about ten lines, naming its profile path, its model and the
+# secret that holds its model key, and pins a qare release tag in `uses:`.
+# qare's own QARE workflow (qare.yml) is such a caller, so qare runs the
+# pipeline it ships. docs/pipeline.md is the caller's guide.
+#
+# Four-job qare pipeline: collect -> plan -> execute -> judge (+ report when
+# no verdict was published, + requeue on push), with artifact handoff.
+#
+# Secret-hygiene map (constitution rule 7: secrets never share a machine with
+# pull request code):
+#   - collect: holds the GitHub token only    (reads the linked issue; no model key)
+#   - plan:    holds the model key only       (the model-key secret)
+#   - execute: holds no secrets at all        (stub containers only)
+#   - judge:   holds the model key + GitHub token only, in separate steps
+#     (the model-key secret for the verifier, which reads evidence but runs
+#     nothing; GITHUB_TOKEN for the steps that write to GitHub)
+#   - report:  holds the GitHub token only    (says why no verdict was posted)
+#   - requeue: holds the GitHub token only    (posts /qa on refused PRs)
+# No secret values are written here; only names, resolved at runtime. The
+# caller passes its model key by name, as the one secret this workflow
+# declares, and never inherits its secrets into it: a called workflow sees
+# only what it is handed, and no job here gains a secret it did not hold
+# when the pipeline lived in the caller's own file.
+#
+# Which qare runs: the revision `qare-ref` names. It defaults to the release
+# this file ships in (a called workflow cannot learn its own ref, so the
+# release is written here and stamped by scripts/sync-version.mjs), which is
+# what lets a caller pin one tag and upgrade by changing it. qare's own
+# caller passes the base commit instead, a revision the pull request cannot
+# change.
+#
+# What runs what: plan, execute and judge run qare inside the published image
+# family (#88), pulled for that revision's version so a run of the pipeline
+# is a pull of the image, not a build of the tree. collect, report and
+# requeue hold the GitHub token only, so they build and run qare from a
+# checkout of that revision beside the caller's tree, and no secret-holding
+# job installs or runs the pull request's tree. collect reads the version
+# from that checkout and hands it on, so no image job reads a version from
+# any tree. The pull request contributes data only: its body, the linked
+# issues, the diff, its profile read as YAML, and the artifacts execute
+# uploaded. execute runs the flavour its profile targets (core by default,
+# web for browser checks), and holds no secrets. Until a release publishes
+# the images, the image pull fails with a message naming exactly that (#88):
+# the pipeline stays red rather than quietly building qare from source,
+# because a source build is the failure mode this family exists to remove.
+#
+# What the caller keeps: its triggers, its concurrency group, and the
+# permission ceiling. A called job can hold no permission the calling job
+# does not grant, so the caller grants the union (actions: read, checks:
+# write, contents: write, issues: write, pull-requests: write) and each job
+# below still declares only what it needs. Nothing of the caller's `env`
+# arrives here; everything it chooses is an input.
+#
+# Nothing here is allowed to fail quietly: no step or job continues on
+# error, so a failed plan can never read as a pass (rule 6).
+#
+# Criteria come from the issue the pull request promises to close (#98). A
+# change that promises none, or closes only issues that state none, has
+# nothing to check: collect says so, every later job skips, and the pipeline
+# stays green. A red pipeline on every chore would hide the failure that
+# matters.
+#
+# collect reads the issue so the model-key job never needs a GitHub token,
+# which keeps the secret-hygiene map above true rather than approximately true.
+#
+# Fork pull requests get no secrets, so the model-key jobs are guarded on the
+# head repository being this one; they skip rather than failing on a fork.
+#
+# The caller filters its pushes to its default branch, so the qa-assets
+# pushes the judge step makes (ADR-0002) never re-trigger this pipeline,
+# which is what keeps those pushes from being pull request completions.
+
+on:
+  workflow_call:
+    inputs:
+      profile:
+        description: The directory that holds the repository's QA profile (config.yml, QA.md, stubs).
+        type: string
+        default: .qa
+      nare-model:
+        description: The model the planner and the verifier ask, as the provider names it.
+        type: string
+        required: true
+      nare-provider:
+        description: The nare provider that reaches the model. openai is any OpenAI-compatible endpoint.
+        type: string
+        default: openai
+      nare-base-url:
+        description: The endpoint of an OpenAI-compatible model service. Empty means the provider's own.
+        type: string
+        default: ''
+      model-key-env:
+        description: The environment variable the provider reads its key from. The model-key secret is exported under this name.
+        type: string
+        default: OPENAI_API_KEY
+      runs-on:
+        description: >-
+          Where every job runs, as JSON: one label ('"ubuntu-latest"') or a
+          list ('["self-hosted", "linux", "x64"]'). A runner needs docker,
+          git, jq and the gh CLI.
+        type: string
+        default: '"ubuntu-latest"'
+      planner-diff-exclude:
+        description: >-
+          Paths left out of the planner's copy of the diff, as space-separated
+          git pathspecs (a test suite, generated files). The full diff still
+          reaches execute and judge.
+        type: string
+        default: ''
+      qare-ref:
+        description: >-
+          The qare revision the pipeline runs: its source for the token-only
+          jobs, its version for the images. It defaults to the release this
+          workflow ships in, so pin the release in `uses:` and leave this
+          alone.
+        type: string
+        default: '2026.10.2'
+    secrets:
+      model-key:
+        description: >-
+          The model key the planner and the verifier use. Not required at the
+          interface, because a fork pull request has none; the plan and judge
+          steps stop by name when it is empty.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  # label: collect (GitHub token only)
+  collect:
+    name: collect (GitHub token only)
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      criteria: ${{ steps.inputs.outputs.criteria }}
+      # The version of the qare this run uses, read from the revision the
+      # caller pinned. plan, execute and judge pull the images it names.
+      qare-version: ${{ steps.qare.outputs.version }}
+    steps:
+      # The base commit: the pull request contributes data only, and the head
+      # arrives below as an object, never as a working tree.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+      # This job holds the GitHub token, so the qare it installs and runs is
+      # the revision the caller pinned, which the pull request cannot change:
+      # a release for a repository that calls this workflow, the base commit
+      # for qare itself.
+      - name: Check out qare at the pinned revision
+        uses: actions/checkout@v4
+        with:
+          repository: ViviDynamics/qare
+          ref: ${{ inputs.qare-ref }}
+          path: .qare-pipeline
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: .qare-pipeline/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .qare-pipeline/.nvmrc
+          cache: pnpm
+          cache-dependency-path: .qare-pipeline/pnpm-lock.yaml
+      - run: pnpm --dir .qare-pipeline install --frozen-lockfile
+      - run: pnpm --dir .qare-pipeline build
+      - name: Read the version of the pinned qare
+        id: qare
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -r '.version // empty' .qare-pipeline/package.json)"
+          if [ -z "$version" ]; then
+            echo "the qare revision this pipeline pinned carries no version in its package.json, so no image can be named for it" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Say why a fork gets no QA
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "this pull request comes from a fork, which gets no model key, so qare cannot plan or check it here" >> "$GITHUB_STEP_SUMMARY"
+      - name: Read the linked issue and the diff
+        id: inputs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PLANNER_DIFF_EXCLUDE: ${{ inputs.planner-diff-exclude }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${PR_BODY:-}" > pr-body.md
+          node .qare-pipeline/packages/cli/dist/index.js linked-issues --body pr-body.md > linked.txt
+          if [ ! -s linked.txt ]; then
+            echo "this change promises to close no issue, so it states no acceptance criteria and there is nothing to check" >> "$GITHUB_STEP_SUMMARY"
+            echo "criteria=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          issues=()
+          while read -r number; do
+            gh issue view "$number" --json body --jq .body > "issue-${number}.md"
+            issues+=("issue-${number}.md")
+          done < linked.txt
+          # Read here, without a model: an issue that states no criteria (a bug
+          # report closed by a one-line fix) has nothing to check, the same
+          # neutral outcome as closing no issue at all.
+          node .qare-pipeline/packages/cli/dist/index.js issue-criteria --out criteria.json "${issues[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ ! -f criteria.json ]; then
+            echo "criteria=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The head is fetched as an object, not checked out: the base
+          # revision's qare produces the diff, and the pull request's tree is
+          # never installed or run in this job.
+          git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          git diff "${BASE_SHA}...${HEAD_SHA}" > change.diff
+          # The planner's prompt travels as one argument (nare#29), so a diff
+          # bigger than that budget cannot reach the planner whole. The
+          # planner's copy keeps the change's source and spec and leaves out
+          # the paths the caller names (a test suite, say); the full diff
+          # stays the diff for execute and judge. The names are read as
+          # words, never expanded by the shell: git matches them, as
+          # pathspecs.
+          excludes=()
+          read -r -a patterns <<< "${PLANNER_DIFF_EXCLUDE:-}"
+          for pattern in "${patterns[@]}"; do
+            excludes+=(":(exclude)$pattern")
+          done
+          git diff "${BASE_SHA}...${HEAD_SHA}" -- . "${excludes[@]}" > change-planner.diff
+          # Both model-facing copies of the diff are scrubbed of the seeded
+          # values the diff itself adds, wherever the profile that carries
+          # them lives and however the mapping is written (a value inside an
+          # inline `totp: { secret: ... }` is on the same line): no model sees
+          # a secret the change promises to keep out of model-facing text (#64).
+          sed -E '/^\+.*(secret[[:space:]]*:|value[[:space:]]*:)/ s/.*/+ [redacted]/' change-planner.diff > change-planner.scrubbed
+          mv change-planner.scrubbed change-planner.diff
+          echo "criteria=present" >> "$GITHUB_OUTPUT"
+          {
+            echo "criteria read from: $(tr '\n' ' ' < linked.txt)"
+            echo "diff bytes: $(wc -c < change.diff)"
+            echo "planner diff bytes: $(wc -c < change-planner.diff)"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the QA inputs
+        if: steps.inputs.outputs.criteria == 'present'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-inputs
+          path: |
+            criteria.json
+            change.diff
+            change-planner.diff
+          if-no-files-found: error
+
+  # label: plan (model key only)
+  plan:
+    name: plan (model key only)
+    needs: collect
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    # A fork pull request gets no secrets, so this would fail for a reason that
+    # has nothing to do with the change. It skips instead.
+    if: >-
+      needs.collect.outputs.criteria == 'present' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      # The base revision: the pull request contributes data only, and this
+      # job holds the model key. The tree supplies the profile the planner
+      # reads; the image is the published core for the pinned qare's version
+      # (#88), so nothing here builds qare from source.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: Pull the core image
+        id: image
+        shell: bash
+        env:
+          QARE_VERSION: ${{ needs.collect.outputs.qare-version }}
+        run: |
+          set -euo pipefail
+          ref="ghcr.io/vividynamics/qare-core:$QARE_VERSION"
+          if ! docker pull "$ref"; then
+            echo "no published qare-core image for version $QARE_VERSION ($ref): the image family publishes when a release is tagged, so tag a release and the images job in qare's .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
+      - name: Download the QA inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: qa-inputs
+          path: .
+      - name: Plan the QA run
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          MODEL_KEY: ${{ secrets.model-key }}
+          MODEL_KEY_ENV: ${{ inputs.model-key-env }}
+          NARE_PROVIDER: ${{ inputs.nare-provider }}
+          NARE_BASE_URL: ${{ inputs.nare-base-url }}
+          NARE_MODEL: ${{ inputs.nare-model }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          # Fail closed (rule 6): a planner without a key is stopped here, by
+          # name, rather than left to fail somewhere inside the model call.
+          if [ -z "$MODEL_KEY" ]; then
+            echo "no model key: the calling workflow must pass the model-key secret (secrets: model-key), and the secret it names must be set in the repository" | tee -a "$GITHUB_STEP_SUMMARY" >&2
+            exit 1
+          fi
+          if [[ ! "$MODEL_KEY_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            echo "model-key-env must be the name of an environment variable (got '$MODEL_KEY_ENV')" | tee -a "$GITHUB_STEP_SUMMARY" >&2
+            exit 1
+          fi
+          # The key travels to the container by name, under the variable the
+          # provider reads, and never as an argument. An endpoint is handed
+          # on only when the caller named one.
+          export "$MODEL_KEY_ENV=$MODEL_KEY"
+          model_env=(-e "$MODEL_KEY_ENV" -e NARE_PROVIDER -e NARE_MODEL)
+          if [ -n "$NARE_BASE_URL" ]; then
+            model_env+=(-e NARE_BASE_URL)
+          fi
+          # The change may introduce flow action kinds the base planner's
+          # vocabulary lacks (#64). They are read out of the diff as data and
+          # handed to the planner's schema. A base revision whose qare has no
+          # such flag yet never reads it; criteria that still cannot be planned
+          # come out unplannable, and execute treats those as neutral.
+          kinds=$(grep '^+.*FLOW_ACTION_KINDS' change.diff | grep -oE "'[A-Za-z][A-Za-z0-9]{0,30}'" | tr -d "'" | sort -u | head -12 | paste -sd, - || true)
+          flow_actions=()
+          if [ -n "$kinds" ]; then
+            flow_actions=(--flow-actions "$kinds")
+            echo "planning with the change's flow action kinds: $kinds" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if ! docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            "${model_env[@]}" \
+            -v "$PWD:$PWD" -w "$PWD" \
+            "$IMAGE_REF" qare plan \
+            --criteria criteria.json --diff change-planner.diff --out plan.json \
+            --nare /usr/local/bin/nare --profile "$PROFILE" "${flow_actions[@]}" 2>plan.err; then
+            # The planner's copy of the diff — scrubbed of the values the
+            # change adds, with the test suite left out — is what the planner
+            # always reads, whatever fits the argument budget (nare#29). Any
+            # failure surfaces as it happened.
+            cat plan.err >&2
+            exit 4
+          fi
+      - name: Upload plan.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan.json
+          path: plan.json
+          if-no-files-found: error
+      - name: Upload mcp calls
+        uses: actions/upload-artifact@v4
+        with:
+          # The planner's look through the profile's registered host MCP
+          # servers (#93), as the plan step served it. Written only when a
+          # profile registered servers, so its absence is an ordinary no
+          # rather than a fault.
+          name: mcp-calls.jsonl
+          path: mcp-calls.jsonl
+          if-no-files-found: ignore
+
+  # label: execute (no secrets)
+  execute:
+    name: execute (no secrets)
+    needs: [collect, plan]
+    if: needs.collect.outputs.criteria == 'present' && needs.plan.result == 'success'
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    outputs:
+      # Where the evidence was uploaded, the one place the posted comment may
+      # link to (CONSTITUTION rule 4). Empty when nothing was uploaded.
+      evidence-url: ${{ steps.evidence.outputs.artifact-url }}
+      # The verdict the run recorded, whatever the plan step exited with
+      # (#203). Empty when the run wrote no result.json: then nothing was
+      # evaluated, judge is skipped, and the report job says why.
+      verdict: ${{ steps.recorded.outputs.verdict }}
+    steps:
+      # actions/checkout checks out the PR merge ref on pull_request events
+      - uses: actions/checkout@v4
+      # The flavour the profile targets (#88): the profile names it, and
+      # execute pulls that image, not the runner's own stack. Absent means
+      # the base image is enough, which a profile of command and mail
+      # checks is.
+      - name: Read the profile's flavour
+        id: flavour
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$PROFILE/config.yml" ]; then
+            echo "flavour=core" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          flavour="$(awk -F'[: ]+' '$1=="flavour"{print $2; exit}' "$PROFILE/config.yml")"
+          echo "flavour=${flavour:-core}" >> "$GITHUB_OUTPUT"
+      - name: Pull the flavour image
+        id: image
+        shell: bash
+        env:
+          QARE_VERSION: ${{ needs.collect.outputs.qare-version }}
+          FLAVOUR: ${{ steps.flavour.outputs.flavour }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # The base revision joins the object store, as it has since #194:
+          # the run names it with --base.
+          git fetch origin "$BASE_SHA" --depth=1
+          # The runtime is pipeline infrastructure, resolved exactly as plan
+          # and judge resolve theirs (#88, rule 7): from the qare revision
+          # the caller pinned, which collect read, and never from the pull
+          # request's tree. For qare itself that revision is the base commit,
+          # so a version-bumping pull request ships green before its release
+          # exists, and the release lands after the merge, from the default
+          # branch's history (#194).
+          ref="ghcr.io/vividynamics/qare-$FLAVOUR:$QARE_VERSION"
+          if ! docker pull "$ref"; then
+            echo "no published qare-$FLAVOUR image for version $QARE_VERSION ($ref): the image family publishes when a release is tagged, so tag a release and the images job in qare's .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
+      - name: Download plan.json
+        uses: actions/download-artifact@v4
+        with:
+          name: plan.json
+          path: .
+      - name: Run the plan
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -uo pipefail
+          # The run's own facts come from here rather than from the plan: a
+          # plan is the same wherever it runs (#105). The run executes inside
+          # the flavour image, so the runner's own record names the image ref
+          # and digest that produced the evidence (#88): the ref and digest
+          # travel in the environment, the flavour and driver versions travel
+          # in the image. The docker CLI and socket are mounted for the stub
+          # containers the plan boots (execute holds no secrets), and the
+          # workspace maps to itself, so the compose paths the runner names
+          # line up with the daemon's.
+          code=0
+          docker run --rm \
+            -u "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e QARE_IMAGE_REF="$IMAGE_REF" \
+            -e QARE_IMAGE_DIGEST="$IMAGE_DIGEST" \
+            -v "$PWD:$PWD" -w "$PWD" \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /usr/bin/docker:/usr/bin/docker:ro \
+            "$IMAGE_REF" qare run --plan plan.json \
+            --id "pr-${PR_NUMBER}" \
+            --repo "$PWD" \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --profile "$PROFILE" \
+            --evidence evidence || code=$?
+          # 3 is refused: this repository has no profile or no stubs, so
+          # qare will not pretend to have checked it. That is an outcome about
+          # the repository rather than a fault in the change, judge still
+          # reports it, and stub issues are filed.
+          if [ "$code" -eq 3 ]; then
+            # A refusal writes result.json like any other run; without it,
+            # exit 3 means something else went wrong and judge has nothing.
+            if [ ! -f evidence/result.json ]; then
+              echo "exit 3 but no evidence/result.json: not a refusal qare recorded" >&2
+              exit 1
+            fi
+            echo "qare refused this run (no profile or stubs yet); judge will report it and file stub issues" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # 2 is blocked: nothing was disproven, but something was left
+          # unverified. When every unverified criterion is one the planner
+          # could not plan, whose planned command cannot run without a
+          # shell, or whose check could not start at all (the planner named
+          # an executable the runner does not have), the gap is in the
+          # planning vocabulary rather than in the change (#64): judge
+          # reports each criterion by name, and the pipeline stays green. Any
+          # other blocked run — a check that could not reach the app, an
+          # environment that would not boot — is a fault and stays red.
+          if [ "$code" -eq 2 ] && [ -f evidence/result.json ] && jq -e '
+            .verdict == "blocked" and
+            ([.criteria[] | select(.outcome == "unverified")] | length) > 0 and
+            ([.criteria[] | select(.outcome == "unverified")
+              | (.reason // "")
+              | startswith("the planner could not plan it")
+                or startswith("the planned command cannot run")
+                or startswith("check could not start")] | all)
+          ' evidence/result.json > /dev/null; then
+            echo "verdict blocked: every criterion left unverified is planner-unplannable, names a command that cannot run without a shell, or names a check that could not start; judge reports them, and nothing was disproven" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          exit "$code"
+      # A failed or blocked verdict exits non-zero and leaves this job red,
+      # and judge still publishes it, so the pull request is told which
+      # criteria failed rather than shown a red job that reads the same as
+      # qare failing (#203). Read whatever the plan step exited with.
+      - name: Read the recorded verdict
+        id: recorded
+        if: always()
+        shell: bash
+        # No readable verdict fails this step (rule 6): judge is skipped, so a
+        # run that recorded nothing must not leave the pipeline green with
+        # nothing posted. The report job names the failure instead.
+        run: |
+          verdict=""
+          if [ -f evidence/result.json ]; then
+            verdict="$(jq -r '.verdict // empty' evidence/result.json 2>/dev/null || true)"
+          fi
+          if [ -z "$verdict" ]; then
+            echo "no readable verdict in evidence/result.json: the run recorded none, so nothing was evaluated" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+      # Evidence is published, so it is redacted before it leaves this
+      # machine, and a redaction that fails uploads nothing (#52). The run
+      # already redacts what it writes; this also covers files a crashed run
+      # left behind and anything else that landed in the directory.
+      - name: Redact the evidence
+        id: redact
+        if: always()
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          if [ ! -d evidence ]; then
+            echo "no evidence directory: nothing to redact or upload"
+            exit 0
+          fi
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD:$PWD" -w "$PWD" \
+            "$IMAGE_REF" qare redact --evidence evidence --profile "$PROFILE"
+      - name: Upload evidence (raw results + result.json)
+        id: evidence
+        if: always() && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: execute-evidence
+          path: evidence/
+          if-no-files-found: ignore
+      # The profile is pull-request data (rule 7): execute reads it as YAML,
+      # and judge reads it from this artifact rather than from a checkout of
+      # the pull request's tree. A run refused for want of a profile has none
+      # to upload, and judge skips the verifier for it anyway.
+      - name: Upload the profile the run used
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-profile
+          path: ${{ inputs.profile }}
+          # .qa, the usual profile, is a hidden directory, and
+          # upload-artifact@v4 matches no hidden path unless it is told to:
+          # without this flag the upload silently uploads nothing and judge
+          # has no profile to read.
+          include-hidden-files: true
+          if-no-files-found: ignore
+
+  # label: judge (model key + GitHub token only)
+  judge:
+    name: judge (model key + GitHub token only)
+    # collect and plan for the diff and the criteria text the verifier reads;
+    # execute for the evidence it checks them against.
+    needs: [collect, plan, execute]
+    outputs:
+      # Whether the verdict reached the pull request; the report job stays
+      # out of the way when it did.
+      posted: ${{ steps.posted.outputs.posted }}
+    # Whenever execute recorded a verdict, including a failed or blocked one
+    # that left execute red (#203): that verdict is the project's answer, and
+    # the pull request is told it. No recorded verdict means nothing was
+    # evaluated; the report job explains that instead.
+    if: always() && needs.execute.outputs.verdict != ''
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    permissions:
+      # contents: write is for the qa-assets push: the judge step commits the
+      # run's screenshots to the orphan branch (ADR-0002). This job never
+      # checks out or runs the pull request tree, so the write cannot touch
+      # pull request code.
+      contents: write
+      checks: write
+      issues: write
+      pull-requests: write
+    steps:
+      # No token left in .git/config: the verifier step holds the model key
+      # and reads files, and must not find a token that can write a check run.
+      # The base commit again: judge holds secrets, so it never installs or
+      # runs the pull request's tree. The checkout also gives a runner that
+      # outlives its jobs a clean workspace, so nothing an earlier run left
+      # behind can be read as this run's result.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: Pull the core image
+        id: image
+        shell: bash
+        env:
+          QARE_VERSION: ${{ needs.collect.outputs.qare-version }}
+        run: |
+          set -euo pipefail
+          ref="ghcr.io/vividynamics/qare-core:$QARE_VERSION"
+          if ! docker pull "$ref"; then
+            echo "no published qare-core image for version $QARE_VERSION ($ref): the image family publishes when a release is tagged, so tag a release and the images job in qare's .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
+      - name: Download the QA inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: qa-inputs
+          path: .
+      - name: Download plan.json
+        uses: actions/download-artifact@v4
+        with:
+          name: plan.json
+          path: .
+      # Evidence gets a directory of its own: it is the verifier's file root,
+      # so its read tool reaches the evidence and nothing else.
+      - name: Download execute evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: execute-evidence
+          path: evidence
+      # A refused run executed nothing, so judge will not call the verifier,
+      # and a failed install must not stop its stub issues being filed. It is
+      # read before the profile download, which it gates: a gate on a step
+      # that has not run yet reads empty, and always passes.
+      - name: Read the executed verdict
+        id: executed
+        shell: bash
+        run: echo "verdict=$(jq -r '.verdict' evidence/result.json)" >> "$GITHUB_OUTPUT"
+      # The profile arrives as an artifact: it is pull-request data, and this
+      # job must not check out the pull request tree. Only a run that actually
+      # executed has one; a refused run skipped the verifier.
+      - name: Download the profile the run used
+        if: steps.executed.outputs.verdict != 'refused'
+        uses: actions/download-artifact@v4
+        with:
+          name: qa-profile
+          path: profile
+      - name: Judge the result
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          # The planner's key and model: the verifier's prompt is planning
+          # size, so it asks the model the planner asked (nare#27).
+          MODEL_KEY: ${{ secrets.model-key }}
+          MODEL_KEY_ENV: ${{ inputs.model-key-env }}
+          NARE_PROVIDER: ${{ inputs.nare-provider }}
+          NARE_BASE_URL: ${{ inputs.nare-base-url }}
+          NARE_MODEL: ${{ inputs.nare-model }}
+        run: |
+          set -euo pipefail
+          # Fail closed (rule 6), as the plan step does: no key, no verifier.
+          if [ -z "$MODEL_KEY" ]; then
+            echo "no model key: the calling workflow must pass the model-key secret (secrets: model-key), and the secret it names must be set in the repository" | tee -a "$GITHUB_STEP_SUMMARY" >&2
+            exit 1
+          fi
+          if [[ ! "$MODEL_KEY_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            echo "model-key-env must be the name of an environment variable (got '$MODEL_KEY_ENV')" | tee -a "$GITHUB_STEP_SUMMARY" >&2
+            exit 1
+          fi
+          export "$MODEL_KEY_ENV=$MODEL_KEY"
+          model_env=(-e "$MODEL_KEY_ENV" -e NARE_PROVIDER -e NARE_MODEL)
+          if [ -n "$NARE_BASE_URL" ]; then
+            model_env+=(-e NARE_BASE_URL)
+          fi
+          # The same flow action kinds the plan job handed the planner (#64):
+          # the judge loads the plan with the base revision's loader, which
+          # needs them to accept checks written in the change's vocabulary.
+          kinds=$(grep '^+.*FLOW_ACTION_KINDS' change.diff | grep -oE "'[A-Za-z][A-Za-z0-9]{0,30}'" | tr -d "'" | sort -u | head -12 | paste -sd, - || true)
+          flow_actions=()
+          if [ -n "$kinds" ]; then
+            flow_actions=(--flow-actions "$kinds")
+          fi
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            "${model_env[@]}" \
+            -v "$PWD:$PWD" -w "$PWD" \
+            "$IMAGE_REF" qare judge \
+            --result evidence/result.json --outDir . \
+            --plan plan.json --diff change-planner.diff \
+            --nare /usr/local/bin/nare --profile profile "${flow_actions[@]}"
+      # What the run cost and decided (#51): its wall clock, the plan's and
+      # the verifier's model spend, the criteria it selected and the verdict.
+      # Recorded whether the verdict was refused or not, because a refusal
+      # costs the pilot its attention too. The record is data the sweep reads
+      # later, not a log line, so it is written before anything that could
+      # fail after it.
+      - name: Record the run's metrics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f judged-result.json ]; then
+            echo "judged-result.json missing: judge did not produce an artifact, no metrics to record"
+            exit 0
+          fi
+          args=()
+          if [ -f plan.json ]; then
+            args+=(--plan plan.json)
+          fi
+          if [ -n "${PR_NUMBER:-}" ]; then
+            args+=(--pr "$PR_NUMBER")
+          fi
+          # A metrics failure is reported, never gating: the verdict is decided
+          # and the evidence posted whether or not the numbers were recorded,
+          # and the numbers are not worth a red run by themselves (#51). The
+          # image's qare records them: this job builds nothing, and a
+          # caller's repository carries no qare to run.
+          if ! docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              -v "$PWD:$PWD" -w "$PWD" \
+              "$IMAGE_REF" qare metrics record \
+              --result judged-result.json "${args[@]}" \
+              --store qa-metrics --out metrics.json; then
+            echo "::warning::qare metrics record failed: this run's numbers are not recorded, the verdict is unaffected"
+          fi
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+      - name: File stub issues (refused runs only)
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f judged-result.json ]; then
+            echo "judged-result.json missing: judge did not produce an artifact, no stub issues to file"
+          elif jq -e '.verdict == "refused"' judged-result.json > /dev/null; then
+            docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              -e GITHUB_TOKEN \
+              -e GITHUB_REPOSITORY \
+              -v "$PWD:$PWD" -w "$PWD" \
+              --entrypoint node \
+              "$IMAGE_REF" /opt/qare/lib/packages/action/dist/index.js stub-issues --result judged-result.json --pr "${{ github.event.pull_request.number }}"
+          else
+            echo "verdict $(jq -r '.verdict' judged-result.json): not refused, no stub issues to file"
+          fi
+      # One sticky comment, updated on every run, and a check run on the head
+      # commit. The screenshots the run captured are pushed to the orphan
+      # qa-assets branch, named by the run (head SHA and date), and linked
+      # there; everything else links to the uploaded artifact, which expires
+      # after 90 days (ADR-0002). Last, so a posting failure cannot stop stub
+      # issues.
+      - name: Post the evidence on the pull request
+        id: posted
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVIDENCE_URL: ${{ needs.execute.outputs.evidence-url }}
+        run: |
+          set -euo pipefail
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            -e GITHUB_TOKEN \
+            -e GITHUB_REPOSITORY \
+            -v "$PWD:$PWD" -w "$PWD" \
+            --entrypoint node \
+            "$IMAGE_REF" /opt/qare/lib/packages/action/dist/index.js post-evidence \
+            --result judged-result.json \
+            --pr "$PR_NUMBER" --sha "$HEAD_SHA" --artifact-url "$EVIDENCE_URL" \
+            --evidence evidence --metrics metrics.json
+          # The verdict is on the pull request: the report job must not
+          # replace it, whatever fails after this (#203).
+          echo "posted=true" >> "$GITHUB_OUTPUT"
+      - name: Upload judge artifacts (comment.md, checkrun.json, judged-result.json, metrics.json)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: judge-artifacts
+          path: |
+            comment.md
+            checkrun.json
+            judged-result.json
+            metrics.json
+          if-no-files-found: ignore
+
+  # label: report (GitHub token only)
+  # A pipeline that failed without publishing a verdict evaluated no
+  # criterion: a tool that would not install, an image that would not pull, a
+  # planner that would not answer, or judge failing to post. On the pull
+  # request that is only a red job, which reads like the project failing
+  # (#203). This job names the job and step that failed, and posts the
+  # sticky comment and a failing check run saying no criterion was evaluated
+  # and the failure is qare's side or the runner's, not the project's.
+  report:
+    name: report (GitHub token only)
+    needs: [collect, plan, execute, judge]
+    if: >-
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.judge.outputs.posted != 'true' &&
+      contains(needs.*.result, 'failure')
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    permissions:
+      # actions: read is for listing this run's jobs and steps.
+      actions: read
+      checks: write
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      # The pinned qare, like every job holding the token (rule 7): the qare
+      # it builds and runs is a revision the pull request cannot change. This
+      # job reads the run through the API and needs nothing of the caller's
+      # tree, so qare is the whole workspace.
+      - name: Check out qare at the pinned revision
+        uses: actions/checkout@v4
+        with:
+          repository: ViviDynamics/qare
+          ref: ${{ inputs.qare-ref }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Report the failure on the pull request
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Empty when execute recorded no verdict (nothing was evaluated);
+          # set when it did and judge failed to publish it.
+          RECORDED_VERDICT: ${{ needs.execute.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          node packages/action/dist/index.js report-failure \
+            --run-id "$RUN_ID" --attempt "$RUN_ATTEMPT" \
+            --pr "$PR_NUMBER" --sha "$HEAD_SHA" --run-url "$RUN_URL" \
+            --recorded-verdict "$RECORDED_VERDICT" \
+            --pipeline collect,plan,execute,judge \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # label: requeue (GitHub token only)
+  requeue:
+    name: requeue (GitHub token only)
+    if: github.event_name == 'push'
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    permissions:
+      # contents: read is for the checkout, which a private repository
+      # cannot do without it.
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The pinned qare, beside the pushed tree whose stub diff it reads.
+      - name: Check out qare at the pinned revision
+        uses: actions/checkout@v4
+        with:
+          repository: ViviDynamics/qare
+          ref: ${{ inputs.qare-ref }}
+          path: .qare-pipeline
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: .qare-pipeline/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .qare-pipeline/.nvmrc
+          cache: pnpm
+          cache-dependency-path: .qare-pipeline/pnpm-lock.yaml
+      - run: pnpm --dir .qare-pipeline install --frozen-lockfile
+      - run: pnpm --dir .qare-pipeline build
+      - name: Re-queue refused PRs unblocked by the merged stubs
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEFORE: ${{ github.event.before }}
+          PUSHED: ${{ github.sha }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          before="$BEFORE"
+          if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
+            before="$(git hash-object -t tree /dev/null)"
+            echo "first push to main: diffing from the empty tree"
+          fi
+          node .qare-pipeline/packages/action/dist/index.js requeue --keys-from-diff "$before...$PUSHED" --profile "$PROFILE"
