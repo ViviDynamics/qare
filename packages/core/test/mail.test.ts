@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mkdtemp } from 'node:fs/promises'
@@ -401,4 +401,26 @@ test('a mail source URL naming a value the run does not mint refuses the run, na
   expect(result.verdict).toBe('refused')
   expect(JSON.stringify(result.criteria)).toContain('mail.source.url')
   expect(sink.requests).toEqual([])
+})
+
+test('the wait opens with the criterion, so a message its earlier check caused is the one read (#65)', async () => {
+  // The check before the mail check is what makes the app send: by the time
+  // the mail check starts, a message sent synchronously has already arrived.
+  const job = await makeJob([
+    {
+      id: 'signup-mail',
+      text: 'signing up sends a confirmation',
+      checks: [
+        { kind: 'command', run: 'node stamp.mjs' },
+        { kind: 'mail', name: 'confirmation', address: 'qa@localhost', timeoutMs: 200 },
+      ],
+    },
+  ])
+  await writeFile(join(job.repoPath, 'stamp.mjs'), "import { writeFileSync } from 'node:fs'\nwriteFileSync('stamp', String(Date.now()))\n")
+  const { result } = await runJob(job, {
+    ...HEALTHY_BOOT,
+    readMail: async () => [message({ received_at: new Date(Number(await readFile(join(job.repoPath, 'stamp'), 'utf8'))).toISOString() })],
+  })
+
+  expect(result.criteria[0]?.outcome).toBe('proven')
 })

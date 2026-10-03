@@ -1751,6 +1751,10 @@ async function runCriterion(
   // every attempt a check was given and never overwrites one with another.
   const dirFor = (index: number, attempt: number): string =>
     attempt === 0 ? join('checks', criterion.id, String(index)) : join('checks', criterion.id, `${index}-attempt${attempt + 1}`)
+  // When this criterion's checks began: the moment its mail checks' window
+  // opens, so the message an earlier check of the criterion caused counts,
+  // and one from before the criterion, an earlier run's included, never does.
+  const criterionStartedAt = Date.now()
   for (const [index, check] of checks.entries()) {
     const substituted = substituteCheck(check, values)
     // A check whose attempts failed and then passed is unstable (#50): the run
@@ -1782,6 +1786,8 @@ async function runCriterion(
           mail.label,
           mail.readMail,
           substituted.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
+          undefined,
+          criterionStartedAt,
         )
         if (outcome.status === 'unverified') return { status: 'unverified', reason: outcome.reason }
         await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
