@@ -177,8 +177,10 @@ async function dockerFindingWith(script: string | undefined) {
     await chmod(join(dir, 'docker'), 0o755)
   }
   process.env.PATH = dir
-  const { dockerInfo: _faked, ...probes } = HEALTHY_PROBES
-  const report = await runDoctor({ probes })
+  // Every probe but dockerInfo is faked, so the docker one is the real one.
+  const report = await runDoctor({
+    probes: { which: HEALTHY_PROBES.which, chromium: HEALTHY_PROBES.chromium, python: HEALTHY_PROBES.python },
+  })
   return report.findings.find((finding) => finding.name === 'docker')
 }
 
