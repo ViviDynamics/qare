@@ -181,10 +181,12 @@ test('a driver that cannot conceal an element is not trusted with one: the recor
   expect(result.outcome).toBe('failed')
   const typed = calls.indexOf(`type textbox:Passphrase=${SECRET}`)
   expect(calls.slice(typed).filter((call) => call.startsWith('frame'))).toEqual([])
-  // What was recorded before the secret is kept; the screenshot is the driver's as it always was.
+  // What was recorded before the secret is kept. No screenshot is taken after it: nothing would hide the field.
   expect(await framesOf(dir)).toEqual([0, 1])
-  expect(calls).toContain('screenshot failure.png []')
+  expect(calls.filter((call) => call.startsWith('screenshot'))).toEqual([])
+  expect(result.evidence).toEqual(['actions.log', 'recording.png'])
   const log = await readFile(join(dir, 'actions.log'), 'utf8')
+  expect(log).toContain('failure.png withheld: a secret was typed into the page, and the driver cannot conceal the element it went into')
   expect(log).toContain('recording stopped before action 2: a secret is about to be typed, and the driver cannot conceal the element it goes into')
   expect(log).not.toContain('is concealed')
   expect(log).not.toContain('concealed:')
@@ -274,4 +276,56 @@ test('a driver with no frame seam is not recorded, and a caller can turn recordi
   const offDir = await outDir()
   expect((await runFlowCheck({ outDir: offDir, page: off.page, actions: FAILING, recording: false })).evidence).toEqual(['actions.log', 'failure.png'])
   expect(off.calls.filter((call) => call.startsWith('frame'))).toEqual([])
+})
+
+test('two fields of one role and name at different places are two fields: each is concealed (#78)', async () => {
+  const { page, calls } = recordedPage({ missing: 'Saved' })
+  const dir = await outDir()
+  const first: FlowElement = { role: 'textbox', name: 'Passphrase', at: 'document/main/form[1]/textbox "Passphrase"' }
+  const second: FlowElement = { role: 'textbox', name: 'Passphrase', at: 'document/main/form[2]/textbox "Passphrase"' }
+
+  await runFlowCheck({
+    outDir: dir,
+    page,
+    redactLog,
+    recording: BOUNDARIES,
+    actions: [
+      { action: 'type', element: first, value: SECRET },
+      { action: 'type', element: second, value: SECRET },
+      { action: 'assertText', text: 'Saved' },
+    ],
+  })
+
+  expect(calls).toContain('screenshot failure.png [textbox:Passphrase, textbox:Passphrase]')
+})
+
+test('a frame larger than the whole bound is not kept: no recording is better than one past its bound (#78)', async () => {
+  const { page } = recordedPage({ missing: 'Saved' })
+  const dir = await outDir()
+
+  const result = await runFlowCheck({ outDir: dir, page, actions: FAILING, recording: { intervalMs: 0, maxBytes: numbered(0).length - 1 } })
+
+  expect(result.evidence).toEqual(['actions.log', 'failure.png'])
+  expect(existsSync(join(dir, 'recording.png'))).toBe(false)
+  expect(await readFile(join(dir, 'actions.log'), 'utf8')).toMatch(/^recording not kept: every frame was larger than the \d+ bytes a recording may hold \(3 dropped\)$/m)
+})
+
+test('a flow that is stopped takes no more frames and writes nothing more, however its last action ends (#78)', async () => {
+  const { page, calls } = recordedPage({ missing: 'Saved' })
+  page.click = async () => new Promise((resolve) => setTimeout(resolve, 80))
+  const dir = await outDir()
+  const stop = new AbortController()
+
+  const flow = runFlowCheck({ outDir: dir, page, actions: FAILING, recording: { intervalMs: 5 }, signal: stop.signal })
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  stop.abort()
+  const framesAtStop = calls.filter((call) => /^frame \d+ starts/.test(call)).length
+  const result = await flow
+
+  expect(result).toEqual({ outcome: 'unverified', reason: 'the flow was stopped before it ended', evidence: [] })
+  // At most the frame that was in flight; the assertion after the click never ran.
+  expect(calls.filter((call) => /^frame \d+ starts/.test(call)).length).toBeLessThanOrEqual(framesAtStop + 1)
+  expect(calls.filter((call) => call.startsWith('assert') || call.startsWith('screenshot'))).toEqual([])
+  expect(existsSync(join(dir, 'recording.png'))).toBe(false)
+  expect(existsSync(join(dir, 'actions.log'))).toBe(false)
 })

@@ -375,9 +375,7 @@ export async function makePlaywrightFlowSession(
           await browserPage.screenshot({
             path: request.screenshot,
             fullPage: true,
-            ...(opts.masks === undefined || opts.masks.length === 0
-              ? {}
-              : { mask: opts.masks.map((selector) => browserPage.locator(selector)), maskColor: '#000000' }),
+            ...captureMasks(browserPage, opts.masks, request),
           })
           screenshot = true
         }

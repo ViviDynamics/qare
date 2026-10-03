@@ -204,6 +204,9 @@ test('a flow that outlived its timeout still gets its log excerpt, cut around th
   const check = 'checks/greets/0'
   expect(result.criteria[0]).toMatchObject({ outcome: 'unverified', reason: 'flow exceeded its 40 ms timeout' })
   expect(await filesUnder(join(job.evidenceDir, check))).toEqual(['console.log', 'failure.log', 'outbound.json'])
+  // The flow it gave up on ends later, and adds nothing to evidence the run has already vouched for.
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  expect(await filesUnder(join(job.evidenceDir, check))).toEqual(['console.log', 'failure.log', 'outbound.json'])
   const excerpt = await readFile(join(job.evidenceDir, check, 'failure.log'), 'utf8')
   expect(excerpt).toMatch(/^\[-\d+\.\d{3}s\] \[main stdout\] main: ready\n--- the check stopped here ---\n\[\+\d+\.\d{3}s\] \[main exited\] code 0$/m)
 })

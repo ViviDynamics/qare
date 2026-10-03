@@ -179,6 +179,12 @@ export interface FlowCheckOpts {
    * are the recording's own unless a caller names others.
    */
   recording?: FlowRecordingOpts | false
+  /**
+   * Stops the flow (#78): a caller that gave up on it, at a timeout, aborts
+   * this, and from then on the flow takes no frame, starts no action and
+   * writes nothing, so it adds nothing to evidence already vouched for.
+   */
+  signal?: AbortSignal
 }
 
 export interface FlowCheckResult {
@@ -263,7 +269,8 @@ function describeAction(action: FlowAction, index: number): string {
  * is unverified, never failed: the criterion says nothing about the change.
  */
 export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult> {
-  const { actions, page, trace, outDir, tracesDir, redactLog, masks, totp, generatedCodes, codesOnPage = false, now = Date.now, a11y, recording } = opts
+  const { actions, page, trace, outDir, tracesDir, redactLog, masks, totp, generatedCodes, codesOnPage = false, now = Date.now, a11y, recording, signal } = opts
+  const stopped = (): boolean => signal?.aborted === true
 
   if (actions.length === 0) {
     return { outcome: 'unverified', reason: 'flow has no actions', evidence: [] }
@@ -302,6 +309,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
 
   const log: string[] = []
   const writeLog = async (): Promise<void> => {
+    if (stopped()) return
     const text = log.join('\n')
     await writeFile(join(outDir, ACTION_LOG), `${redactLog === undefined ? text : redactLog(text)}\n`)
   }
@@ -326,12 +334,22 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   // The elements the flow typed a secret into (#78), blacked out in every
   // capture from the moment before the value is typed.
   const concealed: FlowElement[] = []
+  // A secret typed into a page whose driver cannot conceal it (#78): like a
+  // one-time code, it may sit on the page from then on, so every capture of
+  // pixels is withheld rather than published with nothing over the field.
+  let secretOnPage = false
+  const SECRET_ON_PAGE = 'a secret was typed into the page, and the driver cannot conceal the element it went into'
   const capture = (): FlowCaptureOpts | undefined => (concealed.length === 0 ? undefined : { conceal: [...concealed] })
   const screenshot = async (name: string, opts: { required?: boolean } = {}): Promise<string | undefined> => {
     if (codeOnPage) {
       log.push(`${name} withheld: the second-factor code is visible on the page, and redaction cannot read pixels`)
       return undefined
     }
+    if (secretOnPage) {
+      log.push(`${name} withheld: ${SECRET_ON_PAGE}`)
+      return undefined
+    }
+    if (stopped()) return undefined
     try {
       await exclusive(() => page.screenshot(join(outDir, name), capture()))
       log.push(`screenshot ${name}${masksNote}`)
@@ -363,12 +381,16 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
     if (codeOnPage) log.push('recording not made: a one-time code is on the page, and redaction cannot read pixels')
     else recorder = makeFlowRecorder({ take: () => frame(capture()), exclusive, now, ...(recording === undefined ? {} : { recording }) })
   }
+  // A flow that is stopped takes no more frames from that moment.
+  const stopRecorder = (): void => void recorder?.stop()
+  signal?.addEventListener('abort', stopRecorder, { once: true })
   // A secret about to be typed (#78): no capture that could show it is in
   // flight when it lands, and none after it shows the element it is in.
   const conceal = async (element: FlowElement, index: number): Promise<void> => {
     if (page.conceals !== true) {
-      // Nothing is claimed that the driver cannot do. Its screenshots are
-      // what they were before; its recording ends here, as for a code.
+      // Nothing is claimed that the driver cannot do: its recording ends
+      // here and its captures are withheld from here on, as for a code.
+      secretOnPage = true
       if (recorder !== undefined && !recordingStopped) {
         recordingStopped = true
         log.push(`recording stopped before action ${index}: a secret is about to be typed, and the driver cannot conceal the element it goes into`)
@@ -376,7 +398,8 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
       }
       return
     }
-    if (!concealed.some((entry) => describeElement(entry) === describeElement(element))) {
+    // The whole reference is the identity: two fields of one role and name at different paths are two fields.
+    if (!concealed.some((entry) => JSON.stringify(entry) === JSON.stringify(element))) {
       concealed.push(element)
       log.push(`${describeElement(element)} is concealed in every capture from here on: the value typed into it is one redaction sweeps`)
     }
@@ -413,6 +436,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   // same criterion yields comparable snapshots across clients. A control in
   // that subtree with no accessible name is a named finding, not a silent pass.
   const snapshotAt = async (index: number, trim?: string): Promise<void> => {
+    if (stopped()) return
     if (page.snapshot === undefined) {
       log.push('snapshot not taken: the driver exposes no accessibility snapshot')
       return
@@ -582,7 +606,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   const ACTS_ON_PAGE: readonly string[] = ['open', 'type', 'click', 'choose', 'totp', 'backupCode']
   const SETTLES_PAGE: readonly string[] = ['open', 'waitFor', 'assertText', 'assertElement']
   const auditAt = async (point: number): Promise<void> => {
-    if (a11y === undefined || !actedSinceAudit || auditError !== undefined) return
+    if (a11y === undefined || !actedSinceAudit || auditError !== undefined || stopped()) return
     actedSinceAudit = false
     if (page.audit === undefined) {
       auditError = 'the driver exposes no accessibility audit'
@@ -597,10 +621,15 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
         try {
           // A screenshot is evidence redaction cannot read, so none is taken
           // while a one-time code may sit on the page (#64).
+          const withheld = codeOnPage || secretOnPage
           if (codeOnPage) log.push(`a11y screenshot withheld at ${at}: the second-factor code is visible on the page, and redaction cannot read pixels`)
+          else if (secretOnPage) log.push(`a11y screenshot withheld at ${at}: ${SECRET_ON_PAGE}`)
           else await mkdir(join(outDir, 'a11y'), { recursive: true })
-          const audit = await exclusive(() => runAudit({ tags: a11y.tags, ...(width === undefined ? {} : { width }), theme, ...(codeOnPage ? {} : { screenshot: join(outDir, shot) }) }))
-          const taken = audit.screenshot === true && !codeOnPage
+          // The audit's own screenshot conceals what every other capture conceals (#78).
+          const audit = await exclusive(() =>
+            runAudit({ tags: a11y.tags, ...(width === undefined ? {} : { width }), theme, ...(withheld ? {} : { screenshot: join(outDir, shot), ...capture() }) }),
+          )
+          const taken = audit.screenshot === true && !withheld
           audits.push({ ...audit, point, ...(taken ? { screenshotPath: shot } : {}) })
           const found = audit.violations.reduce((sum, violation) => sum + violation.nodes.length, 0)
           log.push(`a11y audit after action ${point} at ${audit.width}x${theme}: ${found} violation(s)${taken ? `, screenshot ${shot}${masksNote}` : ''}`)
@@ -618,6 +647,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   }
 
   for (const [index, action] of actions.entries()) {
+    if (stopped()) break
     const line = describeAction(action, index)
     try {
       const driven = await drive(action, index)
@@ -625,6 +655,8 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
       await recorder?.sample()
       await settled(action, index)
     } catch (error) {
+      // A flow that was stopped has no failure of its own to report.
+      if (stopped()) break
       failedAt = now()
       if (action.action === 'assertText' || action.action === 'assertElement') {
         outcome = 'failed'
@@ -667,6 +699,11 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
     }
   }
 
+  signal?.removeEventListener('abort', stopRecorder)
+  if (stopped()) {
+    await recorder?.stop()
+    return { outcome: 'unverified', reason: 'the flow was stopped before it ended', evidence: [] }
+  }
   evidence.push(...captures)
   // The state a passing flow ended in is a page it visited, like the others.
   if (outcome === 'passed') await auditAt(actions.length)
@@ -686,9 +723,13 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
     if (outcome === 'passed') log.push(`recording not kept: the flow passed (${recorder.taken()} frames taken)`)
     else {
       const assembled = recorder.assemble(now())
-      if (assembled === undefined)
+      if (stopped()) {
+        // Nothing more is written once the caller has given up on the flow.
+      } else if (assembled === undefined)
         log.push(
-          failures.count === 0
+          recorder.dropped() > 0
+            ? `recording not kept: every frame was larger than the ${recorder.bounds().maxBytes} bytes a recording may hold (${recorder.dropped()} dropped)`
+            : failures.count === 0
             ? 'recording not kept: no frame was taken'
             : `recording not kept: no frame could be taken (${failures.count} failed, the first with ${redactLog === undefined ? failures.first : redactLog(failures.first ?? '')})`,
         )
@@ -712,14 +753,14 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   }
   // The repairs are evidence like the log is: written through the same
   // redaction sweep, listed in the evidence, and named in the run's comment.
-  if (records.length > 0) {
+  if (records.length > 0 && !stopped()) {
     const serialized = `${JSON.stringify({ schemaVersion: REPAIRS_SCHEMA_VERSION, repairs: records }, null, 2)}\n`
     await writeFile(join(outDir, 'repairs.json'), redactLog === undefined ? serialized : redactLog(serialized))
     evidence.push('repairs.json')
   }
   await writeLog()
 
-  if (trace) {
+  if (trace && !stopped()) {
     const tracePath = join(tracesDir ?? outDir, 'trace.zip')
     try {
       await trace.stop(tracePath)

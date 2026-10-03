@@ -1215,11 +1215,12 @@ A recording is kept free of credentials by three rules, all decided in code:
    redaction would sweep from the action log (a `redact` value or pattern, a
    token shape, a value going into a field whose name says password, token or
    secret), the element it types into is concealed: blacked out in every
-   frame and every screenshot from then on. It is concealed before the value
-   is typed, and no capture is in flight when it lands. The action log names
-   each concealed element. A driver says whether it can conceal; one that
-   cannot is never said to have, and its recording stops before the secret
-   is typed instead.
+   frame, every screenshot and every audit screenshot from then on. It is
+   concealed before the value is typed, and no capture is in flight when it
+   lands. The action log names each concealed element. A driver says whether
+   it can conceal; one that cannot (the MCP driver) is never said to have:
+   its recording stops before the secret is typed, and every screenshot
+   after it is withheld, named in the action log, as for a one-time code.
 3. **A one-time code stops it.** The recording stops before a `totp` or
    `backupCode` is typed, as screenshots are withheld from then on (#64), and
    is not made at all when a mail-borne code is already on the page. The
@@ -1233,14 +1234,17 @@ It is bounded. A recording is taken for every flow and kept only when the
 check did not pass; a passing flow's frames are dropped, and its action log
 says how many. A kept recording holds at most 120 distinct frames and 4 MiB
 of frame data, and past either bound the oldest frames go, because the end of
-the flow is where the failure is. A screen that did not change is one frame
+the flow is where the failure is; a frame that alone is past the byte bound
+goes too, and a recording left with no frame is not written. A screen that did not change is one frame
 shown longer, a still is shown for at most 5 seconds, a frame gets 5 seconds
 to be taken, and a frame of another size than the first (a viewport an audit
 resized) is left out. The action log says how many frames the recording
 holds, over how long, in how many bytes, and what was dropped. One capture
 runs at a time: a frame, a screenshot and an accessibility audit never put
 masks up or take them down under one another. A flow that outlived its
-timeout hands back no outcome, and so keeps no recording.
+timeout is told to stop: it takes no more frames, starts no further action
+and writes nothing more, so it keeps no recording and adds nothing to
+evidence the run has already vouched for.
 
 **The platform log** is what the client itself wrote while the flow ran:
 the console messages and page errors of every page or window, each one

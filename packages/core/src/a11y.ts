@@ -1,3 +1,5 @@
+import type { FlowElement } from './flow.js'
+
 /**
  * Accessibility checks (#149): the rule sets a profile may name, what an
  * audit reports, and the rules that turn audits into an outcome. Everything
@@ -75,6 +77,8 @@ export interface A11yAuditRequest {
   theme: string
   /** Where to save the page's screenshot when the audit finds a violation; none is taken when absent. */
   screenshot?: string
+  /** Elements blacked out in that screenshot (#78): the ones the flow typed a secret into. */
+  conceal?: readonly FlowElement[]
 }
 
 /** One element a rule is violated on, as the driver found it. */

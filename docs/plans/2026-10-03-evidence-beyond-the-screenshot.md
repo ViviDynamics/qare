@@ -68,8 +68,11 @@ Out:
 - **One capture at a time.** Frames, screenshots and accessibility audits of
   one check are serialised by the flow, so a frame's masks are never put up
   or taken down under another capture.
-- **A flow that outlives its timeout** hands back no outcome, so it keeps no
-  recording; its `failure.log` is still written, from the time it stopped.
+- **A flow that outlives its timeout** is told to stop and writes nothing
+  more, so it keeps no recording; its `failure.log` is still written, from
+  the time it stopped.
+- **A driver that cannot conceal** (it does not declare `conceals`) stops
+  recording before a secret is typed and withholds its screenshots after.
 - **The browser driver now writes `console.log`** for every flow check, as
   the Electron driver does. `scripts/electron-driver.sh` asserted the
   opposite, and changes with it.

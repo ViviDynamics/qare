@@ -2706,8 +2706,12 @@ async function runFlowCheckJob(
   // When the check stopped, if it did not pass (#78): the moment its
   // platform log is cut around.
   let stoppedAt: number | undefined
+  // A flow the run gives up on is told so (#78): it takes no more frames and
+  // writes nothing after the run has moved on to vouching for the evidence.
+  const giveUp = new AbortController()
   const drive = async (): Promise<FlowJobOutcome> => {
     const work = runFlowCheck({
+      signal: giveUp.signal,
       actions: target === undefined ? check.actions ?? [] : (check.actions ?? []).map((action) => onTarget(action, target.url)),
       page: started.page,
       trace: started.trace,
@@ -2740,6 +2744,7 @@ async function runFlowCheckJob(
     } catch (error) {
       stopped = (error as Error).message
       stoppedAt = Date.now()
+      giveUp.abort()
     }
     if (outcome?.failedAt !== undefined) stoppedAt = outcome.failedAt
     const evidence = outcome === undefined ? [] : inEvidence(outcome.evidence)

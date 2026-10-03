@@ -360,6 +360,7 @@ function auditableChromium(events: string[], opts: { raw: unknown; snapshot: (na
     },
     ariaSnapshot: async () => opts.snapshot(names),
     locator: (selector: string) => ({ selector }),
+    getByRole: (role: string, options: { name: string }) => ({ role, name: options.name }),
     screenshot: async (capture: { path: string; fullPage?: boolean; mask?: unknown[] }) =>
       events.push(`screenshot ${capture.path}${capture.fullPage === true ? ' full page' : ''}${capture.mask === undefined ? '' : ` masked ${capture.mask.length}`}`),
   }
@@ -426,6 +427,21 @@ test('the browser driver audits the page with axe-core and names each element fr
     'scheme null',
     'viewport 1280x720',
   ])
+})
+
+test('an element the flow concealed is blacked out in the audit screenshot too (#78)', async () => {
+  const events: string[] = []
+  const session = await makePlaywrightFlowSession({
+    loadPlaywright: async () => ({ chromium: auditableChromium(events, { raw: RAW_AUDIT, snapshot: auditedSnapshot }) }) as never,
+    loadAxe: async () => ({ source: 'AXE SOURCE' }),
+    masks: ['css=.fixture-banner'],
+  })
+
+  await session.page.audit!({ tags: ['wcag2a'], theme: 'light', screenshot: '/tmp/qare-a11y.png', conceal: [{ role: 'textbox', name: 'Passphrase' }] })
+  await session.dispose()
+
+  // The profile's mask and the concealed field: two regions.
+  expect(events).toContain('screenshot /tmp/qare-a11y.png full page masked 2')
 })
 
 test('a marker that changes the shape of the tree names nothing, and the elements are then marked one by one (#149)', async () => {

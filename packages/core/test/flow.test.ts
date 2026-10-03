@@ -962,3 +962,24 @@ test('an audit takes no screenshot while a one-time code is on the page (#149, #
   expect(requests.map((request) => request.screenshot === undefined)).toEqual([false, true])
   expect(await actionsLog(dir)).toContain('a11y screenshot withheld')
 })
+
+test('an audit taken after a secret was typed conceals its field too, and a driver that cannot conceal takes no audit screenshot (#78)', async () => {
+  const actions: FlowAction[] = [
+    { action: 'open', url: APP_URL },
+    { action: 'type', element: { role: 'textbox', name: 'Passphrase' }, value: 'hunter2-fixture' },
+    { action: 'assertText', text: 'Welcome' },
+  ]
+  const redactLog = (text: string): string => text.split('hunter2-fixture').join('[redacted]')
+
+  const concealing = auditedPage()
+  concealing.page.conceals = true
+  await runFlowCheck({ outDir: await outDir(), page: concealing.page, actions, redactLog, a11y: { tags: ['wcag2a'], widths: [], themes: ['light'] } })
+  expect(concealing.requests.map((request) => request.conceal)).toEqual([undefined, [{ role: 'textbox', name: 'Passphrase' }]])
+  expect(concealing.requests.every((request) => request.screenshot !== undefined)).toBe(true)
+
+  const plain = auditedPage()
+  const dir = await outDir()
+  await runFlowCheck({ outDir: dir, page: plain.page, actions, redactLog, a11y: { tags: ['wcag2a'], widths: [], themes: ['light'] } })
+  expect(plain.requests.map((request) => request.screenshot !== undefined)).toEqual([true, false])
+  expect(await actionsLog(dir)).toContain('a11y screenshot withheld at viewportxlight: a secret was typed into the page, and the driver cannot conceal the element it went into')
+})

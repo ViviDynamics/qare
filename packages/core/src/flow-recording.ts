@@ -50,6 +50,8 @@ export interface FlowRecorder {
   taken(): number
   /** Frames that could not be taken, and the first reason. */
   failures(): { count: number; first?: string }
+  /** Frames dropped to keep the recording within its bounds. */
+  dropped(): number
   /** The bounds the recording was held to. */
   bounds(): { maxFrames: number; maxBytes: number }
   /** What was kept, put together; undefined when no frame was. */
@@ -85,7 +87,9 @@ export function makeFlowRecorder(opts: {
     if (frames.at(-1)?.png.equals(png) === true) return
     frames.push({ png, at: opts.now() })
     bytes += png.length
-    while (frames.length > 1 && (frames.length > maxFrames || bytes > maxBytes)) {
+    // Both bounds hold whatever it takes: a frame that alone is past the
+    // byte bound goes too, and a recording with no frame is not written.
+    while (frames.length > 0 && (frames.length > maxFrames || bytes > maxBytes)) {
       bytes -= (frames.shift() as { png: Buffer }).png.length
       dropped += 1
     }
@@ -144,6 +148,7 @@ export function makeFlowRecorder(opts: {
     },
     taken: () => taken,
     failures: () => ({ count: failed, ...(firstFailure === undefined ? {} : { first: firstFailure }) }),
+    dropped: () => dropped,
     bounds: () => ({ maxFrames, maxBytes }),
     assemble: (endedAt) => {
       if (frames.length === 0) return undefined
