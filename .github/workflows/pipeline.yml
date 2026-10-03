@@ -137,6 +137,16 @@ on:
           reaches execute and judge.
         type: string
         default: ''
+      artefacts:
+        description: >-
+          The name of a workflow artifact that holds the builds a client
+          profile installs (`client.artefact`), uploaded by an earlier job of
+          the calling workflow. execute downloads it, before the run, into a
+          directory of the same name at the repository root, which is where
+          the profile's paths find it. Empty means the profile installs
+          nothing the pipeline has to fetch.
+        type: string
+        default: ''
       qare-ref:
         description: >-
           The qare revision the pipeline runs: its source for the token-only
@@ -491,6 +501,19 @@ jobs:
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
+      # The builds a client profile installs (#75): a build of the head and,
+      # for a comparison, a build of the base, produced by a job of the
+      # calling workflow and uploaded as one artifact. They are pull request
+      # code like the checkout they land in, and this job holds nothing. They
+      # land in a directory of their own, named for the artifact, and before
+      # the plan is downloaded, so no file in them can stand in for the plan
+      # the planner wrote.
+      - name: Download the client artefacts
+        if: inputs.artefacts != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artefacts }}
+          path: ${{ inputs.artefacts }}
       - name: Download plan.json
         uses: actions/download-artifact@v4
         with:

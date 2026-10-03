@@ -94,6 +94,7 @@ test('the pipeline is a reusable workflow and nothing else triggers it', () => {
 
 test('the interface a caller sees: its inputs, their defaults, and its secrets', () => {
   expect(Object.keys(call.inputs).sort()).toEqual([
+    'artefacts',
     'execute-runs-on',
     'model-key-env',
     'nare-base-url',
