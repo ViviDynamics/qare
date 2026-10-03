@@ -14,16 +14,28 @@ name: QARE pipeline
 #   - collect: holds the GitHub token only    (reads the linked issue; no model key)
 #   - plan:    holds the model key only       (the model-key secret)
 #   - execute: holds no secrets at all        (stub containers only)
-#   - judge:   holds the model key + GitHub token only, in separate steps
+#   - judge:   holds the model key + GitHub identity only, in separate steps
 #     (the model-key secret for the verifier, which reads evidence but runs
-#     nothing; GITHUB_TOKEN for the steps that write to GitHub)
-#   - report:  holds the GitHub token only    (says why no verdict was posted)
-#   - requeue: holds the GitHub token only    (posts /qa on refused PRs)
+#     nothing; the identity for the steps that write to GitHub)
+#   - report:  holds the GitHub identity only (says why no verdict was posted)
+#   - requeue: holds the GitHub identity only (posts /qa on refused PRs)
 # No secret values are written here; only names, resolved at runtime. The
-# caller passes its model key by name, as the one secret this workflow
-# declares, and never inherits its secrets into it: a called workflow sees
-# only what it is handed, and no job here gains a secret it did not hold
-# when the pipeline lived in the caller's own file.
+# caller passes its model key and its identity by name, as the secrets this
+# workflow declares, and never inherits its secrets into it: a called
+# workflow sees only what it is handed.
+#
+# The GitHub identity (#61, ADR-0003) is who qare posts as, and it is the
+# caller's choice, made by which secrets it passes: a GitHub App (app-id and
+# app-private-key), else a personal access token (personal-access-token),
+# else the Actions token of the run, which every job already has. The steps
+# that write to GitHub are handed all of it and qare picks in that order, so
+# switching is a change of secrets and of nothing in this file. collect only
+# reads, so it keeps the Actions token and never holds a key that can post.
+# plan and execute hold none of it: the identity exists where qare posts,
+# never beside the planner and never where pull request code runs. The
+# Actions token stays beside the identity because GitHub lets only an App
+# write a check run, so a personal access token leaves that one write to it,
+# and because a pinned qare older than the identity reads nothing else.
 #
 # Which qare runs: the revision `qare-ref` names. It defaults to the release
 # this file ships in (a called workflow cannot learn its own ref, so the
@@ -125,13 +137,32 @@ on:
           workflow ships in, so pin the release in `uses:` and leave this
           alone.
         type: string
-        default: '2026.10.3'
+        default: '2026.10.4'
     secrets:
       model-key:
         description: >-
           The model key the planner and the verifier use. Not required at the
           interface, because a fork pull request has none; the plan and judge
           steps stop by name when it is empty.
+        required: false
+      app-id:
+        description: >-
+          The id (or client id) of the GitHub App qare posts as. A secret so
+          that it can be handed over from a secret or a variable; with
+          app-private-key it makes qare post as the App. Leave both out to
+          post with a token.
+        required: false
+      app-private-key:
+        description: >-
+          A private key of that App, the whole .pem file. It reaches only the
+          steps that write to GitHub, which mint a token for this repository
+          alone that expires within the hour.
+        required: false
+      personal-access-token:
+        description: >-
+          A personal access token qare posts with when no App is passed: what
+          it writes is that user's. With neither, qare posts as the workflow
+          run, with the Actions token.
         required: false
 
 permissions:
@@ -883,12 +914,18 @@ jobs:
         env:
           IMAGE_REF: ${{ steps.image.outputs.ref }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QARE_APP_ID: ${{ secrets.app-id }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_GITHUB_TOKEN: ${{ secrets.personal-access-token }}
         run: |
           if [ ! -f judged-result.json ]; then
             echo "judged-result.json missing: judge did not produce an artifact, no stub issues to file"
           elif jq -e '.verdict == "refused"' judged-result.json > /dev/null; then
             docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
               -e GITHUB_TOKEN \
+              -e QARE_APP_ID \
+              -e QARE_APP_PRIVATE_KEY \
+              -e QARE_GITHUB_TOKEN \
               -e GITHUB_REPOSITORY \
               -v "$PWD:$PWD" -w "$PWD" \
               --entrypoint node \
@@ -897,7 +934,9 @@ jobs:
             echo "verdict $(jq -r '.verdict' judged-result.json): not refused, no stub issues to file"
           fi
       # One sticky comment, updated on every run, and a check run on the head
-      # commit. The screenshots the run captured are pushed to the orphan
+      # commit, both as the identity the caller configured (#61): the comment
+      # is found again by that identity's login. The screenshots the run
+      # captured are pushed to the orphan
       # qa-assets branch, named by the run (head SHA and date), and linked
       # there; everything else links to the uploaded artifact, which expires
       # after 90 days (ADR-0002). Last, so a posting failure cannot stop stub
@@ -909,6 +948,9 @@ jobs:
         env:
           IMAGE_REF: ${{ steps.image.outputs.ref }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QARE_APP_ID: ${{ secrets.app-id }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_GITHUB_TOKEN: ${{ secrets.personal-access-token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVIDENCE_URL: ${{ needs.execute.outputs.evidence-url }}
@@ -916,6 +958,9 @@ jobs:
           set -euo pipefail
           docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
             -e GITHUB_TOKEN \
+            -e QARE_APP_ID \
+            -e QARE_APP_PRIVATE_KEY \
+            -e QARE_GITHUB_TOKEN \
             -e GITHUB_REPOSITORY \
             -v "$PWD:$PWD" -w "$PWD" \
             --entrypoint node \
@@ -985,6 +1030,9 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QARE_APP_ID: ${{ secrets.app-id }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_GITHUB_TOKEN: ${{ secrets.personal-access-token }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1039,6 +1087,9 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QARE_APP_ID: ${{ secrets.app-id }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_GITHUB_TOKEN: ${{ secrets.personal-access-token }}
           BEFORE: ${{ github.event.before }}
           PUSHED: ${{ github.sha }}
           PROFILE: ${{ inputs.profile }}

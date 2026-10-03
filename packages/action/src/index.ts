@@ -15,6 +15,20 @@ import { reportPipelineFailure } from './report-failure.js'
 // The GitHub client and the stub issue poster, for `qare init --file-issues`
 // (#146): the CLI files a stub issue the way the pipeline does.
 export { GitHubClient, GitHubClientError } from './github.js'
+// Who qare posts as (#61): the interface, its three implementations, and the
+// resolution that picks one from what the install configured.
+export {
+  ACTIONS_LOGIN,
+  ACTIONS_TOKEN_ENV,
+  APP_ID_ENV,
+  APP_PRIVATE_KEY_ENV,
+  PERSONAL_TOKEN_ENV,
+  ActionsTokenIdentity,
+  AppInstallationIdentity,
+  TokenIdentity,
+  resolveIdentity,
+} from './identity.js'
+export type { GitHubIdentity, IdentityOptions } from './identity.js'
 export { GitHubStubIssuePoster } from './stub-issues.js'
 
 export interface Writer {
@@ -136,7 +150,9 @@ async function postEvidenceCommand(argv: string[], out: Writer): Promise<number>
     apiRoot: flags.string('api-root'),
     tokenEnv: flags.string('token-env'),
   })
-  const author = flags.string('author')
+  // The sticky comment is found by its author, so the author is whoever this
+  // run posts as (#61): the App's bot, the token's user, or the Actions bot.
+  const author = flags.string('author') || (await client.identity.login())
   // Screenshots are pushed to qa-assets only when the evidence directory the
   // judge downloaded is named; without it the comment links to the artifact
   // alone, which is still where everything else lives.
@@ -204,7 +220,7 @@ async function reportFailureCommand(argv: string[], out: Writer): Promise<number
     apiRoot: flags.string('api-root'),
     tokenEnv: flags.string('token-env'),
   })
-  const author = flags.string('author') || undefined
+  const author = flags.string('author') || (await client.identity.login())
   const poster = new GitHubEvidencePoster(client, pr, headSha, author)
   const outcome = await reportPipelineFailure(client, poster, {
     id: runId,
@@ -254,7 +270,7 @@ async function postQuestionsCommand(argv: string[], out: Writer): Promise<number
     apiRoot: flags.string('api-root'),
     tokenEnv: flags.string('token-env'),
   })
-  const author = flags.string('author') || undefined
+  const author = flags.string('author') || (await client.identity.login())
   const posting = await postQuestions(client, questions, author)
   for (const { issue } of posting.posted) out.write(`asked once on #${issue}\n`)
   for (const { issue } of posting.skipped) out.write(`#${issue} already carries the question; left alone\n`)
