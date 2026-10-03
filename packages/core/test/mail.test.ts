@@ -378,6 +378,16 @@ function catcher(deliver: (address: string) => Caught[] = (address) => [caughtMe
   return { caught, requests: fake.requests }
 }
 
+const CATCHER = { source: { kind: 'mailpit', url: CATCHER_TEMPLATE } }
+
+async function cleanupRecord(job: { evidenceDir: string }): Promise<Record<string, unknown> | undefined> {
+  try {
+    return JSON.parse(await readFile(join(job.evidenceDir, 'mail-cleanup.json'), 'utf8')) as Record<string, unknown>
+  } catch {
+    return undefined
+  }
+}
+
 test('a run reads through the source its profile declares, at an address minted on the profile domain (#65)', async () => {
   const sink = catcher()
   const job = await makeJob(mailCriteria({ address: '{{run.mail_address}}', subject: 'Confirm' }), {
@@ -423,4 +433,54 @@ test('the wait opens with the criterion, so a message its earlier check caused i
   })
 
   expect(result.criteria[0]?.outcome).toBe('proven')
+})
+
+test('a run deletes the mail at the address it minted when it finishes, and records what went (#65)', async () => {
+  const sink = catcher((address) => [
+    caughtMessage({ to: address, created: new Date(Date.now() + 5).toISOString() }),
+    caughtMessage({ ID: 'not-this-runs', to: 'qare-another-run@localhost' }),
+  ])
+  const job = await makeJob(mailCriteria({ address: '{{run.mail_address}}' }), CATCHER)
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('passed')
+  expect(sink.caught.map((caught) => caught.to)).toEqual(['qare-another-run@localhost'])
+  const record = await cleanupRecord(job)
+  expect(record?.source).toMatch(/^mailpit at /)
+  expect(record?.addresses).toEqual([{ address: expect.stringMatching(/^qare-[0-9a-f-]{36}@localhost$/), deleted: 1 }])
+})
+
+test('mail at an address the run did not mint is left alone, and the record says so (#65)', async () => {
+  const sink = catcher((address) => [caughtMessage({ to: address, created: new Date(Date.now() + 5).toISOString() })])
+  const job = await makeJob(mailCriteria({ address: 'shared@localhost' }), CATCHER)
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('passed')
+  // Another run may be waiting at a shared address: nothing there is deleted.
+  expect(sink.caught).toHaveLength(1)
+  expect(sink.requests.filter((request) => request.startsWith('DELETE'))).toEqual([])
+  expect((await cleanupRecord(job))?.addresses).toEqual([{ address: 'shared@localhost', left: 'not an address this run minted' }])
+})
+
+test('a source that cannot delete is recorded, and the verdict stands (#65)', async () => {
+  const sink = catcher()
+  const reads = globalThis.fetch
+  vi.stubGlobal('fetch', (async (input: string | URL | Request, init?: RequestInit) =>
+    init?.method === 'DELETE' ? new Response('no', { status: 500 }) : reads(input, init)) as typeof fetch)
+  const job = await makeJob(mailCriteria({ address: '{{run.mail_address}}' }), CATCHER)
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('passed')
+  expect(sink.caught).toHaveLength(1)
+  expect((await cleanupRecord(job))?.addresses).toEqual([{ address: expect.stringMatching(/^qare-/), error: 'mailpit responded 500' }])
+})
+
+test('a run whose checks waited for no mail asks nothing of the source (#65)', async () => {
+  const sink = catcher()
+  const job = await makeJob([{ id: 'no-mail', text: 'no mail', checks: [{ kind: 'command', run: 'node --version' }] }], CATCHER)
+  const { result } = await runJob(job, HEALTHY_BOOT)
+
+  expect(result.verdict).toBe('passed')
+  expect(sink.requests).toEqual([])
+  expect(await cleanupRecord(job)).toBeUndefined()
 })

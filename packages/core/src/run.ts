@@ -407,6 +407,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
       shardCriteria(job.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
       { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy, opts, ...(side?.gate === undefined ? {} : { gate: side.gate }) },
     )
+    await cleanMail(mail, values.mail_address, job.evidenceDir, 'mail-cleanup.json', rules)
     await persistQuarantine(policy)
     await writeCacheHits(job.evidenceDir, cache?.hits ?? [])
     // The judge is the verdict decision. Base execution and egress interception
@@ -729,6 +730,7 @@ async function runProfileGroup(
       shardCriteria(group.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
       { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy, opts, ...(side?.gate === undefined ? {} : { gate: side.gate }) },
     )
+    await cleanMail(mail, values.mail_address, job.evidenceDir, `mail-cleanup-${group.name}.json`, rules)
     const egressRefused = target !== undefined && target.undeclared.length > 0
     const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
     return { criteria, verdict, values, ...(isolation === undefined ? {} : { isolation }), egressRefused, ...(cache === undefined ? {} : { cacheHits: cache.hits }) }
@@ -785,19 +787,51 @@ interface MailContext {
   label?: string
   readMail?: ReadMail
   source?: MailSource
+  /** Every address a mail check of this run waited at, for the cleanup. */
+  waited: Set<string>
 }
 
 function mailContextOf(profile: QaProfile, values: RunValues, injected: ReadMail | undefined): MailContext {
   const declared: DeclaredMailSource | undefined =
     profile.mail?.source ?? (profile.mail?.inbox === undefined ? undefined : { kind: 'inbox', url: profile.mail.inbox })
-  if (declared === undefined) return injected === undefined ? {} : { readMail: injected }
+  const waited = new Set<string>()
+  if (declared === undefined) return { ...(injected === undefined ? {} : { readMail: injected }), waited }
   const source = mailSourceOf({ kind: declared.kind, url: substituteValues(declared.url, values) })
   return {
     // The inbox contract has always been named by its URL alone.
     label: profile.mail?.inbox ?? source.describe,
     readMail: injected ?? mailReader(source),
     source,
+    waited,
   }
+}
+
+const MAIL_CLEANUP_TIMEOUT_MS = 10_000
+
+/**
+ * Delete the mail a run leaves behind (#65), so the address it minted is
+ * never found again with stale mail behind it. Only the address the run
+ * minted is cleaned: a literal address may be shared, and another run may be
+ * waiting at it. What happened is recorded beside the evidence. Cleanup
+ * decides nothing: a source that cannot delete is named in the record, and
+ * the verdict stands.
+ */
+async function cleanMail(mail: MailContext, minted: string | undefined, evidenceDir: string, file: string, rules: readonly RedactionRule[]): Promise<void> {
+  if (mail.source === undefined || mail.waited.size === 0) return
+  const addresses: Array<{ address: string; deleted?: number; left?: string; error?: string }> = []
+  for (const address of mail.waited) {
+    if (address !== minted) {
+      addresses.push({ address, left: 'not an address this run minted' })
+      continue
+    }
+    try {
+      addresses.push({ address, deleted: await mail.source.delete({ address }, AbortSignal.timeout(MAIL_CLEANUP_TIMEOUT_MS)) })
+    } catch (error) {
+      addresses.push({ address, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  await mkdir(evidenceDir, { recursive: true })
+  await writeFile(join(evidenceDir, file), `${JSON.stringify(redactValue({ source: mail.source.describe, addresses }, rules), null, 2)}\n`)
 }
 
 interface LaneContext {
@@ -875,7 +909,9 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
     // The criterion's app carries its own catcher, published on its own port:
     // the source is addressed with the shard's values, not the run's (#65).
     const shardMail = mailContextOf(profile, shardValues, opts.readMail)
-    return await runCriterion(criterion, job, ctx.rules, shardValues, shardMail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands)
+    const result = await runCriterion(criterion, job, ctx.rules, shardValues, shardMail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands)
+    await cleanMail(shardMail, shardValues.mail_address, job.evidenceDir, `mail-cleanup-${criterion.id}.json`, ctx.rules)
+    return result
   } finally {
     // The criterion's app is torn down with the criterion: a sharded run
     // leaves no stack of its own holding a port or a volume the next
@@ -1779,6 +1815,7 @@ async function runCriterion(
       } else if (fold.kind === 'unverified' && unverifiedReason === undefined) unverifiedReason = fold.reason
     }
     if (substituted.kind === 'mail') {
+      mail.waited.add(substituted.address)
       const fold = await settleCheck(async (attempt) => {
         const checkDir = dirFor(index, attempt)
         const outcome = await runMailCheck(
