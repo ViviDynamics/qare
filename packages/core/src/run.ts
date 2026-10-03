@@ -27,7 +27,7 @@ import { extractCode, mailEvidence, runMailCheck, type MailProof, type ReadMail 
 import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCapabilities, mcpDriverServer, type McpToolResult } from './mcp.js'
 import { ProfileMissingError, clientExecutableName, loadProfile, pathOnTarget, validateProfileConfig, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, mailEvidenceRules, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
-import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunClientArtefact, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
+import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
 import { runVisualCheckJob, visualPageUrl, type VisualComparison, type VisualContext, type VisualSessionFactory } from './visual-run.js'
 import { mintRunValues, mintedMailAddress, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
@@ -1178,8 +1178,6 @@ interface SideContext {
   composePath?: (path: string) => string
   /** The tree a client artefact's build command runs in on this side (#75): a checkout of the base, at the base. */
   buildRoot?: string
-  /** What this side's client was provisioned from (#75), reported back for the comparison. */
-  artefact?: RunClientArtefact
   gate?: (criterion: JobCriterion) => string | undefined
 }
 
@@ -1224,7 +1222,10 @@ function a11yContextOf(profile: QaProfile, comparison: VisualComparison, side: S
 }
 
 /** The base side as the comparison reads it: the raw result of a base that ran, or why none did. */
-type BaseSideOutcome = { status: 'executed'; result: RunResult } | { status: 'not-executed'; reason: string }
+type BaseSideOutcome =
+  | { status: 'executed'; result: RunResult }
+  /** `evidence` is what the base side saved on its way to not running: the log of a provisioning that blocked (#75). */
+  | { status: 'not-executed'; reason: string; evidence?: string[] }
 
 const NOT_RUN_AT_BASE = 'not run at the base: '
 
@@ -1236,7 +1237,9 @@ const NOT_RUN_AT_BASE = 'not run at the base: '
 async function hasSecondSide(job: Job): Promise<boolean> {
   if ('profiles' in job) return true
   try {
-    return (await resolveProfileRef(job.repoPath, job.profile)).app !== undefined
+    const profile = await resolveProfileRef(job.repoPath, job.profile)
+    // A client has a second side when its profile names a build of the base (#75).
+    return profile.app !== undefined || profile.client?.artefact?.base !== undefined
   } catch {
     return false
   }
@@ -1349,6 +1352,51 @@ async function runBaseSide(
     // checkout, no boot, and the result says the run had one side.
     if (profiles.length > 0 && profiles.every(({ profile }) => profile.base?.criteria === 'none'))
       return { status: 'not-executed', reason: 'the profile runs no criteria at the base (base.criteria: none)' }
+    // A client's base side is a build of the base, installed from the
+    // artefact the profile names (#75). The profile and the artefact's path
+    // are the head's, the run's own configuration; a checkout of the base is
+    // made only when that artefact is not there and has to be built.
+    const clientBase = 'profiles' in job ? undefined : profiles[0]?.profile.client?.artefact?.base
+    if (clientBase !== undefined) {
+      let buildRoot: string | undefined
+      if (clientBase.build !== undefined && !(await exists(resolve(job.repoPath, clientBase.path)))) {
+        const built = await (request.checkout ?? prepareBaseCheckout)({
+          repoPath: job.repoPath,
+          baseRef: job.baseRef,
+          headRef: job.headRef,
+          ...(request.repoPath === undefined ? {} : { given: request.repoPath }),
+        })
+        if (!built.ok)
+          return {
+            status: 'not-executed',
+            reason: `the base artefact ${clientBase.path} is not there, and the base revision could not be checked out to build it: ${built.reason}`,
+          }
+        checkout = built.checkout
+        buildRoot = checkout.path
+      }
+      const limits = await baseLimits(profiles, buildRoot ?? job.repoPath)
+      const side: SideContext = {
+        name: 'base',
+        tracesRoot: resolve(job.evidenceDir, '..', 'traces', 'base'),
+        booted,
+        ran: false,
+        extraRules: headRules,
+        gate: limits.gate,
+        ...(buildRoot === undefined ? {} : { buildRoot }),
+      }
+      const baseOpts: SideOpts = { ...opts }
+      delete baseOpts.ledgerFeed
+      delete baseOpts.quarantineDir
+      if (opts.cacheDir !== undefined) baseOpts.cacheDir = join(opts.cacheDir, 'base')
+      const { result } = await runSide({ ...job, evidenceDir: join(job.evidenceDir, 'base') }, baseOpts, side)
+      if (side.ran) return { status: 'executed', result }
+      const first = result.criteria.find((criterion) => criterion.outcome === 'unverified')
+      return {
+        status: 'not-executed',
+        reason: first?.outcome === 'unverified' ? first.reason : `the base side reached no check (verdict ${result.verdict})`,
+        ...(first?.evidence === undefined ? {} : { evidence: first.evidence }),
+      }
+    }
     const outcome = await (request.checkout ?? prepareBaseCheckout)({
       repoPath: job.repoPath,
       baseRef: job.baseRef,
@@ -1464,7 +1512,12 @@ function compareSides(job: Job, head: RunResult, base: BaseSideOutcome, startedA
   const under = (side: 'base' | 'head', paths: string[]): string[] => paths.map((path) => `${side}/${path}`)
   const atBase = new Map((base.status === 'executed' ? base.result.criteria : []).map((criterion) => [criterion.id, criterion]))
   const baseOf = (id: string): CriterionBase => {
-    if (base.status === 'not-executed') return { outcome: 'not-compared', reason: `the base side did not run: ${base.reason}` }
+    if (base.status === 'not-executed')
+      return {
+        outcome: 'not-compared',
+        reason: `the base side did not run: ${base.reason}`,
+        ...(base.evidence === undefined || base.evidence.length === 0 ? {} : { evidence: under('base', base.evidence) }),
+      }
     const criterion = atBase.get(id)
     if (criterion === undefined) return { outcome: 'not-compared', reason: 'the base side reported nothing for this criterion' }
     const evidence = under('base', evidenceOf(criterion))
@@ -1487,8 +1540,22 @@ function compareSides(job: Job, head: RunResult, base: BaseSideOutcome, startedA
   )
   const status: RunBase =
     base.status === 'executed' ? { ref: job.baseRef, status: 'executed' } : { ref: job.baseRef, status: 'not-executed', reason: base.reason }
+  // A client's two sides are two builds (#75): the result names the one the
+  // base was provisioned from, and claims a comparison only when it ran.
+  const baseArtefact = base.status === 'executed' ? base.result.client?.artefact : undefined
+  const client =
+    head.client === undefined
+      ? {}
+      : {
+          client: {
+            ...head.client,
+            comparison: base.status === 'executed' ? ('base' as const) : ('none' as const),
+            ...(baseArtefact === undefined ? {} : { base: baseArtefact }),
+          },
+        }
   return {
     ...head,
+    ...client,
     criteria: criteria.map((criterion) => {
       if (criterion.outcome !== 'failed') return criterion
       if (regressed.has(criterion.id)) return { ...criterion, regression: true }

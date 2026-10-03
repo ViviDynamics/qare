@@ -212,6 +212,143 @@ test('a failed install is blocked naming the artefact, with the log attached, an
   expect(renderComment(loadResult(await readFile(join(job.evidenceDir, 'result.json'), 'utf8')))).toContain('provision.log')
 })
 
+const TWO_SIDES = profileOf({ base: { path: 'artefacts/base.tar.gz' } })
+
+/** A base checkout nobody should need: a prebuilt base artefact is installed, never rebuilt. */
+const NO_CHECKOUT = {
+  checkout: async () => {
+    throw new Error('a prebuilt base artefact needs no checkout of the base')
+  },
+}
+
+test('a run consumes prebuilt artefacts for base and head and provisions both, with no checkout of the base (#75)', async () => {
+  const { job, installRoot } = await workspace({ profile: TWO_SIDES })
+  const launched: string[] = []
+  const { result } = await runJob(job, {
+    ...WITH_DISPLAY,
+    provision: { installRoot, health: UP },
+    clientSession: installedSession([], launched),
+    base: NO_CHECKOUT,
+  })
+
+  expect(result.verdict).toBe('passed')
+  expect(result.base).toEqual({ ref: 'main', status: 'executed' })
+  expect(result.criteria[0]).toMatchObject({ id: 'greets', outcome: 'proven', base: { outcome: 'proven' } })
+  // Two installs, the base first, each in a directory of its own, both gone.
+  expect(launched).toHaveLength(2)
+  expect(launched[0]).toContain('qare-install-base-')
+  expect(launched[1]).toContain('qare-install-head-')
+  expect(readdirSync(installRoot)).toEqual([])
+  // The result names what each side was provisioned from.
+  expect(result.client).toMatchObject({
+    comparison: 'base',
+    artefact: { path: 'artefacts/head.tar.gz', source: 'prebuilt' },
+    base: { path: 'artefacts/base.tar.gz', source: 'prebuilt' },
+  })
+  expect(result.client?.base?.sha256).toMatch(/^[0-9a-f]{64}$/)
+  // Each side keeps its own evidence and its own provisioning log.
+  const baseLog = await readFile(join(job.evidenceDir, 'base', 'provision.log'), 'utf8')
+  const headLog = await readFile(join(job.evidenceDir, 'head', 'provision.log'), 'utf8')
+  expect(baseLog).toContain('provisioning the base side from artefacts/base.tar.gz (archive)')
+  expect(baseLog).toMatch(/\[teardown\] removed/)
+  expect(headLog).toContain('provisioning the head side from artefacts/head.tar.gz (archive)')
+  expect(result.criteria[0]?.evidence?.[0]).toBe('head/checks/greets/0/actions.log')
+  const loaded = loadResult(await readFile(join(job.evidenceDir, 'result.json'), 'utf8'))
+  expect(loaded.client).toEqual(result.client)
+  const comment = renderComment(loaded)
+  expect(comment).toContain('The plan ran on both sides')
+  expect(comment).toContain('The base side is the build installed from `artefacts/base.tar.gz`')
+  expect(comment).not.toContain('Nothing ran at a base revision')
+})
+
+test('a criterion the base build proves and the head build fails is a regression (#75)', async () => {
+  const { job, installRoot } = await workspace({ profile: TWO_SIDES, head: 'Good morning, Ada.' })
+  const { result } = await runJob(job, { ...WITH_DISPLAY, provision: { installRoot, health: UP }, clientSession: installedSession([], []), base: NO_CHECKOUT })
+  expect(result.verdict).toBe('failed')
+  expect(result.criteria[0]).toMatchObject({ id: 'greets', outcome: 'failed', regression: true, base: { outcome: 'proven' } })
+  // A criterion that fails on both builds is behaviour that does not work yet, not a regression.
+  const both = await workspace({ profile: TWO_SIDES, head: 'Good morning, Ada.', base: 'Good morning, Ada.' })
+  const never = await runJob(both.job, { ...WITH_DISPLAY, provision: { installRoot: both.installRoot, health: UP }, clientSession: installedSession([], []), base: NO_CHECKOUT })
+  expect(never.result.criteria[0]).toMatchObject({ outcome: 'failed', regression: false, base: { outcome: 'failed' } })
+})
+
+test('a base artefact that cannot be provisioned never blocks the head: the base is not executed, naming the artefact, with its log kept (#75)', async () => {
+  const { job, installRoot } = await workspace({ profile: TWO_SIDES, base: false })
+  const { result } = await runJob(job, { ...WITH_DISPLAY, provision: { installRoot, health: UP }, clientSession: installedSession([], []), base: NO_CHECKOUT })
+  expect(result.verdict).toBe('passed')
+  expect(result.base?.status).toBe('not-executed')
+  expect(result.base?.reason).toMatch(/^the base artefact artefacts\/base\.tar\.gz is not there to install/)
+  expect(result.criteria[0]).toMatchObject({ outcome: 'proven', base: { outcome: 'not-compared', evidence: ['base/provision.log'] } })
+  expect(result.criteria[0]?.base?.reason).toMatch(/^the base side did not run: the base artefact artefacts\/base\.tar\.gz is not there to install/)
+  // One side ran, and the result does not claim a comparison.
+  expect(result.client?.comparison).toBe('none')
+  expect(result.client?.base).toBeUndefined()
+  expect(await readFile(join(job.evidenceDir, 'base', 'provision.log'), 'utf8')).toContain('[blocked] the base artefact artefacts/base.tar.gz is not there to install')
+  expect(readdirSync(installRoot)).toEqual([])
+})
+
+test('a base artefact that is not there is built in a checkout of the base, by the command the profile declares (#75)', async () => {
+  const profile = profileOf({ base: { path: 'artefacts/base.tar.gz', build: 'node scripts/package.mjs' } })
+  const { job, installRoot, repoPath } = await workspace({ profile, base: false })
+  const baseTree = await mkdtemp(join(tmpdir(), 'qare-client-base-tree-'))
+  const built: Array<{ cwd: string; artefact?: string }> = []
+  let disposed = false
+  const { result } = await runJob(job, {
+    ...WITH_DISPLAY,
+    provision: {
+      installRoot,
+      health: UP,
+      runCommand: async (command, args, run) => {
+        if (command === 'tar') {
+          execFileSync('tar', args)
+          return { code: 0, output: '' }
+        }
+        built.push({ cwd: run.cwd, artefact: run.env.QARE_ARTEFACT })
+        execFileSync('cp', [join(repoPath, 'artefacts', 'head.tar.gz'), join(repoPath, 'artefacts', 'base.tar.gz')])
+        return { code: 0, output: 'packaged the base\n' }
+      },
+    },
+    clientSession: installedSession([], []),
+    base: {
+      checkout: async () => ({
+        ok: true,
+        checkout: {
+          path: baseTree,
+          dispose: async () => {
+            disposed = true
+          },
+        },
+      }),
+    },
+  })
+  expect(built).toEqual([{ cwd: baseTree, artefact: join(repoPath, 'artefacts', 'base.tar.gz') }])
+  expect(result.base).toEqual({ ref: 'main', status: 'executed' })
+  expect(result.client?.base).toMatchObject({ path: 'artefacts/base.tar.gz', source: 'built' })
+  expect(disposed).toBe(true)
+})
+
+test('a client profile has one side when nobody asks for the base, or when it names no base artefact (#75)', async () => {
+  const unasked = await workspace({ profile: TWO_SIDES })
+  const one = await runJob(unasked.job, { ...WITH_DISPLAY, provision: { installRoot: unasked.installRoot, health: UP }, clientSession: installedSession([], []) })
+  expect(one.result.base).toBeUndefined()
+  expect(one.result.client?.comparison).toBe('none')
+  expect(existsSync(join(unasked.job.evidenceDir, 'provision.log'))).toBe(true)
+
+  const headOnly = await workspace()
+  const asked = await runJob(headOnly.job, { ...WITH_DISPLAY, provision: { installRoot: headOnly.installRoot, health: UP }, clientSession: installedSession([], []), base: NO_CHECKOUT })
+  expect(asked.result.base).toBeUndefined()
+  expect(asked.result.client?.comparison).toBe('none')
+})
+
+test('a profile that runs nothing at the base installs nothing there (#75)', async () => {
+  const { job, installRoot } = await workspace({ profile: { ...TWO_SIDES, base: { criteria: 'none' } } })
+  const launched: string[] = []
+  const { result } = await runJob(job, { ...WITH_DISPLAY, provision: { installRoot, health: UP }, clientSession: installedSession([], launched), base: NO_CHECKOUT })
+  expect(result.base).toMatchObject({ status: 'not-executed', reason: 'the profile runs no criteria at the base (base.criteria: none)' })
+  expect(launched).toHaveLength(1)
+  expect(existsSync(join(job.evidenceDir, 'base', 'provision.log'))).toBe(false)
+})
+
 test('an install is removed even when a check throws out of the run (#75)', async () => {
   const { job, installRoot } = await workspace()
   await expect(
