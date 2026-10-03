@@ -6,7 +6,7 @@ import { loadResult, RUN_VERDICTS, VERSION } from '@qare/core'
 import { GitHubClient, GitHubClientError } from './github.js'
 import { GitHubQaAssetsPusher } from './qa-assets.js'
 import { fileRefusalStubs, GitHubStubIssuePoster } from './stub-issues.js'
-import { requeueUnblocked, stubKeysFromDiffText } from './requeue.js'
+import { requeueUnblocked, stubDiffArgs, stubKeysFromDiffText } from './requeue.js'
 import { GitHubEvidencePoster, postEvidence } from './post-evidence.js'
 import { deliverIngest, IngestDeliveryError } from './ingest-deliver.js'
 import { loadQuestions, postQuestions } from './post-questions.js'
@@ -260,6 +260,7 @@ function requeueCommand(argv: string[], out: Writer): Promise<number> {
   return runRequeue({
     keys: flags.list('keys'),
     keysFromDiff: flags.string('keys-from-diff'),
+    profile: flags.string('profile'),
     repository: flags.string('repository'),
     apiRoot: flags.string('api-root'),
     tokenEnv: flags.string('token-env'),
@@ -270,22 +271,28 @@ function requeueCommand(argv: string[], out: Writer): Promise<number> {
 }
 
 async function runRequeue(
-  opts: { keys: string[] | undefined; keysFromDiff: string | undefined; repository?: string | undefined; apiRoot?: string | undefined; tokenEnv?: string | undefined },
+  opts: { keys: string[] | undefined; keysFromDiff: string | undefined; profile?: string | undefined; repository?: string | undefined; apiRoot?: string | undefined; tokenEnv?: string | undefined },
 ): Promise<number[]> {
   let keys = opts.keys
   if (opts.keysFromDiff !== undefined) {
-    const diff = await execFileAsync('git', ['diff', '--unified=0', opts.keysFromDiff, '--', '.qa/']).then(
+    let args: string[]
+    try {
+      args = stubDiffArgs(opts.keysFromDiff, opts.profile)
+    } catch (error) {
+      throw new GitHubClientError(`qare-action requeue: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    const diff = await execFileAsync('git', args).then(
       (result) => result.stdout,
       (error: unknown) => {
         throw new GitHubClientError(
-          `qare-action requeue could not read the stub diff for ${JSON.stringify(opts.keysFromDiff)}: git diff --unified=0 <spec> -- .qa/ failed: ${error instanceof Error ? error.message : String(error)}`,
+          `qare-action requeue could not read the stub diff for ${JSON.stringify(opts.keysFromDiff)}: git diff --unified=0 <spec> -- ${args.at(-1) ?? ''} failed: ${error instanceof Error ? error.message : String(error)}`,
         )
       },
     )
     keys = stubKeysFromDiffText(diff)
   }
   if (keys === undefined || keys.length === 0) {
-    throw new GitHubClientError('qare-action requeue needs --keys <host,host,...> or --keys-from-diff <base>...<head>')
+    throw new GitHubClientError('qare-action requeue needs --keys <host,host,...> or --keys-from-diff <base>...<head> [--profile <dir>]')
   }
   const client = new GitHubClient({ repository: opts.repository, apiRoot: opts.apiRoot, tokenEnv: opts.tokenEnv })
   return requeueUnblocked(client, keys)

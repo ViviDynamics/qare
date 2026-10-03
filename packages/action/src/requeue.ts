@@ -4,6 +4,20 @@ import type { GitHubClient } from './github.js'
 
 export const REQUEUE_COMMENT = '/qa'
 
+/**
+ * The `git diff` arguments that read the merged stubs: the change between two
+ * revisions, under the profile directory. The directory is `.qa` unless the
+ * repository keeps its profile elsewhere and says so (#145). It is a path
+ * inside the repository and nothing else: never an option, never absolute,
+ * never a way out through `..`.
+ */
+export function stubDiffArgs(spec: string, profile = '.qa'): string[] {
+  const dir = profile.replace(/\/+$/, '')
+  if (dir === '' || dir.startsWith('-') || dir.startsWith('/') || dir.split('/').includes('..'))
+    throw new Error(`--profile must be a directory inside the repository (got ${JSON.stringify(profile)})`)
+  return ['diff', '--unified=0', spec, '--', `${dir}/`]
+}
+
 export function stubKeysFromDiffText(diffText: string): string[] {
   const keys = new Set<string>()
   for (const line of diffText.split('\n')) {
