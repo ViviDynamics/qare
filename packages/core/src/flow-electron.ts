@@ -74,7 +74,7 @@ function hasDisplay(env: NodeJS.ProcessEnv): boolean {
   return (env.DISPLAY ?? '') !== '' || (env.WAYLAND_DISPLAY ?? '') !== ''
 }
 
-function xvfbOnPath(env: NodeJS.ProcessEnv): string | undefined {
+export function xvfbOnPath(env: NodeJS.ProcessEnv): string | undefined {
   for (const dir of (env.PATH ?? '').split(delimiter)) {
     if (dir === '') continue
     const candidate = join(dir, 'Xvfb')
