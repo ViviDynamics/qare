@@ -26,6 +26,8 @@ export interface FakeCall {
 export interface FakeToken {
   login: string
   kind: 'actions' | 'user' | 'installation'
+  /** GET /user answers 403 with GitHub's rate limit message, as an exhausted token is answered. */
+  rateLimited?: boolean
 }
 
 /** The App the fake knows: its id, the public half of its key, and where it is installed. */
@@ -205,6 +207,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
     if (url.pathname === '/user' && request.method === 'GET') {
       // Only a user's token is a user; an installation's is refused, as GitHub refuses it.
       if (caller.kind !== 'user') return respond(response, 403, { message: 'Resource not accessible by integration' })
+      if (caller.rateLimited === true) return respond(response, 403, { message: 'API rate limit exceeded for user ID 1.' })
       respond(response, 200, { login: caller.login })
       return
     }

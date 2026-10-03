@@ -220,8 +220,6 @@ test('naming the Actions token on the command line is no choice of identity', ()
 })
 
 test('a token whose user cannot be read for another reason is an error, never a guess', async () => {
-  const limited: typeof fetch = () =>
-    Promise.resolve(new Response(JSON.stringify({ message: 'API rate limit exceeded for user ID 1.' }), { status: 403 }))
-  const identity = resolveIdentity({ repository: REPOSITORY, apiRoot: fake.url, env: { QARE_GITHUB_TOKEN: PAT }, fetchImpl: limited })
-  await expect(identity.login()).rejects.toThrow(/rate limit/)
+  fake.tokens.set(PAT, { login: 'jason', kind: 'user', rateLimited: true })
+  await expect(resolve({ QARE_GITHUB_TOKEN: PAT }).login()).rejects.toThrow(/rate limit/)
 })
