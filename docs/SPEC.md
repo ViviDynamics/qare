@@ -1388,6 +1388,18 @@ there is no other route to take.
 `client.hosts` reads the way `target.hosts` does: a name, or `*.` before a
 name for one label below it. Nothing declared is nothing reachable.
 
+Every launch of the build is contained: each flow check's, and the one the
+health check makes before any check runs (#75). A build launched in place is
+read from the repository, mounted into the cell. A build the run installed
+from an artefact is not in the repository, and its install directory is the
+run's own, which the docker daemon cannot see when the run is itself in a
+container: the install is copied into the cell over the daemon's API, at the
+path it was installed to, and the repository is not in the cell at all. Both
+sides of a comparison are contained alike, and each side's flow checks carry
+their own `outbound.json`. A build command (`client.artefact.*.build`) is a
+command, not the build: it runs with the step's network, as a command check
+does.
+
 | The build reaches for | Inside the cell | In the evidence |
 | --- | --- | --- |
 | A declared host, on port 80 or 443 | It answers | `outbound.json` lists the host, port, protocol and count, `declared: true` |
@@ -1450,7 +1462,8 @@ What the cell does not do:
 main process, through Node and through Chromium's own network stack: a
 declared host answers and is recorded, an undeclared name is refused by name,
 a bare address has no route, and the opted-out profile says it was not
-contained.
+contained. The provisioned profile's two installed builds run contained
+too, their health checks included.
 
 ## Installing and running QARE
 

@@ -85,6 +85,16 @@ it:
   default bridge where a daemon publishes on a loopback the run does not
   share. The virtual display is started inside the cell.
 
+**Every launch, and both kinds of build.** A build launched in place is in
+the repository, which is mounted. A build the run installs from an artefact
+(#75) is in a directory of the run's own, and inside the execute container
+that directory is not one the daemon can see, so it cannot be mounted. The
+cell is handed a copy instead: a volume filled with `docker cp` through a
+container that is created and never started, mounted read-only at the path
+the build was installed to. The health check's launch runs in a cell like a
+flow check's, on both sides of a comparison. A build command is not the
+build: it runs with the step's network, like any command (see below).
+
 A host the build reaches for that the profile does not declare leaves the
 flow `unverified` with `refused: undeclared host: <host>:<port> (<protocol>)`,
 and the run `refused`, exactly as a target run's undeclared host does.
