@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { expect, test } from 'vitest'
-import { clientCellProblem, startClientCell, type CellDocker, type CellProcess } from '../src/client-cell.js'
+import { clientCellProblem, reapLiveCells, startClientCell, trackLiveCell, type CellDocker, type CellProcess } from '../src/client-cell.js'
 
 /** A docker that records every call and plays the gate's and the build's containers. */
 function fakeDocker(script: { gateLines?: string[]; gateExit?: number; fail?: Record<string, string>; port?: string; address?: string } = {}) {
@@ -51,7 +51,8 @@ function fakeDocker(script: { gateLines?: string[]; gateExit?: number; fail?: Re
 
 const OPTS = {
   image: 'qare-web:test',
-  repoPath: '/work/repo',
+  // The directory the build is launched from: where its executable is.
+  install: '/work/repo/dist/app',
   hosts: ['api.example.test', '*.cdn.example.test'],
   uid: 1001,
   gid: 118,
@@ -78,8 +79,19 @@ test('a cell is a volume, a gate on the default network, and a build with no net
   expect(calls[1]).toEqual(['port', 'qare-cell-abc123-gate', '9222/tcp'])
   expect(calls[2]).toEqual(['inspect', '--format', '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}', 'qare-cell-abc123-gate'])
 
+  // The build's directory is copied in: a volume of its own, filled over the
+  // daemon's API through a container that never runs. A copy holds no socket
+  // and no file made after it was taken, so nothing outside the cell can
+  // leave the build a way round the gate in the checkout.
+  expect(calls.slice(3)).toEqual([
+    ['volume', 'create', 'qare-cell-abc123-build'],
+    ['create', '--name', 'qare-cell-abc123-load', '-v', 'qare-cell-abc123-build:/build', 'qare-web:test', 'true'],
+    ['cp', '/work/repo/dist/app/.', 'qare-cell-abc123-load:/build'],
+    ['rm', '-f', 'qare-cell-abc123-load'],
+  ])
+
   const child = cell.spawn('/work/repo/dist/app/app', ['--no-sandbox', '--remote-debugging-port=9222'])
-  // The build: no network, a resolver on its own loopback, no capability, the checkout read-only, no docker socket.
+  // The build: no network, a resolver on its own loopback, no capability, its own directory as a read-only copy, no docker socket.
   // The runner's search domain stays out: with it, every name the build asks for is asked again with the runner's own suffix.
   expect(spawned[1]?.args).toEqual([
     'run', '--rm', '--name', 'qare-cell-abc123-app',
@@ -87,11 +99,13 @@ test('a cell is a volume, a gate on the default network, and a build with no net
     '-u', '1001:118', '-e', 'HOME=/tmp',
     '-v', 'qare-cell-abc123:/run/qare-cell',
     '--network', 'none', '--dns', '127.0.0.1', '--dns-search', '.',
-    '-v', '/work/repo:/work/repo:ro', '-w', '/work/repo',
+    '-v', 'qare-cell-abc123-build:/work/repo/dist/app:ro', '-w', '/work/repo/dist/app',
     'qare-web:test', 'qare', 'cell', 'launch', '--socket-dir', '/run/qare-cell', '--cdp-port', '9222', '--',
     '/work/repo/dist/app/app', '--no-sandbox', '--remote-debugging-port=9222',
   ])
   expect(spawned[1]?.args.join(' ')).not.toContain('docker.sock')
+  // Nothing of the machine's own filesystem is mounted into either container: every mount is a volume the cell made.
+  for (const { args } of spawned) expect(args.filter((arg, index) => args[index - 1] === '-v' && arg.startsWith('/'))).toEqual([])
   expect(child).toBe(spawned[1]?.process)
 
   // What the driver is told: the port the build listens on in its cell, a
@@ -112,16 +126,17 @@ test('disposing a cell stops the build, reads the gate\'s record, and removes ev
   // The record is the gate's last word: before the cell is disposed there is none to read.
   expect(() => cell.record()).toThrow(/has not been disposed/)
   await cell.dispose()
-  expect(calls.slice(3)).toEqual([
+  expect(calls.slice(7)).toEqual([
     ['rm', '-f', 'qare-cell-abc123-app'],
     ['stop', '-t', '10', 'qare-cell-abc123-gate'],
     ['rm', '-f', 'qare-cell-abc123-gate'],
     ['volume', 'rm', '-f', 'qare-cell-abc123'],
+    ['volume', 'rm', '-f', 'qare-cell-abc123-build'],
   ])
   expect(cell.record()).toEqual({ reached })
   // Twice is once.
   await cell.dispose()
-  expect(calls).toHaveLength(7)
+  expect(calls).toHaveLength(12)
 })
 
 test('a record that was cut says so, and one that never arrived is not read as empty (#223)', async () => {
@@ -153,14 +168,14 @@ test('a cell that cannot be made is not half made: what was started is removed, 
   await expect(startClientCell({ ...OPTS, docker: noGate.docker })).rejects.toThrow(
     /the cell could not be made: the gate exited with code 125 before it was ready: docker: Error response from daemon: pull access denied/,
   )
-  expect(noGate.calls.slice(-2)).toEqual([['rm', '-f', 'qare-cell-abc123-gate'], ['volume', 'rm', '-f', 'qare-cell-abc123']])
+  expect(noGate.calls.slice(-3)).toEqual([['rm', '-f', 'qare-cell-abc123-gate'], ['volume', 'rm', '-f', 'qare-cell-abc123'], ['volume', 'rm', '-f', 'qare-cell-abc123-build']])
 
   // Neither the published port nor the gate's own address answers: the daemon is not on this machine.
   const elsewhere = fakeDocker()
   await expect(startClientCell({ ...OPTS, docker: elsewhere.docker, canConnect: async () => false })).rejects.toThrow(
     'the cell could not be made: the gate\'s relay for the driver answered at neither 127.0.0.1:49222 nor 172.17.0.5:9222, so the docker daemon is not on the machine the run is on',
   )
-  expect(elsewhere.calls.slice(-2)).toEqual([['rm', '-f', 'qare-cell-abc123-gate'], ['volume', 'rm', '-f', 'qare-cell-abc123']])
+  expect(elsewhere.calls.slice(-3)).toEqual([['rm', '-f', 'qare-cell-abc123-gate'], ['volume', 'rm', '-f', 'qare-cell-abc123'], ['volume', 'rm', '-f', 'qare-cell-abc123-build']])
 })
 
 test('the driver attaches where the relay answers: the published port, or the gate\'s own address (#223)', async () => {
@@ -190,8 +205,8 @@ test('a harness that is going away takes the cell with it, without waiting (#223
   const { docker, calls } = fakeDocker()
   const cell = await startClientCell({ ...OPTS, docker })
   cell.reap()
-  expect(calls.slice(3)).toEqual([
-    ['sync', 'rm', '-f', 'qare-cell-abc123-app', 'qare-cell-abc123-gate'],
+  expect(calls.slice(7)).toEqual([
+    ['sync', 'rm', '-f', 'qare-cell-abc123-app', 'qare-cell-abc123-gate', 'qare-cell-abc123-load'],
     ['sync', 'volume', 'rm', '-f', 'qare-cell-abc123', 'qare-cell-abc123-build'],
   ])
 })
@@ -214,6 +229,46 @@ test('what a cell needs is checked by name: the image the run is in, and a daemo
   )
   // An image reference is handed to docker as an argument, so it is held to being one.
   expect(await clientCellProblem({ QARE_IMAGE_REF: '--privileged' }, docker)).toMatch(/QARE_IMAGE_REF is not an image reference/)
+})
+
+test('a signal that ends the harness takes every cell with it, a half made one included (#223)', async () => {
+  // A cell whose gate never says it is ready: still being made when the signal arrives.
+  const slow = fakeDocker({ fail: { gate: 'never ready' } })
+  slow.docker.spawn = (args) => {
+    const made = new (class extends EventEmitter {
+      stdout = new EventEmitter()
+      stderr = new EventEmitter()
+      kill(): boolean {
+        return true
+      }
+    })()
+    slow.spawned.push({ args, process: made as never })
+    return made
+  }
+  const making = startClientCell({ ...OPTS, docker: slow.docker, id: 'half01', readyTimeoutMs: 200 })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  const whole = fakeDocker()
+  const cell = await startClientCell({ ...OPTS, docker: whole.docker, id: 'whole1' })
+  reapLiveCells()
+  expect(slow.calls.filter((call) => call[0] === 'sync')).toEqual([
+    ['sync', 'rm', '-f', 'qare-cell-half01-app', 'qare-cell-half01-gate', 'qare-cell-half01-load'],
+    ['sync', 'volume', 'rm', '-f', 'qare-cell-half01', 'qare-cell-half01-build'],
+  ])
+  expect(whole.calls.filter((call) => call[0] === 'sync')).toHaveLength(2)
+  await expect(making).rejects.toThrow(/the gate was not ready in time/)
+  // A cell that was disposed is nobody's to reap any more.
+  const done = fakeDocker()
+  await (await startClientCell({ ...OPTS, docker: done.docker, id: 'done01' })).dispose()
+  reapLiveCells()
+  expect(done.calls.filter((call) => call[0] === 'sync')).toEqual([])
+  await cell.dispose()
+  // A caller's own cell is tracked the same way, and let go when it says so.
+  const reaped: string[] = []
+  const release = trackLiveCell(() => reaped.push('once'))
+  reapLiveCells()
+  release()
+  reapLiveCells()
+  expect(reaped).toEqual(['once'])
 })
 
 test('a build the run installed outside the checkout is copied into the cell, not mounted from a path the daemon may not see (#223, #75)', async () => {
@@ -247,5 +302,5 @@ test('a build the run installed outside the checkout is copied into the cell, no
     ['volume', 'rm', '-f', 'qare-cell-abc123-build'],
   ])
   // An install is an absolute path of the run's own making, and is held to looking like one.
-  await expect(startClientCell({ ...OPTS, docker: fakeDocker().docker, install: 'relative/dir' })).rejects.toThrow(/the installed build's directory is not an absolute path/)
+  await expect(startClientCell({ ...OPTS, docker: fakeDocker().docker, install: 'relative/dir' })).rejects.toThrow(/the build's directory is not an absolute path/)
 })

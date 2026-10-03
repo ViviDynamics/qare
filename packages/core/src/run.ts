@@ -8,7 +8,7 @@ import { prepareBaseCheckout, type BaseCheckout, type BaseCheckoutInput, type Ba
 import { collectCriterionFiles, criterionCacheKey, FileCheckCache, planFingerprint, profileFingerprint, resolveRefSha } from './cache.js'
 import { Artefacts, type ArtefactField } from './artefacts.js'
 import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
-import { bootApp, CANCEL_DOWN_TIMEOUT_MS, clientCellStarter, clientExecutablePath, killActiveCompose, stopApp, type BootOpts, type BootedClient } from './boot.js'
+import { bootApp, CANCEL_DOWN_TIMEOUT_MS, clientCellStarter, clientExecutablePath, inPlaceBuild, killActiveCompose, stopApp, type BootOpts, type BootedClient } from './boot.js'
 import { removeLiveInstalls } from './provision.js'
 import { hasMintedProject, isolatedHealthUrl, isolateRun, type RunIsolation } from './isolation.js'
 import { matchesStub, type EgressAttempt } from './egress.js'
@@ -16,7 +16,7 @@ import { runFlowCheck, runSuiteCheck, undeclaredCheckKinds, type FlowCheckResult
 import type { FlowRepairRecord } from './locator.js'
 import { flowDriverFor } from './flow-driver.js'
 import { applicationPathProblem, makeElectronFlowSession } from './flow-electron.js'
-import type { CellRecord } from './client-cell.js'
+import { reapLiveCells, type CellRecord } from './client-cell.js'
 import { makePlaywrightFlowSession } from './flow-playwright.js'
 import { evidenceOf, judgeRun, toBaseSideResults, toSideResults } from './judge.js'
 import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck, type JobProfileGroup, type JobProfileRef, type JobToolCheck, type SeveralProfilesJob, type SingleProfileJob } from './job.js'
@@ -184,17 +184,21 @@ function clientSessionFactory(
   // cell of its own, made from the image the run is in, holding the hosts
   // the profile declares.
   const startCell = clientCellStarter(opts.clientCell)
-  return ({ masks }) =>
-    makeElectronFlowSession({
-      executable,
+  return async ({ masks }) => {
+    // A contained build is launched from a copy of its own directory: the
+    // one the run installed it to, or the one its executable is in.
+    const contained = client.egress === 'uncontained' ? undefined : booted?.install !== undefined ? { executable, install: booted.install } : await inPlaceBuild(client, repoPath)
+    return makeElectronFlowSession({
+      executable: contained?.executable ?? executable,
       args: client.args,
       masks,
       ...opts.clientEnv,
-      ...(client.egress === 'uncontained' ? {} : { cell: () => startCell({ repoPath, hosts: client.hosts ?? [], ...(booted?.install === undefined ? {} : { install: booted.install }) }) }),
+      ...(contained === undefined ? {} : { cell: () => startCell({ repoPath, hosts: client.hosts ?? [], install: contained.install }) }),
       // The build is pull request code: on a host it gets the minimal
       // environment a command step gets there, never the host's own (#91).
       environment: execution === 'native' ? 'minimal' : 'inherit',
     })
+  }
 }
 
 /** What a target run's flow checks need: where relative URLs point, and which hosts they may reach. */
@@ -460,7 +464,10 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
   const cancelCleanup = isolation === undefined ? undefined : installCancelCleanup(bootedProfile, { ...opts, isolation })
   // A client artefact is installed for the run and removed with it (#75): a
   // cancelled run exits through the hook that removes what it installed.
-  const cancelProvision = profile.client?.artefact === undefined ? undefined : installProvisionCancel()
+  // A contained build's cell is made for the launch and removed with it
+  // (#223): a cancelled run exits through the same hook, which takes its
+  // cells along.
+  const cancelProvision = profile.client === undefined ? undefined : installProvisionCancel()
   let client: BootedClient | undefined
   // The run tears a provisioned client down itself, and says so in the log
   // it publishes. Safe to call on every path out of the run.
@@ -601,6 +608,7 @@ async function writeProvisionLog(evidenceDir: string, log: string, rules: readon
 function installProvisionCancel(): () => void {
   const stop = (): void => {
     removeLiveInstalls()
+    reapLiveCells()
     // The exit is the shared one (#53): this run's part is done at once, and
     // it joins the stops other runs in this process still have pending, so a
     // compose down a neighbouring run queued on the same signal is waited
@@ -2818,10 +2826,15 @@ async function runFlowCheckJob(
       status: 'unverified',
       reason: `refused: undeclared host: ${outbound.undeclared.join(', ')}; the client profile does not list it in client.hosts`,
       evidence,
+      // The refusal is this run's own decision, made from this launch's
+      // record: a cached copy would be replayed without the gate behind it,
+      // and without refusing the run.
+      transient: true,
     }
   }
-  // A record that is missing or cut vouches for nothing: the flow is unverified, whatever it showed.
-  if (outbound.incomplete !== undefined) return { ...driven, status: 'unverified', reason: outbound.incomplete, evidence }
+  // A record that is missing or cut vouches for nothing: the flow is
+  // unverified, whatever it showed, and the next run asks again.
+  if (outbound.incomplete !== undefined) return { ...driven, status: 'unverified', reason: outbound.incomplete, evidence, transient: true }
   return { ...driven, evidence }
 }
 

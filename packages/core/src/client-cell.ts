@@ -89,6 +89,27 @@ export async function clientCellProblem(env: NodeJS.ProcessEnv = process.env, do
   return undefined
 }
 
+/** The cells this process still has: what a signal that ends it must take along. */
+const liveCells = new Set<() => void>()
+
+/** Keep a cell's removal for a cancelled run to call (#223). Returns the release, for when the cell is gone. */
+export function trackLiveCell(reap: () => void): () => void {
+  liveCells.add(reap)
+  return () => void liveCells.delete(reap)
+}
+
+/** Remove every cell this process still has, at once. Synchronous: it runs as the process is being ended. */
+export function reapLiveCells(): void {
+  for (const reap of [...liveCells]) {
+    liveCells.delete(reap)
+    try {
+      reap()
+    } catch {
+      // Nothing more can be done from a process that is ending.
+    }
+  }
+}
+
 /** What the gate recorded for one launch. `incomplete` says why the list is not the whole of it. */
 export interface CellRecord {
   reached: ReachedHost[]
@@ -115,16 +136,17 @@ export interface ClientCell {
 export interface ClientCellOptions {
   /** The image both containers run: the one the run itself is in. */
   image: string
-  /** The repository the build is in, mounted read-only at its own path. */
-  repoPath: string
   hosts: readonly string[]
   /**
-   * Where the run installed the build, when that is not in the repository
-   * (#75). The directory is copied into the cell at the same path, over the
-   * daemon's API, so it need not be a path the daemon can see: the run's own
-   * temporary directory is not, when the run is in a container.
+   * The directory the build is launched from: the one its executable is in,
+   * in the repository, or the one the run installed it to (#75). It is
+   * copied into the cell at the same path, over the daemon's API, never
+   * mounted. A copy need not be a path the daemon can see (the run's own
+   * temporary directory is not, when the run is in a container), and it
+   * holds no socket and nothing made after it was taken: a process outside
+   * the cell cannot leave the build a way round the gate in the checkout.
    */
-  install?: string
+  install: string
   docker?: CellDocker
   uid?: number
   gid?: number
@@ -179,13 +201,23 @@ export async function startClientCell(opts: ClientCellOptions): Promise<ClientCe
   const appName = `${volume}-app`
   const buildVolume = `${volume}-build`
   const loadName = `${volume}-load`
-  if (opts.install !== undefined && !/^\/[^\0]*$/.test(opts.install)) throw new Error("the cell could not be made: the installed build's directory is not an absolute path")
+  if (typeof opts.install !== 'string' || !/^\/[^\0]*$/.test(opts.install)) throw new Error("the cell could not be made: the build's directory is not an absolute path")
+  // From the first thing made to the last thing removed, the cell is one a
+  // signal that ends the harness takes with it.
+  const reap = (): void => {
+    docker.runSync(['rm', '-f', appName, gateName, loadName])
+    docker.runSync(['volume', 'rm', '-f', volume, buildVolume])
+  }
+  const untrack = trackLiveCell(reap)
   // What both containers share: no capability, no way to gain one, the
   // run's own user, and the volume that holds the two sockets.
   const common = ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '-u', `${uid}:${gid}`, '-e', 'HOME=/tmp', '-v', `${volume}:${SOCKET_DIR}`]
 
   const made = await docker.run(['volume', 'create', '--driver', 'local', '--opt', 'type=tmpfs', '--opt', 'device=tmpfs', '--opt', `o=size=1m,uid=${uid},gid=${gid},mode=0700`, volume])
-  if (made.code !== 0) throw new Error(`the cell could not be made: docker volume create failed: ${firstLine(made.stderr) || `exit ${made.code}`}`)
+  if (made.code !== 0) {
+    untrack()
+    throw new Error(`the cell could not be made: docker volume create failed: ${firstLine(made.stderr) || `exit ${made.code}`}`)
+  }
 
   const gate = docker.spawn([
     'run', '--rm', '--name', gateName, ...common,
@@ -224,7 +256,8 @@ export async function startClientCell(opts: ClientCellOptions): Promise<ClientCe
   const remove = async (): Promise<void> => {
     await docker.run(['rm', '-f', gateName])
     await docker.run(['volume', 'rm', '-f', volume])
-    if (opts.install !== undefined) await docker.run(['volume', 'rm', '-f', buildVolume])
+    await docker.run(['volume', 'rm', '-f', buildVolume])
+    untrack()
   }
   const unmade = async (why: string): Promise<never> => {
     await remove()
@@ -277,9 +310,9 @@ export async function startClientCell(opts: ClientCellOptions): Promise<ClientCe
     )
   const relayAt = `${relay.host}:${relay.port}`
 
-  // A build installed outside the checkout is copied in: a volume of its
-  // own, filled through a container that is created and never started.
-  if (opts.install !== undefined) {
+  // The build's directory is copied in: a volume of its own, filled through
+  // a container that is created and never started.
+  {
     const steps: string[][] = [
       ['volume', 'create', buildVolume],
       ['create', '--name', loadName, '-v', `${buildVolume}:/build`, opts.image, 'true'],
@@ -295,9 +328,10 @@ export async function startClientCell(opts: ClientCellOptions): Promise<ClientCe
     await docker.run(['rm', '-f', loadName])
     if (failed !== undefined) return unmade(`the installed build could not be copied into it: ${failed}`)
   }
-  // What the build is launched from: the install, copied in, or the
-  // repository, mounted at its own path. Read-only either way.
-  const source = opts.install === undefined ? ['-v', `${opts.repoPath}:${opts.repoPath}:ro`, '-w', opts.repoPath] : ['-v', `${buildVolume}:${opts.install}:ro`, '-w', opts.install]
+  // What the build is launched from: its own directory, as copied, read-only,
+  // at the path the driver was told. Nothing of the machine's filesystem is
+  // mounted into the cell.
+  const source = ['-v', `${buildVolume}:${opts.install}:ro`, '-w', opts.install]
 
   let disposed: Promise<void> | undefined
   return {
@@ -339,8 +373,8 @@ export async function startClientCell(opts: ClientCellOptions): Promise<ClientCe
       return disposed
     },
     reap: () => {
-      docker.runSync(['rm', '-f', appName, gateName])
-      docker.runSync(['volume', 'rm', '-f', volume, buildVolume])
+      untrack()
+      reap()
     },
   }
 }

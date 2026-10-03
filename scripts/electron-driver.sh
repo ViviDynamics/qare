@@ -50,6 +50,8 @@ git worktree remove --force "$RUNNER_TEMP/qare-base" 2>/dev/null || true
 cleanup() {
   rm -f plan.json
   docker rm -f "$server" > /dev/null 2>&1 || true
+  [ -n "${listener:-}" ] && kill "$listener" 2>/dev/null || true
+  rm -f "$example/dist/qare-example/bypass.sock"
   [ "$had_traces" -eq 1 ] || rm -rf traces
   git worktree remove --force "$RUNNER_TEMP/qare-base" 2>/dev/null || true
   # Whatever the runs produced is what a reader of a failure needs.
@@ -138,8 +140,20 @@ run web "$example/plan.json" "$example/profiles/web"
 run desktop "$example/plan.json" "$example/profiles/desktop"
 run desktop-windows "$example/plan-windows.json" "$example/profiles/desktop"
 # The same file again, against the same build, told what to reach for (#223).
+# A process outside the cell listens on a unix socket in the build's own
+# directory first, as a pull request's own command could: a way out that is
+# not a network, which a mount of the live checkout would hand the build.
+bypass="$example/dist/qare-example/bypass.sock"
+rm -f "$bypass"
+node -e 'require("node:net").createServer((socket) => socket.end()).listen(process.argv[1])' "$bypass" &
+listener=$!
+for _ in $(seq 1 50); do [ -S "$bypass" ] && break; sleep 0.1; done
+[ -S "$bypass" ] || { echo "the socket outside the cell never appeared" >&2; exit 1; }
 run desktop-declared "$example/plan.json" "$example/profiles/desktop-declared"
 refused desktop-undeclared "$example/plan.json" "$example/profiles/desktop-undeclared"
+[ -S "$bypass" ] && kill -0 "$listener" 2>/dev/null || { echo "the socket outside the cell did not outlive the run that was to be refused it" >&2; exit 1; }
+kill "$listener" 2>/dev/null || true
+rm -f "$bypass"
 run desktop-uncontained "$example/plan.json" "$example/profiles/desktop-uncontained"
 
 fail() {
@@ -229,6 +243,9 @@ grep -Eq '^\[main stdout\] main: probe chromium https://example\.org/ -> error '
 # A bare address has no route: nothing but loopback is in the cell.
 grep -Eq '^\[main stdout\] main: probe node http://192\.0\.2\.1/ -> error ENETUNREACH$' "$undeclared/$check/console.log" || fail "a bare address had a route out of the cell"
 grep -Eq '^\[main stdout\] main: probe chromium http://192\.0\.2\.1/ -> error ' "$undeclared/$check/console.log" || fail "a bare address answered Chromium's network stack inside the cell"
+# A socket a process outside the cell was listening on, in the build's own
+# directory, is not in the cell: the build is launched from a copy.
+grep -Eq '^\[main stdout\] main: probe socket bypass\.sock -> error ENOENT$' "$undeclared/$check/console.log" || fail "a socket in the live checkout was there for the build to connect to"
 # The declared host still answered, in the same launch.
 grep -Eq '^\[main stdout\] main: probe node https://example\.com/ -> status [0-9]+$' "$undeclared/$check/console.log" || fail "the declared host stopped answering beside an undeclared one"
 # The record names what was refused, and nothing the cell never let out.

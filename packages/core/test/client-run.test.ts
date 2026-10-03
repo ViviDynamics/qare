@@ -1,9 +1,10 @@
-import { existsSync } from 'node:fs'
+import { execSync } from 'node:child_process'
+import { existsSync, realpathSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { expect, test } from 'vitest'
-import { bootApp, loadResult, renderComment, runJob, type CellRecord, type ClientCell, type FlowPage, type Job, type JobCriterion, type QaProfile } from '../src/index.js'
+import { expect, test, vi } from 'vitest'
+import { bootApp, loadResult, profileFingerprint, renderComment, runJob, stableStringify, trackLiveCell, type CellRecord, type ClientCell, type FlowPage, type Job, type JobCriterion, type QaProfile } from '../src/index.js'
 
 const SECRET = 'sk-desktop-fixture-123'
 
@@ -333,7 +334,7 @@ test('a profile that opts out runs its build uncontained, and the evidence says 
 })
 
 test('without an injected session a contained run makes a cell for each launch, from the profile\'s hosts (#223)', async () => {
-  const asked: Array<{ repoPath: string; hosts: readonly string[] }> = []
+  const asked: Array<{ repoPath: string; hosts: readonly string[]; install?: string }> = []
   const job = await clientJob({ profile: DECLARING })
   const { result } = await runJob(job, {
     ...WITH_DISPLAY,
@@ -347,5 +348,68 @@ test('without an injected session a contained run makes a cell for each launch, 
   })
   expect(result.criteria[0]?.outcome).toBe('unverified')
   expect(result.criteria[0]?.reason).toMatch(/the flow backend did not start: (the cell could not be made: the gate was not ready in time|playwright-core is not installed)/)
-  if (!(result.criteria[0]?.reason ?? '').includes('playwright-core')) expect(asked).toEqual([{ repoPath: job.repoPath, hosts: ['api.example.test'] }])
+  if (!(result.criteria[0]?.reason ?? '').includes('playwright-core')) expect(asked).toEqual([{ repoPath: job.repoPath, hosts: ['api.example.test'], install: join(realpathSync(job.repoPath), 'dist', 'app') }])
+})
+
+test('a refusal for an undeclared host is decided by every run: a cached result never stands in for the gate (#223)', async () => {
+  const job = await clientJob({ profile: DECLARING })
+  execSync('git init -q && git add -A && git -c user.name=t -c user.email=t@example.test commit -q -m build', { cwd: job.repoPath })
+  const cached = { ...job, baseRef: 'HEAD', headRef: 'HEAD' }
+  let launches = 0
+  const session = desktopSession([], () => ({ reached: [{ host: 'telemetry.example.test', port: 53, protocol: 'dns', declared: false, count: 1 }] }))
+  const counting: typeof session = async () => {
+    launches += 1
+    return session()
+  }
+  const cacheDir = join(job.repoPath, '..', `${job.id}-cache-${Date.now()}`)
+  const first = await runJob(cached, { ...WITH_CELL, flowSession: counting, cacheDir })
+  const second = await runJob({ ...cached, evidenceDir: join(job.repoPath, 'evidence-2') }, { ...WITH_CELL, flowSession: counting, cacheDir })
+  expect(first.result.verdict).toBe('refused')
+  // The second run launched the build again and was refused again, by its own gate.
+  expect(launches).toBe(2)
+  expect(second.result.verdict).toBe('refused')
+  expect(second.result.criteria[0]?.reason).toBe(first.result.criteria[0]?.reason)
+})
+
+test('a result cached before builds were contained is not one a contained run replays (#223)', () => {
+  // The fingerprint of a client profile carries the containment it was run under,
+  // so an entry written without a gate's record cannot satisfy a run that needs one.
+  const plain = (profile: QaProfile): string => profileFingerprint({ ...profile, client: undefined } as QaProfile)
+  expect(profileFingerprint(CLIENT_PROFILE)).not.toBe(profileFingerprint({ stubs: [], visual: { widths: [], themes: [] }, suites: [] }))
+  expect(stableStringify(CLIENT_PROFILE)).not.toContain('client-egress-cell')
+  expect(profileFingerprint(CLIENT_PROFILE, (text) => text)).toBe(`client-egress-cell-v1:${stableStringify(CLIENT_PROFILE)}`)
+  // A profile with no client is fingerprinted as it always was.
+  const booted: QaProfile = { stubs: [], visual: { widths: [], themes: [] }, suites: [] }
+  expect(profileFingerprint(booted, (text) => text)).toBe(stableStringify(booted))
+  void plain
+})
+
+test('a cancelled run takes its cells with it before the process ends (#223)', async () => {
+  const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+  const reaped: string[] = []
+  let release: () => void = () => {}
+  let inFlight: () => void = () => {}
+  const started = new Promise<void>((resolve) => (inFlight = resolve))
+  const job = await clientJob()
+  const running = runJob(job, {
+    ...WITH_CELL,
+    // The run is held inside its first check, with a cell made.
+    flowSession: async () => {
+      const untrack = trackLiveCell(() => reaped.push('cell reaped'))
+      inFlight()
+      await new Promise<void>((resolve) => (release = resolve))
+      untrack()
+      throw new Error('cancelled')
+    },
+  })
+  try {
+    await started
+    process.emit('SIGINT')
+    expect(reaped).toEqual(['cell reaped'])
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(4))
+  } finally {
+    release()
+    await running.catch(() => {})
+    exit.mockRestore()
+  }
 })

@@ -1374,7 +1374,8 @@ run does not watch it, it contains it (#223,
 [ADR-0006](./decisions/adr-0006-client-egress-cell.md)). Each launch gets a
 **cell**: a container the runner's docker daemon starts from the image the
 run is in, with no network but loopback (`--network none`), no capability,
-no docker socket, and the repository mounted read-only at its own path.
+no docker socket, and nothing of the machine's filesystem mounted: the
+directory the build is in is copied into it, read-only.
 
 The cell's one way out is a socket to a **gate**, a second container holding
 `client.hosts`. Inside the cell a launcher answers DNS on loopback: it asks
@@ -1389,14 +1390,18 @@ there is no other route to take.
 name for one label below it. Nothing declared is nothing reachable.
 
 Every launch of the build is contained: each flow check's, and the one the
-health check makes before any check runs (#75). A build launched in place is
-read from the repository, mounted into the cell. A build the run installed
-from an artefact is not in the repository, and its install directory is the
-run's own, which the docker daemon cannot see when the run is itself in a
-container: the install is copied into the cell over the daemon's API, at the
-path it was installed to, and the repository is not in the cell at all. Both
-sides of a comparison are contained alike, and each side's flow checks carry
-their own `outbound.json`. A build command (`client.artefact.*.build`) is a
+health check makes before any check runs (#75). The cell holds a copy of the
+directory the build is launched from, at the same path: the directory the
+executable is in for a build launched in place, or the one the run installed
+an artefact to. The copy is made over the daemon's API, so it does not have
+to be a path the daemon can see, and it is a copy on purpose. A mount of the
+live checkout would hand the build whatever another process leaves there
+while it runs, a unix socket to a proxy outside the cell included, and
+`--network none` does not close a socket on a filesystem. A copy carries no
+socket and nothing made after it was taken. The rest of the repository is
+not in the cell: a build that reads files outside its own directory does not
+find them. Both sides of a comparison are contained alike, and each side's
+flow checks carry their own `outbound.json`. A build command (`client.artefact.*.build`) is a
 command, not the build: it runs with the step's network, as a command check
 does.
 
@@ -1455,14 +1460,19 @@ What the cell does not do:
   `redirector.gvt1.com` as soon as the application starts: an application
   gives the spellchecker no language, as the example does, or its profile
   declares the host.
-- The build runs in the image rather than beside the run, with the checkout
-  read-only. The docker daemon has to be on the machine the run is on.
+- The build runs in the image rather than beside the run, from a read-only
+  copy of its own directory. The docker daemon has to be on the machine the
+  run is on.
+- A flow check of a contained build is cached like any other, under a key
+  that names the containment, and a refusal is never cached: every run asks
+  its own gate.
 
 `examples/electron-app` proves it in CI on a hosted runner, from the build's
 main process, through Node and through Chromium's own network stack: a
 declared host answers and is recorded, an undeclared name is refused by name,
-a bare address has no route, and the opted-out profile says it was not
-contained. The provisioned profile's two installed builds run contained
+a bare address has no route, a unix socket a process outside the cell
+listens on in the build's own directory is not there to connect to, and the
+opted-out profile says it was not contained. The provisioned profile's two installed builds run contained
 too, their health checks included.
 
 ## Installing and running QARE

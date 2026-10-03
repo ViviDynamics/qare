@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, realpathSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -532,7 +532,7 @@ test('the health check of a contained build is launched in a cell, like every ot
   asked.length = 0
   const checked = await bootApp(legacy, { clientEnv: WITH_DISPLAY.clientEnv, clientCell: refusing, root: legacyRepo })
   expect(checked.kind).toBe('blocked')
-  if (!(checked.reason ?? '').includes('playwright-core')) expect(asked).toEqual([{ repoPath: legacyRepo, hosts: [] }])
+  if (!(checked.reason ?? '').includes('playwright-core')) expect(asked).toEqual([{ repoPath: legacyRepo, hosts: [], install: join(realpathSync(legacyRepo), 'dist', 'app') }])
 })
 
 test('a flow of a contained installed build is launched in a cell holding the install (#223)', async () => {

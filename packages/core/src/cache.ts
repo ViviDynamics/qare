@@ -61,8 +61,17 @@ export function planFingerprint(criteria: JobCriterion[]): string {
 }
 
 /** The profile hash: a fingerprint over the profile configuration the run loaded. */
-export function profileFingerprint(profile: QaProfile): string {
-  return sha256(stableStringify(profile))
+/**
+ * What a client profile's results were proven under (#223): a build that ran
+ * in a cell, with the gate's record in each flow check's evidence. It is part
+ * of the fingerprint, so a result cached before builds were contained, which
+ * holds no such record, is never replayed as one that does.
+ */
+const CLIENT_CONTAINMENT = 'client-egress-cell-v1'
+
+export function profileFingerprint(profile: QaProfile, digest: (text: string) => string = sha256): string {
+  const text = stableStringify(profile)
+  return digest(profile.client === undefined ? text : `${CLIENT_CONTAINMENT}:${text}`)
 }
 
 /**

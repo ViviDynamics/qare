@@ -264,7 +264,7 @@ export { ELECTRON_FLOW_DRIVER, ElectronFlowSessionError, applicationPathProblem,
 export type { ElectronAppProcess, ElectronHost } from './flow-electron.js'
 export { flowDriverFor } from './flow-driver.js'
 export { runCellCommand } from './cell-launch.js'
-export { clientCellProblem, startClientCell } from './client-cell.js'
+export { clientCellProblem, reapLiveCells, startClientCell, trackLiveCell } from './client-cell.js'
 export type { CellDocker, CellRecord, ClientCell } from './client-cell.js'
 export type { ReachedHost } from './cell-gate.js'
 export { matchesStub, summarizeEgress, mergeVerdicts } from './egress.js'

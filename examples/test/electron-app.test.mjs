@@ -128,7 +128,8 @@ test('the egress profiles launch the same build, and differ only in what it is t
     assert.equal(profile.client.executable, desktop.client.executable)
     assert.equal(flowDriverFor(profile), ELECTRON_FLOW_DRIVER)
   }
-  const probes = (profile) => profile.client.args.filter((arg) => arg.startsWith('--probe=')).map((arg) => new URL(arg.slice('--probe='.length)).hostname)
+  const probed = (profile) => profile.client.args.filter((arg) => arg.startsWith('--probe=')).map((arg) => arg.slice('--probe='.length))
+  const probes = (profile) => probed(profile).filter((url) => !url.startsWith('unix:')).map((url) => new URL(url).hostname)
 
   // The declared profile reaches for one host, and declares it.
   assert.deepEqual(declared.client.hosts, ['example.com'])
@@ -139,6 +140,8 @@ test('the egress profiles launch the same build, and differ only in what it is t
   // a name it does not declare, and an address with no name at all.
   assert.deepEqual(undeclared.client.hosts, ['example.com'])
   assert.deepEqual(probes(undeclared), ['example.com', 'example.org', '192.0.2.1'])
+  // And for a way out that is no network: a socket left in the build's own directory.
+  assert.deepEqual(probed(undeclared).filter((url) => url.startsWith('unix:')), ['unix:bypass.sock'])
 
   // The opted-out profile says so, and declares nothing.
   assert.equal(uncontained.client.egress, 'uncontained')

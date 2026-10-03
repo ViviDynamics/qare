@@ -53,8 +53,8 @@ runner's docker daemon starts from the image the run itself runs in, with
 - `--network none`: the namespace holds a loopback interface and no route;
 - `--cap-drop ALL` and `--security-opt no-new-privileges`, the run's own uid
   and gid, no docker socket, and no environment but the image's;
-- the repository mounted read-only at its own path, which the pipeline
-  already keeps lined up with the daemon's (ADR-0005);
+- a read-only copy of the directory the build is in, at its own path, and
+  nothing of the machine's filesystem mounted;
 - one tmpfs volume, shared with the gate, holding two unix sockets.
 
 Beside it runs a **gate**: a second container from the same image, on
@@ -85,13 +85,18 @@ it:
   default bridge where a daemon publishes on a loopback the run does not
   share. The virtual display is started inside the cell.
 
-**Every launch, and both kinds of build.** A build launched in place is in
-the repository, which is mounted. A build the run installs from an artefact
-(#75) is in a directory of the run's own, and inside the execute container
-that directory is not one the daemon can see, so it cannot be mounted. The
-cell is handed a copy instead: a volume filled with `docker cp` through a
-container that is created and never started, mounted read-only at the path
-the build was installed to. The health check's launch runs in a cell like a
+**A copy, never a mount.** The cell is handed a copy of the directory the
+build is launched from: the one its executable is in, for a build launched
+in place, or the one the run installed an artefact to (#75). The copy is a
+volume filled with `docker cp` through a container that is created and
+never started, mounted read-only at the same path. Two reasons, either
+enough. A mount of the live checkout would let a process outside the cell
+(a command check, a build command) leave a unix socket in it for the build
+to connect to, and a socket on a filesystem is not closed by
+`--network none`; a copy carries no socket and nothing made after it was
+taken. And an install lives in the run's own temporary directory, which the
+daemon cannot see from inside the execute container, so it could not be
+mounted at all. The health check's launch runs in a cell like a
 flow check's, on both sides of a comparison. A build command is not the
 build: it runs with the step's network, like any command (see below).
 
@@ -120,11 +125,12 @@ ADR-0005 already hands the run.
 
 What is contained is the build: the process tree the driver launches. From
 inside the cell it has no interface but loopback, no docker socket, a
-read-only view of the checkout, and no capability. Proven in CI on a hosted
+read-only copy of its own directory, and no capability. Proven in CI on a hosted
 runner with the real Electron example, from the main process, through both
 Node and Chromium's own network stack: a declared host answers, an undeclared
-name does not resolve and is named in the refusal, and a raw address has no
-route.
+name does not resolve and is named in the refusal, a raw address has no
+route, and a unix socket a process outside the cell listens on in the build's
+own directory is not in the cell.
 
 What is not claimed:
 
@@ -169,9 +175,15 @@ network their step has.
   execute step provides both. A run on a developer's machine either has
   them, or opts out, or is blocked by name.
 - The build runs in the image, not beside the run: it sees the image's
-  libraries and environment, the checkout read-only, and a `/tmp` of its
-  own. A build that writes beside its own executable has to be told to write
-  elsewhere.
+  libraries and environment, a read-only copy of its own directory, and a
+  `/tmp` of its own. A build that writes beside its own executable, or reads
+  files elsewhere in the repository, has to be told otherwise. Each launch
+  copies the directory, which for an Electron build is a few hundred
+  megabytes.
+- A cancelled run removes its cells from the signal handler, half made ones
+  included. A flow check's cache key names the containment, so a result
+  cached before builds were contained is not replayed, and a refusal is
+  never cached.
 - The daemon must be on the machine the run is on, because the driver
   attaches to the gate over that machine's loopback or its default bridge.
   A remote daemon (`DOCKER_HOST` over TCP) leaves the flow `unverified`,

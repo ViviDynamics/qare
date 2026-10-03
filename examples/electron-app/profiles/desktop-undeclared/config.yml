@@ -6,6 +6,11 @@
 # The declared host answers. The undeclared name does not resolve inside the
 # cell, the gate records that it was asked for, and the run is refused naming
 # it. The bare address has no route: the build's cell has no network.
+#
+# The last probe is a unix socket in the build's own directory. The CI proof
+# has a process outside the cell listen on it before the run, as a pull
+# request's own command could. The cell holds a copy of the directory, and a
+# copy carries no socket, so there is nothing there to connect to.
 client:
   driver: electron
   executable: examples/electron-app/dist/qare-example/qare-example
@@ -14,6 +19,7 @@ client:
     - --probe=https://example.com/
     - --probe=https://example.org/
     - --probe=http://192.0.2.1/
+    - --probe=unix:bypass.sock
   hosts:
     - example.com
 flavour: web

@@ -45,8 +45,9 @@ Out:
   assumed. The cell uses `--network none`.
 - The cell and the gate run the image the run itself runs in
   (`QARE_IMAGE_REF`), so the launcher and the gate are the run's own qare.
-- The repository is mounted into the cell read-only at its own path, which
-  the pipeline already guarantees lines up with the daemon's (ADR-0005).
+- The directory the build is in is copied into the cell read-only at its own
+  path, never mounted: a copy carries no socket a process outside the cell
+  could leave for the build, and need not be a path the daemon can see.
 - DNS inside the cell is answered on loopback by the launcher, which asks the
   gate. A declared name resolves to loopback, where the launcher forwards
   ports 80 and 443 to the gate; an undeclared name does not resolve and the
@@ -87,3 +88,10 @@ Out:
       execute step.
 - [x] 11. SPEC, pipeline guide, schemas; follow-up issue for command checks
       and suites (#224).
+- [x] 12. After the rebase onto #75: an installed build is copied into its
+      cell, its health check launches in one, and a host that cannot make a
+      cell blocks before anything is built (`client-provision-run.test.ts`,
+      `scripts/client-provision.sh`).
+- [x] 13. Review: the build's directory is always a copy, a cancelled run
+      reaps its cells, the cache key names the containment, a refusal is
+      never cached.

@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import http from 'node:http'
 import https from 'node:https'
 import { realpath, stat } from 'node:fs/promises'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { clientCellProblem, startClientCell, type ClientCell } from './client-cell.js'
 import { electronDisplayProblem, type ElectronHost } from './flow-electron.js'
 import { clientExecutableName, type ProfileApp, type ProfileClient, type QaProfile } from './profile.js'
@@ -15,11 +15,25 @@ import { DEFAULT_CLIENT_HEALTH_TIMEOUT, electronHealthCheck, provisionClient, ty
  * The build a client profile's flows launch (#72, #75): where it is, what it
  * was provisioned from when the run installed it, and how it is taken away.
  */
-/** What a cell is made for (#223): the repository, the hosts the profile declares, and the install when the build is not in the repository. */
+/**
+ * What a cell is made for (#223): the repository the run checks, the hosts
+ * the profile declares, and the directory the build is launched from, which
+ * is the one its executable is in or the one the run installed it to (#75).
+ */
 export interface CellRequest {
   repoPath: string
   hosts: readonly string[]
-  install?: string
+  install: string
+}
+
+/**
+ * The executable of a build launched in place, links followed, and the
+ * directory it is in: what a cell copies in and launches (#223). The probe
+ * has already held the resolved path to being inside the repository.
+ */
+export async function inPlaceBuild(client: ProfileClient, root: string): Promise<{ executable: string; install: string }> {
+  const executable = await realpath(clientExecutablePath(client, root))
+  return { executable, install: dirname(executable) }
 }
 
 /** How a run makes a cell: the caller's own way, or docker and the image the run is in. */
@@ -374,11 +388,12 @@ async function probeClient(client: ProfileClient, opts: BootOpts): Promise<BootO
   // launched by its first flow check, as before.
   const lines: string[] = []
   if (client.health !== undefined) {
-    const health = opts.provision?.health ?? electronHealthCheck(opts.clientEnv, opts.clientEnvironment, contained ? () => startCell({ repoPath: root, hosts }) : undefined)
+    const build = await inPlaceBuild(client, root)
+    const health = opts.provision?.health ?? electronHealthCheck(opts.clientEnv, opts.clientEnvironment, contained ? () => startCell({ repoPath: root, hosts, install: build.install }) : undefined)
     const timeout = client.health.timeout ?? DEFAULT_CLIENT_HEALTH_TIMEOUT
     let healthy: Awaited<ReturnType<typeof health>>
     try {
-      healthy = await health({ executable: path, args: client.args, timeoutMs: parseDurationMs(timeout) })
+      healthy = await health({ executable: contained ? build.executable : path, args: client.args, timeoutMs: parseDurationMs(timeout) })
     } catch (error) {
       healthy = { ok: false, reason: error instanceof Error ? error.message : String(error) }
     }

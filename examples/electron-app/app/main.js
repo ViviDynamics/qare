@@ -5,6 +5,7 @@
 import { app, BrowserWindow, net, session } from 'electron'
 import http from 'node:http'
 import https from 'node:https'
+import { connect } from 'node:net'
 import path from 'node:path'
 
 // What the main process reaches for when it starts (#223): every
@@ -14,6 +15,20 @@ import path from 'node:path'
 // watch a desktop build's traffic from its windows and contains the whole
 // process instead. Each line says how the request ended.
 const probes = process.argv.filter((arg) => arg.startsWith('--probe=')).map((arg) => arg.slice('--probe='.length))
+
+// `--probe=unix:<path>` connects to a unix socket instead: a way out that is
+// not a network at all, which a process outside the build could leave in
+// the build's own directory.
+function probeSocket(path) {
+  return new Promise((resolve) => {
+    const socket = connect(path)
+    socket.on('connect', () => {
+      socket.destroy()
+      resolve('connected')
+    })
+    socket.on('error', (error) => resolve(`error ${error.code ?? error.message}`))
+  })
+}
 
 function probeWithNode(url) {
   return new Promise((resolve) => {
@@ -44,6 +59,10 @@ app.whenReady().then(async () => {
   // Before any window opens, so a run that drives the windows has the whole
   // of what the main process reached for behind it.
   for (const url of probes) {
+    if (url.startsWith('unix:')) {
+      console.log(`main: probe socket ${url.slice('unix:'.length)} -> ${await probeSocket(url.slice('unix:'.length))}`)
+      continue
+    }
     console.log(`main: probe node ${url} -> ${await probeWithNode(url)}`)
     console.log(`main: probe chromium ${url} -> ${await probeWithChromium(url)}`)
   }
