@@ -3,7 +3,7 @@ import { expect, test } from 'vitest'
 import { clientCellProblem, startClientCell, type CellDocker, type CellProcess } from '../src/client-cell.js'
 
 /** A docker that records every call and plays the gate's and the build's containers. */
-function fakeDocker(script: { gateLines?: string[]; gateExit?: number; fail?: Record<string, string>; port?: string } = {}) {
+function fakeDocker(script: { gateLines?: string[]; gateExit?: number; fail?: Record<string, string>; port?: string; address?: string } = {}) {
   const calls: string[][] = []
   const spawned: Array<{ args: string[]; process: FakeProcess }> = []
   class FakeProcess extends EventEmitter implements CellProcess {
@@ -22,6 +22,7 @@ function fakeDocker(script: { gateLines?: string[]; gateExit?: number; fail?: Re
       const failure = script.fail?.[verb]
       if (failure !== undefined) return { code: 1, stdout: '', stderr: failure }
       if (verb === 'port') return { code: 0, stdout: `${script.port ?? '127.0.0.1:49222'}\n`, stderr: '' }
+      if (verb === 'inspect') return { code: 0, stdout: `${script.address ?? '172.17.0.5'}\n`, stderr: '' }
       if (verb === 'stop') {
         // The gate writes its record as it stops.
         const gate = spawned.find((entry) => entry.args.includes('gate'))?.process
@@ -48,7 +49,16 @@ function fakeDocker(script: { gateLines?: string[]; gateExit?: number; fail?: Re
   return { docker, calls, spawned }
 }
 
-const OPTS = { image: 'qare-web:test', repoPath: '/work/repo', hosts: ['api.example.test', '*.cdn.example.test'], uid: 1001, gid: 118, id: 'abc123' }
+const OPTS = {
+  image: 'qare-web:test',
+  repoPath: '/work/repo',
+  hosts: ['api.example.test', '*.cdn.example.test'],
+  uid: 1001,
+  gid: 118,
+  id: 'abc123',
+  // The relay answers on the published port, as it does where the daemon is on this machine.
+  canConnect: async (host: string) => host === '127.0.0.1',
+}
 
 test('a cell is a volume, a gate on the default network, and a build with no network at all (#223)', async () => {
   const { docker, calls, spawned } = fakeDocker()
@@ -66,6 +76,7 @@ test('a cell is a volume, a gate on the default network, and a build with no net
     'qare-web:test', 'qare', 'cell', 'gate', '--socket-dir', '/run/qare-cell', '--host', 'api.example.test', '--host', '*.cdn.example.test',
   ])
   expect(calls[1]).toEqual(['port', 'qare-cell-abc123-gate', '9222/tcp'])
+  expect(calls[2]).toEqual(['inspect', '--format', '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}', 'qare-cell-abc123-gate'])
 
   const child = cell.spawn('/work/repo/dist/app/app', ['--no-sandbox', '--remote-debugging-port=9222'])
   // The build: no network, a resolver on its own loopback, no capability, the checkout read-only, no docker socket.
@@ -100,7 +111,7 @@ test('disposing a cell stops the build, reads the gate\'s record, and removes ev
   // The record is the gate's last word: before the cell is disposed there is none to read.
   expect(() => cell.record()).toThrow(/has not been disposed/)
   await cell.dispose()
-  expect(calls.slice(2)).toEqual([
+  expect(calls.slice(3)).toEqual([
     ['rm', '-f', 'qare-cell-abc123-app'],
     ['stop', '-t', '10', 'qare-cell-abc123-gate'],
     ['rm', '-f', 'qare-cell-abc123-gate'],
@@ -109,7 +120,7 @@ test('disposing a cell stops the build, reads the gate\'s record, and removes ev
   expect(cell.record()).toEqual({ reached })
   // Twice is once.
   await cell.dispose()
-  expect(calls).toHaveLength(6)
+  expect(calls).toHaveLength(7)
 })
 
 test('a record that was cut says so, and one that never arrived is not read as empty (#223)', async () => {
@@ -143,15 +154,42 @@ test('a cell that cannot be made is not half made: what was started is removed, 
   )
   expect(noGate.calls.slice(-2)).toEqual([['rm', '-f', 'qare-cell-abc123-gate'], ['volume', 'rm', '-f', 'qare-cell-abc123']])
 
-  const noPort = fakeDocker({ port: '' })
-  await expect(startClientCell({ ...OPTS, docker: noPort.docker })).rejects.toThrow(/the gate published no port for the driver/)
+  // Neither the published port nor the gate's own address answers: the daemon is not on this machine.
+  const elsewhere = fakeDocker()
+  await expect(startClientCell({ ...OPTS, docker: elsewhere.docker, canConnect: async () => false })).rejects.toThrow(
+    'the cell could not be made: the gate\'s relay for the driver answered at neither 127.0.0.1:49222 nor 172.17.0.5:9222, so the docker daemon is not on the machine the run is on',
+  )
+  expect(elsewhere.calls.slice(-2)).toEqual([['rm', '-f', 'qare-cell-abc123-gate'], ['volume', 'rm', '-f', 'qare-cell-abc123']])
+})
+
+test('the driver attaches where the relay answers: the published port, or the gate\'s own address (#223)', async () => {
+  // A daemon that publishes on a loopback the run does not share (a desktop
+  // daemon in a VM, with the run in a container on its network): the gate's
+  // own address on the default bridge is where the run reaches it.
+  const tried: string[] = []
+  const { docker } = fakeDocker()
+  const cell = await startClientCell({
+    ...OPTS,
+    docker,
+    canConnect: async (host, port) => {
+      tried.push(`${host}:${port}`)
+      return host === '172.17.0.5'
+    },
+  })
+  expect(tried).toEqual(['127.0.0.1:49222', '172.17.0.5:9222'])
+  expect(cell.endpoint('ws://127.0.0.1:9222/devtools/browser/7f3a')).toBe('ws://172.17.0.5:9222/devtools/browser/7f3a')
+  await cell.dispose()
+
+  // An address that is not one is never dialled.
+  const odd = fakeDocker({ address: 'not an address', port: '' })
+  await expect(startClientCell({ ...OPTS, docker: odd.docker, canConnect: async () => true })).rejects.toThrow(/the gate's relay for the driver has no address to be reached at/)
 })
 
 test('a harness that is going away takes the cell with it, without waiting (#223)', async () => {
   const { docker, calls } = fakeDocker()
   const cell = await startClientCell({ ...OPTS, docker })
   cell.reap()
-  expect(calls.slice(2)).toEqual([
+  expect(calls.slice(3)).toEqual([
     ['sync', 'rm', '-f', 'qare-cell-abc123-app', 'qare-cell-abc123-gate'],
     ['sync', 'volume', 'rm', '-f', 'qare-cell-abc123'],
   ])

@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
+import { connect } from 'node:net'
 import { GATE_RELAY_PORT, type GateSummary, type ReachedHost } from './cell-gate.js'
 
 /**
@@ -122,6 +123,24 @@ export interface ClientCellOptions {
   gid?: number
   id?: string
   readyTimeoutMs?: number
+  /** Whether a TCP connection to an address opens; a real attempt by default. */
+  canConnect?: (host: string, port: number) => Promise<boolean>
+}
+
+const RELAY_PROBE_TIMEOUT_MS = 2_000
+
+function tcpAnswers(host: string, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect({ host, port })
+    const done = (answered: boolean): void => {
+      clearTimeout(timer)
+      socket.destroy()
+      resolve(answered)
+    }
+    const timer = setTimeout(() => done(false), RELAY_PROBE_TIMEOUT_MS)
+    socket.once('connect', () => done(true))
+    socket.once('error', () => done(false))
+  })
 }
 
 function isReached(value: unknown): value is ReachedHost {
@@ -218,9 +237,34 @@ export async function startClientCell(opts: ClientCellOptions): Promise<ClientCe
     const said = firstLine(gateErrors)
     return unmade(gateExit === undefined ? 'the gate was not ready in time' : `the gate exited with ${gateExit} before it was ready${said === '' ? '' : `: ${said}`}`)
   }
+  // Where the driver reaches the relay. The published port is on the
+  // loopback of the machine the daemon runs on, which is this one on a
+  // runner. A daemon inside a VM (a desktop install) publishes on a loopback
+  // a run in a container on its network does not share, and there the gate's
+  // own address on the default bridge is where it answers. Whichever answers
+  // is used, and a relay that answers at neither is on another machine.
   const published = await docker.run(['port', gateName, `${GATE_RELAY_PORT}/tcp`])
-  const port = /^127\.0\.0\.1:(\d+)$/m.exec(published.stdout)?.[1]
-  if (published.code !== 0 || port === undefined) return unmade(`the gate published no port for the driver on this machine's loopback${firstLine(published.stderr) === '' ? '' : `: ${firstLine(published.stderr)}`}`)
+  const inspected = await docker.run(['inspect', '--format', '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}', gateName])
+  const publishedPort = /^127\.0\.0\.1:(\d+)$/m.exec(published.stdout)?.[1]
+  const address = inspected.stdout.split(/\s+/).find((entry) => /^\d{1,3}(\.\d{1,3}){3}$/.test(entry))
+  const candidates = [
+    ...(publishedPort === undefined ? [] : [{ host: '127.0.0.1', port: Number(publishedPort) }]),
+    ...(address === undefined ? [] : [{ host: address, port: GATE_RELAY_PORT }]),
+  ]
+  if (candidates.length === 0) return unmade("the gate's relay for the driver has no address to be reached at")
+  const canConnect = opts.canConnect ?? tcpAnswers
+  let relay: { host: string; port: number } | undefined
+  for (const candidate of candidates) {
+    if (await canConnect(candidate.host, candidate.port)) {
+      relay = candidate
+      break
+    }
+  }
+  if (relay === undefined)
+    return unmade(
+      `the gate's relay for the driver answered at neither ${candidates.map((candidate) => `${candidate.host}:${candidate.port}`).join(' nor ')}, so the docker daemon is not on the machine the run is on`,
+    )
+  const relayAt = `${relay.host}:${relay.port}`
 
   let disposed: Promise<void> | undefined
   return {
@@ -235,7 +279,7 @@ export async function startClientCell(opts: ClientCellOptions): Promise<ClientCe
         opts.image, 'qare', 'cell', 'launch', '--socket-dir', SOCKET_DIR, '--cdp-port', String(GATE_RELAY_PORT), '--',
         command, ...args,
       ]), // prettier-ignore
-    endpoint: (printed) => printed.replace(/^ws:\/\/[^/]+/, `ws://127.0.0.1:${port}`),
+    endpoint: (printed) => printed.replace(/^ws:\/\/[^/]+/, `ws://${relayAt}`),
     record: () => {
       if (disposed === undefined || gateExit === undefined) throw new Error('the cell has not been disposed, so its gate has not written its record')
       if (summary === undefined) throw new Error(`the gate stopped (${gateExit}) without writing its record, so what the build reached is not known`)
