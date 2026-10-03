@@ -10,15 +10,15 @@ test('a platform log keeps each line with the moment it was written, in order (#
   const time = clock()
   const log = makePlatformLog({ now: time.now })
 
-  log.record('page 1 opened', 'http://localhost/')
+  log.record('page 1 opened', 'file:///app/index.html')
   time.advance(250)
   log.record('page 1 console.error', 'boom')
   time.advance(10)
   log.record('page 1 crashed')
 
-  expect(log.lines()).toEqual(['[page 1 opened] http://localhost/', '[page 1 console.error] boom', '[page 1 crashed]'])
+  expect(log.lines()).toEqual(['[page 1 opened] file:///app/index.html', '[page 1 console.error] boom', '[page 1 crashed]'])
   expect(log.entries()).toEqual([
-    { at: 1_000_000, line: '[page 1 opened] http://localhost/' },
+    { at: 1_000_000, line: '[page 1 opened] file:///app/index.html' },
     { at: 1_000_250, line: '[page 1 console.error] boom' },
     { at: 1_000_260, line: '[page 1 crashed]' },
   ])

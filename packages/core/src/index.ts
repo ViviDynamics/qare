@@ -236,7 +236,27 @@ export type { ProfileUx } from './profile.js'
 export type { ProfileFindings } from './profile.js'
 export { ADVISORY_DISMISS_COMMAND, ADVISORY_PROMOTE_COMMAND, renderAdvisorySection } from './advisory-comment.js'
 export { runFlowCheck, runSuiteCheck } from './flow.js'
-export type { FlowAction, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult, FlowTotpConfig, FlowDriverCapabilities } from './flow.js'
+export type { FlowAction, FlowCaptureOpts, FlowElement, FlowPage, FlowTrace, FlowCheckOpts, FlowCheckResult, FlowTotpConfig, FlowDriverCapabilities } from './flow.js'
+export { ApngError, assembleApng, splitApng, type ApngFrame } from './apng.js'
+export {
+  RECORDING_FRAME_TIMEOUT_MS,
+  RECORDING_INTERVAL_MS,
+  RECORDING_MAX_BYTES,
+  RECORDING_MAX_FRAMES,
+  RECORDING_STILL_MAX_MS,
+  type FlowRecordingOpts,
+} from './flow-recording.js'
+export {
+  EXCERPT_BEFORE_MS,
+  EXCERPT_MAX_AFTER,
+  EXCERPT_MAX_BEFORE,
+  MAX_PLATFORM_LOG_LINES,
+  MAX_PLATFORM_LOG_LINE_CHARACTERS,
+  excerptAround,
+  makePlatformLog,
+  type PlatformLog,
+  type PlatformLogEntry,
+} from './platform-log.js'
 export { SNAPSHOT_SCHEMA_VERSION, nameFindings, normaliseAriaSnapshot, trimToSubtree } from './snapshot.js'
 export type { SnapshotNode } from './snapshot.js'
 export {

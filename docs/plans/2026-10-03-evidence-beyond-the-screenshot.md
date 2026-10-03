@@ -77,14 +77,14 @@ Out:
 
 ## Tasks
 
-- [ ] 1. Animated PNG assembly (`apng.ts`): frames in, one animated PNG out,
+- [x] 1. Animated PNG assembly (`apng.ts`): frames in, one animated PNG out,
   and back again. Failing test: three frames assembled, split back into the
   same pixels with their delays; a frame of another size is skipped and
   counted; the evidence sweep reads the result as an image.
-- [ ] 2. Platform log (`platform-log.ts`): a bounded, timestamped log and the
+- [x] 2. Platform log (`platform-log.ts`): a bounded, timestamped log and the
   excerpt around a moment. Failing test: lines kept with their times, bounds
   as the Electron driver has them, an excerpt holding only the window.
-- [ ] 3. Recording in the flow (`flow.ts`): the `frame` seam, sampling, the
+- [x] 3. Recording in the flow (`flow.ts`): the `frame` seam, sampling, the
   three credential rules, the bounds, kept only when the check did not pass.
   Failing tests: a failed assert writes `recording.png` and lists it; a
   passing flow keeps none; a typed secret conceals its element before the
