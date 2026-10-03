@@ -9,7 +9,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { loadPlan, loadProfile } from '../../packages/core/dist/index.js'
+import { loadPlan, loadProfile, requirementsOf } from '../../packages/core/dist/index.js'
 import { pipelineStep } from '../../scripts/run-pipeline-step.mjs'
 
 const example = fileURLToPath(new URL('../compose-app/', import.meta.url))
@@ -38,6 +38,23 @@ test('the compose-app plan checks the app from beside qare and from inside the b
   // The run's compose project is qare-<run id>, so a suite reaches the
   // service the run booted and no other run's.
   assert.match(suite.command, /^docker compose -p qare-\{\{run\.id\}\} -f examples\/compose-app\/compose\.yaml exec -T web /)
+})
+
+test('the same app under a profile that requires macOS is what CI holds a refusal to (#76)', async () => {
+  const head = await loadProfile(join(example, '.qa'))
+  const elsewhere = await loadProfile(join(example, 'needs-macos'))
+  // The only difference is what it requires of the host: the app it would boot is the same one.
+  assert.deepEqual(elsewhere.requires, { os: 'macos' })
+  assert.equal(head.requires, undefined)
+  assert.deepEqual(requirementsOf(elsewhere), { os: 'macos' })
+  assert.deepEqual(elsewhere.app, head.app)
+  assert.deepEqual(elsewhere.suites, head.suites)
+  // CI runs the pipeline's own execute step against it, and holds the run to
+  // refusing before the compose app is booted.
+  const script = await readFile(new URL('../../scripts/compose-boot.sh', import.meta.url), 'utf8')
+  assert.match(script, /PROFILE=examples\/compose-app\/needs-macos/)
+  assert.match(script, /refused: unmet requirement: a macos host \(requires\.os\): this host is linux\. Nothing was provisioned\./)
+  assert.match(script, /\.environment\.host\.os == "linux"/)
 })
 
 test('the execute steps CI runs are scripts the pipeline carries', () => {

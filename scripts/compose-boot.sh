@@ -88,3 +88,54 @@ if [ -n "$left" ]; then
   exit 1
 fi
 echo "compose boot: the execute step booted the app, both checks reached it, and the teardown step took the stack down"
+
+# The evidence names the kind of host that produced the result (#76): the
+# run's container is Linux, and on a GitHub Actions runner the step hands in
+# what the runner says it is.
+if ! jq -e --arg runner "${RUNNER_ENVIRONMENT:-}" '
+  .environment.host.os == "linux" and
+  (.environment.host.arch | type) == "string" and
+  (.environment.host.virtualisation | type) == "boolean" and
+  (if $runner == "" then (.environment.host | has("runner") | not) else .environment.host.runner == $runner end)
+' evidence/result.json > /dev/null; then
+  echo "the result does not name the host that produced it: $(jq -c '.environment.host' evidence/result.json)" >&2
+  exit 1
+fi
+echo "compose boot: the evidence names the host kind: $(jq -c '.environment.host' evidence/result.json)"
+
+# The same app under a profile that requires macOS (#76), on this Linux
+# runner: the run is refused by name before anything is provisioned. The
+# step treats a refusal as the outcome it is and exits 0; what it leaves is
+# a result and nothing a boot would have left.
+booted="$RUNNER_TEMP/qare-compose-boot-evidence"
+rm -rf "$booted"
+mv evidence "$booted"
+cp examples/compose-app/plan.json plan.json
+git worktree remove --force "$RUNNER_TEMP/qare-base" 2>/dev/null || true
+code=0
+IMAGE_REF="$image" \
+IMAGE_DIGEST="${image}@local" \
+BASE_SHA="$(git rev-parse 'HEAD^1')" \
+HEAD_SHA="$(git rev-parse HEAD)" \
+PR_NUMBER=0 \
+PROFILE=examples/compose-app/needs-macos \
+  step 'Run the plan' || code=$?
+refusal='refused: unmet requirement: a macos host (requires.os): this host is linux. Nothing was provisioned.'
+left_by_refusal="$(ls -A evidence 2>/dev/null | tr '\n' ' ')"
+if [ "$code" -ne 0 ] || [ "$left_by_refusal" != "result.json " ] || ! jq -e --arg reason "$refusal" '
+  .verdict == "refused" and
+  .requirements == {os: "macos"} and
+  .environment.host.os == "linux" and
+  (has("base") | not) and
+  (.criteria | length) == 2 and
+  ([.criteria[] | .outcome == "unverified" and .reason == $reason] | all)
+' evidence/result.json > /dev/null; then
+  echo "the execute step exited $code and left [$left_by_refusal]: a run that requires macOS was not refused by name before provisioning on this host" >&2
+  [ -f evidence/result.json ] && jq '{verdict, requirements, host: .environment.host, criteria: [.criteria[] | {id, outcome, reason}]}' evidence/result.json >&2
+  exit 1
+fi
+jq '{verdict, requirements, host: .environment.host, reason: .criteria[0].reason}' evidence/result.json
+# Both runs' evidence is kept: the refusal beside the boot it did not make.
+mv evidence "$booted/requires-macos"
+mv "$booted" evidence
+echo "placement: a run that requires macOS was refused on this Linux host before anything was provisioned"
