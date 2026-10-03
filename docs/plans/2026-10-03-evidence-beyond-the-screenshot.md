@@ -98,7 +98,7 @@ Out:
   `console.log` for the browser, and the planted secret: a failing flow on a
   fake session that types, logs and shows a secret leaves a recording, a log
   excerpt and a snapshot, and no byte of the secret anywhere in the evidence.
-- [ ] 7. Real runs on both drivers: the example application gains a field
+- [x] 7. Real runs on both drivers: the example application gains a field
   whose value it logs, a failing plan types a planted secret into it, and
   `scripts/electron-driver.sh` holds the browser and the contained desktop
   build to a recording, a log excerpt and a snapshot with no secret in them.

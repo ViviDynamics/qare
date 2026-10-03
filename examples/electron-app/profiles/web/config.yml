@@ -6,3 +6,9 @@ target:
   url: http://127.0.0.1:4173
   health: { http: /, timeout: 20s }
 flavour: web
+# The value the failing plan types into the access code field (#78): a
+# planted secret, which the run sweeps from every log and conceals in every
+# capture, and which scripts/electron-driver.sh then looks for in the evidence.
+redact:
+  values:
+    - planted-secret-4f9a17c2

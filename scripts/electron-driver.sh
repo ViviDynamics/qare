@@ -15,6 +15,12 @@
 # reaches past what it declares and is refused by name, and one opts out of
 # containment and says so in its evidence.
 #
+# Then evidence beyond the screenshot (#78). A plan that fails, and types a
+# planted secret on its way there, runs against the browser and against the
+# contained desktop build. Each run must leave a recording, a log excerpt
+# and a tree snapshot, and the secret must be in none of the evidence: not
+# in a byte of any file, and not in the pixels of the field it was typed in.
+#
 # Each run is the pipeline's own execute step, read out of
 # .github/workflows/pipeline.yml as the script it is, as in
 # scripts/compose-boot.sh: what runs is what a caller's pipeline runs, in the
@@ -135,10 +141,40 @@ refused() {
   fi
 }
 
+# failing <name> <plan> <profile>: the execute step, for a run whose check
+# must fail. A failed verdict exits non-zero, and is the outcome wanted here.
+failing() {
+  local name="$1" plan="$2" profile="$3" code=0
+  rm -rf evidence
+  git worktree remove --force "$RUNNER_TEMP/qare-base" 2>/dev/null || true
+  cp "$plan" plan.json
+  IMAGE_REF="$image" \
+  IMAGE_DIGEST="${image}@local" \
+  BASE_SHA="$(git rev-parse 'HEAD^1')" \
+  HEAD_SHA="$(git rev-parse HEAD)" \
+  PR_NUMBER=0 \
+  PROFILE="$profile" \
+    step 'Run the plan' || code=$?
+  if [ ! -f evidence/result.json ]; then
+    echo "$name: the execute step exited $code and recorded no evidence/result.json" >&2
+    exit 1
+  fi
+  mv evidence "$collected/$name"
+  jq '{verdict, criteria: [.criteria[] | {id, outcome, reason, evidence}]}' "$collected/$name/result.json"
+  if ! jq -e '.verdict == "failed" and ([.criteria[] | .outcome == "failed"] | all) and (.criteria | length) > 0' "$collected/$name/result.json" > /dev/null; then
+    echo "$name: the execute step exited $code and the plan did not fail against $profile, as it was written to" >&2
+    [ -f "$collected/$name/checks/greets-grace/0/console.log" ] && cat "$collected/$name/checks/greets-grace/0/console.log" >&2
+    exit 1
+  fi
+}
+
 # The same file, twice: the flow is not edited between the two targets.
 run web "$example/plan.json" "$example/profiles/web"
 run desktop "$example/plan.json" "$example/profiles/desktop"
 run desktop-windows "$example/plan-windows.json" "$example/profiles/desktop"
+# A plan that fails, with a secret planted in it, against both targets (#78).
+failing web-failing "$example/plan-failing.json" "$example/profiles/web"
+failing desktop-failing "$example/plan-failing.json" "$example/profiles/desktop"
 # The same file again, against the same build, told what to reach for (#223).
 # A process outside the cell listens on a unix socket in the build's own
 # directory first, as a pull request's own command could: a way out that is
@@ -194,8 +230,15 @@ grep -q '^\[window 1 console.log\] renderer: greeted Ada$' "$desktop/$check/cons
 grep -q '^\[main exited\] ' "$desktop/$check/console.log" || fail "the console output does not say the application exited"
 # Each launch has a user data directory of its own, not the user's.
 grep -q 'user data at .*qare-electron-' "$desktop/$check/console.log" || fail "the build was not launched with a user data directory of its own"
-# The browser driver produces no console evidence: this is the desktop run's.
-[ ! -e "$web/$check/console.log" ] || fail "the browser run wrote a console.log nobody declared"
+# The browser has a platform log of its own (#78): what its page wrote.
+jq -e --arg path "$check/console.log" '[.criteria[].evidence[]] | index($path) != null' "$web/result.json" > /dev/null || fail "the browser result does not list the console output as evidence"
+grep -q '^\[page 1 console.log\] renderer: greeted Ada$' "$web/$check/console.log" || fail "the browser's console output misses what the page logged"
+# A check that passed keeps no recording and has no failure to excerpt.
+for passed in "$web" "$desktop"; do
+  [ ! -e "$passed/$check/recording.png" ] || fail "a check that passed kept a recording: $passed"
+  [ ! -e "$passed/$check/failure.log" ] || fail "a check that passed wrote a failure log: $passed"
+  grep -q '^recording not kept: the flow passed (' "$passed/$check/actions.log" || fail "the action log of a check that passed does not say its recording was dropped: $passed"
+done
 
 # The second window: opened by the application, driven, pictured and closed.
 wcheck=checks/details-window/0
@@ -208,6 +251,35 @@ is_png "$windows/$wcheck/capture-8.png" || fail "the capture of the first window
 if cmp -s "$windows/$wcheck/capture-4.png" "$windows/$wcheck/capture-8.png"; then
   fail "the captures of the two windows are the same picture"
 fi
+
+# Evidence beyond the screenshot (#78): a failing check on each driver left
+# a recording, a log excerpt and a tree snapshot, listed in its result, and
+# the planted secret is in none of it. The evidence is read by qare's own
+# readers, in the image the runs executed in.
+fcheck=checks/greets-grace/0
+planted="$(jq -r '[.criteria[].checks[].actions[] | select(.action == "type" and .element.name == "Access code") | .value][0]' "$example/plan-failing.json")"
+[ -n "$planted" ] && [ "$planted" != null ] || fail "the failing plan plants no secret"
+# evidence_of <name> <log label> <profile>
+evidence_of() {
+  local name="$1" label="$2" profile="$3" dir="$collected/$1" kind
+  for kind in recording.png failure.log console.log failure.png; do
+    jq -e --arg path "$fcheck/$kind" '[.criteria[].evidence[]] | index($path) != null' "$dir/result.json" > /dev/null || fail "$name: the result does not list $kind as evidence"
+  done
+  jq -e --arg prefix "$fcheck/assert-" '[.criteria[].evidence[] | select(startswith($prefix))] | length == 1' "$dir/result.json" > /dev/null || fail "$name: the result does not list the tree snapshot at the failed assertion"
+  is_png "$dir/$fcheck/recording.png" || fail "$name: the recording is not a PNG"
+  # The recording is bounded: 4 MiB of frames, and the little that holds them together.
+  [ "$(wc -c < "$dir/$fcheck/recording.png")" -le 4300000 ] || fail "$name: the recording is larger than its bound"
+  docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:$PWD:ro" -v "$collected:$collected:ro" -w "$PWD" --entrypoint node \
+    "$image" "$example/check-evidence.mjs" "$dir" "$fcheck" "$planted" "$label" || fail "$name: the evidence is not what a failing check owes its reader"
+  # The pipeline's own sweep vouches for every file, the recording included.
+  docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:$PWD:ro" -v "$collected:$collected" -w "$PWD" \
+    "$image" qare redact --evidence "$dir" --profile "$profile" || fail "$name: the evidence sweep refused the evidence"
+}
+evidence_of web-failing 'page 1' "$example/profiles/web"
+evidence_of desktop-failing 'window 1' "$example/profiles/desktop"
+# The desktop excerpt goes on past the mark: the application going away is in it.
+sed -n '/^--- the check stopped here ---$/,$p' "$collected/desktop-failing/$fcheck/failure.log" | grep -Eq '^\[\+[0-9]+\.[0-9]{3}s\] \[main exited\] ' \
+  || fail "the desktop failure log does not hold what the application wrote after the check stopped"
 
 # What the build may reach (#223, ADR-0006). Every desktop run above ran its
 # build in a cell; what follows holds the cell to what it claims, from the
@@ -273,6 +345,19 @@ left="$(docker ps -a --filter name=qare-cell- --format '{{.Names}}'; docker volu
   cat "$desktop/$check/console.log"
   echo '```'
   echo
+  echo "### Evidence beyond the screenshot"
+  echo
+  echo "A plan that fails (\`$example/plan-failing.json\`) left a recording, a log excerpt and a tree snapshot on both drivers, and the secret it types is in none of the evidence. The browser's log around the failure, the end of the desktop build's, and what each action log says of its recording:"
+  echo
+  echo '```'
+  cat "$collected/web-failing/$fcheck/failure.log"
+  echo
+  sed -n '/^--- the check stopped here ---$/,$p' "$collected/desktop-failing/$fcheck/failure.log" | grep -v 'dbus/'
+  echo
+  grep -E '^(recording|role=textbox name=Access code is concealed)' "$collected/desktop-failing/$fcheck/actions.log"
+  grep -E '^recording' "$collected/web-failing/$fcheck/actions.log"
+  echo '```'
+  echo
   echo "### What the build may reach"
   echo
   echo "The build's main process reached for three destinations from inside its cell (\`$example/profiles/desktop-undeclared\`), and the run was refused:"
@@ -286,4 +371,5 @@ left="$(docker ps -a --filter name=qare-cell- --format '{{.Names}}'; docker volu
   echo '```'
 } >> "$GITHUB_STEP_SUMMARY"
 echo "electron driver: one plan passed against the browser and the desktop build, the desktop evidence carries screenshots and the console output, and a second window was driven and closed"
+echo "evidence: a failing check on the browser and on the contained desktop build each left a recording, a log excerpt and a tree snapshot, and the planted secret is in none of it"
 echo "egress: the contained build reached its declared host and was recorded, was refused an undeclared one by name, had no route to a bare address, and the opted-out build said it ran uncontained"

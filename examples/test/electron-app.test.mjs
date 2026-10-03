@@ -155,3 +155,36 @@ test('the egress profiles launch the same build, and differ only in what it is t
   assert.match(main, /setSpellCheckerLanguages\(\[\]\)/)
   assert.doesNotMatch(await readFile(join(example, 'app', 'renderer', 'index.html'), 'utf8'), /probe/)
 })
+
+test('the failing plan plants a secret both profiles redact, in a field the application logs and never shows elsewhere (#78)', async () => {
+  const text = await readFile(join(example, 'plan-failing.json'), 'utf8')
+  const plan = loadPlan(text, [], BROWSER_FLOW_DRIVER)
+  assert.deepEqual(loadPlan(text, [], ELECTRON_FLOW_DRIVER), plan)
+  const actions = plan.criteria.flatMap((criterion) => criterion.checks).flatMap((check) => check.actions)
+  assert.deepEqual(
+    actions.map((action) => action.action),
+    ['open', 'waitFor', 'type', 'type', 'click', 'assertText'],
+  )
+  // The secret goes into the access code field, and the plan ends on a text the page never shows.
+  const planted = actions.find((action) => action.action === 'type' && action.element.name === 'Access code')
+  assert.match(planted.value, /^planted-secret-/)
+  assert.equal(actions.at(-1).text, 'Good evening, Grace.')
+
+  // Both profiles name the planted value, so the run sweeps it; nothing else about them changes.
+  for (const name of ['web', 'desktop']) {
+    const profile = await loadProfile(join(example, 'profiles', name))
+    assert.deepEqual(profile.redact?.values, [planted.value], name)
+  }
+  // The application logs the code it was given, which is what puts the secret in the platform log,
+  // and the greeting it shows is made of the name alone.
+  const renderer = await readFile(join(example, 'app', 'renderer', 'app.js'), 'utf8')
+  assert.match(renderer, /console\.log\(`renderer: access code \$\{code\}`\)/)
+  assert.match(renderer, /textContent = `\$\{greeting\}, \$\{name\}\.`/)
+  const page = await readFile(join(example, 'app', 'renderer', 'index.html'), 'utf8')
+  assert.match(page, /<label>Access code <input id="code" name="code" autocomplete="off" \/><\/label>/)
+
+  // The checker the CI job runs reads the evidence with qare's own readers.
+  const checker = await readFile(join(example, 'check-evidence.mjs'), 'utf8')
+  assert.match(checker, /splitApng/)
+  assert.match(checker, /decodePng/)
+})

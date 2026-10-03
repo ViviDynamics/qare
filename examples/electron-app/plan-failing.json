@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "1",
+  "criteria": [
+    {
+      "id": "greets-grace",
+      "text": "The greeter shows a greeting to Grace",
+      "checks": [
+        {
+          "kind": "flow",
+          "name": "a greeting nobody wrote",
+          "actions": [
+            { "action": "open", "url": "/" },
+            { "action": "waitFor", "element": { "role": "textbox", "name": "Name" } },
+            { "action": "type", "element": { "role": "textbox", "name": "Name" }, "value": "Ada" },
+            { "action": "type", "element": { "role": "textbox", "name": "Access code" }, "value": "planted-secret-4f9a17c2" },
+            { "action": "click", "element": { "role": "button", "name": "Greet" } },
+            { "action": "assertText", "text": "Good evening, Grace." }
+          ]
+        }
+      ]
+    }
+  ]
+}
