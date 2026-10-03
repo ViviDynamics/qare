@@ -465,3 +465,5 @@ export {
   sumUsage,
 } from './metrics.js'
 export type { MetricsNote, MetricsNoteKind, MetricsStore, MetricsSummary, ModelUsage, RunMetricsRecord } from './metrics.js'
+// Findings on main (#154): what a run on main amounts to, who it names, and what the issue says.
+export * from './main-findings.js'
