@@ -79,4 +79,4 @@ Out:
   (`packages/cli/test/pipeline-caller.test.ts`)
 - [x] 6. Documentation: `docs/pipeline.md` (identity, secrets, permissions per
   option), the spec section, ADR-0003.
-- [ ] 7. Release 2026.10.4 (`scripts/sync-version.mjs`).
+- [x] 7. Release 2026.10.4 (`scripts/sync-version.mjs`).
