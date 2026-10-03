@@ -50,6 +50,8 @@ function fakeChromium(events: string[], opts: { visible?: boolean; subresources?
             // Like Playwright, the context raises `page` for every page it opens.
             newPage: async () => {
               const page = {
+              // A real page says where it is: the platform log names it when it opens (#78).
+              url: () => 'about:blank',
               goto: async (url: string) => {
                 events.push(`open ${url}`)
                 request(url)
@@ -524,4 +526,105 @@ test('the function run in the page asks the engine for the rule set and flattens
       },
     ],
   })
+})
+
+/** A browser whose one page raises the events a real page raises, and writes down what each capture was asked. */
+function observedChromium(captures: unknown[]) {
+  const handlers = new Map<string, Array<(arg: unknown) => void>>()
+  const onPage: Array<(page: unknown) => void> = []
+  const page = {
+    url: () => 'about:blank',
+    on: (event: string, handler: (arg: unknown) => void) => handlers.set(event, [...(handlers.get(event) ?? []), handler]),
+    locator: (selector: string) => ({ selector }),
+    getByRole: (role: string, options: { name: string }) => ({ role, name: options.name }),
+    getByTestId: (testId: string) => ({ testId }),
+    screenshot: async (capture: unknown) => {
+      captures.push(capture)
+      return Buffer.from('a frame')
+    },
+  }
+  const emit = (event: string, arg?: unknown): void => {
+    for (const handler of handlers.get(event) ?? []) handler(arg)
+  }
+  const chromium = {
+    launch: () =>
+      Promise.resolve({
+        newContext: async () => ({
+          on: (event: string, handler: (page: unknown) => void) => {
+            if (event === 'page') onPage.push(handler)
+          },
+          newPage: async () => {
+            for (const handler of onPage) handler(page)
+            return page
+          },
+        }),
+        close: async () => undefined,
+      }),
+  }
+  const popup = (url: string): { emit: (event: string, arg?: unknown) => void } => {
+    const own = new Map<string, Array<(arg: unknown) => void>>()
+    for (const handler of onPage) handler({ url: () => url, on: (event: string, listener: (arg: unknown) => void) => own.set(event, [...(own.get(event) ?? []), listener]) })
+    return { emit: (event, arg) => (own.get(event) ?? []).forEach((listener) => listener(arg)) }
+  }
+  return { chromium, emit, popup }
+}
+
+test('the browser driver declares the recording and the console beside its screenshots and trace (#78)', () => {
+  expect(BROWSER_FLOW_DRIVER.evidence).toEqual(['screenshot', 'trace', 'console', 'recording'])
+})
+
+test('a frame is a screenshot in memory: masked as one, with every concealed element blacked out, and given five seconds (#78)', async () => {
+  const captures: unknown[] = []
+  const { chromium } = observedChromium(captures)
+  const session = await makePlaywrightFlowSession({ loadPlaywright: async () => ({ chromium }) as never, masks: ['css=.fixture-banner'] })
+
+  const frame = await session.page.frame?.({ conceal: [{ role: 'textbox', name: 'Passphrase' }, { testId: 'pin' }] })
+  await session.page.frame?.()
+  await session.page.screenshot('/tmp/qare-failure.png', { conceal: [{ role: 'textbox', name: 'Passphrase' }] })
+  await session.dispose()
+
+  expect(Buffer.from(frame as Uint8Array).toString()).toBe('a frame')
+  expect(captures).toEqual([
+    { type: 'png', scale: 'css', timeout: 5000, mask: [{ selector: 'css=.fixture-banner' }, { role: 'textbox', name: 'Passphrase' }, { testId: 'pin' }], maskColor: '#000000' },
+    { type: 'png', scale: 'css', timeout: 5000, mask: [{ selector: 'css=.fixture-banner' }], maskColor: '#000000' },
+    { path: '/tmp/qare-failure.png', mask: [{ selector: 'css=.fixture-banner' }, { role: 'textbox', name: 'Passphrase' }], maskColor: '#000000' },
+  ])
+})
+
+test('a frame of a page with nothing to hide asks for no mask (#78)', async () => {
+  const captures: unknown[] = []
+  const { chromium } = observedChromium(captures)
+  const session = await makePlaywrightFlowSession({ loadPlaywright: async () => ({ chromium }) as never })
+
+  await session.page.frame?.()
+  await session.dispose()
+
+  expect(captures).toEqual([{ type: 'png', scale: 'css', timeout: 5000 }])
+})
+
+test('the browser has a platform log too: console messages, page errors, a crashed page, and every page that opened or closed (#78)', async () => {
+  const { chromium, emit, popup } = observedChromium([])
+  const session = await makePlaywrightFlowSession({ loadPlaywright: async () => ({ chromium }) as never })
+
+  await session.page.frame?.()
+  emit('console', { type: () => 'error', text: () => 'the save failed' })
+  emit('pageerror', new Error('undefined is not a function'))
+  const second = popup('about:blank#details')
+  second.emit('console', { type: () => 'log', text: () => 'details ready' })
+  second.emit('close')
+  emit('crash')
+  await session.dispose()
+
+  expect(session.console()).toEqual([
+    '[page 1 opened] about:blank',
+    '[page 1 console.error] the save failed',
+    '[page 1 error] undefined is not a function',
+    '[page 2 opened] about:blank#details',
+    '[page 2 console.log] details ready',
+    '[page 2 closed]',
+    '[page 1 crashed]',
+  ])
+  const entries = session.platformLog()
+  expect(entries.map((entry) => entry.line)).toEqual(session.console())
+  for (const entry of entries) expect(entry.at).toBeGreaterThan(0)
 })

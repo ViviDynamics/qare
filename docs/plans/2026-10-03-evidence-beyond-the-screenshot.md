@@ -90,7 +90,7 @@ Out:
   passing flow keeps none; a typed secret conceals its element before the
   type and in every later frame and screenshot; a second factor stops the
   recording before it is typed; the bounds drop the oldest frames.
-- [ ] 4. Browser driver: `frame`, concealed screenshots, console, page errors
+- [x] 4. Browser driver: `frame`, concealed screenshots, console, page errors
   and crashes. Failing tests against the fake chromium.
 - [ ] 5. Electron driver: `frame`, concealed screenshots, a crashed window,
   the shared platform log. Failing tests against the fake application.
