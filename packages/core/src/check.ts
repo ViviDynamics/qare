@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { BootOpts } from './boot.js'
 import { BROWSER_FLOW_DRIVER } from './flow-playwright.js'
@@ -14,6 +14,7 @@ import { ProfileMissingError, loadProfile, type QaProfile } from './profile.js'
 import { redactText, redactionRules, valueRules } from './redact.js'
 import type { RunResult } from './result.js'
 import { runJob, type FlowSessionFactory } from './run.js'
+import { VISUAL_RECORD, type VisualSessionFactory } from './visual-run.js'
 import { NareAgentRunner, type AgentRunner } from './runner.js'
 
 export class CheckInputError extends Error {
@@ -39,7 +40,7 @@ export interface CheckOptions {
    */
   verifier: ((evidenceDir: string) => AgentRunner) | 'none'
   id?: string
-  run?: BootOpts & { readMail?: ReadMail; flowSession?: FlowSessionFactory }
+  run?: BootOpts & { readMail?: ReadMail; flowSession?: FlowSessionFactory; visualSession?: VisualSessionFactory }
 }
 
 export interface CheckOutcome {
@@ -126,6 +127,7 @@ export async function checkCriteria(opts: CheckOptions): Promise<CheckOutcome> {
   })
   notes.push(...runNotes)
   const { result: executed } = await runJob(job, opts.run ?? {})
+  notes.push(...(await uncomparedVisualNotes(executed, opts.evidenceDir)))
 
   const rules = redactionRules(profile?.redact)
   const { result: judged, changed } = await judgeExecuted(executed, {
@@ -138,6 +140,31 @@ export async function checkCriteria(opts: CheckOptions): Promise<CheckOutcome> {
   for (const criterion of changed) notes.push(`verifier: ${criterion.criterionId} ${criterion.outcome}: ${redactText(criterion.reason ?? '', rules)}`)
   await writeFile(join(opts.evidenceDir, 'judged-result.json'), `${JSON.stringify(judged, null, 2)}\n`)
   return { criteria, executed, judged, notes }
+}
+
+/**
+ * A one-off check has one side, so a visual check in it compares with nothing
+ * (#143). The harness's own record says so, and so does the caller: a proven
+ * visual criterion here means the page was captured, not that it matches a
+ * base. Read from the evidence the run wrote, never from a model.
+ */
+async function uncomparedVisualNotes(executed: RunResult, evidenceDir: string): Promise<string[]> {
+  const notes: string[] = []
+  for (const criterion of executed.criteria) {
+    for (const path of criterion.evidence ?? []) {
+      if (path !== VISUAL_RECORD && !path.endsWith(`/${VISUAL_RECORD}`)) continue
+      let record: { screenshot?: unknown; comparison?: { with?: unknown; reason?: unknown } }
+      try {
+        record = JSON.parse(await readFile(join(evidenceDir, path), 'utf8')) as typeof record
+      } catch {
+        continue
+      }
+      if (record.comparison?.with !== 'nothing') continue
+      const note = `${criterion.id}: the visual check ${String(record.screenshot)} captured the head only: ${String(record.comparison.reason)}`
+      if (!notes.includes(note)) notes.push(note)
+    }
+  }
+  return notes
 }
 
 /**

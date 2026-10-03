@@ -151,6 +151,27 @@ test('an element reference is a role with its name or a test id, never both, nev
   expect(selector.message).toContain('role')
 })
 
+test('a visual check names the page it captures, and the page is a string (#143)', () => {
+  const check = { kind: 'visual', name: 'article', screenshot: 'ada', url: '/wiki/Ada_Lovelace', widths: [390, 1440] }
+  const plan = parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [check] }] })
+  expect(plan.criteria[0]).toMatchObject({ checks: [check] })
+
+  // Without one the check captures the app's root, so it stays optional.
+  const rootOnly = parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ kind: 'visual', name: 'home', screenshot: 'home' }] }] })
+  expect(rootOnly.criteria[0]).toMatchObject({ checks: [{ kind: 'visual', name: 'home', screenshot: 'home' }] })
+
+  for (const url of ['', 7]) {
+    const error = planError(() => parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ ...check, url }] }] }))
+    expect(error.field).toBe('criteria[0].checks[0].url')
+  }
+  // A width is a viewport in whole pixels: the planner hears about anything else in its correction round.
+  for (const width of [0, -390, 390.5]) {
+    const error = planError(() => parsePlan({ schemaVersion: '1', criteria: [{ ...criterion, checks: [{ ...check, widths: [width] }] }] }))
+    expect(error.field).toBe('criteria[0].checks[0].widths[0]')
+    expect(error.message).toContain('whole number of pixels')
+  }
+})
+
 test('visual check themes become evidence file names, so they cannot escape the evidence dir', () => {
   const check = { kind: 'visual', name: 'n', screenshot: 'shot', themes: ['../../escape'] }
   const error = planError(() =>

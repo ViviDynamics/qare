@@ -189,3 +189,36 @@ test('without profile masks the screenshots record none (#119)', async () => {
 
   expect(result.screenshots.every((screenshot) => screenshot.masks === undefined)).toBe(true)
 })
+
+test('a differ that finds the same pixels in different bytes reports the pair identical (#143)', async () => {
+  const opts = await optsWith(new Map([['1440/light', [PNG_A, PNG_B]]]), {
+    widths: [1440],
+    themes: ['light'],
+    diffImages: async () => 'identical',
+  })
+
+  const result = await runVisualCheck(opts)
+
+  expect(result.diffs).toEqual([{ width: 1440, theme: 'light', status: 'identical' }])
+  expect(existsSync(join(opts.outDir, 'diff'))).toBe(false)
+})
+
+test('the page is captured at the URL as given when the caller asks for it (#143)', async () => {
+  const urls: string[] = []
+  const outDir = await mkdtemp(join(tmpdir(), 'qare-visual-'))
+
+  await runVisualCheck({
+    baseUrl: BASE_URL,
+    outDir,
+    widths: [390],
+    themes: ['dark'],
+    revisions: ['head'],
+    urlAsGiven: true,
+    screenshot: async (url) => {
+      urls.push(url)
+      return PNG_A
+    },
+  })
+
+  expect(urls).toEqual([BASE_URL])
+})

@@ -105,6 +105,20 @@ test('the schema types flow actions and the prompt names the element vocabulary'
   expect(request.prompt).toContain('testId')
 })
 
+test('the schema and the prompt give a visual check the page it captures (#143)', async () => {
+  const runner = new FakeAgentRunner([completed(planned())])
+  await planRun(runner, INPUTS)
+
+  const schema = JSON.parse(runner.requests[0].outputSchema)
+  const check = schema.properties.criteria.items.properties.checks.items.properties
+  expect(check.url).toEqual({ type: 'string' })
+
+  const [request] = runner.requests
+  expect(request.prompt).toContain('"kind":"visual","name":...,"screenshot":"name","url":"/the/page"')
+  // The planner is told what the check compares, so it plans one for how a page looks and not for what it says.
+  expect(request.prompt).toContain('compared with the same page at the base revision')
+})
+
 test('an unplannable criterion is kept, with its reason', async () => {
   const runner = new FakeAgentRunner([
     completed(

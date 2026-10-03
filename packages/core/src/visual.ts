@@ -10,7 +10,18 @@ export interface VisualCheckOpts {
   themes: string[]
   revisions: VisualRevision[]
   screenshot?: (url: string, width: number, theme: string, revision: VisualRevision) => Promise<Buffer>
-  diffImages?: (basePng: Buffer, headPng: Buffer) => Promise<Buffer | null>
+  /**
+   * Compare two captures whose bytes differ. The answer is the diff image,
+   * `identical` when the pixels are the same in different bytes (#143), or
+   * null when no image could be produced.
+   */
+  diffImages?: (basePng: Buffer, headPng: Buffer) => Promise<Buffer | 'identical' | null>
+  /**
+   * Capture the page at `baseUrl` exactly as given (#143). Without it the
+   * width and theme are appended as query parameters, for a backend that
+   * cannot set a viewport or a colour scheme itself.
+   */
+  urlAsGiven?: boolean
   /**
    * Profile masks (#119): page regions the screenshot backend blacks out at
    * capture. They come from the profile, so base and head screenshots carry
@@ -50,6 +61,7 @@ export async function runVisualCheck(opts: VisualCheckOpts): Promise<VisualCheck
   const captured = new Map<string, Partial<Record<VisualRevision, Buffer>>>()
 
   const buildUrl = (width: number, theme: string): string => {
+    if (opts.urlAsGiven === true) return baseUrl
     const separator = baseUrl.includes('?') ? '&' : '?'
     return baseUrl + separator + 'theme=' + encodeURIComponent(theme) + '&width=' + String(width)
   }
@@ -105,6 +117,10 @@ export async function runVisualCheck(opts: VisualCheckOpts): Promise<VisualCheck
       }
       try {
         const diffPng = await diffImages(basePng, headPng)
+        if (diffPng === 'identical') {
+          diffs.push({ width, theme, status: 'identical' })
+          continue
+        }
         if (diffPng == null) {
           diffs.push({ width, theme, status: 'unavailable', reason: 'the differ produced no image' })
           continue

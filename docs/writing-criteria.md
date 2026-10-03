@@ -37,7 +37,7 @@ the checks that would carry it. Three kinds cover most criteria:
 | --- | --- | --- |
 | `command` | The exit code and output of one fixed command | Anything a script can assert with no browser: a test suite, a linter, a build, a migration |
 | `flow` | A fixed action set a client driver performs, driven through a real browser | What a user does and sees: forms, navigation, sign-in, the result of an interaction |
-| `visual` | Named screenshots at named widths and themes, compared against the base | How a page looks: layout, spacing, state differences a flow would step over |
+| `visual` | A page captured at named widths and themes, compared pixel for pixel with the same page at the base | How a page looks: layout, spacing, state differences a flow would step over. Any difference from the base fails it, so state it for a page the change should leave looking the same |
 
 A criterion is `command` when every check that carries it is a command, and
 `flow` otherwise. Two further kinds exist in the plan schema, `mail` (a

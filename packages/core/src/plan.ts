@@ -32,6 +32,8 @@ export interface VisualCheck {
   kind: 'visual'
   name: string
   screenshot: string
+  /** The page to capture (#143): a path on the app, or a URL. The app's root when absent. */
+  url?: string
   widths?: number[]
   themes?: string[]
   inferred?: boolean
@@ -144,6 +146,9 @@ export interface Plan {
 }
 
 const CHECK_KINDS: CheckKind[] = ['command', 'flow', 'visual', 'mail', 'tool']
+
+/** The widest viewport a visual check captures at (#143): wider is a typo, not a screen. */
+export const MAX_VISUAL_WIDTH = 10000
 
 export class PlanValidationError extends Error {
   readonly field: string
@@ -360,8 +365,13 @@ function parseCheck(value: unknown, base: string, extraFlowActions: readonly str
     }
     case 'visual': {
       const screenshot = nonEmptyString(value.screenshot, `${base}.screenshot`, 'screenshot')
+      const url = value.url === undefined ? undefined : nonEmptyString(value.url, `${base}.url`, 'url')
       const widths = value.widths === undefined ? undefined : numberArray(value.widths, `${base}.widths`, 'widths')
       const themes = value.themes === undefined ? undefined : stringArray(value.themes, `${base}.themes`, 'themes')
+      if (widths !== undefined)
+        for (const [index, width] of widths.entries())
+          if (!Number.isInteger(width) || width < 1 || width > MAX_VISUAL_WIDTH)
+            fail(`${base}.widths[${index}]`, `width ${JSON.stringify(width)} must be a whole number of pixels between 1 and ${MAX_VISUAL_WIDTH}; a width is the viewport a screenshot is taken at`)
       if (themes !== undefined)
         for (const [index, theme] of themes.entries())
           if (/[/\\]|\.\.|[\x00-\x1f\x7f]/.test(theme))
@@ -369,7 +379,7 @@ function parseCheck(value: unknown, base: string, extraFlowActions: readonly str
               `${base}.themes[${index}]`,
               `theme ${JSON.stringify(theme)} must not contain path separators, ".." or control characters; themes become evidence file names`,
             )
-      return finish({ kind: 'visual', name, screenshot, ...(widths !== undefined ? { widths } : {}), ...(themes !== undefined ? { themes } : {}) }, inferred)
+      return finish({ kind: 'visual', name, screenshot, ...(url !== undefined ? { url } : {}), ...(widths !== undefined ? { widths } : {}), ...(themes !== undefined ? { themes } : {}) }, inferred)
     }
     case 'mail': {
       const address = nonEmptyString(value.address, `${base}.address`, 'address')

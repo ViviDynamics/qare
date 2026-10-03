@@ -47,7 +47,7 @@ that can settle it or to a reason it cannot be planned.
 | `text` | criterion | required, non-empty string |
 | `checks` | planned criterion | required array, at least one check; mutually exclusive with `unplannable` |
 | `unplannable` | criterion | non-empty reason string; mutually exclusive with `checks` |
-| `kind` | check | required: `"command"`, `"flow"` or `"visual"` |
+| `kind` | check | required: `"command"`, `"flow"`, `"visual"`, `"mail"` or `"tool"` |
 | `name` | check | required, non-empty string |
 | `inferred` | check | optional boolean; `true` marks a check the model derived without the criterion naming it |
 
@@ -57,8 +57,9 @@ Per-kind required fields (all values are non-empty strings):
 | --- | --- | --- |
 | `command` | `command` | the shell command the harness runs |
 | `flow` | `suite` or `actions` | exactly one: an existing suite name, or a fixed action set of typed actions |
-| `visual` | `screenshot` | named screenshot to capture |
-| `visual` | `widths`, `themes` | optional arrays of numbers / of strings; profile defaults apply when omitted |
+| `visual` | `screenshot` | what the screenshot is called in the evidence |
+| `visual` | `url` | optional: the page to capture, a path on the app or a URL; the app's root when omitted (#143) |
+| `visual` | `widths`, `themes` | optional arrays of whole pixel widths (1 to 10000) / of strings; the profile's `visual` section applies when omitted. Themes become evidence file names, so they carry no path separators |
 
 A flow action is one of `{"action": "open", "url": "..."}`, `{"action": "type", "element": ..., "value": "..."}`, `{"action": "click", "element": ...}` and `{"action": "assertText", "text": "..."}`. An element reference is `{"role": "...", "name": "..."}` or `{"testId": "..."}` — semantic, never a selector. Free-form strings are rejected when the plan loads.
 

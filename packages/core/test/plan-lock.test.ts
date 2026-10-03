@@ -156,6 +156,17 @@ test('the fingerprint changes when any check field changes', () => {
   for (const mutation of mutations) expect(fingerprintPlan(mutation)).not.toBe(locked)
 })
 
+test('the page a visual check captures is part of the locked check (#143)', () => {
+  const visual = (url?: string) =>
+    parsePlan({
+      ...basePlanInput,
+      criteria: [{ id: 'c2', text: 'second criterion.', checks: [{ kind: 'visual', name: 'n2', screenshot: 's', ...(url === undefined ? {} : { url }) }] }],
+    })
+  expect(fingerprintPlan(visual('/reports'))).not.toBe(fingerprintPlan(visual()))
+  expect(fingerprintPlan(visual('/reports'))).not.toBe(fingerprintPlan(visual('/invoices')))
+  expect(fingerprintPlan(visual('/reports'))).toBe(fingerprintPlan(visual('/reports')))
+})
+
 test('the fingerprint does not change when only criterion text or the unplannable reason changes', () => {
   const textOnly = parsePlan({
     schemaVersion: '1',

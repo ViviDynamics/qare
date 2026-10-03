@@ -20,7 +20,7 @@ export interface RunContext {
   post?: JobPostTarget
 }
 
-/** Check kinds the job runner executes today. */
+/** The job check a planned check becomes; undefined for a kind the runner does not execute. */
 function runnable(check: PlanCheck): JobCheck | undefined {
   switch (check.kind) {
     case 'command':
@@ -52,7 +52,21 @@ function runnable(check: PlanCheck): JobCheck | undefined {
         assert: check.assert,
         ...(check.timeoutMs === undefined ? {} : { timeoutMs: check.timeoutMs }),
       }
+    case 'visual':
+      // The widths and themes the plan chose travel with the check (#143). A
+      // plan that chose none, or an empty list, takes the profile's `visual`
+      // section when the check runs.
+      return {
+        kind: 'visual',
+        name: check.name,
+        screenshot: check.screenshot,
+        ...(check.url === undefined ? {} : { url: check.url }),
+        ...(check.widths === undefined || check.widths.length === 0 ? {} : { widths: check.widths }),
+        ...(check.themes === undefined || check.themes.length === 0 ? {} : { themes: check.themes }),
+      }
     default:
+      // Every kind a plan carries today runs. A plan written by a newer
+      // planner may carry one this runner has never heard of.
       return undefined
   }
 }
@@ -78,7 +92,7 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
     const skipped = criterion.checks.filter((check) => runnable(check) === undefined)
     if (skipped.length > 0)
       notes.push(
-        `${criterion.id}: ${skipped.length} check(s) not run, because the runner executes command, mail, flow and tool checks only ` +
+        `${criterion.id}: ${skipped.length} check(s) not run, because the runner executes command, mail, flow, tool and visual checks only ` +
           `(${[...new Set(skipped.map((check) => check.kind))].join(', ')})`,
       )
     const kinds = [...new Set(skipped.map((check) => check.kind))].join(', ')
@@ -91,12 +105,12 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
             text: criterion.text,
             checks,
             ...isolated,
-            skipped: `${skipped.length} of its planned checks did not run (${kinds}), which the runner does not execute yet`,
+            skipped: `${skipped.length} of its planned checks did not run (${kinds}), which the runner does not execute`,
           }
     return {
       id: criterion.id,
       text: criterion.text,
-      unrunnable: `the plan checks it only with ${kinds} checks, which the runner does not execute yet`,
+      unrunnable: `the plan checks it only with ${kinds} checks, which the runner does not execute`,
     }
   })
 

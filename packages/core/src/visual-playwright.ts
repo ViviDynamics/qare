@@ -1,3 +1,5 @@
+import type { EgressAttempt } from './egress.js'
+import { attemptOf } from './flow-playwright.js'
 import type { VisualCheckOpts } from './visual.js'
 
 const NOT_INSTALLED_MESSAGE =
@@ -60,6 +62,15 @@ export async function makePlaywrightScreenshot(
     }
   }
 
+  // Every request a capture makes, so a run against a target can hold the
+  // hosts its screenshots reached against the ones its profile declares
+  // (#122, #143), exactly as a flow's browser is held.
+  const outbound: EgressAttempt[] = []
+  const record = (url: string): void => {
+    const attempt = attemptOf(url)
+    if (attempt !== undefined) outbound.push(attempt)
+  }
+
   const screenshot: ScreenshotFn = async (url, width, theme, revision) => {
     void revision
     const browser = await launch()
@@ -68,6 +79,10 @@ export async function makePlaywrightScreenshot(
       reducedMotion: 'reduce',
       colorScheme: theme === 'dark' ? 'dark' : 'light',
     })
+    context.on('request', (request) => record(request.url()))
+    // A WebSocket never raises a request event, so every page the context
+    // opens reports its own.
+    context.on('page', (opened) => opened.on('websocket', (socket) => record(socket.url())))
     try {
       const page = await context.newPage()
       await page.goto(url, { waitUntil: 'networkidle' })
@@ -88,7 +103,17 @@ export async function makePlaywrightScreenshot(
     }
   }
 
-  return Object.assign(screenshot, { dispose })
+  return Object.assign(screenshot, { dispose, outbound: () => [...outbound] })
+}
+
+/**
+ * Every connection the backend's captures attempted so far, or undefined for
+ * a backend that keeps no record: a run against a target does not trust one
+ * that cannot say what it reached.
+ */
+export function outboundOf(screenshot: unknown): EgressAttempt[] | undefined {
+  const outbound = (screenshot as { outbound?: () => EgressAttempt[] } | null | undefined)?.outbound
+  return typeof outbound === 'function' ? outbound() : undefined
 }
 
 export async function disposeBrowser(screenshot: unknown): Promise<void> {

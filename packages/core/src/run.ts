@@ -23,6 +23,7 @@ import { ProfileMissingError, loadProfile, pathOnTarget, validateProfileConfig, 
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
+import { runVisualCheckJob, visualPageUrl, type VisualComparison, type VisualContext, type VisualSessionFactory } from './visual-run.js'
 import { mintRunValues, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
 import {
   addQuarantineRecord,
@@ -183,6 +184,8 @@ export type RunJobOpts = BootOpts & {
   ledgerFeed?: { dir: string }
   readMail?: ReadMail
   flowSession?: FlowSessionFactory
+  /** Where the run's visual checks get their screenshots (#143); the Playwright backend by default. */
+  visualSession?: VisualSessionFactory
   /** What the driver behind this run's flows declares (#70); the browser driver by default. */
   flowDriver?: FlowDriverCapabilities
   /** Where the run executes; detected from the process when not pinned (issue #91). */
@@ -386,7 +389,16 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     const totp =
       login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
     if (side !== undefined) side.ran = true
-    const flow = { session: opts.flowSession, masks: profile.redact?.masks ?? [], suites: profile.suites, target, totp, mcp: profile.mcp, ...(side === undefined ? {} : { tracesRoot: side.tracesRoot }) }
+    const flow = {
+      session: opts.flowSession,
+      masks: profile.redact?.masks ?? [],
+      suites: profile.suites,
+      target,
+      totp,
+      mcp: profile.mcp,
+      visual: visualContextOf(profile, profile.redact?.masks ?? [], opts.visualSession, side),
+      ...(side === undefined ? {} : { tracesRoot: side.tracesRoot }),
+    }
     const criteria = await runCriteriaAcrossLanes(
       job.criteria,
       shardCriteria(job.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
@@ -437,6 +449,7 @@ async function runSeveralProfiles(
     ledgerFeed?: { dir: string }
     readMail?: ReadMail
     flowSession?: FlowSessionFactory
+    visualSession?: VisualSessionFactory
     flowDriver?: FlowDriverCapabilities
     /** How many times a failing check repeats before it is judged (#50). */
     flakeAttempts?: number
@@ -600,6 +613,7 @@ async function runProfileGroup(
     ledgerFeed?: { dir: string }
     readMail?: ReadMail
     flowSession?: FlowSessionFactory
+    visualSession?: VisualSessionFactory
     flowDriver?: FlowDriverCapabilities
     workers?: number
     /** How many times a failing check repeats before it is judged (#50). */
@@ -697,7 +711,16 @@ async function runProfileGroup(
     // The masks are the union of every app's, built before any app ran, so
     // one app's screenshots cannot publish another app's secret region (#55).
     if (side !== undefined) side.ran = true
-    const flow = { session: opts.flowSession, masks, suites: profile.suites, target, totp, mcp: profile.mcp, ...(side === undefined ? {} : { tracesRoot: side.tracesRoot }) }
+    const flow = {
+      session: opts.flowSession,
+      masks,
+      suites: profile.suites,
+      target,
+      totp,
+      mcp: profile.mcp,
+      visual: visualContextOf(profile, masks, opts.visualSession, side),
+      ...(side === undefined ? {} : { tracesRoot: side.tracesRoot }),
+    }
     const criteria = await runCriteriaAcrossLanes(
       group.criteria,
       shardCriteria(group.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
@@ -731,10 +754,15 @@ function isolatedSuitesOf(profile: QaProfile): Set<string> {
  * detected execution, the run's cache) plus the boot options a shard boots
  * its own app with (#48).
  */
-/** What a criterion's flow checks run with: the session seam, the masks, the suites, and where a trace is kept. */
+/**
+ * What a criterion's browser checks run with: the flow session seam, the
+ * masks, the suites, where a trace is kept, and what its visual checks
+ * capture with and compare against (#143).
+ */
 interface FlowContext {
   session?: FlowSessionFactory
   masks: string[]
+  visual: VisualContext
   suites: ProfileSuite[]
   target?: FlowTargetContext
   totp?: FlowTotpConfig
@@ -903,9 +931,39 @@ interface SideContext {
   ran: boolean
   /** The other side's redaction rules, swept over this side's evidence too. */
   extraRules?: readonly RedactionRule[]
+  /**
+   * The head profile's masks, in force at the base too (#143): both sides
+   * black out the same regions, so masking never shows as a difference.
+   */
+  extraMasks?: readonly string[]
+  /** On the head side: where the base side saved its screenshots, and why a criterion has none (#143). */
+  visualBase?: Extract<VisualComparison, { with: 'base' }>
   /** The base boots from the base tree: where a compose path of the profile lands there. */
   composePath?: (path: string) => string
   gate?: (criterion: JobCriterion) => string | undefined
+}
+
+/**
+ * What a side's visual checks run with (#143). A run with one side compares
+ * with nothing and says why; the base side of a two-sided run only captures;
+ * the head side compares its captures with the ones the base side saved.
+ */
+function visualContextOf(profile: QaProfile, masks: readonly string[], session: VisualSessionFactory | undefined, side: SideContext | undefined): VisualContext {
+  const oneSided: VisualComparison = {
+    with: 'nothing',
+    reason:
+      profile.target !== undefined
+        ? 'the profile names a running target, which has one side only, so there is no base to compare with'
+        : 'nothing ran at a base revision in this run, so there is no base to compare with',
+  }
+  return {
+    ...(session === undefined ? {} : { session }),
+    defaults: profile.visual,
+    masks: [...new Set([...masks, ...(side?.extraMasks ?? [])])],
+    comparison: side === undefined ? oneSided : side.name === 'base' ? { with: 'base-side' } : (side.visualBase ?? oneSided),
+    ...(profile.app === undefined ? {} : { appHealth: profile.app.health.http }),
+    ...(profile.target === undefined ? {} : { targetUrl: profile.target.url }),
+  }
 }
 
 /** The base side as the comparison reads it: the raw result of a base that ran, or why none did. */
@@ -1055,6 +1113,7 @@ async function runBaseSide(
       booted,
       ran: false,
       extraRules: headRules,
+      extraMasks: profiles.flatMap(({ profile }) => profile.redact?.masks ?? []),
       composePath: (path) => intoBaseTree(job.repoPath, basePath, resolve(path)) ?? (isAbsolute(path) ? path : resolve(basePath, path)),
       gate: limits.gate,
     }
@@ -1104,7 +1163,15 @@ async function runBothSides(job: Job, opts: SideOpts, request: BaseSideRequest):
   // feeds nothing itself.
   const headOpts: SideOpts = { ...opts }
   delete headOpts.ledgerFeed
-  const headSide: SideContext = { name: 'head', tracesRoot: resolve(job.evidenceDir, '..', 'traces', 'head'), booted: [], ran: false }
+  const headSide: SideContext = {
+    name: 'head',
+    tracesRoot: resolve(job.evidenceDir, '..', 'traces', 'head'),
+    booted: [],
+    ran: false,
+    // The base screenshots of a visual check are the ones the base side just
+    // saved (#143): there is no second way to capture a base.
+    visualBase: { with: 'base', evidenceDir: join(job.evidenceDir, 'base'), why: (criterionId) => noBaseScreenshots(base, criterionId) },
+  }
   const head = await runSide({ ...job, evidenceDir: join(job.evidenceDir, 'head') }, headOpts, headSide)
   const compared = redactResult(compareSides(job, head.result, base, startedAt), [...BUILTIN_REDACTION_RULES, ...headRules])
   await mkdir(job.evidenceDir, { recursive: true })
@@ -1115,6 +1182,14 @@ async function runBothSides(job: Job, opts: SideOpts, request: BaseSideRequest):
     ...(head.isolation === undefined ? {} : { isolation: head.isolation }),
     ...(head.isolations === undefined ? {} : { isolations: head.isolations }),
   }
+}
+
+/** Why the base side saved no screenshots for a criterion's visual check (#143). */
+function noBaseScreenshots(base: BaseSideOutcome, criterionId: string): string {
+  if (base.status === 'not-executed') return `the base side did not run: ${base.reason}`
+  const criterion = base.result.criteria.find((entry) => entry.id === criterionId)
+  if (criterion?.outcome !== 'unverified') return 'the base side saved no screenshots for this check'
+  return criterion.reason.startsWith(NOT_RUN_AT_BASE) ? criterion.reason : `unverified at the base: ${criterion.reason}`
 }
 
 /**
@@ -1304,6 +1379,16 @@ function validatePlanValues(criteria: JobCriterion[], profile: QaProfile, values
         const suiteIndex = check.suite === undefined ? -1 : profile.suites.findIndex((suite) => suite.name === check.suite)
         const suite = profile.suites[suiteIndex]
         if (suite !== undefined) validateRunReferences(suite.command, values, `suites[${suiteIndex}].command`)
+        continue
+      }
+      if (check.kind === 'visual') {
+        // The page a visual check captures may name run values, and on a
+        // target it is a path below the target URL, like a flow's (#143).
+        if (check.url !== undefined) {
+          validateValueReferences(check.url, values, `${base}.url`)
+          if (profile.target !== undefined && check.url.startsWith('/') && pathOnTarget(profile.target.url, check.url) === undefined)
+            throw new JobValidationError(`${base}.url`, `the path ${JSON.stringify(check.url)} climbs out of the target ${profile.target.url}; a path on the target stays below its URL`)
+        }
         continue
       }
       if (check.kind === 'tool') {
@@ -1578,6 +1663,10 @@ async function runCriterion(
   // store decides what the next run does, so the cache must not pin the
   // unverified outcome past the record that caused it.
   let quarantinedHere = false
+  // A visual check the base side saved no screenshots for is unverified this
+  // run only (#143): the next run's base may boot, so the cache must not
+  // serve this run's missing comparison back to it.
+  let notCacheable = false
   // The values a run publishes or consumes — a mail message's link, its
   // one-time code — are secrets like any other: they join the profile's
   // redaction rules for every piece of evidence written after them (#64).
@@ -1729,6 +1818,43 @@ async function runCriterion(
       foldCriterion(fold)
       continue
     }
+    if (substituted.kind === 'visual') {
+      // A visual check captures through the screenshot seam and compares
+      // with what the base side saved (#143). The outcome is decided in
+      // code from the captures and the diffs, never by a model.
+      const fold = await settleCheck(async (attempt) => {
+        const page = visualPageUrl(substituted.url, flow.visual, values)
+        if (!page.ok) return { status: 'unverified' as const, reason: page.reason }
+        const checkDir = dirFor(index, attempt)
+        const target = flow.target
+        const outcome = await runVisualCheckJob({
+          check: substituted,
+          pageUrl: page.url,
+          criterionId: criterion.id,
+          index,
+          evidenceDir: job.evidenceDir,
+          checkDir,
+          rules: sweepRules,
+          context: flow.visual,
+          defaultTimeoutMs: DEFAULT_CHECK_TIMEOUT_MS,
+          ...(target === undefined
+            ? {}
+            : {
+                recordOutbound: async (attempts: readonly EgressAttempt[]) => {
+                  const undeclared = await recordOutbound(attempts, target, join(job.evidenceDir, checkDir), sweepRules)
+                  target.undeclared.push(...undeclared)
+                  return undeclared
+                },
+              }),
+        })
+        evidence.push(...outcome.evidence)
+        if (outcome.transient === true) notCacheable = true
+        if (outcome.status === 'failed') return { status: 'failed' as const }
+        return { status: outcome.status, reason: outcome.reason === undefined ? undefined : redactText(outcome.reason, sweepRules) }
+      }, policy.attempts)
+      foldCriterion(fold)
+      continue
+    }
     // The shell-syntax rule judges the AUTHORED command, before artefact
     // values are substituted: a mail link like a URL with an ampersand is
     // data for the no-shell spawn, while an authored `&&` is a plan written
@@ -1832,7 +1958,7 @@ async function runCriterion(
   // outcome is never stored: it is this run's transient judgment, the
   // quarantine store already decides what the next run does, and a replay
   // of it would outlive the record that caused it.
-  if (cache !== undefined && !quarantinedHere) {
+  if (cache !== undefined && !quarantinedHere && !notCacheable) {
     await cache.cache.put(cacheKeyFor(criterion, checks, cache), {
       version: 1,
       criterion: criterion.id,
@@ -1897,6 +2023,7 @@ function substituteCheck(check: JobCheck, values: RunValues): JobCheck {
       ...(check.body === undefined ? {} : { body: substituteValues(check.body, values) }),
     }
   }
+  if (check.kind === 'visual') return check.url === undefined ? check : { ...check, url: substituteValues(check.url, values) }
   if (check.kind === 'tool') {
     // A tool check's strings — argument values and matcher text alike — may
     // name run values, exactly as a command's do (#94).
