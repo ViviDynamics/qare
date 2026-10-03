@@ -61,7 +61,8 @@ export type {
   ProfileMcpToolMap,
   McpStep,
 } from './profile.js'
-export { MCP_DRIVER_INTENTS } from './profile.js'
+export { CLIENT_DRIVERS, MCP_DRIVER_INTENTS } from './profile.js'
+export type { ClientDriver, ProfileClient } from './profile.js'
 export {
   DEFAULT_PROFILE_NAME,
   discoverProfiles,
@@ -143,7 +144,7 @@ export type { IssueCriteriaProblem } from './issue-criteria.js'
 export { linkedIssues } from './linked-issues.js'
 export { jobFromPlan } from './job-from-plan.js'
 export type { RunContext } from './job-from-plan.js'
-export { EXECUTE_PATH_TOOLS, NO_DIFF, PLAN_OUTPUT_SCHEMA, PlanStepError, planRun } from './plan-step.js'
+export { EXECUTE_PATH_TOOLS, NO_DIFF, PLAN_OUTPUT_SCHEMA, PlanStepError, planOutputSchema, planRun } from './plan-step.js'
 export type { DeclaredRunInputs, PlanCriterionInput, PlanInputs } from './plan-step.js'
 export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'
 export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobVisualCheck, JobA11yCheck, JobCheck, JobPostTarget, JobProfileGroup, SingleProfileJob, SeveralProfilesJob } from './job.js'
@@ -259,6 +260,8 @@ export {
   PlaywrightScreenshotBackendError,
 } from './visual-playwright.js'
 export { BROWSER_FLOW_DRIVER, makePlaywrightFlowSession, PlaywrightFlowSessionError } from './flow-playwright.js'
+export { ELECTRON_FLOW_DRIVER } from './flow-electron.js'
+export { flowDriverFor } from './flow-driver.js'
 export { matchesStub, summarizeEgress, mergeVerdicts } from './egress.js'
 export type { EgressAttempt, EgressFinding, EgressStub } from './egress.js'
 export { diffStubs, flagAddedStubs } from './stub-diff.js'

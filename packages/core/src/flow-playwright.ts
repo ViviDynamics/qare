@@ -20,6 +20,7 @@ export const BROWSER_FLOW_DRIVER: FlowDriverCapabilities = {
   name: 'browser',
   actions: ['open', 'type', 'click', 'choose', 'waitFor', 'assertText', 'assertElement', 'capture', 'totp', 'backupCode'],
   evidence: ['screenshot', 'trace'],
+  checks: ['visual', 'a11y'],
 }
 
 type PlaywrightModule = typeof import('playwright-core')

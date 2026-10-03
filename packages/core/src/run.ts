@@ -13,7 +13,8 @@ import { hasMintedProject, isolatedHealthUrl, isolateRun, type RunIsolation } fr
 import { matchesStub, type EgressAttempt } from './egress.js'
 import { runFlowCheck, runSuiteCheck, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
 import type { FlowRepairRecord } from './locator.js'
-import { BROWSER_FLOW_DRIVER, makePlaywrightFlowSession } from './flow-playwright.js'
+import { flowDriverFor } from './flow-driver.js'
+import { makePlaywrightFlowSession } from './flow-playwright.js'
 import { evidenceOf, judgeRun, toBaseSideResults, toSideResults } from './judge.js'
 import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck, type JobProfileGroup, type JobProfileRef, type JobToolCheck, type SeveralProfilesJob, type SingleProfileJob } from './job.js'
 import type { FlowActionStep } from './plan.js'
@@ -333,7 +334,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
   const login = profile.app?.login
   const rules = [...redactionRules(profile.redact), ...valueRules([login?.totp?.secret, login?.backupCode?.value]), ...(side?.extraRules ?? [])]
   try {
-    validatePlanValues(job.criteria, profile, values, opts.flowDriver ?? mcpDriverCapabilities(profile.mcp) ?? BROWSER_FLOW_DRIVER)
+    validatePlanValues(job.criteria, profile, values, opts.flowDriver ?? flowDriverFor(profile))
   } catch (error) {
     if (!(error instanceof JobValidationError)) throw error
     return refuseRun(job, opts, rules, error.message, targetNote, isolation, execution, startedAt)
@@ -680,7 +681,7 @@ async function runProfileGroup(
     )
   }
   try {
-    validatePlanValues(group.criteria, profile, values, opts.flowDriver ?? mcpDriverCapabilities(profile.mcp) ?? BROWSER_FLOW_DRIVER)
+    validatePlanValues(group.criteria, profile, values, opts.flowDriver ?? flowDriverFor(profile))
   } catch (error) {
     if (!(error instanceof JobValidationError)) throw error
     // The rules sweep the values the refusal publishes: they are the union of

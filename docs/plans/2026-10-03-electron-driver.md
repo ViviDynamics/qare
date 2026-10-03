@@ -99,10 +99,10 @@ Out:
 
 ## Tasks
 
-- [ ] 1. Profile `client` section: a profile names the driver, the executable
+- [x] 1. Profile `client` section: a profile names the driver, the executable
       and its arguments; malformed, conflicting and unsupported sections are
       refused by field (`profile.test.ts`).
-- [ ] 2. Capability declaration: `ELECTRON_FLOW_DRIVER`, the `checks` a driver
+- [x] 2. Capability declaration: `ELECTRON_FLOW_DRIVER`, the `checks` a driver
       serves, `flowDriverFor(profile)`; a plan with a `visual` or `a11y` check
       is refused at load and before boot, and the planner is not offered them
       (`flow-electron.test.ts`, `plan.test.ts`, `plan-step.test.ts`).
