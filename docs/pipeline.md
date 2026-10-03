@@ -30,7 +30,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.2
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.3
     with:
       nare-model: gpt-4.1-mini
     secrets:
@@ -62,7 +62,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.2
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.3
     with:
       runs-on: '["self-hosted", "linux", "x64"]'
       profile: services/web/qa
@@ -129,14 +129,58 @@ plan, execute and judge run qare and nare inside the published images
 (`ghcr.io/vividynamics/qare-core` and the flavour the profile names), and
 the three jobs that hold only the GitHub token set up node themselves.
 
+A profile that boots its application (`app.boot`) also needs, on the runner
+execute lands on, the docker compose v2 plugin, and the buildx plugin if the
+compose file builds an image. The runner's user must be able to run
+`docker compose` itself: execute hands the run exactly the docker that user
+has. A runner with no compose plugin says so in the job summary.
+
+## Profiles that boot an application
+
+execute runs `qare run` inside the image, and the run boots the profile's
+compose file against the runner's docker daemon. The containers compose
+starts are siblings of the run's container, not children of it, so three
+things hold:
+
+- **The app is at `localhost`.** The run shares the runner's network. qare
+  picks a free port and hands it to compose as `QARE_APP_PORT`, so the compose
+  file publishes on it, `ports: ["127.0.0.1:${QARE_APP_PORT:-3000}:3000"]`,
+  and the profile's health URL and every check name the app at
+  `http://localhost:{{run.app_port}}`.
+- **Paths are the runner's.** The workspace is mounted at its own path, so a
+  bind mount or a build context a compose file names resolves for the daemon
+  exactly as it does for the run.
+- **A suite can run inside the booted service.** The run's compose project is
+  `qare-<run id>`, so a suite that needs the stack's own hostnames (a
+  database, a stub) names it:
+
+  ```yaml
+  suites:
+    - name: sign-in
+      command: "docker compose -p qare-{{run.id}} -f compose.qa.yaml exec -T web bundle exec cucumber features/sign_in.feature"
+      kind: flow
+  ```
+
+When the run ends, the pipeline takes its compose projects down, volumes
+included. Images the stack built stay in the runner's cache.
+
+[`examples/compose-app`](../examples/compose-app) is a small profile of this
+shape. qare's CI runs the pipeline's own execute steps against it on every
+change, so this path is exercised and not only described.
+
 ## Your own runners
 
 qare's rule is that secrets never share a machine with pull request code.
 On GitHub-hosted runners every job gets a fresh machine, so the rule holds
 by construction. A runner that outlives its job is different: execute runs
-the pull request's code with the docker socket in reach, and whatever that
-code leaves behind is still there when a later plan or judge job, holding
-the model key or a token that can write, lands on the same machine.
+the pull request's code with the runner's docker daemon in reach, and
+whoever can ask a docker daemon for a container owns the machine it runs on.
+The container the run executes in is not a sandbox. Whatever the pull
+request leaves behind, as root, is still there when a later plan or judge
+job, holding the model key or a token that can write, lands on the same
+machine. Why execute is handed the daemon anyway, and what was weighed, is
+recorded in
+[ADR-0005](./decisions/adr-0005-execute-docker-access.md).
 
 So with your own runners, do one of these:
 
@@ -168,15 +212,6 @@ the default branch, so the `qa-assets` pushes judge makes do not start a run.
 
 Call the pipeline once per workflow run. Its artifacts have fixed names, so
 two calls in one run would overwrite each other.
-
-## What does not work yet
-
-execute runs the plan inside the published image. A profile that names a
-`target` (an application already running) works there today. A profile that
-boots its own application with compose (`app.boot`) does not yet: the run's
-container has no `docker compose` and cannot reach the runner's docker
-daemon. That is tracked in
-[#209](https://github.com/ViviDynamics/qare/issues/209).
 
 ## Upgrading
 

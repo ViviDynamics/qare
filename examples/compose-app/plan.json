@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "1",
+  "criteria": [
+    {
+      "id": "page-served",
+      "text": "The booted app serves its page on the port the run published",
+      "checks": [
+        {
+          "kind": "command",
+          "name": "page-has-greeting",
+          "command": "node examples/compose-app/page-has.mjs http://localhost:{{run.app_port}}/ Hello-from-compose"
+        }
+      ]
+    },
+    {
+      "id": "suite-inside-service",
+      "text": "A suite runs inside the booted service",
+      "checks": [{ "kind": "flow", "name": "in-service", "suite": "in-service" }]
+    }
+  ]
+}

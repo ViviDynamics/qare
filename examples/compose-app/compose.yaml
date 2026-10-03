@@ -1,0 +1,9 @@
+# The stack the example profile boots. qare hands compose the port it picked
+# for this run as QARE_APP_PORT, so two runs never publish on the same one.
+# The image is built from this directory, because that is what a real
+# repository does: the app under test is the pull request's own code.
+services:
+  web:
+    build: .
+    ports:
+      - "127.0.0.1:${QARE_APP_PORT:-3000}:3000"

@@ -1,0 +1,3 @@
+# The app has no sign-in; the profile schema asks for a fixture all the same.
+reader:
+  email: reader@example.test

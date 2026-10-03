@@ -33,6 +33,41 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
 
+  # A real compose boot (#209): qare's own profile names a running target, so
+  # its own QARE pipeline never boots anything. This job does: it runs the
+  # pipeline's execute steps, read out of pipeline.yml as the scripts they
+  # are, against examples/compose-app, a profile whose app is built and
+  # booted with compose. The run happens in the core image built from this
+  # tree, with the runner's docker handed to it exactly as a caller's
+  # pipeline hands it. The checkout is two commits deep, like execute's, so
+  # the base side has a commit to boot, and it leaves no token behind, since
+  # the workspace is handed to a container that runs the tree's code.
+  compose-boot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      # The step reader parses the workflow with the workspace's yaml.
+      - run: pnpm install --frozen-lockfile
+      - name: Build the core image
+        run: docker build -f images/core/Dockerfile -t qare-core:ci .
+      - name: Boot the example compose app through the pipeline's execute steps
+        run: scripts/compose-boot.sh qare-core:ci
+      - name: Upload the run's evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-boot-evidence
+          path: evidence/
+          if-no-files-found: ignore
+
   # The image family (#88): CI builds the flavours it can, holds the core
   # image to its size budget, and checks that a derived image reinstalls
   # nothing the base already ships. Publication is the release workflow's
