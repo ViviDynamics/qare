@@ -104,7 +104,7 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
     if (skipped.length > 0)
       notes.push(
         `${criterion.id}: ${skipped.length} check(s) not run, because the runner executes command, mail, flow, tool, visual and a11y checks only` +
-          `(${[...new Set(skipped.map((check) => check.kind))].join(', ')})`,
+          ` (${[...new Set(skipped.map((check) => check.kind))].join(', ')})`,
       )
     const kinds = [...new Set(skipped.map((check) => check.kind))].join(', ')
     const isolated = criterion.isolated === undefined ? {} : { isolated: criterion.isolated }
