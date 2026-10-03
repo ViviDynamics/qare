@@ -473,3 +473,18 @@ export type { MetricsNote, MetricsNoteKind, MetricsStore, MetricsSummary, ModelU
 export * from './main-findings.js'
 export * from './main-findings-blame.js'
 export * from './main-findings-render.js'
+export { CLIENT_ARTEFACT_KINDS, clientExecutableName } from './profile.js'
+export type { ProfileArtefactSide, ProfileClientArtefact } from './profile.js'
+export { DESKTOP_INSTALLERS, electronHealthCheck, provisionClient, runProvisionCommand } from './provision.js'
+export type {
+  ArtefactInstaller,
+  ClientHealthCheck,
+  ClientProvision,
+  InstallInput,
+  InstalledArtefact,
+  ProvisionCommandResult,
+  ProvisionCommandRunner,
+  ProvisionOpts,
+  ProvisionSide,
+  ProvisionedArtefact,
+} from './provision.js'
