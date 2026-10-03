@@ -37,6 +37,15 @@ Everything judge writes is published, so it redacts the reasons in it, with
 the built-in rules and, given `--profile <dir>`, the profile's `redact` values
 and patterns too.
 
+After the verdict is computed judge also asks the model for an advisory UX
+review of the screens the run's flows drove (#150), unless `--runner none` is
+given or the profile's `ux.review` is `false`. Its findings land under
+`advisory` in `judged-result.json` and in a section of the comment marked
+advisory. They are a model's opinion for a person to read: an orchestrator
+must not gate on them, and nothing in the verdict, the check run or any exit
+code depends on them. `--dismissed <path>` names the findings a person
+already dismissed on the change, so they are not raised again.
+
 `qare reap` tears down compose projects qare booted (#53). With project names
 (`qare reap qare-<run id>`), exactly those are downed and a name that is not
 qare's is refused, so the orchestrator can reap the run that just died while

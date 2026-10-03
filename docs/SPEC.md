@@ -198,6 +198,10 @@ a11y:                            # optional: what an accessibility audit holds a
 mail:                            # optional: where mail checks read from (#65)
   source: { kind: mailpit, url: "http://localhost:8025" }  # the catcher in the stack
   # domain: qa-mail.example.com  # what follows the @ of the address a run mints
+ux:                              # optional: the advisory UX review (#150), which never decides a verdict
+  review: true                   # false turns it off (default: on, for runs whose flows drove pages)
+  rules:                         # house rules the reviewer holds screens to
+    - An error message says what went wrong and what to do next.
 redact:                          # optional: fixture data that must not be published
   values: ["jane@pilot.example"] # literal strings
   patterns: ['CUST-\d{6}']       # regular expressions
@@ -465,6 +469,92 @@ they are compared, so a redacted name reads the same at both sides.
 The criterion's result carries the counts (`a11y`), and the comment lists
 them by criterion under "Accessibility", so violations that fail nothing are
 still reported where the verdict is read.
+
+### Advisory UX review
+
+Some problems a change introduces are judgement calls no criterion states: a
+confusing flow, a label that does not match the ones around it, an error
+message that helps nobody, a screen that breaks the patterns of the product.
+A model can spot these, and a model decides nothing (rule 3). So the review
+(#150) is advisory: its findings are shown to a person, and are never in the
+verdict.
+
+It runs in `qare judge`, after the verdict is computed, as the second thing
+judge asks the model: through nare, with the read-only tool set and the
+evidence directory as its file root, exactly as the verifier is run, in the
+step that already holds the model key (rule 7). It is on by default. A run
+with no screen makes no call, and neither does `--runner none`, a refused
+run, or a profile whose `ux` section says `review: false`.
+
+A screen is the evidence directory of one check that drove a page: one that
+holds a flow's action log, an accessibility snapshot (#82) or an audit record
+(#149). The run checks the criteria of the change, so the screens its flows
+visited are the screens the change touched; the base side's evidence is not
+reviewed. For each screen the reviewer is handed the text evidence the
+harness saved, with the text of the criterion the check belongs to, `QA.md`,
+and the profile's house rules (`ux.rules`: a design system, voice and tone,
+patterns to hold to). It reads no screenshot: nare's `read` tool returns
+text, so the reviewer works from the snapshots and logs and is told so
+(ViviDynamics/nare#48 asks for images).
+
+Each finding names its screen, a category (`label`, `error-message`,
+`consistency`, `flow`, `copy`, `layout`, `feedback`, `other`), a severity
+(`high`, `medium`, `low`), what was seen, why it matters, and the element it
+is about. Code rebuilds the answer field by field:
+
+- a finding about a screen the reviewer was not given is dropped;
+- the criterion and the screenshot are attached from the screen, so a finding
+  names only a screenshot the harness saved (rule 4), and none when it saved
+  none;
+- text is cut to one bounded line and redacted with the run's rules, and at
+  most 12 findings are kept, the most severe first;
+- nothing else the model wrote is carried. The answer schema has no field
+  for a criterion, an outcome or a file.
+
+The boundary with the verdict is structural, and a test holds it:
+
+- The findings live under `advisory` in `judged-result.json`. The judge
+  builds its result from named fields that do not include that key, so a
+  result judges the same with and without it, whatever the findings say.
+- The check run and judge's verdict line are written from the judged result
+  before the review is added. The comment shows the findings in a section of
+  its own, "Advisory UX review", below everything the verdict rests on, saying
+  that they are a model's opinion, not evidence, and that the verdict was
+  decided without them.
+- A reviewer that throws, stops, or answers something that is not a findings
+  list is `unavailable`, with the reason and no findings. The verdict, the
+  exit code and the check run are what they were. This is the one place a
+  model failure does not stop anything, because nothing rests on it.
+- `qare replay` compares a stored verdict without its `advisory` key: the
+  recompute calls no model, and the review is no part of the verdict.
+
+A person acts on a finding with a reply on the pull request, written as the
+first line of a comment and naming the finding by its id:
+
+- `/qa-dismiss <id>`: the finding is not raised again on that pull request.
+  A finding's identity is its screen, its category and the element it names
+  (what it saw, when it names none), hashed to eight characters. The next
+  run's reviewer is handed what was dismissed and told not to report it
+  again, and a finding with a dismissed identity is dropped in code and
+  counted. A model that rewords a dismissed finding and names its element
+  differently is caught by the first half or not at all; that half is
+  advisory too.
+- `/qa-promote <id>`: the finding becomes an issue, carrying what was seen,
+  why it matters, the screen, the screenshot (the link it was pushed to on
+  `qa-assets`, or its name when it was not pushed), and a link back to the
+  pull request. qare files no issue unless asked: a model's opinion does not
+  interrupt anyone.
+
+`qare-action advisory-replies` carries the replies out, as a sweep of the
+pull request's comments that is safe to repeat: each reply is answered once,
+in a comment that is also the record, so nothing is dismissed, filed or said
+twice, and a finding promoted a second time is pointed at its issue. The
+findings ride qare's evidence comment as data, and both they and the records
+are read only from comments the posting identity wrote; a reply counts only
+from an owner, a member or a collaborator of the repository. The pipeline
+runs the sweep in judge before the model is asked, and again the moment a
+reply is made when the caller listens for `issue_comment`
+([pipeline.md](./pipeline.md)).
 
 ### Mail checks
 
@@ -1262,6 +1352,8 @@ with the reason named, never as a failed criterion.
 
 - CI completes green on a PR (`workflow_run`), once per head SHA.
 - A `/qa` comment on the PR.
+- A `/qa-dismiss <id>` or `/qa-promote <id>` comment on the PR, which runs no
+  checks: it dismisses an advisory UX finding or files it as an issue (#150).
 - A `qa` label.
 - Locally: `qare run` from the CLI or the Claude Code skill.
 
@@ -1291,6 +1383,9 @@ Fork PRs are refused outright in the Action.
   The same masks apply to base and head screenshots alike, so masking never
   shows as a visual difference, and the evidence names the masks that applied
   to each screenshot: a flow's action log, and a visual check's `visual.json`. What a mask cannot cover, text redaction still covers.
+- Advisory UX findings (#150), when the run was reviewed: a section of the
+  comment marked advisory, and the `advisory` key of `judged-result.json`.
+  They are never in the verdict or the check run.
 - `result.json` is the machine contract other harnesses consume.
 - Both artifact schemas are documented in [schemas.md](./schemas.md); the
   orchestrator contract (invocation, exit codes and reaction per verdict) in
@@ -1352,7 +1447,10 @@ unstable.
 
 Capabilities qare needs from nare, each an issue on nare when it is missing:
 schema-constrained output for `plan.json`, a read-only tool set for the
-verifier step, and a per-step token budget with a retry on truncation.
+verifier step and the advisory UX reviewer, a per-step token budget with a
+retry on truncation, and a read-only way to look at an image file
+(ViviDynamics/nare#48), without which the UX reviewer reads snapshots and
+logs and no screenshot.
 
 ## Repo conventions
 

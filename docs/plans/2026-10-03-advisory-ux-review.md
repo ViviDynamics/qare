@@ -77,7 +77,7 @@ Out:
   answer.
 - Model output is filtered in code: a finding naming a screen it was not
   given is dropped, text is capped and redacted with the run's rules, and at
-  most 20 findings are kept. No field of a finding names a criterion outcome.
+  most 12 findings are kept. No field of a finding names a criterion outcome.
 - A finding's identity is a hash of its screen, its category (a fixed list)
   and the element it names (or what it saw, when it names none). The id is
   what a person types, and what "the same finding on the same screen" means
@@ -100,12 +100,12 @@ Out:
 
 ## Tasks
 
-- [ ] 1. Profile `ux` section: `packages/core/test/profile.test.ts`.
-- [ ] 2. Screens of a run, finding identity, and the filter over the model's answer: `packages/core/test/advisory.test.ts`.
-- [ ] 3. The reviewer through the runner seam, failing without touching the result: `packages/core/test/advisory.test.ts`.
-- [ ] 4. `advisory` in the result, redacted, and never read by the judge or by replay: `packages/core/test/result.test.ts`, `judge.test.ts`, `redact.test.ts`, `replay.test.ts`.
-- [ ] 5. The comment's advisory section: `packages/core/test/evidence.test.ts`.
-- [ ] 6. `qare judge` reviews after it judges: `packages/cli/test/judge-advisory.test.ts`.
-- [ ] 7. Replies: dismiss, promote, who may, once only: `packages/action/test/advisory.test.ts`, `post-evidence.test.ts`.
-- [ ] 8. The pipeline carries out replies and hands the dismissed list to judge: `packages/cli/test/workflow.test.ts`, `pipeline-caller.test.ts`.
-- [ ] 9. SPEC, schemas, pipeline guide.
+- [x] 1. Profile `ux` section: `packages/core/test/profile-ux.test.ts`.
+- [x] 2. Screens of a run, finding identity, and the filter over the model's answer: `packages/core/test/advisory.test.ts`.
+- [x] 3. The reviewer through the runner seam, failing without touching the result: `packages/core/test/advisory.test.ts`.
+- [x] 4. `advisory` in the result, redacted, and never read by the judge or by replay: `packages/core/test/advisory-result.test.ts`.
+- [x] 5. The comment's advisory section: `packages/core/test/advisory-comment.test.ts`.
+- [x] 6. `qare judge` reviews after it judges: `packages/cli/test/judge-advisory.test.ts`.
+- [x] 7. Replies: dismiss, promote, who may, once only: `packages/action/test/advisory.test.ts`.
+- [x] 8. The pipeline carries out replies and hands the dismissed list to judge: `packages/cli/test/pipeline-advisory.test.ts`, `pipeline-caller.test.ts`.
+- [x] 9. SPEC, schemas, pipeline guide.
