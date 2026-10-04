@@ -137,18 +137,21 @@ What is not claimed:
 - **The rest of the step.** A command check, a suite and a compose service
   still run with the network the step has, and still hold the daemon. The
   execute container is not a sandbox (ADR-0005), and this record does not
-  make it one. A pull request that wants to reach the network from a command
-  check still can. The boundary for that remains the machine: no secret on
-  it.
+  make it one. A named command is contained since #224; a pull request that
+  wants the network from anything else still can. The boundary for that
+  remains the machine: no secret on it.
 - **Who writes the list.** The profile is a file in the repository, so a pull
   request can add a host to `client.hosts`. The addition is in the diff and
   in `outbound.json`; containment makes reaching a host a declared act, not
   an impossible one.
 - **What travels to a declared host.** The gate decides by name. The bytes
   to a declared host are the build's own, TLS included.
-- **Ports and protocols.** Ports 80 and 443 only, and only connections that
-  name their host. Anything else has no route and is not recorded by name:
-  the build sees the failure, the record does not.
+- **Ports and protocols.** For the build, ports 80 and 443 only, and only
+  connections that name their host. Anything else has no route and is not
+  recorded by name: the build sees the failure, the record does not. The
+  command cell's gate carries any port a declared host answers on (#224),
+  because a stack publishes the app on the run's own port, and a target
+  answers on its own; the record names the protocol it saw.
 - **A raw address.** It has no route, so it fails; nothing names it in the
   record, because nothing left the cell.
 
@@ -159,15 +162,34 @@ no launcher has no network at all.
 
 ## What the same decision means for command checks and suites
 
-They have the same gap and the same answer would close it: run the command
-in a cell. It is not done here, because a command check is not a program
-that only needs a display. It needs the repository's toolchain, which lives
-on the runner or in the flavour image, write access to the checkout, and the
-booted stack on the runner's loopback, which a cell with no network cannot
-see. Carrying those through the gate (the stack as declared hosts, stubs as
-the list) is its own design, tracked as #224. Until it lands,
-the SPEC keeps saying what is true: a command check and a suite run with the
-network their step has.
+#224 applies this decision to a named command. A command check is not a
+program that only needs a display: it needs the repository's toolchain,
+which lives in the flavour image, write access to the checkout, and the
+booted stack, which a cell with no network cannot see. So its cell is
+handed those through the one door it has: the toolchain is the image the
+cell is made from, the checkout is copied in read-only at the path the
+command runs from, with the paths it declares as scratch mounted over the
+copy as writable tmpfs, and the stack arrives as declared hosts through the
+gate — the app on the port the run published it, each stub dialed as the
+compose service that provides it. The evidence carries the gate's record in
+`outbound.json` beside the command's streams, an undeclared destination
+refuses the check, a refusal is never cached, and the profile opts out with
+`egress: uncontained` on the command itself. A profile whose commands run
+contained requires a cell, and a host without one is refused before
+anything boots.
+
+What stays outside, and why:
+
+- **Suites.** A suite may need the docker daemon (`docker compose exec`
+  inside a booted service), which a cell withholds, and a suite that is
+  both contained and able to start containers is a privilege handed twice.
+  Suites run uncontained, and their evidence says so.
+- **Compose services.** A booted stack's egress is the stubs' business: the
+  profile declares what its checks reach, and the services keep the network
+  compose gave them.
+- **A build command** (`client.artefact.*.build`) runs with the step's
+  network still: it runs before the build it configures, and containing it
+  is #224's decision applied to named commands only.
 
 ## Consequences
 

@@ -326,3 +326,14 @@ test('the profile hash moves with the profile the run loaded', () => {
   expect(profileFingerprint(profile)).not.toBe(profileFingerprint(changed))
   expect(profileFingerprint(profile)).toBe(profileFingerprint({ suites: [] }))
 })
+
+test('a profile with named commands hashes under what commands were proven under (#224)', () => {
+  const profile: QaProfile = { suites: [] }
+  const withCommands: QaProfile = { ...profile, commands: { test: { run: 'echo hi', about: 'runs' } } }
+  const optedOut: QaProfile = { ...withCommands, commands: { test: { run: 'echo hi', about: 'runs', egress: 'uncontained' } } }
+  expect(profileFingerprint(profile)).not.toBe(profileFingerprint(withCommands))
+  // What a command was proven under is part of the fingerprint: the marker
+  // is what separates a result cached before commands were contained, which
+  // holds no gate record, from one replayed as one that does.
+  expect(profileFingerprint(withCommands)).not.toBe(profileFingerprint(optedOut))
+})

@@ -25,6 +25,9 @@ test('the requirement table: what a profile declares, and what its shape already
   expect(requirementsOf(validateProfileConfig({ client: CLIENT }))).toEqual({ cell: true })
   expect(requirementsOf(validateProfileConfig({ client: { ...CLIENT, egress: 'uncontained' } }))).toEqual({ display: true })
   expect(requirementsOf(validateProfileConfig({ client: { ...CLIENT, egress: 'uncontained' }, requires: { os: 'windows' } }))).toEqual({ os: 'windows', display: true })
+  // A named command that runs contained is launched in a cell too (#224), and an opt-out asks nothing.
+  expect(requirementsOf(validateProfileConfig({ ...TARGET, commands: { test: { run: 'echo hi', about: 'runs' } } }))).toEqual({ cell: true })
+  expect(requirementsOf(validateProfileConfig({ ...TARGET, commands: { test: { run: 'echo hi', about: 'runs', egress: 'uncontained' } } }))).toEqual({})
 })
 
 test('the host kind is read from the machine: operating system, architecture, virtualisation, and the runner it is (#76)', () => {

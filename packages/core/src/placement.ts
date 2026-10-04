@@ -16,8 +16,9 @@ import type { DeviceKind, HostOperatingSystem, ProfileRequires, QaProfile } from
 /**
  * Everything a run requires of its host: what the profile declares
  * (`requires`), and what its shape already implies. `cell` is a container
- * the docker daemon makes for a contained client build (#223); `display` is
- * somewhere a window can open, for a build launched on the host itself (#72).
+ * the docker daemon makes for a contained client build (#223) or a named
+ * command that runs contained (#224); `display` is somewhere a window can
+ * open, for a build launched on the host itself (#72).
  */
 export interface Requirements extends ProfileRequires {
   cell?: true
@@ -27,13 +28,16 @@ export interface Requirements extends ProfileRequires {
 /**
  * The requirement table. The browser, and so a profile that boots an app or
  * names a target, implies nothing: it runs headless on any host. A client
- * build implies where its windows open. A device driver (#73, #74) adds its
- * row here.
+ * build implies where its windows open, and any named command that runs
+ * contained implies the cell it is launched in (#224). A device driver
+ * (#73, #74) adds its row here.
  */
 export function requirementsOf(profile: QaProfile): Requirements {
+  const contained = profile.commands !== undefined && Object.values(profile.commands).some((command) => command.egress !== 'uncontained')
   return {
     ...profile.requires,
     ...(profile.client === undefined ? {} : profile.client.egress === 'uncontained' ? { display: true as const } : { cell: true as const }),
+    ...(contained ? { cell: true as const } : {}),
   }
 }
 
@@ -43,7 +47,7 @@ export function describeRequirements(requirements: Requirements): string[] {
     ...(requirements.os === undefined ? [] : [`a ${requirements.os} host`]),
     ...(requirements.virtualisation === true ? ['hardware virtualisation'] : []),
     ...(requirements.devices ?? []).map((kind) => `an attached ${kind} device`),
-    ...(requirements.cell === true ? ['a cell the docker daemon makes for the build'] : []),
+    ...(requirements.cell === true ? ['a cell the docker daemon makes'] : []),
     ...(requirements.display === true ? ['a display'] : []),
   ]
 }

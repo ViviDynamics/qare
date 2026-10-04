@@ -1,0 +1,180 @@
+import { mkdtemp, readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { spawn } from 'node:child_process'
+import { expect, test } from 'vitest'
+import type { CellProcess, CellRecord } from '../src/client-cell.js'
+import { runJob, type Job, type JobCriterion, type QaProfile } from '../src/index.js'
+import type { CommandCell, CommandCellOptions } from '../src/command-cell.js'
+
+// Test files carry no network literals (the offline scanner), so the URL is joined at runtime.
+const HEALTH_URL = ['http:', '//localhost:3000/up'].join('')
+
+const PROFILE: QaProfile = {
+  app: {
+    boot: { compose: 'compose.qa.yaml', service: 'admin' },
+    health: { http: HEALTH_URL, timeout: '120s' },
+    seed: { command: 'bin/rails db:seed:qa' },
+    login: { fixture: 'fixtures/users.yml', role: 'admin' },
+  },
+  stubs: [
+    {
+      service: 'billing',
+      hosts: ['api.billing-vendor.example'],
+      provided_by: { compose_service: 'billing' },
+    },
+  ],
+  suites: [{ name: 'browser-e2e', command: 'echo suite ran', kind: 'flow' }],
+  visual: { widths: [], themes: [] },
+}
+
+const COMMANDS: QaProfile['commands'] = {
+  test: {
+    run: 'echo hi',
+    about: 'runs the suite, printing its machine-readable report',
+  },
+}
+
+const BOOT = {
+  runCompose: async () => ({ code: 0, stdout: 'up out', stderr: 'up err' }),
+  probe: async () => ({ ok: true }),
+  pollIntervalMs: 1,
+  clientCell: { problem: async () => undefined },
+}
+
+async function makeJob(fields: { criteria: JobCriterion[]; profile: { inline: QaProfile } }): Promise<Job> {
+  const repoPath = await mkdtemp(join(tmpdir(), 'qare-command-'))
+  return {
+    id: 'job-command-smoke',
+    repoPath,
+    baseRef: 'main',
+    headRef: 'HEAD~1',
+    profile: fields.profile,
+    criteria: fields.criteria,
+    evidenceDir: join(repoPath, 'evidence'),
+    post: 'none',
+  }
+}
+
+function commandCriteria(...runs: string[]): JobCriterion[] {
+  return runs.map((run, index) => ({
+    id: `criterion-${index + 1}`,
+    text: `criterion ${index + 1}`,
+    checks: [{ kind: 'command', run }],
+  }))
+}
+
+/** A cell that runs the command on this host, and records what the test says the gate did. */
+function fakeCell(record: CellRecord, asked: unknown[] = []): (opts: Omit<CommandCellOptions, 'image'>) => Promise<CommandCell> {
+  return async (opts) => {
+    asked.push(opts)
+    return {
+      run: (argv, env) => spawn(argv[0] ?? '', argv.slice(1), { cwd: opts.checkout, env, stdio: ['ignore', 'pipe', 'pipe'] }) as unknown as CellProcess,
+      record: () => record,
+      dispose: async () => undefined,
+      reap: () => undefined,
+    }
+  }
+}
+
+test('a contained command runs in a cell and its evidence carries what the gate recorded (#224)', async () => {
+  const asked: unknown[] = []
+  const job = await makeJob({
+    criteria: commandCriteria('echo hi'),
+    profile: { inline: { ...PROFILE, commands: COMMANDS } },
+  })
+
+  const { result } = await runJob(job, {
+    ...BOOT,
+    commandCell: { start: fakeCell({ reached: [{ host: 'api.billing-vendor.example', port: 443, protocol: 'https', declared: true, count: 1 }] }, asked) },
+  })
+
+  expect(result.criteria[0].outcome).toBe('proven')
+  expect(result.criteria[0].evidence).toContain('checks/criterion-1/0/outbound.json')
+  const outbound = JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'outbound.json'), 'utf8')) as Record<string, unknown>
+  expect(outbound).toEqual({
+    command: 'echo hi',
+    containment: 'cell',
+    declared: ['api.billing-vendor.example'],
+    reached: [{ host: 'api.billing-vendor.example', port: 443, protocol: 'https', declared: true, count: 1 }],
+  })
+  // The cell is the one the run declared for the profile: the app at the
+  // published port, the stub as the service that provides it, the gate
+  // joining the compose project's network.
+  expect(asked[0]).toMatchObject({
+    hosts: ['api.billing-vendor.example'],
+    map: { 'api.billing-vendor.example': 'billing' },
+    app: { host: 'localhost', scheme: 'http' },
+    checkout: job.repoPath,
+  })
+  const request = asked[0] as { app?: { port?: number }; composeProject?: string }
+  expect(typeof request.app?.port).toBe('number')
+  expect(request.composeProject).toMatch(/^qare-/)
+})
+
+test('a destination the profile does not declare refuses the check: the result is unverified and said to be (#224)', async () => {
+  const job = await makeJob({
+    criteria: commandCriteria('echo hi'),
+    profile: { inline: { ...PROFILE, commands: COMMANDS } },
+  })
+
+  const { result } = await runJob(job, {
+    ...BOOT,
+    commandCell: { start: fakeCell({ reached: [{ host: 'telemetry.example', port: 443, protocol: 'https', declared: false, count: 2 }] }) },
+  })
+
+  expect(result.criteria[0].outcome).toBe('unverified')
+  expect(result.criteria[0].reason).toBe(
+    "refused: undeclared host: telemetry.example:443 (https); the profile does not list it in the command's declared hosts",
+  )
+  const outbound = JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'outbound.json'), 'utf8')) as Record<string, unknown>
+  expect(outbound.containment).toBe('cell')
+})
+
+test('a command that opts out runs with the network its step has, and its evidence says what it was not shown (#224)', async () => {
+  const asked: unknown[] = []
+  const job = await makeJob({
+    criteria: commandCriteria('echo hi'),
+    profile: { inline: { ...PROFILE, commands: { test: { ...COMMANDS.test, egress: 'uncontained' } } } },
+  })
+
+  const { result } = await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }, asked) } })
+
+  expect(result.criteria[0].outcome).toBe('proven')
+  expect(asked).toEqual([])
+  const outbound = JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'outbound.json'), 'utf8')) as Record<string, unknown>
+  expect(outbound).toEqual({
+    command: 'echo hi',
+    containment: 'none',
+    reason: 'the profile opts out with egress: uncontained, so the command ran with the network its step has and what it reached was not recorded',
+  })
+})
+
+test('a check that names no command of the profile runs uncontained, and its evidence carries no record of traffic (#224)', async () => {
+  const asked: unknown[] = []
+  const job = await makeJob({
+    criteria: commandCriteria('echo bare'),
+    profile: { inline: { ...PROFILE, commands: COMMANDS } },
+  })
+
+  const { result } = await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }, asked) } })
+
+  expect(result.criteria[0].outcome).toBe('proven')
+  expect(asked).toEqual([])
+  await expect(readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'outbound.json'), 'utf8')).rejects.toThrow()
+})
+
+test("the suite's evidence says in as many words that it ran uncontained (#224)", async () => {
+  const job = await makeJob({
+    criteria: [{ id: 'criterion-1', text: 'criterion 1', checks: [{ kind: 'flow', suite: 'browser-e2e' }] }],
+    profile: { inline: { ...PROFILE, commands: COMMANDS } },
+  })
+
+  const { result } = await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }) } })
+
+  expect(result.verdict).toBe('passed')
+  expect(result.criteria[0].evidence).toEqual(['checks/criterion-1/0/suite.txt'])
+  const suite = JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'suite.txt'), 'utf8')) as Record<string, unknown>
+  expect(suite.containment).toBe('none')
+  expect(suite.note).toBe('a suite runs uncontained, so it may reach for whatever its step can reach and its traffic is not recorded')
+})

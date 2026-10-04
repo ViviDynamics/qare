@@ -2,7 +2,10 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { spawn } from 'node:child_process'
 import { expect, test, vi } from 'vitest'
+import type { CellProcess } from '../src/client-cell.js'
+import type { CommandCell, CommandCellOptions } from '../src/command-cell.js'
 import {
   JobValidationError,
   NARE_CONTRACT,
@@ -52,6 +55,19 @@ const HEALTHY_BOOT = {
   runCompose: async () => ({ code: 0, stdout: 'up out', stderr: 'up err' }),
   probe: async () => ({ ok: true }),
   pollIntervalMs: 1,
+  // A contained command needs a host that can make the cell it runs in, and
+  // a cell that runs the command on this host, so a selection test keeps
+  // testing selection while the run takes the contained path (#224).
+  clientCell: { problem: async () => undefined },
+  commandCell: {
+    start: async (opts: Omit<CommandCellOptions, 'image'>): Promise<CommandCell> => ({
+      run: (argv, env) =>
+        spawn(argv[0] ?? '', argv.slice(1), { cwd: opts.checkout, env, stdio: ['ignore', 'pipe', 'pipe'] }) as unknown as CellProcess,
+      record: () => ({ reached: [] }),
+      dispose: async () => undefined,
+      reap: () => undefined,
+    }),
+  },
 }
 
 async function makeJob(fields: { criteria: JobCriterion[]; profile: JobProfileRef }): Promise<Job> {

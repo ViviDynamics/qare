@@ -19,10 +19,11 @@ function fakeDocker(script: { gateLines?: string[]; gateExit?: number; fail?: Re
   const docker: CellDocker = {
     run: async (args) => {
       calls.push(args)
-      const verb = args[0] as string
+      const [verb, sub] = args as [string, string]
       const failure = script.fail?.[verb]
       if (failure !== undefined) return { code: 1, stdout: '', stderr: failure }
-      if (verb === 'inspect') return { code: 0, stdout: `${script.inspect ?? '172.17.0.1'}\n`, stderr: '' }
+      if (verb === 'network' && sub === 'ls') return { code: 0, stdout: 'stack_default\n', stderr: '' }
+      if (verb === 'network' && sub === 'inspect') return { code: 0, stdout: `${script.inspect ?? '172.17.0.1'}\n`, stderr: '' }
       if (verb === 'stop') {
         // The gate writes its record as it stops.
         const gate = spawned.find((entry) => entry.args.includes('gate'))?.process
@@ -51,10 +52,10 @@ function fakeDocker(script: { gateLines?: string[]; gateExit?: number; fail?: Re
 
 const OPTS = {
   image: 'qare-web:test',
-  hosts: ['app.example.test', 'api.stubs.test'],
-  map: { 'app.example.test': '172.17.0.1', 'api.stubs.test': 'billing-stub' },
-  app: { port: 3000, protocol: 'http' as const },
-  network: 'stack_default',
+  hosts: ['api.stubs.test'],
+  map: { 'api.stubs.test': 'billing-stub' },
+  app: { host: 'localhost', port: 3000, scheme: 'http' as const },
+  composeProject: 'stack',
   checkout: '/work/repo',
   scratch: ['tmp/scratch'],
   uid: 1001,
@@ -66,29 +67,30 @@ test('a command cell is a gate on the default bridge that joins the stack, and a
   const { docker, calls, spawned } = fakeDocker()
   const cell = await startCommandCell({ ...OPTS, docker })
 
-  // The gate: the declared hosts, the app's port and scheme, each stub dialed as its service.
+  // The stack's network and the address the app is published at are asked
+  // before anything is made: the map is in the gate's argv.
+  expect(calls[0]).toEqual(['network', 'ls', '--format', '{{.Name}}', '--filter', 'label=com.docker.compose.project=stack'])
+  expect(calls[1]).toEqual(['network', 'inspect', '--format', '{{(index .IPAM.Config 0).Gateway}}', 'bridge'])
+
+  // The gate: the app's host and every stub's, the app's port and scheme,
+  // each stub dialled as its service and the app dialled at the gateway.
   expect(spawned[0]?.args).toEqual([
     'run', '--rm', '--name', 'qare-cell-abc123-gate',
     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
     '-u', '1001:118', '-e', 'HOME=/tmp',
     '-v', 'qare-cell-abc123:/run/qare-cell',
     'qare-web:test', 'qare', 'cell', 'gate', '--socket-dir', '/run/qare-cell',
-    '--host', 'app.example.test', '--host', 'api.stubs.test',
+    '--host', 'api.stubs.test', '--host', 'localhost',
     '--port', '3000', 'http',
-    '--map', 'app.example.test=172.17.0.1', '--map', 'api.stubs.test=billing-stub',
+    '--map', 'api.stubs.test=billing-stub', '--map', 'localhost=172.17.0.1',
   ])
   // A second interface, where the stubs live.
-  expect(calls[1]).toEqual(['network', 'connect', 'stack_default', 'qare-cell-abc123-gate'])
-  // The address the app is published at.
-  expect(calls[2]).toEqual(['inspect', '--format', '{{(index .NetworkSettings.Networks "bridge").Gateway}}', 'qare-cell-abc123-gate'])
+  expect(calls[3]).toEqual(['network', 'connect', 'stack_default', 'qare-cell-abc123-gate'])
 
   // The checkout is copied in, never mounted from the machine.
-  expect(calls.slice(3)).toEqual([
-    ['volume', 'create', 'qare-cell-abc123-build'],
-    ['create', '--name', 'qare-cell-abc123-load', '-v', 'qare-cell-abc123-build:/checkout', 'qare-web:test', 'true'],
-    ['cp', '/work/repo/.', 'qare-cell-abc123-load:/checkout'],
-    ['rm', '-f', 'qare-cell-abc123-load'],
-  ])
+  expect(calls[4]).toEqual(['volume', 'create', 'qare-cell-abc123-build'])
+  expect(calls[5]).toEqual(['create', '--name', 'qare-cell-abc123-load', '-v', 'qare-cell-abc123-build:/checkout', 'qare-web:test', 'true'])
+  expect(calls[6]).toEqual(['cp', '/work/repo/.', 'qare-cell-abc123-load:/checkout'])
 
   cell.run(['true', '--verbose'], { FOO: 'bar' })
   expect(spawned[1]?.args).toEqual([
@@ -108,7 +110,8 @@ test('a command cell is a gate on the default bridge that joins the stack, and a
   await cell.dispose()
   expect(cell.record()).toEqual({ reached: [] })
   expect(calls.filter((args) => args[0] === 'stop')).toEqual([['stop', '-t', '10', 'qare-cell-abc123-gate']])
-  expect(calls.at(-1)).toEqual(['network', 'rm', '-f', 'stack_default'])
+  // The network is the stack's own: joined, never removed.
+  expect(calls.at(-1)).toEqual(['volume', 'rm', '-f', 'qare-cell-abc123', 'qare-cell-abc123-build'])
 })
 
 test('a command cell without a stack boots no interface for the stubs and carries no app port (#224)', async () => {
@@ -128,10 +131,44 @@ test('a command cell without a stack boots no interface for the stubs and carrie
   expect(calls.at(-1)).toEqual(['volume', 'rm', '-f', 'qare-cell-def456', 'qare-cell-def456-build'])
 })
 
+test("a declared host on a port other than the gate's own two has that port carried, and is dialled as itself (#224)", async () => {
+  const { docker, calls, spawned } = fakeDocker()
+  const cell = await startCommandCell({
+    image: 'qare-web:test',
+    hosts: ['staging.example.test'],
+    ports: [{ port: 8443, protocol: 'https' }],
+    checkout: '/work/repo',
+    id: 'efg789',
+    docker,
+  })
+  // No app, so no gateway is asked: the target is dialled as itself.
+  expect(calls.find((args) => args[0] === 'inspect')).toBeUndefined()
+  expect(spawned[0]?.args.filter((arg) => arg === '--map')).toEqual([])
+  expect(spawned[0]?.args.slice(spawned[0]?.args.indexOf('--host'))).toEqual(['--host', 'staging.example.test', '--port', '8443', 'https'])
+  cell.run(['true'])
+  expect(spawned[1]?.args.filter((arg) => arg === '--tmpfs')).toEqual([])
+  expect(spawned[1]?.args.slice(spawned[1]?.args.indexOf('--port'))).toEqual(['--port', '8443', 'https', '--', 'true'])
+  await cell.dispose()
+})
+
+test('an app published on the gate\'s own port is mapped to the gateway without a port of its own (#224)', async () => {
+  const { docker, spawned } = fakeDocker()
+  await startCommandCell({
+    image: 'qare-web:test',
+    hosts: [],
+    app: { host: 'localhost', port: 80, scheme: 'http' },
+    checkout: '/work/repo',
+    id: 'fgh890',
+    docker,
+  })
+  expect(spawned[0]?.args.filter((arg) => arg === '--port')).toEqual([])
+  expect(spawned[0]?.args.filter((arg) => arg === '--map' || arg === 'localhost=172.17.0.1')).toEqual(['--map', 'localhost=172.17.0.1'])
+})
+
 test('a gate that is never ready takes the cell down with it, and says what it was (#224)', async () => {
   const { docker, calls } = fakeDocker({ fail: { gate: 'no such image' } })
   await expect(startCommandCell({ ...OPTS, docker, readyTimeoutMs: 100 })).rejects.toThrow(
     'the cell could not be made: the gate exited with code 125 before it was ready: no such image',
   )
-  expect(calls.at(-1)).toEqual(['network', 'rm', '-f', 'stack_default'])
+  expect(calls.at(-1)).toEqual(['volume', 'rm', '-f', 'qare-cell-abc123', 'qare-cell-abc123-build'])
 })

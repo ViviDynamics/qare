@@ -569,6 +569,7 @@ export function validateProfileConfig(config: unknown): QaProfile {
     fail('config.yml', 'config.yml must be a YAML object with app, stubs, visual and suites, or with target, or with client')
   if (config.client !== undefined) return validateClientConfig(config)
   if (config.target !== undefined) return validateTargetConfig(config)
+  const commands = config.commands === undefined ? undefined : parseCommands(config.commands)
   return {
     app: parseApp(config.app),
     stubs: parseStubs(config.stubs),
@@ -579,12 +580,12 @@ export function validateProfileConfig(config: unknown): QaProfile {
     ...(config.mcp === undefined ? {} : { mcp: parseMcp(config.mcp) }),
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
     ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
-    ...(config.commands === undefined ? {} : { commands: parseCommands(config.commands) }),
+    ...(commands === undefined ? {} : { commands }),
     ...(config.base === undefined ? {} : { base: parseProfileBase(config.base) }),
     ...(config.a11y === undefined ? {} : { a11y: parseA11y(config.a11y) }),
     ...(config.ux === undefined ? {} : { ux: parseUx(config.ux) }),
     ...(config.findings === undefined ? {} : { findings: parseFindings(config.findings) }),
-    ...requiresOf(config.requires),
+    ...requiresOf(config.requires, undefined, commands),
   }
 }
 
@@ -602,6 +603,7 @@ function validateTargetConfig(config: Record<string, unknown>): QaProfile {
     fail('stubs', 'a target profile boots no stack, so it has no stubs; list the hosts its checks may reach in target.hosts')
   if (config.base !== undefined)
     fail('base', 'a target profile has one side only, so it has no base side to bound; remove the base section')
+  const commands = config.commands === undefined ? undefined : parseCommands(config.commands)
   return {
     target: parseTarget(config.target),
     stubs: [],
@@ -612,11 +614,11 @@ function validateTargetConfig(config: Record<string, unknown>): QaProfile {
     ...(config.mcp === undefined ? {} : { mcp: parseMcp(config.mcp) }),
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
     ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
-    ...(config.commands === undefined ? {} : { commands: parseCommands(config.commands) }),
+    ...(commands === undefined ? {} : { commands }),
     ...(config.a11y === undefined ? {} : { a11y: parseA11y(config.a11y) }),
     ...(config.ux === undefined ? {} : { ux: parseUx(config.ux) }),
     ...(config.findings === undefined ? {} : { findings: parseFindings(config.findings) }),
-    ...requiresOf(config.requires),
+    ...requiresOf(config.requires, undefined, commands),
   }
 }
 
@@ -655,6 +657,7 @@ function validateClientConfig(config: Record<string, unknown>): QaProfile {
   const mcp = config.mcp === undefined ? undefined : parseMcp(config.mcp)
   if (mcp?.some((server) => server.driver !== undefined))
     fail('mcp', `a flow is driven by one driver: this profile names the ${client.driver} client, so no MCP server may carry a driver mapping`)
+  const commands = config.commands === undefined ? undefined : parseCommands(config.commands)
   return {
     client,
     stubs: [],
@@ -665,11 +668,11 @@ function validateClientConfig(config: Record<string, unknown>): QaProfile {
     ...(mcp === undefined ? {} : { mcp }),
     ...(config.redact === undefined ? {} : { redact: parseRedact(config.redact) }),
     ...(config.paths === undefined ? {} : { paths: parseProfilePaths(config.paths, 'paths') }),
-    ...(config.commands === undefined ? {} : { commands: parseCommands(config.commands) }),
+    ...(commands === undefined ? {} : { commands }),
     ...(base === undefined ? {} : { base }),
     ...(config.ux === undefined ? {} : { ux: parseUx(config.ux) }),
     ...(config.findings === undefined ? {} : { findings: parseFindings(config.findings) }),
-    ...requiresOf(config.requires, client),
+    ...requiresOf(config.requires, client, commands),
   }
 }
 
@@ -682,12 +685,15 @@ const REQUIRES_KEYS = ['os', 'virtualisation', 'devices']
  * lists the run can check a host against. A contained client build is
  * launched in a cell, which is a Linux container (#223), so a section that
  * requires another operating system for one contradicts the profile itself.
+ * So does a named command that runs contained (#224): its cell is a Linux
+ * container too, whatever operating system the commands are written for.
  */
-function requiresOf(value: unknown, client?: ProfileClient): { requires?: ProfileRequires } {
+function requiresOf(value: unknown, client?: ProfileClient, commands?: Record<string, ProfileCommand>): { requires?: ProfileRequires } {
   if (value === undefined) return {}
   if (!isRecord(value)) fail('requires', 'requires must be a YAML object with os, virtualisation and devices')
   for (const key of Object.keys(value))
     if (!REQUIRES_KEYS.includes(key)) fail(`requires.${key}`, `requires takes os, virtualisation and devices, not ${JSON.stringify(key)}`)
+  const containedCommands = commands !== undefined && Object.values(commands).some((command) => command.egress !== 'uncontained')
   const requires: ProfileRequires = {}
   if (value.os !== undefined) {
     if (typeof value.os !== 'string' || !(HOST_OPERATING_SYSTEMS as readonly string[]).includes(value.os))
@@ -697,6 +703,11 @@ function requiresOf(value: unknown, client?: ProfileClient): { requires?: Profil
       fail(
         'requires.os',
         `a contained build is launched in a cell, which is a Linux container, so it cannot require ${os}: a build for ${os} says client.egress: uncontained`,
+      )
+    if (containedCommands && os !== 'linux')
+      fail(
+        'requires.os',
+        `a contained command is launched in a cell, which is a Linux container, so it cannot require ${os}: a command for ${os} says egress: uncontained`,
       )
     requires.os = os
   }

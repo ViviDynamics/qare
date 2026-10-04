@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { lstat, mkdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { a11yConfigOf, type A11yCounts, type ProfileA11y } from './a11y.js'
@@ -17,7 +17,8 @@ import { runFlowCheck, runSuiteCheck, undeclaredCheckKinds, type FlowCheckResult
 import type { FlowRepairRecord } from './locator.js'
 import { flowDriverFor } from './flow-driver.js'
 import { applicationPathProblem, electronDisplayProblem, makeElectronFlowSession } from './flow-electron.js'
-import { reapLiveCells, type CellRecord } from './client-cell.js'
+import { reapLiveCells, type CellProcess, type CellRecord } from './client-cell.js'
+import { startCommandCell, type CommandCell, type CommandCellOptions } from './command-cell.js'
 import { makePlaywrightFlowSession } from './flow-playwright.js'
 import { excerptAround, type PlatformLogEntry } from './platform-log.js'
 import { evidenceOf, judgeRun, toBaseSideResults, toSideResults } from './judge.js'
@@ -234,6 +235,64 @@ function clientContext(client: ProfileClient): FlowClientContext {
 }
 
 /**
+ * How a run contains a named command (#224). `request` is the cell's fixed
+ * shape, decided once the stack is known: the declared hosts, the app and
+ * the network they are reached through. `start` makes one cell, handed the
+ * checkout, scratch and name of the command that runs in it. Absent when
+ * the profile names no command that runs contained.
+ */
+interface CommandCellContext {
+  request: Omit<CommandCellOptions, 'checkout' | 'scratch' | 'id' | 'image'>
+  start: (request: Omit<CommandCellOptions, 'image'>) => Promise<CommandCell>
+}
+
+/**
+ * What a run declares for the commands it contains (#224): the booted app,
+ * every stub's hosts as the compose services that provide them, and the
+ * network the gate joins. Undefined when the profile names no command that
+ * runs contained, for then nothing asks for a cell.
+ */
+function commandCellContextOf(profile: QaProfile, isolation: RunIsolation | undefined, values: RunValues, opts: SideOpts): CommandCellContext | undefined {
+  const commands = Object.values(profile.commands ?? {})
+  if (commands.length === 0 || commands.every((command) => command.egress === 'uncontained')) return undefined
+  const stubs = profile.stubs ?? []
+  const map = Object.fromEntries(stubs.flatMap((stub) => stub.hosts.map((host) => [host, stub.provided_by.compose_service])))
+  const hosts = [...new Set(stubs.flatMap((stub) => stub.hosts))]
+  let request: Omit<CommandCellOptions, 'checkout' | 'scratch' | 'id' | 'image'>
+  if (isolation !== undefined) {
+    // The app is published on the port the run gave it: a command reaches it
+    // at localhost, and the cell maps that to the bridge's gateway, where
+    // the published port answers.
+    request = { hosts, map, app: { host: 'localhost', port: isolation.port ?? 3000, scheme: 'http' }, composeProject: isolation.project }
+  } else if (profile.target !== undefined) {
+    // A target is reached as itself: the gate dials it with the egress it
+    // has, and carries the port the URL names when it is not the gate's own.
+    const url = new URL(substituteValues(profile.target.url, values))
+    const scheme = url.protocol.replace(':', '') as 'http' | 'https'
+    const port = url.port === '' ? (scheme === 'https' ? 443 : 80) : Number(url.port)
+    request = { hosts: [...hosts, url.hostname], map, ...(port === 80 || port === 443 ? {} : { ports: [{ port, protocol: scheme }] }) }
+  } else {
+    request = { hosts, map }
+  }
+  return { request, start: opts.commandCell?.start ?? ((made) => startCommandCell({ ...made, image: process.env.QARE_IMAGE_REF ?? '' })) }
+}
+
+/**
+ * The profile command a check's run filled in (#224): the plan carries the
+ * run with the run's values substituted, so the match is by tokens, the way
+ * the filter of a selection is matched. Undefined for a command the profile
+ * does not name.
+ */
+function commandOf(check: JobCommandCheck, commands: Record<string, ProfileCommand> | undefined): ProfileCommand | undefined {
+  if (commands === undefined) return undefined
+  const tokens = check.run.split(/\s+/).filter((token) => token !== '')
+  return Object.values(commands).find((command) => {
+    const template = command.run.split(/\s+/).filter((token) => token !== '')
+    return template.length === tokens.length && template.every((token, index) => tokenFillsTemplate(token, tokens[index]))
+  })
+}
+
+/**
  * Execute a job's checks against the head revision and write result.json into the
  * job's evidence directory.
  *
@@ -305,6 +364,13 @@ export type RunJobOpts = BootOpts & {
    * named a regression. Absent, the run has one side, as it always had.
    */
   base?: BaseSideRequest
+  /**
+   * How a run makes the cell a contained command runs in (#224): the
+   * caller's own way, or docker and the image the run is in.
+   */
+  commandCell?: {
+    start?: (opts: Omit<CommandCellOptions, 'image'>) => Promise<CommandCell>
+  }
 }
 
 type SideOpts = Omit<RunJobOpts, 'base'>
@@ -639,12 +705,14 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
       login?.totp === undefined ? undefined : { ...login.totp, ...(login.backupCode === undefined ? {} : { backupCode: login.backupCode.value }) }
     if (side !== undefined) side.ran = true
     const visual = visualContextOf(profile, profile.redact?.masks ?? [], opts.visualSession, side)
+    const commands = commandCellContextOf(profile, isolation, values, opts)
     const flow = {
       session: opts.flowSession ?? clientSessionFactory(profile, job.repoPath, opts, execution, boot.client, opts.clientSession),
       masks: profile.redact?.masks ?? [],
       suites: profile.suites,
       target,
       ...(reaching === undefined ? {} : { client: reaching }),
+      ...(commands === undefined ? {} : { commands }),
       totp,
       mcp: profile.mcp,
       visual,
@@ -1071,11 +1139,13 @@ async function runProfileGroup(
     // one app's screenshots cannot publish another app's secret region (#55).
     if (side !== undefined) side.ran = true
     const visual = visualContextOf(profile, masks, opts.visualSession, side)
+    const commands = commandCellContextOf(profile, isolation, values, opts)
     const flow = {
       session: opts.flowSession ?? clientSessionFactory(profile, job.repoPath, opts, execution),
       masks,
       suites: profile.suites,
       target,
+      ...(commands === undefined ? {} : { commands }),
       totp,
       mcp: profile.mcp,
       visual,
@@ -1131,6 +1201,8 @@ interface FlowContext {
   target?: FlowTargetContext
   /** What a client run records about its build's network (#223). */
   client?: FlowClientContext
+  /** How a run contains a named command (#224); absent when nothing is contained. */
+  commands?: CommandCellContext
   totp?: FlowTotpConfig
   mcp?: ProfileMcpServer[]
   /** Where traces go; beside the evidence directory when the run names none. */
@@ -2514,7 +2586,16 @@ async function runCriterion(
       if (resolved.consumed.length > 0) sweepRules.push(...valueRules(resolved.consumed.map((consumed) => consumed.artefact)))
       const checkDir = dirFor(index, attempt)
       const selection = resolveSelection(resolved.check, commands)
-      const outcome = await runCommandCheck(resolved.check, cwd, timeoutMs, execution, selection)
+      const declared = commandOf(resolved.check, commands)
+      // A named command is contained by default (#224); the opt-out is
+      // explicit, and the evidence of a command that opted out says so. A
+      // check whose run names no command the profile declares runs as it
+      // always did, with the network its step has.
+      const contained = declared !== undefined && declared.egress !== 'uncontained' && flow.commands !== undefined
+      const optedOut = declared?.egress === 'uncontained'
+      const outcome = contained
+        ? await runContainedCommandCheck(resolved.check, cwd, timeoutMs, execution, selection, flow.commands!, declared?.scratch, join(job.evidenceDir, checkDir), sweepRules)
+        : await runCommandCheck(resolved.check, cwd, timeoutMs, execution, selection)
       await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
       await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), sweepRules))
       await writeFile(join(job.evidenceDir, checkDir, 'stderr.txt'), redactText(truncationNote(outcome, 'stderr'), sweepRules))
@@ -2526,6 +2607,13 @@ async function runCriterion(
         evidence.push(`${checkDir}/selected.txt`)
       }
       evidence.push(`${checkDir}/stdout.txt`, `${checkDir}/stderr.txt`)
+      if (contained || optedOut) evidence.push(`${checkDir}/outbound.json`)
+      if (optedOut)
+        await writeOutbound(join(job.evidenceDir, checkDir), {
+          command: resolved.check.run,
+          containment: 'none',
+          reason: 'the profile opts out with egress: uncontained, so the command ran with the network its step has and what it reached was not recorded',
+        }, sweepRules)
       // The command, its outcome and the exit code it closed with are evidence
       // like the streams are (#152): a check that passes silently (test -f,
       // grep -q) writes no output, and a verifier reading only empty streams
@@ -2545,6 +2633,10 @@ async function runCriterion(
         )
         evidence.push(`${checkDir}/consumed.json`)
       }
+      // A refusal is the run's judgment about the network, not the
+      // command's own failure, and the next run re-judges it from scratch:
+      // what the gate refused depends on where the run happens to land.
+      if (outcome.refused === true) notCacheable = true
       if (outcome.status === 'failed') return { status: 'failed' as const }
       return { status: outcome.status, reason: outcome.reason }
     }, policy.attempts)
@@ -2777,9 +2869,19 @@ async function runFlowCheckJob(
     const outcome = await runSuiteCheck({ name: suite.name, command }, { cwd: repoPath, timeoutMs: check.timeoutMs, execution })
     const dir = join(evidenceDir, checkDir)
     await mkdir(dir, { recursive: true })
+    // A suite may need the docker daemon, which a cell withholds, so suites
+    // are never contained (#224): the evidence says so in as many words, so
+    // a reader knows the suite's traffic is not recorded.
     const text = redactText(
       JSON.stringify(
-        { suite: suite.name, command, outcome: outcome.outcome, ...(outcome.reason === undefined ? {} : { reason: outcome.reason }) },
+        {
+          suite: suite.name,
+          command,
+          containment: 'none',
+          note: 'a suite runs uncontained, so it may reach for whatever its step can reach and its traffic is not recorded',
+          outcome: outcome.outcome,
+          ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+        },
         null,
         2,
       ),
@@ -3348,6 +3450,8 @@ interface CheckOutcome {
   stderrTruncated?: boolean
   code?: number
   selected?: string[]
+  /** The gate refused a destination the profile does not declare (#224). */
+  refused?: boolean
 }
 
 /** The selection a declared test command carries (#157): which placeholder is
@@ -3399,8 +3503,13 @@ function unrunnableCommandReason(run: string): string | undefined {
  * fork children that inherit the stdio pipes, and killing only the parent would
  * leave those grandchildren holding the pipes open, which stalls `close`.
  */
-function killCheck(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (child.pid === undefined) return
+function killCheck(child: { pid?: number; kill(signal?: NodeJS.Signals): boolean }, signal: NodeJS.Signals): void {
+  if (child.pid === undefined) {
+    // The process is the cell's docker run (#224): it has no process group
+    // of its own, and the signal is what stops the container it started.
+    child.kill(signal)
+    return
+  }
   if (process.platform === 'win32') {
     child.kill(signal)
     return
@@ -3420,7 +3529,7 @@ function killCheck(child: ChildProcess, signal: NodeJS.Signals): void {
  * it, so the minimal deterministic environment is the rule for every command
  * step there (#91): pull request code never inherits a host's tokens.
  */
-function checkEnvironment(env: JobCommandCheck['env'], execution: ExecutionKind | undefined): NodeJS.ProcessEnv | undefined {
+function checkEnvironment(env: JobCommandCheck['env'], execution: ExecutionKind | undefined): Record<string, string> | undefined {
   if (execution !== 'native' && env === undefined) return undefined
   return {
     PATH: process.env.PATH ?? '/usr/bin:/bin',
@@ -3577,18 +3686,12 @@ export function runCommandCheck(
   timeoutMs: number,
   execution?: ExecutionKind,
   selection?: Selection,
+  /** How a contained check's process is had (#224): the cell's docker run. Absent, the command is spawned here. */
+  inCell?: (tokens: string[], cwd: string, env: Record<string, string> | undefined) => CellProcess,
 ): Promise<CheckOutcome> {
   const env = checkEnvironment(check.env, execution)
   return new Promise((resolve) => {
     const tokens = check.run.split(/\s+/).filter((token) => token !== '')
-    // detached puts the check in its own process group so a group-wide kill also
-    // reaches grandchildren that inherited the stdio pipes.
-    const child = spawn(tokens[0] ?? '', tokens.slice(1), {
-      cwd,
-      ...(env === undefined ? {} : { env }),
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: process.platform !== 'win32',
-    })
     let stdout = ''
     let stderr = ''
     let stdoutTruncated = false
@@ -3604,6 +3707,15 @@ export function runCommandCheck(
       if (killTimer !== undefined) clearTimeout(killTimer)
       resolve(outcome)
     }
+    // detached puts the check in its own process group so a group-wide kill also
+    // reaches grandchildren that inherited the stdio pipes. A contained check's
+    // process is the docker run itself: killing it is what stops the container.
+    const child: CellProcess = inCell?.(tokens, cwd, env) ?? spawn(tokens[0] ?? '', tokens.slice(1), {
+      cwd,
+      ...(env === undefined ? {} : { env }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
+    })
     const timer = setTimeout(() => {
       timedOut = true
       killCheck(child, 'SIGTERM')
@@ -3672,6 +3784,69 @@ export function runCommandCheck(
         })
     })
   })
+}
+
+/**
+ * Run a named command contained (#224): the command runs in a cell of its
+ * own, with no network but the declared hosts through the gate, and the
+ * checkout copied in and mounted read-only where the command runs from. The
+ * gate's record is the evidence of what the command reached, written beside
+ * its streams; a destination the profile does not declare refuses the check.
+ */
+async function runContainedCommandCheck(
+  check: JobCommandCheck,
+  cwd: string,
+  timeoutMs: number,
+  execution: ExecutionKind | undefined,
+  selection: Selection | undefined,
+  cell: CommandCellContext,
+  scratch: string[] | undefined,
+  dir: string,
+  rules: readonly RedactionRule[],
+): Promise<CheckOutcome> {
+  const made = await cell.start({ ...cell.request, checkout: cwd, ...(scratch === undefined ? {} : { scratch }) })
+  let outcome: CheckOutcome
+  try {
+    outcome = await runCommandCheck(check, cwd, timeoutMs, execution, selection, (tokens, _cwd, env) => made.run(tokens, env))
+  } finally {
+    // The record is written by the gate as it stops, whatever the command
+    // did with the time it had.
+    await made.dispose()
+  }
+  let record: CellRecord
+  try {
+    record = made.record()
+  } catch (error) {
+    record = { reached: [], incomplete: sanitizeLine((error as Error).message) }
+  }
+  await writeOutbound(
+    dir,
+    {
+      command: check.run,
+      containment: 'cell',
+      declared: [...cell.request.hosts],
+      reached: record.reached,
+      ...(record.incomplete === undefined ? {} : { incomplete: record.incomplete }),
+    },
+    rules,
+  )
+  const undeclared = record.reached
+    .filter((host) => !host.declared)
+    .map((host) => `${host.host}:${host.port} (${host.protocol})`)
+  if (undeclared.length > 0)
+    return {
+      ...outcome,
+      status: 'unverified',
+      refused: true,
+      reason: `refused: undeclared host: ${undeclared.join(', ')}; the profile does not list it in the command's declared hosts`,
+    }
+  return outcome
+}
+
+/** Write what a command reached into the check's `outbound.json` (#224). */
+async function writeOutbound(dir: string, record: Record<string, unknown>, rules: readonly RedactionRule[]): Promise<void> {
+  await mkdir(dir, { recursive: true })
+  await writeFile(join(dir, 'outbound.json'), `${JSON.stringify(redactValue(record, rules), null, 2)}\n`)
 }
 
 function truncationNote(outcome: CheckOutcome, stream: 'stdout' | 'stderr'): string {
