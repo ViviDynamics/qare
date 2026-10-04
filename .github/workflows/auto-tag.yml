@@ -14,13 +14,15 @@ name: Auto-tag
 # tag and the build's month: the patch climbs while the month does not, and
 # a new month starts a new line.
 #
-# Two honest limits. GitHub Actions keeps one running and one pending run per
-# concurrency group, so a burst of green builds can supersede a queued run,
-# and a superseded merge ships in the release that follows it rather than in
-# a tag of its own. And a computed tag cannot stamp the pipeline's qare-ref
-# default, because the automation never pushes commits, so a caller pinning a
-# computed tag names its qare-ref explicitly to avoid running one release
-# behind.
+# Three honest limits. GitHub Actions keeps one running and one pending run
+# per concurrency group, so a burst of green builds can supersede a queued
+# run, and a superseded merge ships in the release that follows it rather
+# than in a tag of its own. The release workflow serializes behind the same
+# rule, so a pending release can be superseded by a newer one and its tag
+# ships nothing until a rerun re-dispatches it. And a computed tag cannot
+# stamp the pipeline's qare-ref default, because the automation never pushes
+# commits, so a caller pinning a computed tag names its qare-ref explicitly
+# to avoid running one release behind.
 #
 # The release runs exactly once per commit, and a failed dispatch is
 # recoverable: when the validated commit already carries a release tag and a
@@ -103,9 +105,17 @@ jobs:
             # must not leave the commit tagged and unreleased, so the
             # release is re-dispatched when no run for the tag exists.
             export T="$tagged_at" S="$head"
-            started="$(gh run list --workflow=release.yml --limit 20 --json headBranch,headSha \
-              --jq '.[] | select(.headBranch == env.T) or select(.headSha == env.S)')"
-            if [ -z "$started" ]; then
+            # The lookup filters server side: a limit applied before the
+            # filter would hide the run behind newer releases and dispatch
+            # the tag again on a rerun of an older commit. A superseded run
+            # never started building, so it does not count as started.
+            started="$(gh run list --workflow=release.yml --branch "$tagged_at" --limit 1 --json conclusion \
+              --jq 'any(.[]; .conclusion != "superseded")')"
+            if [ "$started" = "false" ]; then
+              started="$(gh run list --workflow=release.yml --commit "$head" --limit 1 --json conclusion \
+                --jq 'any(.[]; .conclusion != "superseded")')"
+            fi
+            if [ "$started" != "true" ]; then
               echo "version=$tagged_at" >> "$GITHUB_ENV"
               echo "tag_exists=true" >> "$GITHUB_ENV"
               echo "tagged=true" >> "$GITHUB_ENV"

@@ -14,7 +14,14 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  # A global group orders releases through completion: the image steps push
+  # shared aliases (latest and the month line), and per-ref groups would let
+  # two close releases build concurrently and let the older one finish last,
+  # rolling the aliases backward. One running and one pending run survive,
+  # so a burst supersedes a pending release; rerunning the release's
+  # auto-tag run re-dispatches it.
+  group: release
+  cancel-in-progress: false
 
 jobs:
   # The image family's publication (#88): a release tag is what the registry

@@ -512,9 +512,12 @@ test('auto-tag releases an unbumped merge with the next CalVer (#230)', () => {
   // Zero-padded patches are octal to bash: the increment forces base 10.
   expect(autoTag).toContain('$((10#${latest#"$line."} + 1))')
   // A rerun whose tag has no release run re-dispatches instead of leaving
-  // the commit tagged but unreleased.
+  // the commit tagged but unreleased. The lookup filters server side, so a
+  // limit cannot hide the run behind newer releases.
   expect(autoTag).toContain('if [ -n "$tagged_at" ]')
   expect(autoTag).toContain('re-dispatching the release')
+  expect(autoTag).toContain('gh run list --workflow=release.yml --branch "$tagged_at"')
+  expect(autoTag).toContain('gh run list --workflow=release.yml --commit "$head"')
   // An annotated tag lists twice in ls-remote: the tag object and its ^{}
   // peel. The awk keeps the peel's commit sha by last-line-wins, and strips
   // the prefix so the name feeds the line comparison bare.
@@ -535,6 +538,14 @@ test('auto-tag no-ops when the validated commit is already tagged (#230)', () =>
   expect(autoTag).toContain('if [ "$sha" = "$head" ]')
   expect(autoTag).toContain('the validated commit is already tagged')
   expect(autoTag).toMatch(/echo "tagged=false" >> "\$GITHUB_ENV"/)
+})
+
+test('releases serialize, so an older release cannot finish last and roll the aliases back', () => {
+  const release = readFileSync(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8')
+  // The mutable aliases (latest and the month line) are promoted by every
+  // release: a global concurrency group orders them through completion.
+  expect(release).toContain('group: release\n')
+  expect(release).not.toMatch(/group: release-\$\{\{ github\.ref \}\}/)
 })
 
 test('auto-tag dispatches the release on the tag and verifies the run started (#188)', () => {
