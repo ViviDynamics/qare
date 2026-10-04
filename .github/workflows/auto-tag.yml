@@ -88,7 +88,10 @@ jobs:
           # against, and an annotated tag's ^{} line carries it, which the
           # awk's last-line-wins keeps.
           head="$(git rev-parse HEAD)"
-          git fetch --quiet origin 'refs/tags/*:refs/tags/*'
+          # Nothing local needs updating: the walk reads ls-remote against
+          # origin and ancestry against this full checkout, and a quiet
+          # fetch whose tags git refuses to update exits 1 printing nothing,
+          # which would end the whole workflow without a word of why.
           latest=""
           tagged_at=""
           while IFS=$'\t' read -r name sha; do

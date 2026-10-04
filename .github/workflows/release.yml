@@ -124,9 +124,12 @@ jobs:
           # the newest release on its own line: a recovered September release
           # still publishes 2026.9 after October's release exists. The
           # promotion copies the built manifest without rebuilding it.
+          # Nothing local needs updating: the walk reads ls-remote against
+          # origin and ancestry against the full checkout. A quiet fetch of
+          # the tags whose updates git rejects would exit 1 printing nothing,
+          # so the release would fail without a word of why.
           newest=""
           newest_on_line=""
-          git fetch --quiet origin 'refs/tags/*:refs/tags/*'
           while IFS=$'\t' read -r name sha; do
             if git merge-base --is-ancestor "$sha" "origin/${{ github.event.repository.default_branch }}"; then
               newest="$name"

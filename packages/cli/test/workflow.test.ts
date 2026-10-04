@@ -504,9 +504,12 @@ test('auto-tag releases an unbumped merge with the next CalVer (#230)', () => {
   // The newest tag is taken from release tags on the default branch only:
   // an unrelated or off-branch tag sorts after any CalVer and would reset
   // the line, and release.yml releases default-branch tags only.
-  expect(autoTag).toContain("'refs/tags/*:refs/tags/*'")
   expect(autoTag).toContain("grep -E 'refs/tags/20[0-9]{2}\\.[0-9]+\\.[0-9]+(\\^\\{\\})?$' | awk")
   expect(autoTag).toContain("git merge-base --is-ancestor \"$sha\" HEAD")
+  // The walk reads ls-remote and ancestry only: a quiet fetch of the tags
+  // whose updates git rejects exits 1 printing nothing, which failed the
+  // first real release without a word of why.
+  expect(autoTag).not.toContain('git fetch --quiet')
   // A computed name origin already carries cannot be pushed: climb the patch.
   expect(autoTag).toContain('while [ -n "$(git ls-remote --tags origin "refs/tags/$line.$patch")" ]; do')
   // Zero-padded patches are octal to bash: the increment forces base 10.
@@ -561,6 +564,9 @@ test('releases serialize, so an older release cannot finish last and roll the al
   expect(release).not.toContain('ghcr.io/vividynamics/qare-web:${{ env.CALVER_LINE }}')
   expect(release).not.toContain('ghcr.io/vividynamics/qare-android:${{ env.CALVER_LINE }}')
   expect(release).not.toContain('ghcr.io/vividynamics/qare-desktop-linux:${{ env.CALVER_LINE }}')
+  // The promotion walk reads ls-remote and ancestry only: a quiet fetch of
+  // the tags whose updates git rejects exits 1 printing nothing.
+  expect(release).not.toContain('git fetch --quiet')
   const promote = release.indexOf('- name: Promote the shared aliases')
   const desktop = release.indexOf('- name: Build and push the desktop-linux flavour from it')
   expect(promote, 'aliases are promoted after every image built').toBeGreaterThan(desktop)
