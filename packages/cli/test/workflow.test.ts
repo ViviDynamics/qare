@@ -501,6 +501,9 @@ test('auto-tag releases an unbumped merge with the next CalVer (#230)', () => {
   // month give the next one: the patch climbs while the month does not, and
   // a new month starts a new line.
   expect(autoTag).toMatch(/git ls-remote --tags origin 'refs\/tags\/\*\.\*\.\*'/)
+  // The newest tag is taken from release tags only: an unrelated
+  // three-component tag sorts after any CalVer and would reset the line.
+  expect(autoTag).toContain("grep -E '^20[0-9]{2}\\.[0-9]+\\.[0-9]+$' | sort -V | tail -1")
   // An annotated tag lists twice in ls-remote: the tag object and its ^{}
   // peel. Without stripping the peel the sort reads the wrong newest tag.
   expect(autoTag).toContain("sed 's/\\^{}$//'")
