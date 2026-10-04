@@ -121,7 +121,15 @@ export async function startGate(opts: GateOptions): Promise<Gate> {
   const carriedNote = carriedPortsNote(Object.keys(carried).map(Number))
   // A declared host may be dialed under another name (#224): the stub as the
   // compose service that provides it, the app as the address the bridge answers.
-  const dialAs = (host: string): string => (opts.map ?? {})[host] ?? host
+  // A mapping may be a pattern (`*.vendor.example`), the way a stub's declared
+  // hosts are, and then it names every host the pattern matches.
+  const dialAs = (host: string): string => {
+    const map = opts.map ?? {}
+    const exact = map[host]
+    if (exact !== undefined) return exact
+    const pattern = Object.keys(map).find((key) => key.startsWith('*.') && matchesStub(host, [{ hosts: [key] }]))
+    return pattern === undefined ? host : (map[pattern] ?? host)
+  }
   const maxEntries = opts.maxEntries ?? DEFAULT_MAX_ENTRIES
   const dial = opts.dial ?? ((host: string, port: number): Socket => connect({ host, port }))
   const reached = new Map<string, ReachedHost>()
@@ -172,11 +180,14 @@ export async function startGate(opts: GateOptions): Promise<Gate> {
       record(host ?? 'unknown', port, protocol ?? 'tcp', false)
       return answer(socket, { ok: false, reason: 'undeclared' }, true)
     }
-    if (protocol === undefined) {
+    if (protocol === undefined && dialAs(host) === host) {
+      // A host the cell dials by its own name reaches out through the gate's
+      // own two ports; a mapped host is the stack's own service, and answers
+      // on whatever port it listens on.
       record(host, port, 'tcp', false)
       return answer(socket, { ok: false, reason: `the gate carries ports ${carriedNote} only` }, true)
     }
-    record(host, port, protocol, true)
+    record(host, port, protocol ?? 'tcp', true)
     const upstream = track(dial(dialAs(host), port))
     let settled = false
     const refuse = (why: string): void => {

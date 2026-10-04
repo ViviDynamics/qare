@@ -190,7 +190,10 @@ commands:                        # optional: invocations the planner may rely on
     filter: pattern              # which placeholder is the test filter (#157)
     report: vitest-json          # the machine-readable report the command prints: vitest-json, junit-xml or node-tap
     scratch: [tmp/scratch]       # optional: paths the command may write, each inside the repository (#224)
-    egress: uncontained          # optional: opts the command out of its cell (#224); scratch beside it is refused
+  smoke:                         # a command opts out of its cell in as many words (#224)
+    run: "pnpm exec vitest run"
+    about: runs the whole suite with the network its step has
+    egress: uncontained          # optional; scratch beside egress: uncontained is refused at load
 base:                            # optional: what the base side of a run costs (#147)
   criteria: ledger               # all (default), ledger (only criteria the base's ledger carries), or none
   budget: 10m                    # the base side's wall clock; what did not run is "not compared"
@@ -697,6 +700,20 @@ The plan asks for the second factor with two actions: `{"action":"totp",
 "element":{...}}`, which types the code the harness generates from the seeded
 secret at the moment the flow runs, and `{"action":"backupCode","element":{...}}`,
 which types the seeded recovery value. No plan, and no model, ever carries the
+secret or a code: the plan names an element, the harness does the math. A flow
+that asks for a second factor the profile does not seed is `unverified` with
+the gap named before anything runs.
+
+A code typed against a window that ends before the app reads it is born stale:
+the harness waits out a boundary that is about to cross, and a code that
+straddles a window while the flow is moving is retried once in the window it
+lands in (RFC 6238 §5.2). A factor type that fails is `unverified`, never a
+failed criterion: the login did not complete, and the change under test is not
+what refused it. A step after the factor was typed reports what it observed —
+an assertion that fails once the factor was accepted is a product failure,
+`failed`, with the capture still withheld, because page visibility alone is not
+a rejection signal (#64). And because redaction cannot read pixels, every
+screenshot of a flow whose page carries a code — generated, or read from mail —
 is withheld, and the evidence says so. The same sweep follows the code: a
 command that echoes a mail-borne link or code publishes it redacted, and a flow
 failure whose reason quotes a value the flow put on the page publishes the
@@ -1951,12 +1968,14 @@ check's `outbound.json`, however the flow ended, a timeout included. A browser
 backend that cannot report what it reached leaves the flow `unverified`. The target's own host is always allowed, and `target.hosts`
 names the rest, with the same `*.` wildcards as a stub's hosts. A host that is
 neither refuses the run, as a missing stub does in a booted run, except that no
-stub issue is filed: a target has no stubs. Command checks and suites are not intercepted:
-a suite drives its own browser, which QARE cannot see. Only the traffic of the
-browser QARE drives is recorded. A process the run starts is contained rather
-than watched; that is done for the build a client profile launches
-([Containing the build](#containing-the-build)) and not yet for command
-checks and suites (#224).
+stub issue is filed: a target has no stubs. A named command the profile
+contains is held to the same list: its cell carries the target's own host and
+every host `target.hosts` declares ([Containing a
+command](#containing-a-command)). Suites are not intercepted: a suite drives
+its own browser, which QARE cannot see. Only the traffic of the browser QARE
+drives is recorded. A process the run starts is contained rather than watched;
+that is done for the build a client profile launches ([Containing the
+build](#containing-the-build)) and for command checks (#224).
 
 There is only one side, so nothing runs at a base revision and no regression is
 looked for. The result carries `target: { url, comparison: "none" }` and the

@@ -205,3 +205,92 @@ test("the suite's evidence says in as many words that it ran uncontained (#224)"
   expect(suite.containment).toBe('none')
   expect(suite.note).toBe('a suite runs uncontained, so it may reach for whatever its step can reach and its traffic is not recorded')
 })
+
+test('an incomplete record of what the command reached is not proof: the check is unverified (#224)', async () => {
+  const job = await makeJob({
+    criteria: commandCriteria('echo hi'),
+    profile: { inline: { ...PROFILE, commands: COMMANDS } },
+  })
+
+  const { result } = await runJob(job, {
+    ...BOOT,
+    commandCell: {
+      start: fakeCell({
+        reached: [{ host: 'api.billing-vendor.example', port: 443, protocol: 'https', declared: true, count: 1 }],
+        incomplete: 'the gate stopped before the command did',
+      }),
+    },
+  })
+
+  expect(result.criteria[0].outcome).toBe('unverified')
+  expect(result.criteria[0].reason).toBe(
+    'refused: the record of what the command reached is incomplete: the gate stopped before the command did',
+  )
+})
+
+test("a target run's cell carries the target's own host and the destinations it declares (#224)", async () => {
+  const asked: unknown[] = []
+  const TARGET_URL = ['https:', '//qa.example.test/health'].join('')
+  const job = await makeJob({
+    criteria: commandCriteria('echo hi'),
+    profile: {
+      inline: {
+        target: {
+          url: TARGET_URL,
+          health: { http: ['https:', '//qa.example.test/up'].join(''), timeout: '120s' },
+          hosts: ['data.vendor.example'],
+        },
+        suites: [],
+        visual: { widths: [], themes: [] },
+        commands: COMMANDS,
+      } as QaProfile,
+    },
+  })
+
+  const { result } = await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }, asked) } })
+
+  expect(result.criteria[0].outcome).toBe('proven')
+  expect(asked[0]).toMatchObject({ hosts: ['qa.example.test', 'data.vendor.example'] })
+})
+
+test("the cell is told the scheme the app's health URL carries, not always http (#224)", async () => {
+  const asked: unknown[] = []
+  const HTTPS_HEALTH_URL = ['https:', '//localhost:3000/up'].join('')
+  const job = await makeJob({
+    criteria: commandCriteria('echo hi'),
+    profile: {
+      inline: {
+        ...PROFILE,
+        app: { ...PROFILE.app, health: { http: HTTPS_HEALTH_URL, timeout: '120s' } },
+        commands: COMMANDS,
+      },
+    },
+  })
+
+  const { result } = await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }, asked) } })
+
+  expect(result.criteria[0].outcome).toBe('proven')
+  expect(asked[0]).toMatchObject({ app: { scheme: 'https' } })
+})
+
+test('a check two commands both name is refused: the profile must not declare overlapping commands (#224)', async () => {
+  const job = await makeJob({
+    criteria: commandCriteria('tool smoke'),
+    profile: {
+      inline: {
+        ...PROFILE,
+        commands: {
+          test: { run: 'tool {{name}}', about: 'runs any tool' },
+          smoke: { run: 'tool smoke', about: 'runs the smoke check' },
+        },
+      },
+    },
+  })
+
+  const { result } = await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }) } })
+
+  expect(result.criteria[0].outcome).toBe('unverified')
+  expect(result.criteria[0].reason).toBe(
+    'refused: the profile declares overlapping commands (tool {{name}} and tool smoke); a check is contained by the one command its run names',
+  )
+})

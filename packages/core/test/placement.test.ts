@@ -76,8 +76,8 @@ test('each unmet requirement is named for what is missing, and all of them are n
     'an attached android device (requires.devices): no adb is on PATH',
   ])
   // The two requirements a client profile implies keep the words their probes already had.
-  expect(await unmetRequirements({ cell: true }, host, { ...probes, cell: async () => 'a client build runs contained, in a cell the docker daemon makes, and no daemon answered' })).toEqual([
-    'a client build runs contained, in a cell the docker daemon makes, and no daemon answered',
+  expect(await unmetRequirements({ cell: true }, host, { ...probes, cell: async () => 'a contained build or command runs in a cell the docker daemon makes, and no daemon answered' })).toEqual([
+    'a contained build or command runs in a cell the docker daemon makes, and no daemon answered',
   ])
   expect(await unmetRequirements({ display: true }, host, { ...probes, display: () => 'the electron driver needs a display' })).toEqual(['the electron driver needs a display'])
 })

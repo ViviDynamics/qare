@@ -247,6 +247,21 @@ interface CommandCellContext {
 }
 
 /**
+ * The scheme the run reaches its booted app through: the health URL's own, so
+ * a cell holding a command reaches an https app the way the run's browser
+ * does. Http, when the profile names no health URL to read it from.
+ */
+function appSchemeOf(profile: QaProfile, values: RunValues): 'http' | 'https' {
+  const health = profile.app?.health?.http
+  if (health === undefined) return 'http'
+  try {
+    return new URL(substituteValues(health, values)).protocol.replace(':', '') as 'http' | 'https'
+  } catch {
+    return 'http'
+  }
+}
+
+/**
  * What a run declares for the commands it contains (#224): the booted app,
  * every stub's hosts as the compose services that provide them, and the
  * network the gate joins. Undefined when the profile names no command that
@@ -262,15 +277,19 @@ function commandCellContextOf(profile: QaProfile, isolation: RunIsolation | unde
   if (isolation !== undefined) {
     // The app is published on the port the run gave it: a command reaches it
     // at localhost, and the cell maps that to the bridge's gateway, where
-    // the published port answers.
-    request = { hosts, map, app: { host: 'localhost', port: isolation.port ?? 3000, scheme: 'http' }, composeProject: isolation.project }
+    // the published port answers. The scheme is the health URL's, not always
+    // http: an app that answers over https is dialed as it answers.
+    request = { hosts, map, app: { host: 'localhost', port: isolation.port ?? 3000, scheme: appSchemeOf(profile, values) }, composeProject: isolation.project }
   } else if (profile.target !== undefined) {
     // A target is reached as itself: the gate dials it with the egress it
     // has, and carries the port the URL names when it is not the gate's own.
+    // The destinations the profile declares the target may reach besides its
+    // own host are the cell's to carry too, wildcards and all (#122, #224).
     const url = new URL(substituteValues(profile.target.url, values))
     const scheme = url.protocol.replace(':', '') as 'http' | 'https'
     const port = url.port === '' ? (scheme === 'https' ? 443 : 80) : Number(url.port)
-    request = { hosts: [...hosts, url.hostname], map, ...(port === 80 || port === 443 ? {} : { ports: [{ port, protocol: scheme }] }) }
+    const declaredHosts = [...new Set([...hosts, url.hostname, ...(profile.target.hosts ?? [])])]
+    request = { hosts: declaredHosts, map, ...(port === 80 || port === 443 ? {} : { ports: [{ port, protocol: scheme }] }) }
   } else {
     request = { hosts, map }
   }
@@ -278,15 +297,16 @@ function commandCellContextOf(profile: QaProfile, isolation: RunIsolation | unde
 }
 
 /**
- * The profile command a check's run filled in (#224): the plan carries the
+ * The profile commands a check's run filled in (#224): the plan carries the
  * run with the run's values substituted, so the match is by tokens, the way
- * the filter of a selection is matched. Undefined for a command the profile
- * does not name.
+ * the filter of a selection is matched. Empty for a command the profile does
+ * not name, and more than one means the profile's commands overlap, which no
+ * check can be held to.
  */
-function commandOf(check: JobCommandCheck, commands: Record<string, ProfileCommand> | undefined): ProfileCommand | undefined {
-  if (commands === undefined) return undefined
+function commandOf(check: JobCommandCheck, commands: Record<string, ProfileCommand> | undefined): ProfileCommand[] {
+  if (commands === undefined) return []
   const tokens = check.run.split(/\s+/).filter((token) => token !== '')
-  return Object.values(commands).find((command) => {
+  return Object.values(commands).filter((command) => {
     const template = command.run.split(/\s+/).filter((token) => token !== '')
     return template.length === tokens.length && template.every((token, index) => tokenFillsTemplate(token, tokens[index]))
   })
@@ -2587,14 +2607,26 @@ async function runCriterion(
       const checkDir = dirFor(index, attempt)
       const selection = resolveSelection(resolved.check, commands)
       const declared = commandOf(resolved.check, commands)
+      // Two commands whose templates fill the same run leave the check with
+      // no one declaration to hold it to, and the answer must not depend on
+      // the order the YAML happened to name them in: refused, wherever the
+      // check would have been contained or not.
+      if (declared.length > 1)
+        return {
+          status: 'unverified' as const,
+          stdout: '',
+          stderr: '',
+          refused: true,
+          reason: `refused: the profile declares overlapping commands (${declared.map((command) => command.run).join(' and ')}); a check is contained by the one command its run names`,
+        }
       // A named command is contained by default (#224); the opt-out is
       // explicit, and the evidence of a command that opted out says so. A
       // check whose run names no command the profile declares runs as it
       // always did, with the network its step has.
-      const contained = declared !== undefined && declared.egress !== 'uncontained' && flow.commands !== undefined
-      const optedOut = declared?.egress === 'uncontained'
+      const contained = declared[0] !== undefined && declared[0].egress !== 'uncontained' && flow.commands !== undefined
+      const optedOut = declared[0]?.egress === 'uncontained'
       const outcome = contained
-        ? await runContainedCommandCheck(resolved.check, cwd, timeoutMs, execution, selection, flow.commands!, declared?.scratch, join(job.evidenceDir, checkDir), sweepRules)
+        ? await runContainedCommandCheck(resolved.check, cwd, timeoutMs, execution, selection, flow.commands!, declared[0]?.scratch, join(job.evidenceDir, checkDir), sweepRules)
         : await runCommandCheck(resolved.check, cwd, timeoutMs, execution, selection)
       await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
       await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), sweepRules))
@@ -3860,6 +3892,16 @@ async function runContainedCommandCheck(
   const undeclared = record.reached
     .filter((host) => !host.declared)
     .map((host) => `${host.host}:${host.port} (${host.protocol})`)
+  // An incomplete record is not the whole of what the command reached, so it
+  // proves nothing: the check is unverified, and refused so the gap is never
+  // baked into the cache as the criterion's verdict.
+  if (record.incomplete !== undefined)
+    return {
+      ...outcome,
+      status: 'unverified',
+      refused: true,
+      reason: `refused: the record of what the command reached is incomplete: ${record.incomplete}`,
+    }
   if (undeclared.length > 0)
     return {
       ...outcome,

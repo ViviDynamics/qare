@@ -323,7 +323,7 @@ test('what a profile requires of the host is held to it: operating system, virtu
 
 test('a contained client build requires a cell of the host, not a display (#223, #76)', async () => {
   const dir = await profileDir('client:\n  driver: electron\n  executable: dist/app/app\n')
-  const problem = 'a client build runs contained, in a cell the docker daemon makes, and no daemon answered (docker exited 127)'
+  const problem = 'a contained build or command runs in a cell the docker daemon makes, and no daemon answered (docker exited 127)'
   const bare = await runDoctor({
     profilePath: dir,
     probes: {

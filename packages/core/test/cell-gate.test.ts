@@ -125,6 +125,38 @@ test('a mapped host is dialled as the name the map carries, and recorded as the 
   ])
 })
 
+test('a map key with a wildcard carries every host the pattern names, dialled as the mapped service (#224)', async () => {
+  const { port } = await upstream()
+  const { gate: started, dir, dialled } = await gate(['api.vendor.example.test'], {
+    dialPort: port,
+    map: { '*.vendor.example.test': 'billing-stub' },
+  })
+  const { reply } = await ask(dir, { op: 'connect', host: 'api.vendor.example.test', port: 443 })
+  expect(reply).toEqual({ ok: true })
+  expect(dialled).toEqual(['billing-stub:443'])
+  await started.stop()
+})
+
+test("a mapped host is reached on any port the stack answers on; an unmapped one is held to the gate's own two (#224)", async () => {
+  const { port } = await upstream()
+  const { gate: started, dir, lines, dialled } = await gate(['api.billing.example.test', 'plain.example.test'], {
+    dialPort: port,
+    map: { 'api.billing.example.test': 'billing-stub' },
+  })
+  const { reply } = await ask(dir, { op: 'connect', host: 'api.billing.example.test', port: 8080 })
+  expect(reply).toEqual({ ok: true })
+  expect(dialled).toEqual(['billing-stub:8080'])
+  expect((await ask(dir, { op: 'connect', host: 'plain.example.test', port: 8080 })).reply).toEqual({
+    ok: false,
+    reason: 'the gate carries ports 80 and 443 only',
+  })
+  await started.stop()
+  expect(summaryOf(lines).reached).toEqual([
+    { host: 'api.billing.example.test', port: 8080, protocol: 'tcp', declared: true, count: 1 },
+    { host: 'plain.example.test', port: 8080, protocol: 'tcp', declared: false, count: 1 },
+  ])
+})
+
 test('the gate carries the port the run booted the app on, and names every port it carries (#224)', async () => {
   const { port } = await upstream()
   const { gate: started, dir, lines, dialled } = await gate(['api.example.test'], {

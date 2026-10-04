@@ -104,7 +104,11 @@ export async function startCommandCell(opts: CommandCellOptions): Promise<Comman
   const checkout = opts.checkout.replace(/\/$/, '')
   if (!/^\/[^\0]*$/.test(checkout)) throw new Error("the cell could not be made: the command's directory is not an absolute path")
   for (const entry of opts.scratch ?? []) {
-    if (entry === '' || entry.startsWith('/') || entry.includes('..')) throw new Error('the cell could not be made: a scratch path is not a path under the checkout')
+    // The same rule the profile's scratch is held to: a path under the
+    // checkout, with no "..", "." or empty step in it. A name like
+    // "coverage..old" is one segment, and stays welcome.
+    if (entry === '' || entry.startsWith('/') || entry.split('/').some((segment) => segment === '..' || segment === '.' || segment === ''))
+      throw new Error('the cell could not be made: a scratch path is not a path under the checkout')
   }
   // From the first thing made to the last thing removed, the cell is one a
   // signal that ends the harness takes with it.
