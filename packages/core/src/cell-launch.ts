@@ -120,7 +120,7 @@ export async function launchInCell(opts: CellLaunchOptions): Promise<number> {
 }
 
 const USAGE =
-  'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... | qare cell launch --socket-dir <dir> --cdp-port <port> [--no-display] -- <command> [args...]'
+  'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... [--app <host>:<port>[:<dial-port>]] | qare cell launch --socket-dir <dir> --cdp-port <port> [--no-display] -- <command> [args...]'
 
 /** The `--port <port> <scheme>` flags, named by both the gate and the launcher for the app the run boots (#224). */
 function parsePorts(flags: string[], who: string): { ports: { port: number; protocol: 'http' | 'https' }[]; error: string | undefined } {
@@ -225,6 +225,23 @@ export async function runCellCommand(argv: string[], io: CellCommandIo): Promise
     map[name] = entry.slice(at + 1)
   }
   const relayPort = values('--relay-port')[0]
+  // The run's app, when the stack booted one: the host it is asked for by,
+  // the port it is published at, and the port inside the stack the published
+  // port leads to (#224).
+  let app: { host: string; port: number; dialPort?: number } | undefined
+  const appFlag = values('--app')[0]
+  if (appFlag !== undefined) {
+    const parts = appFlag.split(':')
+    const port = Number(parts[1])
+    const dialPort = parts[2] === undefined ? undefined : Number(parts[2])
+    const carried = (value: number | undefined): boolean => value !== undefined && Number.isInteger(value) && value > 0 && value <= 65_535
+    const name = parts.length > 1 && parts.length < 4 ? hostName(parts[0] ?? '') : undefined
+    if (name === undefined || !carried(port) || (dialPort !== undefined && !carried(dialPort))) {
+      io.err(`qare cell gate: ${JSON.stringify(appFlag)} is not an <host>:<port>[:<dial-port>] app`)
+      return 4
+    }
+    app = { host: name, port, ...(dialPort === undefined ? {} : { dialPort }) }
+  }
   let gate
   try {
     gate = await startGate({
@@ -234,6 +251,7 @@ export async function runCellCommand(argv: string[], io: CellCommandIo): Promise
       ...(relayPort === undefined ? {} : { relayPort: Number(relayPort) }),
       ...(ports.length === 0 ? {} : { ports }),
       ...(Object.keys(map).length === 0 ? {} : { map }),
+      ...(app === undefined ? {} : { app }),
     })
   } catch (error) {
     io.err(`qare cell gate: could not start: ${(error as Error).message}`)

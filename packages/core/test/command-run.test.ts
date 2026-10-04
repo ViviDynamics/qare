@@ -112,6 +112,30 @@ test('a contained command runs in a cell and its evidence carries what the gate 
   expect(request.composeProject).toMatch(/^qare-/)
 })
 
+test("a criterion with an app of its own gives the cell the shard's app, not the run's (#224)", async () => {
+  const asked: unknown[] = []
+  const job = await makeJob({
+    criteria: [
+      ...commandCriteria('echo other'),
+      { id: 'mutator-1', text: 'it mutates', checks: [{ kind: 'command', run: 'echo hi' }], isolated: true },
+    ],
+    profile: { inline: { ...PROFILE, commands: COMMANDS } },
+  })
+
+  const { result } = await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }, asked) }, workers: 2 })
+
+  expect(result.criteria.map((criterion) => criterion.outcome)).toEqual(['proven', 'proven'])
+  const runIsolation = JSON.parse(await readFile(join(job.evidenceDir, 'isolation.json'), 'utf8')) as Record<string, string>
+  const shardIsolation = JSON.parse(await readFile(join(job.evidenceDir, 'isolation-mutator-1.json'), 'utf8')) as Record<string, string>
+  // The cell the isolated criterion's command ran in was made for the app
+  // that criterion booted: the shard's compose project, at the shard's
+  // published port, never the run's shared app.
+  const request = asked[0] as { app?: { port?: number }; composeProject?: string }
+  expect(request.composeProject).toBe(shardIsolation.project)
+  expect(request.composeProject).not.toBe(runIsolation.project)
+  expect(request.app?.port).toBe(Number(shardIsolation.port))
+})
+
 test('a destination the profile does not declare refuses the check: the result is unverified and said to be (#224)', async () => {
   const job = await makeJob({
     criteria: commandCriteria('echo hi'),

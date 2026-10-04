@@ -738,13 +738,15 @@ asked for: a command opens no windows, and the images a command runs in ship
 no Xvfb to start one with.
 
 The cell's one way out is the same gate the build's cell uses, handed the
-hosts the profile's stack declares: the booted app, on the port the run
-published it, and every stub's declared hosts, dialed as the compose service
-that provides them, so a stub answers on whatever port it listens on. On a
-target run, which boots no stack, a declared host is the target's own, on
-whatever port it answers — carried like any port that is not the gate's own
-two. An undeclared name resolves to nothing, and a connection to one is
-refused, exactly as the build's cell refuses.
+hosts the profile's stack declares: the booted app, answered on the port the
+run published it alone and dialled as the compose service that publishes it,
+on the port inside the stack the published port leads to; and every stub's
+declared hosts, dialed as the compose service that provides them, so a stub
+answers on whatever port it listens on. On a target run, which boots no
+stack, a declared host is the target's own, on whatever port it answers —
+carried like any port that is not the gate's own two. An undeclared name
+resolves to nothing, and a connection to one is refused, exactly as the
+build's cell refuses.
 
 A contained command check writes `outbound.json` beside its stdout and
 stderr, in the shape the build's evidence carries:

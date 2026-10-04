@@ -23,7 +23,7 @@ async function upstream(): Promise<{ port: number }> {
 
 async function gate(
   hosts: string[],
-  extra: { maxEntries?: number; dialPort?: number; map?: Record<string, string>; ports?: { port: number; protocol: 'http' | 'https' }[] } = {},
+  extra: { maxEntries?: number; dialPort?: number; map?: Record<string, string>; ports?: { port: number; protocol: 'http' | 'https' }[]; app?: { host: string; port: number; dialPort?: number } } = {},
 ): Promise<{ gate: Gate; dir: string; lines: string[]; dialled: string[] }> {
   const dir = await mkdtemp(join(tmpdir(), 'qare-gate-'))
   cleanups.push(() => rm(dir, { recursive: true, force: true }))
@@ -43,6 +43,7 @@ async function gate(
     ...(extra.maxEntries === undefined ? {} : { maxEntries: extra.maxEntries }),
     ...(extra.map === undefined ? {} : { map: extra.map }),
     ...(extra.ports === undefined ? {} : { ports: extra.ports }),
+    ...(extra.app === undefined ? {} : { app: extra.app }),
   })
   cleanups.push(() => started.stop().then(() => {}))
   return { gate: started, dir, lines, dialled }
@@ -151,6 +152,33 @@ test('an exact mapping is resolved however the profile spelled the host (#224)',
   expect((await ask(dir, { op: 'connect', host: 'a.vendor.example.test', port: 8080 })).reply).toEqual({ ok: true })
   expect(dialled).toEqual(['billing-stub:8080', 'vendor-stub:8080'])
   await started.stop()
+})
+
+test('the app is answered on its published port alone, and dialled as its service inside the stack (#224)', async () => {
+  const { port } = await upstream()
+  const { gate: started, dir, lines, dialled } = await gate(['localhost'], {
+    dialPort: port,
+    map: { localhost: 'web' },
+    ports: [{ port: 34567, protocol: 'http' }],
+    app: { host: 'localhost', port: 34567, dialPort: 3000 },
+  })
+  expect((await ask(dir, { op: 'connect', host: 'localhost', port: 34567 })).reply).toEqual({ ok: true })
+  // The dial goes to the service the map names, on the port inside the stack
+  // the published port leads to, not the port the command asked for.
+  expect(dialled).toEqual(['web:3000'])
+  // Any other port at the app's name is not the app: a service on the
+  // machine the app is published from answers there, and that is no
+  // destination the profile declared.
+  expect((await ask(dir, { op: 'connect', host: 'localhost', port: 2375 })).reply).toEqual({
+    ok: false,
+    reason: 'the app answers on its published port only',
+  })
+  await started.stop()
+  // The record is the gate's, sorted by the destination it names.
+  expect(summaryOf(lines).reached).toEqual([
+    { host: 'localhost', port: 2375, protocol: 'tcp', declared: false, count: 1 },
+    { host: 'localhost', port: 34567, protocol: 'http', declared: true, count: 1 },
+  ])
 })
 
 test("a mapped host is reached on any port the stack answers on; an unmapped one is held to the gate's own two (#224)", async () => {

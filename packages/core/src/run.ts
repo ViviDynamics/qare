@@ -276,9 +276,10 @@ function commandCellContextOf(profile: QaProfile, isolation: RunIsolation | unde
   let request: Omit<CommandCellOptions, 'checkout' | 'scratch' | 'id' | 'image'>
   if (isolation !== undefined) {
     // The app is published on the port the run gave it: a command reaches it
-    // at localhost, and the cell maps that to the bridge's gateway, where
-    // the published port answers. The scheme is the health URL's, not always
-    // http: an app that answers over https is dialed as it answers.
+    // at localhost, dialled as the compose service that publishes the app,
+    // on the port inside the stack the published port leads to. The scheme
+    // is the health URL's, not always http: an app that answers over https
+    // is dialed as it answers.
     request = { hosts, map, app: { host: 'localhost', port: isolation.port ?? 3000, scheme: appSchemeOf(profile, values) }, composeProject: isolation.project }
   } else if (profile.target !== undefined) {
     // A target is reached as itself: the gate dials it with the egress it
@@ -1364,7 +1365,12 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
     // The criterion's app carries its own catcher, published on its own port:
     // the source is addressed with the shard's values, not the run's (#65).
     const shardMail = mailContextOf(profile, shardValues, opts)
-    const result = await runCriterion(criterion, job, ctx.rules, shardValues, shardMail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands)
+    // The commands' cell is the shard's too: the app a contained command
+    // reaches for is the one this criterion booted, under the project and
+    // at the port the shard was given, never the run's shared app (#224).
+    const shardCommands = commandCellContextOf(profile, shardIsolation, shardValues, opts)
+    const shardFlow = { ...ctx.flow, ...(shardCommands === undefined ? {} : { commands: shardCommands }) }
+    const result = await runCriterion(criterion, job, ctx.rules, shardValues, shardMail, new Artefacts(), shardFlow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands)
     await cleanMail(shardMail, shardValues.mail_address, job.evidenceDir, `mail-cleanup-${criterion.id}.json`, ctx.rules)
     return result
   } finally {

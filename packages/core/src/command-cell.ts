@@ -41,25 +41,25 @@ export interface CommandCellOptions {
   hosts: readonly string[]
   /**
    * A declared host dialed as another name: a stub host as the compose
-   * service that provides it on the compose project's network, or the app
-   * as the address on the default bridge that answers the published port.
-   * A host left out is dialled as itself.
+   * service that provides it on the compose project's network, and the app
+   * as the compose service that publishes it. A host left out is dialled
+   * as itself.
    */
   map?: Readonly<Record<string, string>>
   /**
    * The app, as the command asks for it: the host a check's URL names
    * (`localhost` for a run that boots its own stack), the port the run
    * publishes it on, and the scheme the port is read with. The host is
-   * mapped to the default bridge's gateway, where the published port
-   * answers; the port itself the gate carries when it is not its own two.
+   * mapped to the compose service that publishes the app, and the gate
+   * carries the published port when it is not its own two.
    */
   app?: { host: string; port: number; scheme: 'http' | 'https' }
   /**
    * More ports the gate carries and the shim intercepts, each dialled as
    * itself: a declared host on a port other than the gate's own two, such as
    * a target that does not answer on 80 or 443. The app's port, when a stack
-   * is booted, is not one of these: it is the `app` above, mapped to the
-   * gateway as well as carried.
+   * is booted, is not one of these: it is the `app` above, mapped to its
+   * service as well as carried.
    */
   ports?: readonly CarriedPort[]
   /** The compose project's network the gate joins to reach the stubs, when a stack is booted. */
@@ -131,10 +131,10 @@ export async function startCommandCell(opts: CommandCellOptions): Promise<Comman
   const common = ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '-u', `${uid}:${gid}`, '-e', 'HOME=/tmp', '-v', `${volume}:${SOCKET_DIR}`]
 
   // The stubs are on the compose project's network, and the app is published
-  // on the machine's own port, reachable from the default bridge's gateway.
-  // Both are asked of the daemon before anything is made: the network is a
-  // name for `network connect`, the gateway a name for the gate's map, and
-  // both the stack's own facts, not the cell's.
+  // by one of the stack's own containers. Both are asked of the daemon before
+  // anything is made: the network is a name for `network connect`, the app's
+  // service and the port it answers at are names for the gate's map and the
+  // app it is told of, and all are the stack's own facts, not the cell's.
   let network = opts.network
   if (network === undefined && opts.composeProject !== undefined) {
     const asked = await docker.run(['network', 'ls', '--format', '{{.Name}}', '--filter', `label=com.docker.compose.project=${opts.composeProject}`])
@@ -144,14 +144,35 @@ export async function startCommandCell(opts: CommandCellOptions): Promise<Comman
     }
     network = found
   }
-  let gateway: string | undefined
-  if (opts.app !== undefined) {
-    const asked = await docker.run(['network', 'inspect', '--format', '{{(index .IPAM.Config 0).Gateway}}', 'bridge'])
-    const found = asked.stdout.trim().split(/\s+/)[0]
-    if (asked.code !== 0 || !/^\d{1,3}(\.\d{1,3}){3}$/.test(found ?? '')) {
-      throw new Error('the cell could not be made: the address the app is published at is not known: the default bridge has no gateway')
+  // The app is the stack's own service, dialled on the network the gate
+  // joins, not an address of the machine the stack is published from: the
+  // publish the profiles name is bound to the machine's own loopback
+  // (pipeline.md), and a container on the default bridge reaches no
+  // loopback but its own. What the daemon says publishes the app's port is
+  // the service the gate maps the app's host to, and the port inside the
+  // stack the published port leads to.
+  let app: { host: string; port: number; dialPort: number; service: string } | undefined
+  const askedApp = opts.app
+  if (askedApp !== undefined) {
+    if (opts.composeProject === undefined)
+      throw new Error("the cell could not be made: the app's service is not known: the compose project is not named")
+    const listed = await docker.run(['ps', '--format', '{{.Names}}\t{{.Ports}}', '--filter', `label=com.docker.compose.project=${opts.composeProject}`])
+    const pattern = new RegExp(`:${askedApp.port}->(\\d+)/tcp`)
+    const line = listed.code === 0 ? listed.stdout.split('\n').find((entry) => pattern.test(entry)) : undefined
+    const match = (line?.match(pattern) ?? undefined) as RegExpExecArray | undefined
+    if (line === undefined || match === undefined) {
+      throw new Error(
+        `the cell could not be made: the app's service could not be asked of the daemon: no container of the compose project ${opts.composeProject} publishes port ${askedApp.port}`,
+      )
     }
-    gateway = found
+    const named = await docker.run(['inspect', '--format', '{{index .Config.Labels "com.docker.compose.service"}}', line.split('\t')[0] ?? ''])
+    const service = named.code === 0 ? (named.stdout.trim().split('\n')[0]?.trim() ?? '') : ''
+    if (!/^[a-z0-9][a-z0-9_.-]*$/.test(service)) {
+      throw new Error(
+        `the cell could not be made: the app's service could not be asked of the daemon: the container publishing port ${askedApp.port} names no compose service`,
+      )
+    }
+    app = { host: askedApp.host, port: askedApp.port, dialPort: Number(match[1]), service }
   }
 
   const untrack = trackLiveCell(reap)
@@ -161,22 +182,24 @@ export async function startCommandCell(opts: CommandCellOptions): Promise<Comman
     throw new Error(`the cell could not be made: docker volume create failed: ${firstLine(made.stderr) || `exit ${made.code}`}`)
   }
 
-  // The gate, on the default bridge. The app's host is asked for by name and
-  // dialled at the gateway, where the published port answers; a stub host is
-  // dialled as the compose service that provides it. The gate's own two
-  // ports are always carried, so the app's port is carried only when it is
-  // not one of them: carrying it again would bind the shim to a port the
-  // gate already listens on.
+  // The gate, on the default bridge, joining the stack's own network. The
+  // app's host is asked for by name, dialled as the compose service that
+  // publishes it, on the port inside the stack the published port leads to;
+  // a stub host is dialled as the compose service that provides it. The
+  // gate's own two ports are always carried, so the app's port is carried
+  // only when it is not one of them: carrying it again would bind the shim
+  // to a port the gate already listens on.
   const carried = [
     ...(opts.app !== undefined && opts.app.port !== 80 && opts.app.port !== 443 ? [{ port: opts.app.port, protocol: opts.app.scheme }] : []),
     ...(opts.ports ?? []),
   ].flatMap((entry) => ['--port', String(entry.port), entry.protocol])
-  const map = { ...(opts.map ?? {}), ...(opts.app === undefined || gateway === undefined ? {} : { [opts.app.host]: gateway }) }
+  const map = { ...(opts.map ?? {}), ...(app === undefined ? {} : { [app.host]: app.service }) }
   const hosts = [...new Set([...opts.hosts, ...(opts.app === undefined ? [] : [opts.app.host])])]
   const mapArgs = Object.entries(map).flatMap(([host, name]) => ['--map', `${host}=${name}`])
   const gate = docker.spawn([
     'run', '--rm', '--name', gateName, ...common,
     opts.image, 'qare', 'cell', 'gate', '--socket-dir', SOCKET_DIR, ...hosts.flatMap((host) => ['--host', host]), ...carried, ...mapArgs,
+    ...(app === undefined ? [] : ['--app', `${app.host}:${app.port}:${app.dialPort}`]),
   ]) // prettier-ignore
   let gateExit: string | undefined
   let gateErrors = ''

@@ -81,6 +81,14 @@ export interface GateOptions {
   socketDir: string
   relayPort?: number
   relayHost?: string
+  /**
+   * The run's app, when the stack booted one: the host it is asked for by,
+   * the port it is published at, and the port inside the stack the published
+   * port leads to (#224). The app is one service at one port: its host is
+   * answered on the published port alone, and dialled as the compose service
+   * the map names it, at the port the service answers at.
+   */
+  app?: { host: string; port: number; dialPort?: number }
   /** Where the gate's lines go: standard output, which the run reads. */
   write: (line: string) => void
   /** Connects to a declared host; the network by default. */
@@ -135,6 +143,8 @@ export async function startGate(opts: GateOptions): Promise<Gate> {
   }
   const maxEntries = opts.maxEntries ?? DEFAULT_MAX_ENTRIES
   const dial = opts.dial ?? ((host: string, port: number): Socket => connect({ host, port }))
+  // The app, with its host named the way requests name hosts: lowercase.
+  const app = opts.app === undefined ? undefined : { ...opts.app, host: hostName(opts.app.host) ?? opts.app.host }
   const reached = new Map<string, ReachedHost>()
   let capped = false
   const open = new Set<Socket>()
@@ -183,6 +193,16 @@ export async function startGate(opts: GateOptions): Promise<Gate> {
       record(host ?? 'unknown', port, protocol ?? 'tcp', false)
       return answer(socket, { ok: false, reason: 'undeclared' }, true)
     }
+    // The app is one service at one port: a request for its host on any
+    // other port is not the app, however a service on the machine the app
+    // is published from may answer (#224). What is left holds for every
+    // other mapped host: the stack's own services answer on whatever port
+    // they listen on.
+    const served = app !== undefined && host === app.host ? app : undefined
+    if (served !== undefined && port !== served.port) {
+      record(host, port, protocol ?? 'tcp', false)
+      return answer(socket, { ok: false, reason: 'the app answers on its published port only' }, true)
+    }
     if (protocol === undefined && dialAs(host) === host) {
       // A host the cell dials by its own name reaches out through the gate's
       // own two ports; a mapped host is the stack's own service, and answers
@@ -191,7 +211,7 @@ export async function startGate(opts: GateOptions): Promise<Gate> {
       return answer(socket, { ok: false, reason: `the gate carries ports ${carriedNote} only` }, true)
     }
     record(host, port, protocol ?? 'tcp', true)
-    const upstream = track(dial(dialAs(host), port))
+    const upstream = track(dial(dialAs(host), served?.dialPort ?? port))
     let settled = false
     const refuse = (why: string): void => {
       if (settled) return
