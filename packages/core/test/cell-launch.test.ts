@@ -9,8 +9,8 @@ import { askGate } from './cell-sockets.js'
 
 function seams(events: string[]) {
   return {
-    startShim: async (opts: { socketDir: string; cdpPort: number }) => {
-      events.push(`shim ${opts.socketDir} ${opts.cdpPort}`)
+    startShim: async (opts: { socketDir: string; cdpPort: number; appPort?: number; appScheme?: 'http' | 'https' }) => {
+      events.push(`shim ${opts.socketDir} ${opts.cdpPort}${opts.appPort === undefined ? '' : ` app=${opts.appPort} ${String(opts.appScheme)}`}`)
       return { ports: { dns: 53, http: 80, https: 443 }, stop: async () => void events.push('shim stopped') }
     },
     xvfb: () => '/usr/bin/Xvfb',
@@ -138,6 +138,30 @@ test('qare cell gate reads the port and the mapping a stack needs, and refuses a
   expect(await running).toBe(0)
   // The gate started with what the run handed it: the summary closes it.
   expect(JSON.parse(lines.at(-1) as string).event).toBe('summary')
+})
+
+test('the launcher hands the shim the app port the run named, and refuses a second one (#224)', async () => {
+  const events: string[] = []
+  const code = await launchInCell({
+    command: '/bin/sh',
+    args: ['-c', 'exit 0'],
+    socketDir: '/run/qare-cell',
+    cdpPort: 9222,
+    appPort: 30007,
+    appScheme: 'http',
+    env: { PATH: process.env.PATH },
+    err: () => events.push('err'),
+    signals: new EventEmitter(),
+    ...seams(events),
+  })
+  expect(code).toBe(0)
+  expect(events).toEqual(['shim /run/qare-cell 9222 app=30007 http', 'display /usr/bin/Xvfb', 'display stopped', 'shim stopped'])
+  const said: string[] = []
+  const io = { out: () => {}, err: (line: string) => said.push(line), signals: new EventEmitter() }
+  expect(
+    await runCellCommand(['launch', '--socket-dir', '/tmp', '--cdp-port', '9222', '--port', '30007', 'http', '--port', '30008', 'https', '--', '/bin/true'], io),
+  ).toBe(4)
+  expect(said).toEqual(['qare cell launch: one --port is all a launch carries'])
 })
 
 test('qare cell gate serves until it is told to stop, then writes its record (#223)', async () => {

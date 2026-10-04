@@ -14,7 +14,8 @@ import { DNS_TYPE_A, dnsReply, httpHost, readDnsQuestion, tlsServerName, type Pe
  * - the resolver on loopback asks the gate about every name, and answers a
  *   declared one with loopback and any other with no such name;
  * - ports 80 and 443 on loopback read which host a connection is for and
- *   ask the gate to connect it, carrying the bytes untouched;
+ *   ask the gate to connect it, carrying the bytes untouched; so does the
+ *   port where the run's booted app answers, when the run names one (#224);
  * - the build's DevTools endpoint is exposed on a socket the gate relays to
  *   the driver.
  *
@@ -34,12 +35,19 @@ export interface ShimOptions {
   dnsPort?: number
   httpPort?: number
   httpsPort?: number
+  /**
+   * The loopback port where the run's booted app answers, and how (#224).
+   * A named command connects to the app's name on this port; the shim reads
+   * the connection the same way it reads 80 and 443, and asks the gate.
+   */
+  appPort?: number
+  appScheme?: 'http' | 'https'
   /** The loopback port the build's DevTools endpoint listens on. */
   cdpPort: number
 }
 
 export interface Shim {
-  ports: { dns: number; http: number; https: number }
+  ports: { dns: number; http: number; https: number; app?: number }
   stop: () => Promise<void>
 }
 
@@ -180,6 +188,11 @@ export async function startShim(opts: ShimOptions): Promise<Shim> {
   const https = carry(443, tlsServerName)
   await listening(http, opts.httpPort ?? 80, LOOPBACK)
   await listening(https, opts.httpsPort ?? 443, LOOPBACK)
+  // The booted app answers on the port the run gave it, not on either of
+  // those two; the shim reads it as http or https, as the run booted it (#224).
+  const app =
+    opts.appPort === undefined ? undefined : carry(opts.appPort, opts.appScheme === 'https' ? tlsServerName : httpHost)
+  if (app !== undefined) await listening(app, opts.appPort, LOOPBACK)
 
   // The driver's way in, from the gate's side of the shared directory.
   const devtools = createServer((socket) => {
@@ -196,9 +209,9 @@ export async function startShim(opts: ShimOptions): Promise<Shim> {
 
   const dnsAddress = dns.address()
   return {
-    ports: { dns: dnsAddress.port, http: portOf(http), https: portOf(https) },
+    ports: { dns: dnsAddress.port, http: portOf(http), https: portOf(https), ...(app === undefined ? {} : { app: portOf(app) }) },
     stop: async () => {
-      const closed = Promise.all([http, https, devtools].map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
+      const closed = Promise.all([http, https, ...(app === undefined ? [] : [app]), devtools].map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
       for (const socket of open) socket.destroy()
       await new Promise<void>((resolve) => dns.close(() => resolve()))
       await closed

@@ -43,6 +43,9 @@ export interface CellLaunchOptions {
   err: (line: string) => void
   signals?: SignalSource
   startShim?: (opts: ShimOptions) => Promise<Shim>
+  /** The port where the run's booted app answers, and how; the shim intercepts it for the build (#224). */
+  appPort?: number
+  appScheme?: 'http' | 'https'
   xvfb?: () => string | undefined
   startDisplay?: (xvfb: string) => Promise<{ display: string; stop: () => Promise<void> }>
   spawnBuild?: (command: string, args: string[], env: NodeJS.ProcessEnv) => BuildProcess
@@ -53,7 +56,12 @@ export async function launchInCell(opts: CellLaunchOptions): Promise<number> {
   const signals = opts.signals ?? process
   let shim: Shim
   try {
-    shim = await (opts.startShim ?? startShim)({ socketDir: opts.socketDir, cdpPort: opts.cdpPort })
+    shim = await (opts.startShim ?? startShim)({
+      socketDir: opts.socketDir,
+      cdpPort: opts.cdpPort,
+      ...(opts.appPort === undefined ? {} : { appPort: opts.appPort }),
+      ...(opts.appScheme === undefined ? {} : { appScheme: opts.appScheme }),
+    })
   } catch (error) {
     opts.err(`qare cell: the cell's network could not be set up: ${(error as Error).message}`)
     return LAUNCH_FAILED
@@ -109,6 +117,21 @@ export async function launchInCell(opts: CellLaunchOptions): Promise<number> {
 const USAGE =
   'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... | qare cell launch --socket-dir <dir> --cdp-port <port> -- <command> [args...]'
 
+/** The `--port <port> <scheme>` flags, named by both the gate and the launcher for the app the run boots (#224). */
+function parsePorts(flags: string[], who: string): { ports: { port: number; protocol: 'http' | 'https' }[]; error: string | undefined } {
+  const ports: { port: number; protocol: 'http' | 'https' }[] = []
+  for (let index = 0; index < flags.length; index++) {
+    if (flags[index] !== '--port') continue
+    const port = Number(flags[index + 1])
+    const protocol = flags[index + 2]
+    if (!Number.isInteger(port) || port <= 0 || port > 65_535 || (protocol !== 'http' && protocol !== 'https')) {
+      return { ports, error: `${who}: --port must be a port and a scheme, http or https` }
+    }
+    ports.push({ port, protocol })
+  }
+  return { ports, error: undefined }
+}
+
 export interface CellCommandIo {
   /** One line of standard output: the gate's lines, which the run reads. */
   out: (line: string) => void
@@ -144,7 +167,25 @@ export async function runCellCommand(argv: string[], io: CellCommandIo): Promise
       io.err('qare cell launch: --cdp-port must be a port')
       return 4
     }
-    return launchInCell({ command: command[0] as string, args: command.slice(1), socketDir, cdpPort, err: io.err, signals })
+    const parsed = parsePorts(flags, 'qare cell launch')
+    if (parsed.error !== undefined) {
+      io.err(parsed.error)
+      return 4
+    }
+    if (parsed.ports.length > 1) {
+      io.err('qare cell launch: one --port is all a launch carries')
+      return 4
+    }
+    const app = parsed.ports[0]
+    return launchInCell({
+      command: command[0] as string,
+      args: command.slice(1),
+      socketDir,
+      cdpPort,
+      ...(app === undefined ? {} : { appPort: app.port, appScheme: app.protocol }),
+      err: io.err,
+      signals,
+    })
   }
 
   if (socketDir === undefined) {
@@ -159,17 +200,12 @@ export async function runCellCommand(argv: string[], io: CellCommandIo): Promise
     return 4
   }
   // A port the run booted the app on, carried beside the gate's own two (#224).
-  const ports: { port: number; protocol: 'http' | 'https' }[] = []
-  for (let index = 0; index < flags.length; index++) {
-    if (flags[index] !== '--port') continue
-    const port = Number(flags[index + 1])
-    const protocol = flags[index + 2]
-    if (!Number.isInteger(port) || port <= 0 || port > 65_535 || (protocol !== 'http' && protocol !== 'https')) {
-      io.err('qare cell gate: --port must be a port and a scheme, http or https')
-      return 4
-    }
-    ports.push({ port, protocol })
+  const parsedPorts = parsePorts(flags, 'qare cell gate')
+  if (parsedPorts.error !== undefined) {
+    io.err(parsedPorts.error)
+    return 4
   }
+  const ports = parsedPorts.ports
   // A declared host dialed as the name that answers: the compose service that
   // provides a stub, or the address the run's bridge answers the app at (#224).
   const map: Record<string, string> = {}
