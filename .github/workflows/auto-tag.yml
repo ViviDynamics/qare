@@ -9,8 +9,10 @@ name: Auto-tag
 # workflow runs, so the release is started explicitly rather than left to the
 # tag push.
 #
-# Idempotent by the tag's existence: a merge that changes no version finds the
-# tag already on origin and does nothing, and a tag a human pushed first means
+# Idempotent per commit: a merge that leaves package.json's version unchanged
+# finds that tag already on origin, and the automation then computes the next
+# CalVer from the newest tag and the build's month instead, so a green merge to
+# main always ends with a tag and a release. A tag a human pushed first means
 # the automation dispatches nothing, so the release runs exactly once per tag
 # and nothing loops.
 
@@ -55,14 +57,32 @@ jobs:
           fetch-depth: 0
       - name: Read the version package.json carries
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
-      - name: Do nothing when the tag already exists
+      - name: Decide the version to tag
         run: |
           set -euo pipefail
-          if [ -n "$(git ls-remote --tags origin "refs/tags/$version")" ]; then
-            echo "tag $version already exists on origin: nothing to do" >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$(git ls-remote --tags origin "refs/tags/$version")" ]; then
+            echo "tagged=true" >> "$GITHUB_ENV"
+            echo "the version package.json carries ($version) is untagged: tagging it" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # The packaged version is already released: a merge that did not bump
+          # it still releases. The next CalVer comes from the newest tag and
+          # the build's month: the patch climbs while the month does not, and
+          # a new month starts a new line.
+          latest="$(git ls-remote --tags origin 'refs/tags/*.*.*' | cut -d/ -f3 | sed 's/\^{}$//' | sort -V | tail -1)"
+          line="$(date -u +%Y.%-m)"
+          case "$latest" in
+            "$line".*) patch="$((${latest#"$line."} + 1))" ;;
+            *) patch=0 ;;
+          esac
+          next="$line.$patch"
+          if [ -n "$(git ls-remote --tags origin "refs/tags/$next")" ]; then
+            echo "tag $next already exists on origin: nothing to do" >> "$GITHUB_STEP_SUMMARY"
             echo "tagged=false" >> "$GITHUB_ENV"
           else
             echo "tagged=true" >> "$GITHUB_ENV"
+            echo "version=$next" >> "$GITHUB_ENV"
+            echo "package.json's version is already tagged: computing $next from the newest tag ($latest)" >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Tag the validated commit and push it
         if: env.tagged == 'true'
