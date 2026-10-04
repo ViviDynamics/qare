@@ -9,9 +9,9 @@ import { loadResult, type RunResult } from './result.js'
  * the machine that produced it (#52).
  *
  * The first four built-in rules are nare's event redaction (nare/events.py at
- * the pinned 2026.9.10), so what nare keeps out of its own events stays out of
- * qare's evidence too. nare applies them in-process to its events and offers
- * callers no way to run them over their own text, so qare applies the same
+ * the then-pinned 2026.9.10), so what nare keeps out of its own events stays out of
+ * qare's evidence too. At that version nare applied them to its events and
+ * offered no caller redaction command, so qare applies the same
  * rules here rather than a second, different set. The rest cover token shapes
  * nare's list does not.
  */

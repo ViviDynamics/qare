@@ -48,7 +48,7 @@ RUN pnpm install --frozen-lockfile \
 # needs, so no package toolchain is installed into the final image at all.
 FROM python:3.12-slim-bookworm
 
-ARG NARE_WHEEL=https://github.com/ViviDynamics/nare/releases/download/2026.9.10/nare-2026.9.10-py3-none-any.whl
+ARG NARE_WHEEL=https://github.com/ViviDynamics/nare/releases/download/2026.10.4/nare-2026.10.4-py3-none-any.whl
 ARG IMAGE_NAME=qare-core
 
 LABEL org.opencontainers.image.title=$IMAGE_NAME \
