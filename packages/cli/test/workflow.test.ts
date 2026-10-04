@@ -501,13 +501,19 @@ test('auto-tag releases an unbumped merge with the next CalVer (#230)', () => {
   // month give the next one: the patch climbs while the month does not, and
   // a new month starts a new line.
   expect(autoTag).toMatch(/git ls-remote --tags origin 'refs\/tags\/\*\.\*\.\*'/)
-  // The newest tag is taken from release tags only: an unrelated
-  // three-component tag sorts after any CalVer and would reset the line.
-  expect(autoTag).toContain("grep -E '^20[0-9]{2}\\.[0-9]+\\.[0-9]+$' | sort -V | tail -1")
+  // The newest tag is taken from release tags on the default branch only:
+  // an unrelated or off-branch tag sorts after any CalVer and would reset
+  // the line, and release.yml releases default-branch tags only.
+  expect(autoTag).toContain("git fetch --quiet origin 'refs/tags/*:refs/tags/*'")
+  expect(autoTag).toContain("grep -E 'refs/tags/20[0-9]{2}\\.[0-9]+\\.[0-9]+(\\^\\{\\})?$' | awk")
+  expect(autoTag).toContain("git merge-base --is-ancestor \"$sha\" HEAD")
+  // A computed name origin already carries cannot be pushed: climb the patch.
+  expect(autoTag).toContain('while [ -n "$(git ls-remote --tags origin "refs/tags/$line.$patch")" ]; do')
   // An annotated tag lists twice in ls-remote: the tag object and its ^{}
-  // peel. Without stripping the peel the sort reads the wrong newest tag.
-  expect(autoTag).toContain("sed 's/\\^{}$//'")
-  expect(autoTag).toMatch(/sort -V \| tail -1/)
+  // peel. The awk keeps the peel's commit sha by last-line-wins, and strips
+  // the prefix so the name feeds the line comparison bare.
+  expect(autoTag).toContain("sub(/^refs\\/tags\\//, \"\", ref)")
+  expect(autoTag).toMatch(/sort -V/)
   expect(autoTag).toMatch(/date -u \+%Y\.%-m/)
   expect(autoTag).toContain('case "$latest" in')
 })
