@@ -125,8 +125,11 @@ export async function startGate(opts: GateOptions): Promise<Gate> {
   // hosts are, and then it names every host the pattern matches.
   const dialAs = (host: string): string => {
     const map = opts.map ?? {}
-    const exact = map[host]
-    if (exact !== undefined) return exact
+    // The concrete host is the lowercase name the request resolved to; the
+    // map is the profile's own casing, so it is resolved with the same
+    // normalization the declarations are matched by (#224).
+    const exact = Object.keys(map).find((key) => (hostName(key) ?? key.toLowerCase()) === host)
+    if (exact !== undefined) return map[exact] ?? host
     const pattern = Object.keys(map).find((key) => key.startsWith('*.') && matchesStub(host, [{ hosts: [key] }]))
     return pattern === undefined ? host : (map[pattern] ?? host)
   }

@@ -137,6 +137,22 @@ test('a map key with a wildcard carries every host the pattern names, dialled as
   await started.stop()
 })
 
+test('an exact mapping is resolved however the profile spelled the host (#224)', async () => {
+  const { port } = await upstream()
+  const { gate: started, dir, dialled } = await gate(['api.billing.example.test', '*.vendor.example.test'], {
+    dialPort: port,
+    map: { 'API.BILLING.EXAMPLE.TEST': 'billing-stub', '*.VENDOR.EXAMPLE.TEST': 'vendor-stub' },
+  })
+  // The request is the lowercase name it resolved to; the map is the
+  // profile's own casing. Either way, the stub answers, not a host on the
+  // internet that happens to spell the same.
+  expect((await ask(dir, { op: 'connect', host: 'api.billing.example.test', port: 8080 })).reply).toEqual({ ok: true })
+  expect(dialled).toEqual(['billing-stub:8080'])
+  expect((await ask(dir, { op: 'connect', host: 'a.vendor.example.test', port: 8080 })).reply).toEqual({ ok: true })
+  expect(dialled).toEqual(['billing-stub:8080', 'vendor-stub:8080'])
+  await started.stop()
+})
+
 test("a mapped host is reached on any port the stack answers on; an unmapped one is held to the gate's own two (#224)", async () => {
   const { port } = await upstream()
   const { gate: started, dir, lines, dialled } = await gate(['api.billing.example.test', 'plain.example.test'], {
