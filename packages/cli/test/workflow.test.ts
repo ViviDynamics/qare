@@ -549,11 +549,14 @@ test('releases serialize, so an older release cannot finish last and roll the al
   expect(release).toContain('group: release\n')
   expect(release).not.toMatch(/group: release-\$\{\{ github\.ref \}\}/)
   // Serialization orders by dispatch time, not by version: the shared
-  // aliases (latest and the month line) are promoted after the images
-  // build, and only by the newest release, so a recovery rerun of an older
-  // release cannot finish last and roll them back.
+  // aliases are promoted after the images build. latest follows the newest
+  // release overall, and the month line follows the newest release on its
+  // own line, so a recovery rerun of a superseded September release still
+  // publishes 2026.9 after October's release exists.
   expect(release).toContain('Promote the shared aliases')
   expect(release).toContain('imagetools create')
+  expect(release).toContain('if [ "$GITHUB_REF_NAME" = "$newest_on_line" ]')
+  expect(release).toContain('if [ "$GITHUB_REF_NAME" = "$newest" ]')
   expect(release).not.toContain('ghcr.io/vividynamics/qare-core:${{ env.CALVER_LINE }}')
   expect(release).not.toContain('ghcr.io/vividynamics/qare-web:${{ env.CALVER_LINE }}')
   expect(release).not.toContain('ghcr.io/vividynamics/qare-android:${{ env.CALVER_LINE }}')
