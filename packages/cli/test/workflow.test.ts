@@ -509,6 +509,12 @@ test('auto-tag releases an unbumped merge with the next CalVer (#230)', () => {
   expect(autoTag).toContain("git merge-base --is-ancestor \"$sha\" HEAD")
   // A computed name origin already carries cannot be pushed: climb the patch.
   expect(autoTag).toContain('while [ -n "$(git ls-remote --tags origin "refs/tags/$line.$patch")" ]; do')
+  // Zero-padded patches are octal to bash: the increment forces base 10.
+  expect(autoTag).toContain('$((10#${latest#"$line."} + 1))')
+  // A rerun whose tag has no release run re-dispatches instead of leaving
+  // the commit tagged but unreleased.
+  expect(autoTag).toContain('if [ -n "$tagged_at" ]')
+  expect(autoTag).toContain('re-dispatching the release')
   // An annotated tag lists twice in ls-remote: the tag object and its ^{}
   // peel. The awk keeps the peel's commit sha by last-line-wins, and strips
   // the prefix so the name feeds the line comparison bare.
@@ -525,8 +531,8 @@ test('auto-tag no-ops when the validated commit is already tagged (#230)', () =>
   // one of them naming the validated commit ends the run before anything
   // is computed. Only release tags count: an unrelated tag on the commit
   // does not trigger the release, so it must not suppress one either.
-  expect(autoTag).toContain("git ls-remote --tags origin | grep -E 'refs/tags/20[0-9]{2}")
-  expect(autoTag).toContain("(\\^\\{\\})?$' | awk '{print $1}' | grep -qx \"$head\"")
+  expect(autoTag).toContain("git ls-remote --tags origin 'refs/tags/*.*.*' | grep -E 'refs/tags/20[0-9]{2}")
+  expect(autoTag).toContain('if [ "$sha" = "$head" ]')
   expect(autoTag).toContain('the validated commit is already tagged')
   expect(autoTag).toMatch(/echo "tagged=false" >> "\$GITHUB_ENV"/)
 })
