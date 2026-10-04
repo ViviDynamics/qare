@@ -486,12 +486,38 @@ test('auto-tag runs only after CI passes on a push to main (#188)', () => {
     expect(autoTag).toContain(gate)
 })
 
-test('auto-tag tags the version package.json carries, and nothing else (#188)', () => {
+test('auto-tag tags the version package.json carries when it is untagged (#188, #230)', () => {
   expect(autoTag).toContain("require('./package.json').version")
-  // Idempotent by the tag's existence: a merge that changes no version no-ops.
+  // Idempotent by the tag's existence: a merge that changes no version
+  // computes the next CalVer instead (#230).
   expect(autoTag).toMatch(/git ls-remote --tags origin "refs\/tags\/\$version"/)
   expect(autoTag).toContain('tagged=true')
   expect(autoTag).toMatch(/git tag "\$version" "\$sha"/)
+})
+
+test('auto-tag releases an unbumped merge with the next CalVer (#230)', () => {
+  // The owner's rule (#230): a green merge to main tags and releases. When
+  // the packaged version is already tagged, the newest tag and the build's
+  // month give the next one: the patch climbs while the month does not, and
+  // a new month starts a new line.
+  expect(autoTag).toMatch(/git ls-remote --tags origin 'refs\/tags\/\*\.\*\.\*'/)
+  // An annotated tag lists twice in ls-remote: the tag object and its ^{}
+  // peel. Without stripping the peel the sort reads the wrong newest tag.
+  expect(autoTag).toContain("sed 's/\\^{}$//'")
+  expect(autoTag).toMatch(/sort -V \| tail -1/)
+  expect(autoTag).toMatch(/date -u \+%Y\.%-m/)
+  expect(autoTag).toContain('case "$latest" in')
+})
+
+test('auto-tag no-ops when the validated commit is already tagged (#230)', () => {
+  // A rerun of the job, or a tag a person pushed first, must not release
+  // the same commit twice. Every tag ls-remote lists names its object sha
+  // first, and an annotated tag's peeled line carries the commit sha, so
+  // one of them naming the validated commit ends the run before anything
+  // is computed.
+  expect(autoTag).toMatch(/git ls-remote --tags origin \| awk '\{print \$1\}' \| grep -qx "\$head"/)
+  expect(autoTag).toContain('the validated commit is already tagged')
+  expect(autoTag).toMatch(/echo "tagged=false" >> "\$GITHUB_ENV"/)
 })
 
 test('auto-tag dispatches the release on the tag and verifies the run started (#188)', () => {

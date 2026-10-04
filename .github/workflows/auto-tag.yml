@@ -9,12 +9,22 @@ name: Auto-tag
 # workflow runs, so the release is started explicitly rather than left to the
 # tag push.
 #
-# Idempotent per commit: a merge that leaves package.json's version unchanged
-# finds that tag already on origin, and the automation then computes the next
-# CalVer from the newest tag and the build's month instead, so a green merge to
-# main always ends with a tag and a release. A tag a human pushed first means
-# the automation dispatches nothing, so the release runs exactly once per tag
-# and nothing loops.
+# A green merge to main tags and releases. When package.json's version is
+# already tagged, the automation computes the next CalVer from the newest
+# tag and the build's month: the patch climbs while the month does not, and
+# a new month starts a new line.
+#
+# Two honest limits. GitHub Actions keeps one running and one pending run per
+# concurrency group, so a burst of green builds can supersede a queued run,
+# and a superseded merge ships in the release that follows it rather than in
+# a tag of its own. And a computed tag cannot stamp the pipeline's qare-ref
+# default, because the automation never pushes commits, so a caller pinning a
+# computed tag names its qare-ref explicitly to avoid running one release
+# behind.
+#
+# Idempotent per commit: a commit that already carries any tag, by a rerun or
+# by a tag a person pushed first, is a no-op, so the release runs exactly once
+# per commit and nothing loops.
 
 on:
   workflow_run:
@@ -60,15 +70,28 @@ jobs:
       - name: Decide the version to tag
         run: |
           set -euo pipefail
+          # A rerun of this job, or a tag a person pushed first, must not
+          # release the same commit twice. Every tag ls-remote lists names
+          # its object sha first, and an annotated tag's peeled line carries
+          # the commit sha, so one of them naming the validated commit ends
+          # the run here, before anything is computed.
+          head="$(git rev-parse HEAD)"
+          if git ls-remote --tags origin | awk '{print $1}' | grep -qx "$head"; then
+            echo "the validated commit is already tagged: nothing to do" >> "$GITHUB_STEP_SUMMARY"
+            echo "tagged=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
           if [ -z "$(git ls-remote --tags origin "refs/tags/$version")" ]; then
             echo "tagged=true" >> "$GITHUB_ENV"
             echo "the version package.json carries ($version) is untagged: tagging it" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           # The packaged version is already released: a merge that did not bump
-          # it still releases. The next CalVer comes from the newest tag and
-          # the build's month: the patch climbs while the month does not, and
-          # a new month starts a new line.
+          # it still releases. A bump that names a version a computed release
+          # already consumed lands here too, and ships under the next version,
+          # which the summary says. The next CalVer comes from the newest tag
+          # and the build's month: the patch climbs while the month does not,
+          # and a new month starts a new line.
           latest="$(git ls-remote --tags origin 'refs/tags/*.*.*' | cut -d/ -f3 | sed 's/\^{}$//' | sort -V | tail -1)"
           line="$(date -u +%Y.%-m)"
           case "$latest" in
