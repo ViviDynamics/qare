@@ -727,11 +727,15 @@ on its loopback. What it reaches from there, the run contains the way it
 contains a build (#223): a named command runs in a **cell** of its own,
 through the same docker daemon, from the same image. The command container
 has no network and no capability, and the checkout is copied into it,
-read-only, at the path the command runs from; a named command may declare
-the paths it may write (`commands.<name>.scratch`, each inside the
+read-only, whole: a command that runs from a subdirectory still reads the
+repository's own files, so its cell holds the repository root and the
+command runs from the working directory its check names. A named command may
+declare the paths it may write (`commands.<name>.scratch`, each inside the
 repository), and each is a writable tmpfs mounted over the copy at the same
-path. A write anywhere else fails against the read-only copy, and the
-failure names itself in the command's output.
+repository-relative path. A write anywhere else fails against the read-only
+copy, and the failure names itself in the command's output. No display is
+asked for: a command opens no windows, and the images a command runs in ship
+no Xvfb to start one with.
 
 The cell's one way out is the same gate the build's cell uses, handed the
 hosts the profile's stack declares: the booted app, on the port the run

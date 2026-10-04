@@ -294,3 +294,25 @@ test('a check two commands both name is refused: the profile must not declare ov
     'refused: the profile declares overlapping commands (tool {{name}} and tool smoke); a check is contained by the one command its run names',
   )
 })
+
+test('a contained check runs from the cwd it names, with the whole checkout copied into the cell (#224)', async () => {
+  const asked: unknown[] = []
+  const job = await makeJob({
+    criteria: [
+      {
+        id: 'criterion-1',
+        text: 'criterion 1',
+        checks: [{ kind: 'command', run: 'echo hi', cwd: 'packages/foo' }],
+      },
+    ],
+    profile: { inline: { ...PROFILE, commands: COMMANDS } },
+  })
+
+  const { result } = await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }, asked) } })
+
+  expect(result.criteria[0].outcome).toBe('proven')
+  // The cell holds a copy of the repository root, not the subtree the check
+  // runs from: a command under packages/foo still reads the repository's own
+  // files, and its repository-relative scratch stays repository-relative.
+  expect(asked[0]).toMatchObject({ checkout: job.repoPath, cwd: 'packages/foo' })
+})

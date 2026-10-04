@@ -103,7 +103,7 @@ test('a command cell is a gate on the default bridge that joins the stack, and a
     '-w', '/work/repo',
     '--tmpfs', '/work/repo/tmp/scratch:uid=1001,gid=118,mode=0700',
     '-e', 'FOO=bar',
-    'qare-web:test', 'qare', 'cell', 'launch', '--socket-dir', '/run/qare-cell', '--cdp-port', '9222', '--port', '3000', 'http', '--',
+    'qare-web:test', 'qare', 'cell', 'launch', '--socket-dir', '/run/qare-cell', '--cdp-port', '9222', '--no-display', '--port', '3000', 'http', '--',
     'true', '--verbose',
   ])
 
@@ -112,6 +112,28 @@ test('a command cell is a gate on the default bridge that joins the stack, and a
   expect(calls.filter((args) => args[0] === 'stop')).toEqual([['stop', '-t', '10', 'qare-cell-abc123-gate']])
   // The network is the stack's own: joined, never removed.
   expect(calls.at(-1)).toEqual(['volume', 'rm', '-f', 'qare-cell-abc123', 'qare-cell-abc123-build'])
+})
+
+test('the command runs from the working directory it names, inside the copy of the whole checkout (#224)', async () => {
+  const { docker, calls, spawned } = fakeDocker()
+  const cell = await startCommandCell({ ...OPTS, docker, cwd: 'packages/foo' })
+
+  // The whole checkout is copied, whatever the working directory is.
+  expect(calls[6]).toEqual(['cp', '/work/repo/.', 'qare-cell-abc123-load:/checkout'])
+  cell.run(['true'], {})
+  expect(spawned[1]?.args).toEqual([
+    'run', '--rm', '--name', 'qare-cell-abc123-command',
+    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+    '-u', '1001:118', '-e', 'HOME=/tmp',
+    '-v', 'qare-cell-abc123:/run/qare-cell',
+    '--network', 'none', '--dns', '127.0.0.1', '--dns-search', '.',
+    '-v', 'qare-cell-abc123-build:/work/repo:ro',
+    '-w', '/work/repo/packages/foo',
+    '--tmpfs', '/work/repo/tmp/scratch:uid=1001,gid=118,mode=0700',
+    'qare-web:test', 'qare', 'cell', 'launch', '--socket-dir', '/run/qare-cell', '--cdp-port', '9222', '--no-display', '--port', '3000', 'http', '--',
+    'true',
+  ])
+  await cell.dispose()
 })
 
 test('a command cell without a stack boots no interface for the stubs and carries no app port (#224)', async () => {

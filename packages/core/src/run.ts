@@ -2625,8 +2625,13 @@ async function runCriterion(
       // always did, with the network its step has.
       const contained = declared[0] !== undefined && declared[0].egress !== 'uncontained' && flow.commands !== undefined
       const optedOut = declared[0]?.egress === 'uncontained'
+      // The cell holds a copy of the repository root, whatever subdirectory
+      // the check runs from: a cell made of the subtree alone would leave the
+      // command without the repository's own files, and mount its
+      // repository-relative scratch below the subdirectory (#224).
+      const cwdRel = cwd === job.repoPath ? undefined : relative(job.repoPath, cwd)
       const outcome = contained
-        ? await runContainedCommandCheck(resolved.check, cwd, timeoutMs, execution, selection, flow.commands!, declared[0]?.scratch, join(job.evidenceDir, checkDir), sweepRules)
+        ? await runContainedCommandCheck(resolved.check, cwd, job.repoPath, cwdRel, timeoutMs, execution, selection, flow.commands!, declared[0]?.scratch, join(job.evidenceDir, checkDir), sweepRules)
         : await runCommandCheck(resolved.check, cwd, timeoutMs, execution, selection)
       await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
       await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), sweepRules))
@@ -3828,6 +3833,8 @@ export function runCommandCheck(
 async function runContainedCommandCheck(
   check: JobCommandCheck,
   cwd: string,
+  repoRoot: string,
+  cwdRel: string | undefined,
   timeoutMs: number,
   execution: ExecutionKind | undefined,
   selection: Selection | undefined,
@@ -3838,7 +3845,7 @@ async function runContainedCommandCheck(
 ): Promise<CheckOutcome> {
   let made: CommandCell
   try {
-    made = await cell.start({ ...cell.request, checkout: cwd, ...(scratch === undefined ? {} : { scratch }) })
+    made = await cell.start({ ...cell.request, checkout: repoRoot, ...(cwdRel === undefined ? {} : { cwd: cwdRel }), ...(scratch === undefined ? {} : { scratch }) })
   } catch (error) {
     // Cell startup is check infrastructure (#224): like a flow whose backend
     // does not start, the answer is an unverified outcome the run keeps, not

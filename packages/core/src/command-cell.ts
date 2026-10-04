@@ -72,6 +72,13 @@ export interface CommandCellOptions {
   composeProject?: string
   /** The absolute path the command runs from: the checkout, copied into the cell and mounted read-only. */
   checkout: string
+  /**
+   * The working directory the command runs from, relative to the checkout.
+   * The checkout is still the whole repository: a command under a subdirectory
+   * reads the repository's own files, and its repository-relative scratch
+   * paths stay repository-relative (#224).
+   */
+  cwd?: string
   /** Paths under the checkout the command may write; each is mounted a writable tmpfs of its own. */
   scratch?: readonly string[]
   docker?: CellDocker
@@ -110,6 +117,9 @@ export async function startCommandCell(opts: CommandCellOptions): Promise<Comman
     if (entry === '' || entry.startsWith('/') || entry.split('/').some((segment) => segment === '..' || segment === '.' || segment === ''))
       throw new Error('the cell could not be made: a scratch path is not a path under the checkout')
   }
+  const cwd = opts.cwd === undefined ? undefined : opts.cwd.replace(/\/$/, '')
+  if (cwd !== undefined && (cwd === '' || cwd.startsWith('/') || cwd.split('/').some((segment) => segment === '..' || segment === '.' || segment === '')))
+    throw new Error("the cell could not be made: the command's working directory is not a path under the checkout")
   // From the first thing made to the last thing removed, the cell is one a
   // signal that ends the harness takes with it.
   const reap = (): void => {
@@ -254,6 +264,7 @@ export async function startCommandCell(opts: CommandCellOptions): Promise<Comman
   // What the command runs in: its checkout, read-only, at the path it runs
   // from, with the scratch paths writable over the copy and nothing else.
   const scratch = (opts.scratch ?? []).flatMap((entry) => ['--tmpfs', `${checkout}/${entry}:uid=${uid},gid=${gid},mode=0700`])
+  const workdir = cwd === undefined ? checkout : `${checkout}/${cwd}`
   let disposed: Promise<void> | undefined
   return {
     run: (argv, env) =>
@@ -265,10 +276,12 @@ export async function startCommandCell(opts: CommandCellOptions): Promise<Comman
         // puts a host nobody reached for in the record.
         '--network', 'none', '--dns', '127.0.0.1', '--dns-search', '.',
         '-v', `${volumeName}:${checkout}:ro`,
-        '-w', checkout,
+        '-w', workdir,
         ...scratch,
         ...Object.entries(env ?? {}).flatMap(([key, value]) => ['-e', `${key}=${value}`]),
-        opts.image, 'qare', 'cell', 'launch', '--socket-dir', SOCKET_DIR, '--cdp-port', String(GATE_RELAY_PORT), ...carried, '--',
+        // No display is asked for: a command needs none, and the images a
+        // command runs in ship no Xvfb to start one with (#224).
+        opts.image, 'qare', 'cell', 'launch', '--socket-dir', SOCKET_DIR, '--cdp-port', String(GATE_RELAY_PORT), '--no-display', ...carried, '--',
         argv[0] ?? 'true', ...argv.slice(1),
       ]), // prettier-ignore
     record: () => {

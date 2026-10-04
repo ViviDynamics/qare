@@ -46,6 +46,8 @@ export interface CellLaunchOptions {
   /** The port where the run's booted app answers, and how; the shim intercepts it for the build (#224). */
   appPort?: number
   appScheme?: 'http' | 'https'
+  /** A command check needs no display: the launcher asks for no Xvfb and starts none (#224). */
+  noDisplay?: boolean
   xvfb?: () => string | undefined
   startDisplay?: (xvfb: string) => Promise<{ display: string; stop: () => Promise<void> }>
   spawnBuild?: (command: string, args: string[], env: NodeJS.ProcessEnv) => BuildProcess
@@ -71,25 +73,28 @@ export async function launchInCell(opts: CellLaunchOptions): Promise<number> {
     await display?.stop().catch(() => {})
     await shim.stop().catch(() => {})
   }
-  const xvfb = (opts.xvfb ?? ((): string | undefined => xvfbOnPath(env)))()
-  if (xvfb === undefined) {
-    await cleanUp()
-    opts.err('qare cell: no Xvfb is on PATH to start a virtual display for the build; the web image ships it')
-    return LAUNCH_FAILED
-  }
-  try {
-    display = await (opts.startDisplay ?? startVirtualDisplay)(xvfb)
-  } catch (error) {
-    await cleanUp()
-    opts.err(`qare cell: ${(error as Error).message}`)
-    return LAUNCH_FAILED
+  if (opts.noDisplay !== true) {
+    const xvfb = (opts.xvfb ?? ((): string | undefined => xvfbOnPath(env)))()
+    if (xvfb === undefined) {
+      await cleanUp()
+      opts.err('qare cell: no Xvfb is on PATH to start a virtual display for the build; the web image ships it')
+      return LAUNCH_FAILED
+    }
+    try {
+      display = await (opts.startDisplay ?? startVirtualDisplay)(xvfb)
+    } catch (error) {
+      await cleanUp()
+      opts.err(`qare cell: ${(error as Error).message}`)
+      return LAUNCH_FAILED
+    }
   }
 
   const spawnBuild = opts.spawnBuild ?? ((command: string, args: string[], buildEnv: NodeJS.ProcessEnv): BuildProcess => spawn(command, args, { env: buildEnv, stdio: 'inherit' }))
+  const childEnv = display === undefined ? env : { ...env, DISPLAY: display.display }
   const code = await new Promise<number>((resolve) => {
     let child: BuildProcess
     try {
-      child = spawnBuild(opts.command, opts.args, { ...env, DISPLAY: display?.display })
+      child = spawnBuild(opts.command, opts.args, childEnv)
     } catch (error) {
       opts.err(`qare cell: the build could not be started: ${(error as Error).message}`)
       return resolve(LAUNCH_FAILED)
@@ -115,7 +120,7 @@ export async function launchInCell(opts: CellLaunchOptions): Promise<number> {
 }
 
 const USAGE =
-  'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... | qare cell launch --socket-dir <dir> --cdp-port <port> -- <command> [args...]'
+  'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... | qare cell launch --socket-dir <dir> --cdp-port <port> [--no-display] -- <command> [args...]'
 
 /** The `--port <port> <scheme>` flags, named by both the gate and the launcher for the app the run boots (#224). */
 function parsePorts(flags: string[], who: string): { ports: { port: number; protocol: 'http' | 'https' }[]; error: string | undefined } {
@@ -183,6 +188,7 @@ export async function runCellCommand(argv: string[], io: CellCommandIo): Promise
       socketDir,
       cdpPort,
       ...(app === undefined ? {} : { appPort: app.port, appScheme: app.protocol }),
+      ...(flags.includes('--no-display') ? { noDisplay: true } : {}),
       err: io.err,
       signals,
     })

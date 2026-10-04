@@ -68,8 +68,33 @@ test('a signal sent to the launcher is the build\'s to answer, and a build ended
   expect(await killed).toBe(137)
 })
 
-test('a cell with no display to start, or no way to ask the gate, starts no build and says why (#223)', async () => {
+test('a command launch runs headless: no display asked for, none started (#224)', async () => {
   const events: string[] = []
+  let output = ''
+  const code = await launchInCell({
+    command: '/bin/sh',
+    args: ['-c', 'echo "display $DISPLAY"; exit 5'],
+    socketDir: '/run/qare-cell',
+    cdpPort: 9222,
+    noDisplay: true,
+    env: { PATH: process.env.PATH, HOME: '/tmp' },
+    err: (line) => events.push(`err ${line}`),
+    signals: new EventEmitter(),
+    spawnBuild: (command, args, env) => {
+      events.push('build started')
+      const child = spawn(command, args, { env, stdio: ['ignore', 'pipe', 'inherit'] })
+      child.stdout.on('data', (chunk) => (output += String(chunk)))
+      return child
+    },
+    ...seams(events),
+    xvfb: () => undefined,
+  })
+  expect(code).toBe(5)
+  expect(output).toBe('display \n')
+  expect(events).toEqual(['shim /run/qare-cell 9222', 'build started', 'shim stopped'])
+})
+
+test('a cell with no display to start, or no way to ask the gate, starts no build and says why (#223)', async () => {  const events: string[] = []
   const said: string[] = []
   const base = { command: '/bin/sh', args: ['-c', 'exit 0'], socketDir: '/run/qare-cell', cdpPort: 9222, env: {}, err: (line: string) => said.push(line), signals: new EventEmitter() }
   const started = (): never => {
@@ -99,7 +124,7 @@ test('qare cell launch and qare cell gate read their arguments, and refuse what 
   expect(await runCellCommand(['gate', '--host', 'api.example.test'], io)).toBe(4)
   expect(await runCellCommand(['gate', '--socket-dir', '/tmp', '--host', 'not a host'], io)).toBe(4)
   expect(said).toEqual([
-    'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... | qare cell launch --socket-dir <dir> --cdp-port <port> -- <command> [args...]',
+    'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... | qare cell launch --socket-dir <dir> --cdp-port <port> [--no-display] -- <command> [args...]',
     'qare cell launch: no command to launch after --',
     'qare cell launch: --socket-dir is required',
     'qare cell gate: --socket-dir is required',
