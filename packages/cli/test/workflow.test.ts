@@ -518,6 +518,9 @@ test('auto-tag releases an unbumped merge with the next CalVer (#230)', () => {
   expect(autoTag).toContain('re-dispatching the release')
   expect(autoTag).toContain('gh run list --workflow=release.yml --branch "$tagged_at"')
   expect(autoTag).toContain('gh run list --workflow=release.yml --commit "$head"')
+  // A run concurrency replaced is recorded cancelled, not superseded, and
+  // either way it never started building.
+  expect(autoTag).toContain('.conclusion != "superseded" and .conclusion != "cancelled"')
   // An annotated tag lists twice in ls-remote: the tag object and its ^{}
   // peel. The awk keeps the peel's commit sha by last-line-wins, and strips
   // the prefix so the name feeds the line comparison bare.
@@ -542,10 +545,22 @@ test('auto-tag no-ops when the validated commit is already tagged (#230)', () =>
 
 test('releases serialize, so an older release cannot finish last and roll the aliases back', () => {
   const release = readFileSync(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8')
-  // The mutable aliases (latest and the month line) are promoted by every
-  // release: a global concurrency group orders them through completion.
+  // A global concurrency group orders releases through completion.
   expect(release).toContain('group: release\n')
   expect(release).not.toMatch(/group: release-\$\{\{ github\.ref \}\}/)
+  // Serialization orders by dispatch time, not by version: the shared
+  // aliases (latest and the month line) are promoted after the images
+  // build, and only by the newest release, so a recovery rerun of an older
+  // release cannot finish last and roll them back.
+  expect(release).toContain('Promote the shared aliases')
+  expect(release).toContain('imagetools create')
+  expect(release).not.toContain('ghcr.io/vividynamics/qare-core:${{ env.CALVER_LINE }}')
+  expect(release).not.toContain('ghcr.io/vividynamics/qare-web:${{ env.CALVER_LINE }}')
+  expect(release).not.toContain('ghcr.io/vividynamics/qare-android:${{ env.CALVER_LINE }}')
+  expect(release).not.toContain('ghcr.io/vividynamics/qare-desktop-linux:${{ env.CALVER_LINE }}')
+  const promote = release.indexOf('- name: Promote the shared aliases')
+  const desktop = release.indexOf('- name: Build and push the desktop-linux flavour from it')
+  expect(promote, 'aliases are promoted after every image built').toBeGreaterThan(desktop)
 })
 
 test('auto-tag dispatches the release on the tag and verifies the run started (#188)', () => {

@@ -107,13 +107,14 @@ jobs:
             export T="$tagged_at" S="$head"
             # The lookup filters server side: a limit applied before the
             # filter would hide the run behind newer releases and dispatch
-            # the tag again on a rerun of an older commit. A superseded run
-            # never started building, so it does not count as started.
+            # the tag again on a rerun of an older commit. A run that
+            # concurrency replaced, recorded cancelled, or superseded, never
+            # started building, so it does not count as started.
             started="$(gh run list --workflow=release.yml --branch "$tagged_at" --limit 1 --json conclusion \
-              --jq 'any(.[]; .conclusion != "superseded")')"
+              --jq 'any(.[]; .conclusion != "superseded" and .conclusion != "cancelled")')"
             if [ "$started" = "false" ]; then
               started="$(gh run list --workflow=release.yml --commit "$head" --limit 1 --json conclusion \
-                --jq 'any(.[]; .conclusion != "superseded")')"
+                --jq 'any(.[]; .conclusion != "superseded" and .conclusion != "cancelled")')"
             fi
             if [ "$started" != "true" ]; then
               echo "version=$tagged_at" >> "$GITHUB_ENV"
