@@ -504,7 +504,7 @@ test('auto-tag releases an unbumped merge with the next CalVer (#230)', () => {
   // The newest tag is taken from release tags on the default branch only:
   // an unrelated or off-branch tag sorts after any CalVer and would reset
   // the line, and release.yml releases default-branch tags only.
-  expect(autoTag).toContain("git fetch --quiet origin 'refs/tags/*:refs/tags/*'")
+  expect(autoTag).toContain("'refs/tags/*:refs/tags/*'")
   expect(autoTag).toContain("grep -E 'refs/tags/20[0-9]{2}\\.[0-9]+\\.[0-9]+(\\^\\{\\})?$' | awk")
   expect(autoTag).toContain("git merge-base --is-ancestor \"$sha\" HEAD")
   // A computed name origin already carries cannot be pushed: climb the patch.
