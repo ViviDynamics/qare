@@ -21,6 +21,13 @@ test('the core image recipe builds the workspace, stamps the pinned versions and
   assert.doesNotMatch(dockerfile, /playwright|chromium/i, 'the core image ships no client driver')
 })
 
+test('the builder strips node debug symbols before copying it into the runtime', async () => {
+  const dockerfile = await readFile(join(ROOT, 'images', 'core', 'Dockerfile'), 'utf8')
+  const builder = dockerfile.split('FROM python:3.12-slim-bookworm\n')[0]
+  assert.match(builder, /binutils/, 'strip is available only in the build stage')
+  assert.match(builder, /strip --strip-unneeded \/usr\/bin\/node/, 'unused debug symbols are removed before the runtime copy')
+})
+
 test('the core image holds its size budget', async () => {
   const budget = Number((await readFile(join(ROOT, 'images', 'core', 'size-budget'), 'utf8')).trim())
   assert.ok(Number.isFinite(budget) && budget > 0, 'the budget is a positive byte count')
