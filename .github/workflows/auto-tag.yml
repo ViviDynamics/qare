@@ -22,9 +22,10 @@ name: Auto-tag
 # computed tag names its qare-ref explicitly to avoid running one release
 # behind.
 #
-# Idempotent per commit: a commit that already carries any tag, by a rerun or
-# by a tag a person pushed first, is a no-op, so the release runs exactly once
-# per commit and nothing loops.
+# Idempotent per commit: a commit that already carries a release tag, by a
+# rerun or by a tag a person pushed first, is a no-op, so the release runs
+# exactly once per commit and nothing loops. Tags that are not releases do
+# not count in either direction: they trigger no release and suppress none.
 
 on:
   workflow_run:
@@ -76,7 +77,10 @@ jobs:
           # the commit sha, so one of them naming the validated commit ends
           # the run here, before anything is computed.
           head="$(git rev-parse HEAD)"
-          if git ls-remote --tags origin | awk '{print $1}' | grep -qx "$head"; then
+          # Only release tags count: the release workflow's trigger and its
+          # own CalVer check accept nothing else, so an unrelated tag on the
+          # commit must not suppress a release either.
+          if git ls-remote --tags origin | grep -E 'refs/tags/20[0-9]{2}\.[0-9]+\.[0-9]+(\^\{\})?$' | awk '{print $1}' | grep -qx "$head"; then
             echo "the validated commit is already tagged: nothing to do" >> "$GITHUB_STEP_SUMMARY"
             echo "tagged=false" >> "$GITHUB_ENV"
             exit 0
