@@ -20,12 +20,13 @@ FROM python:3.12-slim-bookworm AS builder
 ARG NODE_MAJOR=22
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg binutils \
  && mkdir -p /etc/apt/keyrings \
  && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
  && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
  && apt-get update \
  && apt-get install -y --no-install-recommends nodejs \
+ && strip --strip-unneeded /usr/bin/node \
  && rm -rf /var/lib/apt/lists* \
  && npm install --global pnpm@12.5.1
 
@@ -48,7 +49,7 @@ RUN pnpm install --frozen-lockfile \
 # needs, so no package toolchain is installed into the final image at all.
 FROM python:3.12-slim-bookworm
 
-ARG NARE_WHEEL=https://github.com/ViviDynamics/nare/releases/download/2026.9.10/nare-2026.9.10-py3-none-any.whl
+ARG NARE_WHEEL=https://github.com/ViviDynamics/nare/releases/download/2026.10.4/nare-2026.10.4-py3-none-any.whl
 ARG IMAGE_NAME=qare-core
 
 LABEL org.opencontainers.image.title=$IMAGE_NAME \
