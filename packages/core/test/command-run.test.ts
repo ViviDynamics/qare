@@ -131,6 +131,33 @@ test('a destination the profile does not declare refuses the check: the result i
   expect(outbound.containment).toBe('cell')
 })
 
+test("the cell's start failing leaves the run standing: the check is unverified and its record says why (#224)", async () => {
+  const job = await makeJob({
+    criteria: commandCriteria('echo hi'),
+    profile: { inline: { ...PROFILE, commands: COMMANDS } },
+  })
+
+  const { result } = await runJob(job, {
+    ...BOOT,
+    commandCell: {
+      start: async () => {
+        throw new Error('docker daemon is unreachable')
+      },
+    },
+  })
+
+  expect(result.criteria[0].outcome).toBe('unverified')
+  expect(result.criteria[0].reason).toBe("the command's cell did not start: docker daemon is unreachable")
+  const outbound = JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'outbound.json'), 'utf8')) as Record<string, unknown>
+  expect(outbound).toEqual({
+    command: 'echo hi',
+    containment: 'cell',
+    declared: ['api.billing-vendor.example'],
+    reached: [],
+    incomplete: 'docker daemon is unreachable',
+  })
+})
+
 test('a command that opts out runs with the network its step has, and its evidence says what it was not shown (#224)', async () => {
   const asked: unknown[] = []
   const job = await makeJob({

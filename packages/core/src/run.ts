@@ -3804,7 +3804,34 @@ async function runContainedCommandCheck(
   dir: string,
   rules: readonly RedactionRule[],
 ): Promise<CheckOutcome> {
-  const made = await cell.start({ ...cell.request, checkout: cwd, ...(scratch === undefined ? {} : { scratch }) })
+  let made: CommandCell
+  try {
+    made = await cell.start({ ...cell.request, checkout: cwd, ...(scratch === undefined ? {} : { scratch }) })
+  } catch (error) {
+    // Cell startup is check infrastructure (#224): like a flow whose backend
+    // does not start, the answer is an unverified outcome the run keeps, not
+    // a result it loses. Refused, so a flaky daemon is never baked into the
+    // cache as the criterion's verdict, and the record says the cell never
+    // got to prove anything.
+    await writeOutbound(
+      dir,
+      {
+        command: check.run,
+        containment: 'cell',
+        declared: [...cell.request.hosts],
+        reached: [],
+        incomplete: sanitizeLine((error as Error).message),
+      },
+      rules,
+    )
+    return {
+      status: 'unverified',
+      stdout: '',
+      stderr: '',
+      reason: `the command's cell did not start: ${sanitizeLine((error as Error).message)}`,
+      refused: true,
+    }
+  }
   let outcome: CheckOutcome
   try {
     outcome = await runCommandCheck(check, cwd, timeoutMs, execution, selection, (tokens, _cwd, env) => made.run(tokens, env))
