@@ -9,10 +9,27 @@ name: Auto-tag
 # workflow runs, so the release is started explicitly rather than left to the
 # tag push.
 #
-# Idempotent by the tag's existence: a merge that changes no version finds the
-# tag already on origin and does nothing, and a tag a human pushed first means
-# the automation dispatches nothing, so the release runs exactly once per tag
-# and nothing loops.
+# A green merge to main tags and releases. When package.json's version is
+# already tagged, the automation computes the next CalVer from the newest
+# tag and the build's month: the patch climbs while the month does not, and
+# a new month starts a new line.
+#
+# Three honest limits. GitHub Actions keeps one running and one pending run
+# per concurrency group, so a burst of green builds can supersede a queued
+# run, and a superseded merge ships in the release that follows it rather
+# than in a tag of its own. The release workflow serializes behind the same
+# rule, so a pending release can be superseded by a newer one and its tag
+# ships nothing until a rerun re-dispatches it. And a computed tag cannot
+# stamp the pipeline's qare-ref default, because the automation never pushes
+# commits, so a caller pinning a computed tag names its qare-ref explicitly
+# to avoid running one release behind.
+#
+# The release runs exactly once per commit, and a failed dispatch is
+# recoverable: when the validated commit already carries a release tag and a
+# release run for it exists, the run is a no-op, and when the tag exists but
+# its release run never started, the release is re-dispatched. Tags that are
+# not releases do not count in either direction: they trigger no release and
+# suppress none.
 
 on:
   workflow_run:
@@ -55,17 +72,94 @@ jobs:
           fetch-depth: 0
       - name: Read the version package.json carries
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
-      - name: Do nothing when the tag already exists
+      - name: Decide the version to tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if [ -n "$(git ls-remote --tags origin "refs/tags/$version")" ]; then
-            echo "tag $version already exists on origin: nothing to do" >> "$GITHUB_STEP_SUMMARY"
+          # Every tag ls-remote lists names its object sha first, and an
+          # annotated tag's peeled line carries the commit sha, so one of
+          # them naming the validated commit ends the run here, before
+          # anything is computed. Only release tags count: the release
+          # workflow's trigger and its own CalVer check accept nothing else,
+          # so an unrelated tag on the commit must not suppress a release
+          # either. The peeled commit sha is what ancestry is checked
+          # against, and an annotated tag's ^{} line carries it, which the
+          # awk's last-line-wins keeps.
+          head="$(git rev-parse HEAD)"
+          git fetch --quiet origin 'refs/tags/*:refs/tags/*'
+          latest=""
+          tagged_at=""
+          while IFS=$'\t' read -r name sha; do
+            if [ "$sha" = "$head" ]; then
+              tagged_at="$name"
+            elif git merge-base --is-ancestor "$sha" HEAD; then
+              latest="$name"
+            fi
+          done < <(git ls-remote --tags origin 'refs/tags/*.*.*' | grep -E 'refs/tags/20[0-9]{2}\.[0-9]+\.[0-9]+(\^\{\})?$' | awk '{ref=$2; sub(/\^\{\}$/, "", ref); sub(/^refs\/tags\//, "", ref); shas[ref]=$1} END{for (r in shas) print r "\t" shas[r]}' | sort -V)
+          if [ -n "$tagged_at" ]; then
+            # A rerun of this job, or a tag a person pushed first, must not
+            # release the same commit twice: a release run for the tag ends
+            # the run here. But a tag created by a run whose dispatch failed
+            # must not leave the commit tagged and unreleased, so the
+            # release is re-dispatched when no run for the tag exists.
+            export T="$tagged_at" S="$head"
+            # The lookup filters server side: a limit applied before the
+            # filter would hide the run behind newer releases and dispatch
+            # the tag again on a rerun of an older commit. A run that
+            # concurrency replaced, recorded cancelled, or superseded, never
+            # started building, so it does not count as started.
+            started="$(gh run list --workflow=release.yml --branch "$tagged_at" --limit 1 --json conclusion \
+              --jq 'any(.[]; .conclusion != "superseded" and .conclusion != "cancelled")')"
+            if [ "$started" = "false" ]; then
+              started="$(gh run list --workflow=release.yml --commit "$head" --limit 1 --json conclusion \
+                --jq 'any(.[]; .conclusion != "superseded" and .conclusion != "cancelled")')"
+            fi
+            if [ "$started" != "true" ]; then
+              echo "version=$tagged_at" >> "$GITHUB_ENV"
+              echo "tag_exists=true" >> "$GITHUB_ENV"
+              echo "tagged=true" >> "$GITHUB_ENV"
+              echo "the validated commit is already tagged $tagged_at and no release run exists for it: re-dispatching the release" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "the validated commit is already tagged: nothing to do" >> "$GITHUB_STEP_SUMMARY"
             echo "tagged=false" >> "$GITHUB_ENV"
-          else
-            echo "tagged=true" >> "$GITHUB_ENV"
+            exit 0
           fi
+          if [ -z "$(git ls-remote --tags origin "refs/tags/$version")" ]; then
+            echo "tagged=true" >> "$GITHUB_ENV"
+            echo "the version package.json carries ($version) is untagged: tagging it" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # The packaged version is already released: a merge that did not bump
+          # it still releases. A bump that names a version a computed release
+          # already consumed lands here too, and ships under the next version,
+          # which the summary says. The next CalVer comes from the newest
+          # release on the default branch (computed with the tagged-commit
+          # check above) and the build's month: the patch climbs while the
+          # month does not, and a new month starts a new line. release.yml
+          # releases tags whose commits are on the default branch only, so
+          # the newest release is drawn from exactly those tags: a stray
+          # CalVer tag on a pull-request commit sorts ahead of the real
+          # releases and would reset or claim the line without counting.
+          line="$(date -u +%Y.%-m)"
+          case "$latest" in
+            "$line".*) patch="$((10#${latest#"$line."} + 1))" ;;
+            *) patch=0 ;;
+          esac
+          # A computed name origin already carries cannot be pushed: climb
+          # the patch until the name is free, so a stray tag on a
+          # pull-request commit cannot consume the computed name either.
+          while [ -n "$(git ls-remote --tags origin "refs/tags/$line.$patch")" ]; do
+            patch=$((patch + 1))
+          done
+          next="$line.$patch"
+          echo "tagged=true" >> "$GITHUB_ENV"
+          echo "version=$next" >> "$GITHUB_ENV"
+          echo "package.json's version is already tagged: computing $next (newest release on main: ${latest:-none})" >> "$GITHUB_STEP_SUMMARY"
       - name: Tag the validated commit and push it
-        if: env.tagged == 'true'
+        if: env.tagged == 'true' && env.tag_exists != 'true'
         run: |
           set -euo pipefail
           # An annotated tag needs a committer identity, which the runner does
