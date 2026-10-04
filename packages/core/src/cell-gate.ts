@@ -31,6 +31,14 @@ export const GATE_RELAY_PORT = 9222
 
 /** The ports the gate connects to: the two a connection names its host on. */
 const CARRIED_PORTS: Record<number, string> = { 80: 'http', 443: 'https' }
+
+/** A refusal names the ports the gate carries, as a list in words. */
+function carriedPortsNote(ports: number[]): string {
+  const sorted = [...ports].sort((a, b) => a - b)
+  if (sorted.length <= 1) return sorted.map(String).join('')
+  const head = sorted.slice(0, -1).map(String).join(', ')
+  return `${head} and ${sorted[sorted.length - 1]}`
+}
 /** A request is one short line; a longer one is not a request. */
 const MAX_REQUEST_BYTES = 1_024
 /** The distinct destinations one launch may put in the record before it is cut. */
@@ -56,6 +64,19 @@ export interface GateSummary {
 export interface GateOptions {
   /** The hosts the profile declares, as `client.hosts` writes them. */
   hosts: readonly string[]
+  /**
+   * A declared host dialed as another name (#224): a stub host as the compose
+   * service that provides it on the project's network, or the booted app's
+   * own name as the address that answers the run's bridge. The record keeps
+   * the name the cell asked for.
+   */
+  map?: Readonly<Record<string, string>>
+  /**
+   * The ports the gate carries beyond its own 80 and 443 (#224): a booted
+   * stack publishes the app on the port the run gave it, not on either of
+   * those two.
+   */
+  ports?: readonly CarriedPort[]
   /** The directory the gate and the cell share. */
   socketDir: string
   relayPort?: number
@@ -65,6 +86,12 @@ export interface GateOptions {
   /** Connects to a declared host; the network by default. */
   dial?: (host: string, port: number) => Socket
   maxEntries?: number
+}
+
+/** One port the gate carries for a declared host, and how the connection is read. */
+export interface CarriedPort {
+  port: number
+  protocol: 'http' | 'https'
 }
 
 export interface Gate {
@@ -87,6 +114,14 @@ function listen(server: Server, ...where: [string] | [number, string]): Promise<
 
 export async function startGate(opts: GateOptions): Promise<Gate> {
   const stubs = [{ hosts: [...opts.hosts] }]
+  // The ports the gate carries: its own two, and any the run hands it for the
+  // stack it booted (#224).
+  const carried: Record<number, string> = { ...CARRIED_PORTS }
+  for (const entry of opts.ports ?? []) carried[entry.port] = entry.protocol
+  const carriedNote = carriedPortsNote(Object.keys(carried).map(Number))
+  // A declared host may be dialed under another name (#224): the stub as the
+  // compose service that provides it, the app as the address the bridge answers.
+  const dialAs = (host: string): string => (opts.map ?? {})[host] ?? host
   const maxEntries = opts.maxEntries ?? DEFAULT_MAX_ENTRIES
   const dial = opts.dial ?? ((host: string, port: number): Socket => connect({ host, port }))
   const reached = new Map<string, ReachedHost>()
@@ -132,17 +167,17 @@ export async function startGate(opts: GateOptions): Promise<Gate> {
     }
     if (op !== 'connect') return void socket.destroy()
     const port = typeof rawPort === 'number' && Number.isInteger(rawPort) && rawPort > 0 && rawPort < 65_536 ? rawPort : 0
-    const protocol = CARRIED_PORTS[port]
+    const protocol = carried[port]
     if (!declared) {
       record(host ?? 'unknown', port, protocol ?? 'tcp', false)
       return answer(socket, { ok: false, reason: 'undeclared' }, true)
     }
     if (protocol === undefined) {
       record(host, port, 'tcp', false)
-      return answer(socket, { ok: false, reason: 'the gate carries ports 80 and 443 only' }, true)
+      return answer(socket, { ok: false, reason: `the gate carries ports ${carriedNote} only` }, true)
     }
     record(host, port, protocol, true)
-    const upstream = track(dial(host, port))
+    const upstream = track(dial(dialAs(host), port))
     let settled = false
     const refuse = (why: string): void => {
       if (settled) return

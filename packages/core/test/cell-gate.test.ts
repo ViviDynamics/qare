@@ -21,7 +21,10 @@ async function upstream(): Promise<{ port: number }> {
   return { port: listening.port }
 }
 
-async function gate(hosts: string[], extra: { maxEntries?: number; dialPort?: number } = {}): Promise<{ gate: Gate; dir: string; lines: string[]; dialled: string[] }> {
+async function gate(
+  hosts: string[],
+  extra: { maxEntries?: number; dialPort?: number; map?: Record<string, string>; ports?: { port: number; protocol: 'http' | 'https' }[] } = {},
+): Promise<{ gate: Gate; dir: string; lines: string[]; dialled: string[] }> {
   const dir = await mkdtemp(join(tmpdir(), 'qare-gate-'))
   cleanups.push(() => rm(dir, { recursive: true, force: true }))
   const lines: string[] = []
@@ -38,6 +41,8 @@ async function gate(hosts: string[], extra: { maxEntries?: number; dialPort?: nu
       return dialLoopback(extra.dialPort ?? 1)
     },
     ...(extra.maxEntries === undefined ? {} : { maxEntries: extra.maxEntries }),
+    ...(extra.map === undefined ? {} : { map: extra.map }),
+    ...(extra.ports === undefined ? {} : { ports: extra.ports }),
   })
   cleanups.push(() => started.stop().then(() => {}))
   return { gate: started, dir, lines, dialled }
@@ -102,6 +107,41 @@ test('a connection to a declared host is made by the gate and carried both ways,
   expect(summaryOf(lines).reached).toEqual([
     { host: 'api.example.test', port: 443, protocol: 'https', declared: true, count: 1 },
     { host: 'api.example.test', port: 80, protocol: 'http', declared: true, count: 1 },
+  ])
+})
+
+test('a mapped host is dialled as the name the map carries, and recorded as the name the cell asked for (#224)', async () => {
+  const { port } = await upstream()
+  const { gate: started, dir, lines, dialled } = await gate(['api.billing.example.test'], {
+    dialPort: port,
+    map: { 'api.billing.example.test': 'billing-stub' },
+  })
+  const { reply } = await ask(dir, { op: 'connect', host: 'api.billing.example.test', port: 443 })
+  expect(reply).toEqual({ ok: true })
+  expect(dialled).toEqual(['billing-stub:443'])
+  await started.stop()
+  expect(summaryOf(lines).reached).toEqual([
+    { host: 'api.billing.example.test', port: 443, protocol: 'https', declared: true, count: 1 },
+  ])
+})
+
+test('the gate carries the port the run booted the app on, and names every port it carries (#224)', async () => {
+  const { port } = await upstream()
+  const { gate: started, dir, lines, dialled } = await gate(['api.example.test'], {
+    dialPort: port,
+    ports: [{ port: 3000, protocol: 'http' }],
+  })
+  const { reply } = await ask(dir, { op: 'connect', host: 'api.example.test', port: 3000 })
+  expect(reply).toEqual({ ok: true })
+  expect(dialled).toEqual(['api.example.test:3000'])
+  expect((await ask(dir, { op: 'connect', host: 'api.example.test', port: 22 })).reply).toEqual({
+    ok: false,
+    reason: 'the gate carries ports 80, 443 and 3000 only',
+  })
+  await started.stop()
+  expect(summaryOf(lines).reached).toEqual([
+    { host: 'api.example.test', port: 22, protocol: 'tcp', declared: false, count: 1 },
+    { host: 'api.example.test', port: 3000, protocol: 'http', declared: true, count: 1 },
   ])
 })
 

@@ -564,6 +564,61 @@ test('a command whose name is not a safe name fails the profile (#156)', async (
   rmSync(dir, { recursive: true })
 })
 
+test('a named command may opt out of containment and declare scratch (#224)', () => {
+  const profile = validateProfileConfig({
+    target: MCP_HEALTH,
+    commands: {
+      seed: { run: 'node scripts/seed.mjs', about: 'seeds the stub', egress: 'uncontained' },
+      test: { run: 'pnpm test', about: 'runs the tests', scratch: ['coverage', 'artifacts/junit'] },
+    },
+  })
+  expect(profile.commands?.seed?.egress).toBe('uncontained')
+  expect(profile.commands?.seed?.scratch).toBeUndefined()
+  expect(profile.commands?.test?.scratch).toEqual(['coverage', 'artifacts/junit'])
+  expect(profile.commands?.test?.egress).toBeUndefined()
+})
+
+test('a command whose egress is not contained or uncontained fails the profile (#224)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: pnpm test\n    about: runs the tests\n    egress: sandboxed\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test.egress')
+  expect(error.message).toContain('contained or uncontained')
+  rmSync(dir, { recursive: true })
+})
+
+test('a scratch path that escapes the repository fails the profile (#224)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: pnpm test\n    about: runs the tests\n    scratch: ['../outside']\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test.scratch')
+  expect(error.message).toContain('../outside')
+  rmSync(dir, { recursive: true })
+})
+
+test('a scratch path that is absolute or empty fails the profile (#224)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: pnpm test\n    about: runs the tests\n    scratch: ['/tmp/coverage']\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test.scratch')
+  expect(error.message).toContain('/tmp/coverage')
+  rmSync(dir, { recursive: true })
+})
+
+test('a command that opts out of containment and declares scratch is refused (#224)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\ncommands:\n  test:\n    run: pnpm test\n    about: runs the tests\n    egress: uncontained\n    scratch: ['coverage']\n`)
+
+  const error = await profileError(() => loadProfile(dir))
+  expect(error.field).toBe('commands.test')
+  expect(error.message).toContain('uncontained')
+  expect(error.message).toContain('scratch')
+  rmSync(dir, { recursive: true })
+})
+
 test('the loaded profile carries its QA.md instructions (#156)', async () => {
   const profile = await loadProfile(fixtureDir)
 

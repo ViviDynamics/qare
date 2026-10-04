@@ -198,6 +198,19 @@ export interface ProfileCommand {
   filter?: string
   /** The machine-readable report the command prints on stdout (#157). */
   report?: ReportFormat
+  /**
+   * Whether the command runs contained (#224): in a cell with no network but
+   * the declared hosts through the gate, and the repository as a read-only
+   * copy. The default is contained; `uncontained` is the explicit opt-out,
+   * and the check's evidence then says the command ran uncontained.
+   */
+  egress?: 'contained' | 'uncontained'
+  /**
+   * Paths inside the repository a contained command may write (#224), each a
+   * writable directory over the read-only copy. A write anywhere else fails
+   * against the copy. A command that runs uncontained is held to no list.
+   */
+  scratch?: string[]
 }
 
 /** The report formats a command check's selection can be read from (#157). */
@@ -1192,10 +1205,26 @@ function parseCommands(value: unknown): Record<string, ProfileCommand> {
         `run ${JSON.stringify(run)} starts with ${JSON.stringify(program)}, which a shell interprets and the runner cannot spawn: name the program that runs`,
       )
     const about = nonEmptyString(entry.about, `${base}.about`, 'about')
+    const egress = entry.egress === undefined ? undefined : nonEmptyString(entry.egress, `${base}.egress`, 'egress')
+    if (egress !== undefined && egress !== 'contained' && egress !== 'uncontained')
+      fail(
+        `${base}.egress`,
+        `egress ${JSON.stringify(egress)} must be contained or uncontained: a command runs in a cell with only the declared hosts through the gate, or it says uncontained and runs with the network its step has`,
+      )
+    const scratch = entry.scratch === undefined ? undefined : parseScratch(entry.scratch, base)
+    if (egress === 'uncontained' && scratch !== undefined)
+      fail(
+        base,
+        'a command that runs uncontained is held to no scratch: the read-only copy and the writable paths are the cell\'s, so remove one of egress: uncontained and scratch',
+      )
+    const extras = {
+      ...(egress === undefined ? {} : { egress }),
+      ...(scratch === undefined ? {} : { scratch }),
+    }
     const filter = entry.filter === undefined ? undefined : nonEmptyString(entry.filter, `${base}.filter`, 'filter')
     const report = entry.report === undefined ? undefined : nonEmptyString(entry.report, `${base}.report`, 'report')
     if (filter === undefined && report === undefined) {
-      commands[name] = { run, about }
+      commands[name] = { run, about, ...extras }
       continue
     }
     if (filter === undefined)
@@ -1215,9 +1244,28 @@ function parseCommands(value: unknown): Record<string, ProfileCommand> {
         base,
         `report ${JSON.stringify(report)} must be one of the formats the runner reads: ${REPORT_FORMATS.join(', ')}`,
       )
-    commands[name] = { run, about, filter, report: report as ReportFormat }
+    commands[name] = { run, about, filter, report: report as ReportFormat, ...extras }
   }
   return commands
+}
+
+/**
+ * The paths a contained command may write (#224): each relative to the
+ * repository, with no step that leaves it, so the cell can mount a writable
+ * directory at the same path over the read-only copy. Anything else would
+ * promise a write the copy never keeps.
+ */
+function parseScratch(value: unknown, base: string): string[] {
+  if (!Array.isArray(value)) fail(`${base}.scratch`, 'scratch must be a list of paths relative to the repository')
+  if (value.length === 0) fail(`${base}.scratch`, 'scratch names no path: an empty list writes nothing, so remove it')
+  return value.map((entry) => {
+    const path = nonEmptyString(entry, `${base}.scratch`, 'scratch path')
+    if (path.startsWith('/'))
+      fail(`${base}.scratch`, `scratch path ${JSON.stringify(path)} must be a path relative to the repository, not an absolute one`)
+    if (path.split('/').some((segment) => segment === '..' || segment === '' || segment === '.'))
+      fail(`${base}.scratch`, `scratch path ${JSON.stringify(path)} must stay inside the repository, with no "..", "." or empty step in it`)
+    return path
+  })
 }
 
 /**

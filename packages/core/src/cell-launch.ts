@@ -106,7 +106,8 @@ export async function launchInCell(opts: CellLaunchOptions): Promise<number> {
   return code
 }
 
-const USAGE = 'usage: qare cell gate --socket-dir <dir> [--host <name>]... | qare cell launch --socket-dir <dir> --cdp-port <port> -- <command> [args...]'
+const USAGE =
+  'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... | qare cell launch --socket-dir <dir> --cdp-port <port> -- <command> [args...]'
 
 export interface CellCommandIo {
   /** One line of standard output: the gate's lines, which the run reads. */
@@ -157,10 +158,41 @@ export async function runCellCommand(argv: string[], io: CellCommandIo): Promise
     io.err(`qare cell gate: ${JSON.stringify(bad)} is not a host name`)
     return 4
   }
+  // A port the run booted the app on, carried beside the gate's own two (#224).
+  const ports: { port: number; protocol: 'http' | 'https' }[] = []
+  for (let index = 0; index < flags.length; index++) {
+    if (flags[index] !== '--port') continue
+    const port = Number(flags[index + 1])
+    const protocol = flags[index + 2]
+    if (!Number.isInteger(port) || port <= 0 || port > 65_535 || (protocol !== 'http' && protocol !== 'https')) {
+      io.err('qare cell gate: --port must be a port and a scheme, http or https')
+      return 4
+    }
+    ports.push({ port, protocol })
+  }
+  // A declared host dialed as the name that answers: the compose service that
+  // provides a stub, or the address the run's bridge answers the app at (#224).
+  const map: Record<string, string> = {}
+  for (const entry of values('--map')) {
+    const at = entry.indexOf('=')
+    const name = at === -1 ? '' : entry.slice(0, at)
+    if (at === -1 || name === '' || entry.slice(at + 1) === '' || hostName(name.replace(/^\*\./, '')) === undefined) {
+      io.err(`qare cell gate: ${JSON.stringify(entry)} is not a <host>=<name> mapping`)
+      return 4
+    }
+    map[name] = entry.slice(at + 1)
+  }
   const relayPort = values('--relay-port')[0]
   let gate
   try {
-    gate = await startGate({ hosts, socketDir, write: io.out, ...(relayPort === undefined ? {} : { relayPort: Number(relayPort) }) })
+    gate = await startGate({
+      hosts,
+      socketDir,
+      write: io.out,
+      ...(relayPort === undefined ? {} : { relayPort: Number(relayPort) }),
+      ...(ports.length === 0 ? {} : { ports }),
+      ...(Object.keys(map).length === 0 ? {} : { map }),
+    })
   } catch (error) {
     io.err(`qare cell gate: could not start: ${(error as Error).message}`)
     return 4

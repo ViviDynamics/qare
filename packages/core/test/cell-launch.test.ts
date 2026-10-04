@@ -99,12 +99,45 @@ test('qare cell launch and qare cell gate read their arguments, and refuse what 
   expect(await runCellCommand(['gate', '--host', 'api.example.test'], io)).toBe(4)
   expect(await runCellCommand(['gate', '--socket-dir', '/tmp', '--host', 'not a host'], io)).toBe(4)
   expect(said).toEqual([
-    'usage: qare cell gate --socket-dir <dir> [--host <name>]... | qare cell launch --socket-dir <dir> --cdp-port <port> -- <command> [args...]',
+    'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... | qare cell launch --socket-dir <dir> --cdp-port <port> -- <command> [args...]',
     'qare cell launch: no command to launch after --',
     'qare cell launch: --socket-dir is required',
     'qare cell gate: --socket-dir is required',
     'qare cell gate: "not a host" is not a host name',
   ])
+})
+
+test('qare cell gate reads the port and the mapping a stack needs, and refuses a malformed one (#224)', async () => {
+  const said: string[] = []
+  const io = { out: () => {}, err: (line: string) => said.push(line), signals: new EventEmitter() }
+  expect(await runCellCommand(['gate', '--socket-dir', '/tmp', '--port', '3000'], io)).toBe(4)
+  expect(await runCellCommand(['gate', '--socket-dir', '/tmp', '--port', '3000', 'gopher'], io)).toBe(4)
+  expect(await runCellCommand(['gate', '--socket-dir', '/tmp', '--map', 'no-equals-sign'], io)).toBe(4)
+  expect(await runCellCommand(['gate', '--socket-dir', '/tmp', '--map', '=billing-stub'], io)).toBe(4)
+  expect(await runCellCommand(['gate', '--socket-dir', '/tmp', '--map', 'not a host=stub'], io)).toBe(4)
+  expect(said).toEqual([
+    'qare cell gate: --port must be a port and a scheme, http or https',
+    'qare cell gate: --port must be a port and a scheme, http or https',
+    'qare cell gate: "no-equals-sign" is not a <host>=<name> mapping',
+    'qare cell gate: "=billing-stub" is not a <host>=<name> mapping',
+    'qare cell gate: "not a host=stub" is not a <host>=<name> mapping',
+  ])
+  const dir = await mkdtemp(join(tmpdir(), 'qare-cell-cmd-'))
+  const lines: string[] = []
+  const signals = new EventEmitter()
+  let ready: (() => void) | undefined
+  const isReady = new Promise<void>((resolve) => (ready = resolve))
+  const running = runCellCommand(
+    ['gate', '--socket-dir', dir, '--relay-port', '0', '--host', 'api.example.test', '--port', '3000', 'http', '--map', 'api.example.test=billing-stub'],
+    { out: (line) => (lines.push(line), ready?.()), err: () => {}, signals },
+  )
+  await isReady
+  // The launcher attaches its signal listeners when the gate is up; give it that tick.
+  await new Promise((resolve) => setImmediate(resolve))
+  signals.emit('SIGTERM')
+  expect(await running).toBe(0)
+  // The gate started with what the run handed it: the summary closes it.
+  expect(JSON.parse(lines.at(-1) as string).event).toBe('summary')
 })
 
 test('qare cell gate serves until it is told to stop, then writes its record (#223)', async () => {
