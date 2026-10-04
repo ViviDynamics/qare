@@ -13,10 +13,10 @@ import { GATE_RELAY_PORT, type GateSummary, type ReachedHost } from './cell-gate
  */
 
 /** Where the shared volume is mounted in both containers. */
-const SOCKET_DIR = '/run/qare-cell'
-const GATE_READY_TIMEOUT_MS = 60_000
+export const SOCKET_DIR = '/run/qare-cell'
+export const GATE_READY_TIMEOUT_MS = 60_000
 /** How long the gate is given to write its record once asked to stop. */
-const GATE_STOP_SECONDS = 10
+export const GATE_STOP_SECONDS = 10
 const OPT_OUT = 'a profile that must run its build uncontained says so with client.egress: uncontained, and the evidence then says it too'
 
 /** The part of a child process a cell uses: what the Electron driver reads its application through. */
@@ -65,7 +65,7 @@ export const defaultCellDocker: CellDocker = {
   },
 }
 
-const firstLine = (text: string): string => text.trim().split('\n')[0]?.trim() ?? ''
+export const firstLine = (text: string): string => text.trim().split('\n')[0]?.trim() ?? ''
 
 /** An image reference is an argument to docker, so it is held to looking like one. */
 const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/
@@ -178,7 +178,8 @@ function isReached(value: unknown): value is ReachedHost {
   return typeof entry.host === 'string' && typeof entry.port === 'number' && typeof entry.protocol === 'string' && typeof entry.declared === 'boolean' && typeof entry.count === 'number'
 }
 
-function summaryIn(line: string): GateSummary | undefined {
+/** The gate's record line, when the line is one. Shared with the command cell, which reads the same record. */
+export function summaryIn(line: string): GateSummary | undefined {
   let parsed: unknown
   try {
     parsed = JSON.parse(line)

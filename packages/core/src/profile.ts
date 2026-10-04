@@ -1218,7 +1218,7 @@ function parseCommands(value: unknown): Record<string, ProfileCommand> {
         'a command that runs uncontained is held to no scratch: the read-only copy and the writable paths are the cell\'s, so remove one of egress: uncontained and scratch',
       )
     const extras = {
-      ...(egress === undefined ? {} : { egress }),
+      ...(egress === undefined ? {} : { egress: egress as 'contained' | 'uncontained' }),
       ...(scratch === undefined ? {} : { scratch }),
     }
     const filter = entry.filter === undefined ? undefined : nonEmptyString(entry.filter, `${base}.filter`, 'filter')

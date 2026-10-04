@@ -190,9 +190,9 @@ export async function startShim(opts: ShimOptions): Promise<Shim> {
   await listening(https, opts.httpsPort ?? 443, LOOPBACK)
   // The booted app answers on the port the run gave it, not on either of
   // those two; the shim reads it as http or https, as the run booted it (#224).
-  const app =
+  const app: Server | undefined =
     opts.appPort === undefined ? undefined : carry(opts.appPort, opts.appScheme === 'https' ? tlsServerName : httpHost)
-  if (app !== undefined) await listening(app, opts.appPort, LOOPBACK)
+  if (opts.appPort !== undefined && app !== undefined) await listening(app, opts.appPort, LOOPBACK)
 
   // The driver's way in, from the gate's side of the shared directory.
   const devtools = createServer((socket) => {
