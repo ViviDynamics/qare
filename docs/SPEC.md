@@ -746,7 +746,9 @@ declared hosts, dialed as the compose service that provides them. Each host a
 stub the profile gives ports for (`stubs.<name>.ports`) is answered on its
 own loopback address at those ports, so the command reaches the stub on the
 port it names, over any protocol, and the gate records the dial as the host
-it is dialed by; a stub that names no ports is reached as http or https
+it is dialed by, on the protocol the dial is: a stub's declared port is
+tcp, however the app's own port may share its number; a stub that names no
+ports is reached as http or https
 alone, read from the connection the way a browser dials it. The gate holds a
 mapped host to those ports on its own account, asked on the mounted socket
 or not: the shim's bindings are the shim's, and a port the stub does not

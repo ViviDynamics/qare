@@ -209,6 +209,7 @@ export async function startGate(opts: GateOptions): Promise<Gate> {
     // The app is one service at one port: a request for its host on any
     // other port is not the app, however a service on the machine the app
     // is published from may answer (#224).
+    const dialled = dialAs(host)
     const served = app !== undefined && host === app.host ? app : undefined
     if (served !== undefined && port !== served.port) {
       record(host, port, protocol ?? 'tcp', false)
@@ -217,19 +218,24 @@ export async function startGate(opts: GateOptions): Promise<Gate> {
     // A mapped stub host answers on the gate's own two and the ports its
     // stub declares alone (#224): the cell can speak for itself on the
     // mounted socket, and what the shim binds is no rule of the gate's.
-    if (served === undefined && dialAs(host) !== host && !stubDeclares(host, port)) {
-      record(host, port, protocol ?? 'tcp', false)
+    if (served === undefined && dialled !== host && !stubDeclares(host, port)) {
+      record(host, port, 'tcp', false)
       return answer(socket, { ok: false, reason: 'a stub answers on the gate\'s own two and the ports its stub declares only' }, true)
     }
-    if (protocol === undefined && dialAs(host) === host) {
+    if (protocol === undefined && dialled === host) {
       // A host the cell dials by its own name reaches out through the gate's
       // own two ports; a mapped host is the stack's own service, and answers
       // on whatever port it listens on.
       record(host, port, 'tcp', false)
       return answer(socket, { ok: false, reason: `the gate carries ports ${carriedNote} only` }, true)
     }
-    record(host, port, protocol ?? 'tcp', true)
-    const upstream = track(dial(dialAs(host), served?.dialPort ?? port))
+    // The protocol the record names is what the dial is: the app's own
+    // scheme on the app's port, the gate's own two as a browser reads them,
+    // and a stub's declared port tcp, whatever other host carries that
+    // number (#224).
+    const named = served !== undefined || dialled === host || port === 80 || port === 443 ? (protocol ?? 'tcp') : 'tcp'
+    record(host, port, named, true)
+    const upstream = track(dial(dialled, served?.dialPort ?? port))
     let settled = false
     const refuse = (why: string): void => {
       if (settled) return

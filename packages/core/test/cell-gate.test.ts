@@ -162,6 +162,36 @@ test('an exact mapping is resolved however the profile spelled the host, and hel
   await started.stop()
 })
 
+test('the record names the protocol the dial is, not the scheme a port number shares (#224)', async () => {
+  const { port } = await upstream()
+  const { gate: started, dir, lines, dialled } = await gate(['api.example.test', 'localhost'], {
+    dialPort: port,
+    map: { 'api.example.test': 'billing-stub', localhost: 'web' },
+    ports: [{ port: 8080, protocol: 'http' }],
+    app: { host: 'localhost', port: 8080, dialPort: 3000 },
+    stubPorts: [{ host: 'api.example.test', port: 8080 }],
+  })
+  // The app's host is the app: its port is read as the scheme the run
+  // publishes it with.
+  expect((await ask(dir, { op: 'connect', host: 'localhost', port: 8080 })).reply).toEqual({ ok: true })
+  expect(dialled).toEqual(['web:3000'])
+  // A stub's declared port is a port its service answers on, over any
+  // protocol: the record keeps it tcp, not the app's scheme that shares the
+  // number.
+  expect((await ask(dir, { op: 'connect', host: 'api.example.test', port: 8080 })).reply).toEqual({ ok: true })
+  expect(dialled).toEqual(['web:3000', 'billing-stub:8080'])
+  expect((await ask(dir, { op: 'connect', host: 'api.example.test', port: 8081 })).reply).toEqual({
+    ok: false,
+    reason: 'a stub answers on the gate\'s own two and the ports its stub declares only',
+  })
+  await started.stop()
+  expect(summaryOf(lines).reached).toEqual([
+    { host: 'api.example.test', port: 8080, protocol: 'tcp', declared: true, count: 1 },
+    { host: 'api.example.test', port: 8081, protocol: 'tcp', declared: false, count: 1 },
+    { host: 'localhost', port: 8080, protocol: 'http', declared: true, count: 1 },
+  ])
+})
+
 test('the app is answered on its published port alone, and dialled as its service inside the stack (#224)', async () => {
   const { port } = await upstream()
   const { gate: started, dir, lines, dialled } = await gate(['localhost'], {
