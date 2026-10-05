@@ -49,11 +49,11 @@ test('a stub may declare the ports its service answers on, and a bad port is ref
   const dir = copiedProfile()
   const withPorts = (ports: string): string =>
     fixtureConfig().replace('hosts: ["api.billing-vendor.example"]', `hosts: ["api.billing-vendor.example"]\n${ports}`)
-  writeFileSync(join(dir, 'config.yml'), withPorts('    ports: [8080, 443]'))
+  writeFileSync(join(dir, 'config.yml'), withPorts('    ports: [8080, 9090]'))
   expect((await loadProfile(dir)).stubs?.[0]).toEqual({
     service: 'billing',
     hosts: ['api.billing-vendor.example'],
-    ports: [8080, 443],
+    ports: [8080, 9090],
     provided_by: { compose_service: 'billing-stub' },
   })
 
@@ -65,6 +65,29 @@ test('a stub may declare the ports its service answers on, and a bad port is ref
     expect(error.field).toBe('stubs[0].ports')
     expect(error.message).toContain('a stub port is a number in 1..65535')
   }
+  for (const ports of ['    ports: [80]', '    ports: [443]']) {
+    writeFileSync(join(dir, 'config.yml'), withPorts(ports))
+    const error = await profileError(() => loadProfile(dir))
+    expect(error.field).toBe('stubs[0].ports')
+    expect(error.message).toContain("a stub port may not be 80 or 443: those are the gate's own two")
+  }
+
+  writeFileSync(
+    join(dir, 'config.yml'),
+    fixtureConfig().replace(
+      'hosts: ["api.billing-vendor.example"]',
+      'hosts: ["*.billing-vendor.example"]\n    ports: [8080]',
+    ),
+  )
+  const wildcard = await profileError(() => loadProfile(dir))
+  expect(wildcard.field).toBe('stubs[0].hosts')
+  expect(wildcard.message).toContain('a stub that names ports must name each host exactly, not as a wildcard')
+
+  writeFileSync(
+    join(dir, 'config.yml'),
+    fixtureConfig().replace('hosts: ["api.billing-vendor.example"]', 'hosts: ["API.Billing-Vendor.Example"]'),
+  )
+  expect((await loadProfile(dir)).stubs?.[0]?.hosts).toEqual(['api.billing-vendor.example'])
 })
 
 test('a base section states what the base side costs: which criteria, and how long (#147)', async () => {

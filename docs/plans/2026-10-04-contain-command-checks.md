@@ -95,12 +95,12 @@ Out:
 
 ## Assumptions
 
-- Contained is the default, and the opt-out is per named command. A command
-  the planner writes by hand (`run:` strings) is always contained, as is every
-  named command the profile does not opt out; a check whose run names no
-  command of the profile runs uncontained, for there is no declaration to
-  hold it to, and its evidence says so. The profile's named commands are
-  where an opt-out lives, in the diff, where a reviewer reads it.
+- Contained is the default, and the opt-out is per named command. Every named
+  command the profile does not opt out is contained; a check whose run names
+  no command of the profile, a hand-written `run:` string included, runs with
+  the step's network, for there is no declaration to hold it to, and its
+  evidence says so. The profile's named commands are where an opt-out lives,
+  in the diff, where a reviewer reads it.
 - The toolchain a command needs lives in the image (`QARE_IMAGE_REF`); a
   command whose tools are not in the image fails with the image's own exit,
   named in the command's output. The pipeline's image is the flavour that

@@ -348,7 +348,7 @@ test('the cell is handed the ports the stubs declare, beside the app the run boo
     profile: {
       inline: {
         ...PROFILE,
-        stubs: [{ service: 'billing', hosts: ['api.billing-vendor.example'], ports: [8080, 443], provided_by: { compose_service: 'billing' } }],
+        stubs: [{ service: 'billing', hosts: ['api.billing-vendor.example'], ports: [8080, 9090], provided_by: { compose_service: 'billing' } }],
         commands: COMMANDS,
       },
     },
@@ -362,7 +362,7 @@ test('the cell is handed the ports the stubs declare, beside the app the run boo
     map: { 'api.billing-vendor.example': 'billing' },
     stubPorts: [
       { host: 'api.billing-vendor.example', port: 8080 },
-      { host: 'api.billing-vendor.example', port: 443 },
+      { host: 'api.billing-vendor.example', port: 9090 },
     ],
   })
 })

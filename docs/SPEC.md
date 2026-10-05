@@ -747,7 +747,10 @@ stub the profile gives ports for (`stubs.<name>.ports`) is answered on its
 own loopback address at those ports, so the command reaches the stub on the
 port it names, over any protocol, and the gate records the dial as the host
 it is dialed by; a stub that names no ports is reached as http or https
-alone, read from the connection the way a browser dials it. On a target run,
+alone, read from the connection the way a browser dials it. A stub's ports
+may not be 80 or 443, the gate's own two: the gate answers every host by
+those already, so a declaration of them names nothing the command could not
+reach. On a target run,
 which boots no stack, a declared host is the target's own, on whatever port
 it answers — carried like any port that is not the gate's own two. An
 undeclared name resolves to nothing, and a connection to one is refused,
@@ -1676,7 +1679,7 @@ not in the cell: a build that reads files outside its own directory does not
 find them. Both sides of a comparison are contained alike, and each side's
 flow checks carry their own `outbound.json`. A build command (`client.artefact.*.build`) is a
 command, not the build: it runs with the step's network, as a command check
-does.
+that names no command of the profile does.
 
 | The build reaches for | Inside the cell | In the evidence |
 | --- | --- | --- |

@@ -228,9 +228,12 @@ export async function startShim(opts: ShimOptions): Promise<Shim> {
 
   // A declared stub port is answered on the host's own address, and the
   // gate is asked with that host: no reading of what the connection is for,
-  // because the address already says it (#224).
+  // because the address already says it (#224). A stub may not name the
+  // gate's own two, which are bound to every local address already (#224).
+  const gatePorts = [opts.httpPort ?? 80, opts.httpsPort ?? 443]
   const stubs: Server[] = []
   for (const { host, port } of opts.stubPorts ?? []) {
+    if (gatePorts.includes(port)) throw new Error(`a stub port may not be 80 or 443: those are the gate's own two, and the gate already answers the host by them`)
     const address = addresses.get(host)
     if (address === undefined) continue
     const server = createServer((socket) => {

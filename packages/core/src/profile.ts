@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { A11Y_IMPACTS, A11Y_STANDARDS, type A11yAccepted, type A11yImpact, type ProfileA11y } from './a11y.js'
 import { parseDurationMs, shellCharacter } from './duration.js'
+import { hostName } from './cell-wire.js'
 import { MAIL_SOURCE_KINDS, type DeclaredMailSource, type MailSourceKind } from './mail-source.js'
 import { channelToolName } from './mcp.js'
 import { RedactionError, redactionRules, validateMaskSelectors, type ProfileRedaction } from './redact.js'
@@ -998,18 +999,28 @@ function parseStub(value: unknown, index: number): ProfileStub {
   if (!isRecord(value)) fail(base, 'stub must be a YAML object with service, hosts and provided_by')
   if (!isRecord(value.provided_by))
     fail(`${base}.provided_by`, 'stub provided_by must be a YAML object with compose_service')
+  const hosts = stringArray(value.hosts, `${base}.hosts`, 'stub hosts').map((entry) => {
+    const wildcard = entry.startsWith('*.')
+    const name = hostName(wildcard ? entry.slice(2) : entry)
+    if (name === undefined)
+      fail(`${base}.hosts`, `${JSON.stringify(entry)} is not a host name: write the name alone, such as api.example.com or *.example.com`)
+    return wildcard ? `*.${name}` : name
+  })
   let ports: number[] | undefined
   if (value.ports !== undefined) {
     if (!Array.isArray(value.ports)) fail(`${base}.ports`, 'stub ports must be an array of port numbers')
     ports = value.ports.map((entry) => {
       if (typeof entry !== 'number' || !Number.isInteger(entry) || entry <= 0 || entry > 65_535)
         fail(`${base}.ports`, 'a stub port is a number in 1..65535')
+      if (entry === 80 || entry === 443) fail(`${base}.ports`, 'a stub port may not be 80 or 443: those are the gate\'s own two, and the gate already answers the host by them')
       return entry
     })
+    if (hosts.some((host) => host.startsWith('*.')))
+      fail(`${base}.hosts`, 'a stub that names ports must name each host exactly, not as a wildcard')
   }
   return {
     service: nonEmptyString(value.service, `${base}.service`, 'service name'),
-    hosts: stringArray(value.hosts, `${base}.hosts`, 'stub hosts'),
+    hosts,
     ...(ports === undefined ? {} : { ports }),
     provided_by: {
       compose_service: nonEmptyString(

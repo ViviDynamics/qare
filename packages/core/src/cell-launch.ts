@@ -151,11 +151,12 @@ function parseStubPorts(flags: string[], who: string): { stubPorts: { host: stri
     if (flags[index] !== '--stub') continue
     const at = (flags[index + 1] ?? '').lastIndexOf(':')
     const host = at === -1 ? '' : flags[index + 1]?.slice(0, at) ?? ''
+    const name = hostName(host)
     const port = Number(flags[index + 1]?.slice(at + 1))
-    if (at === -1 || hostName(host) === undefined || !Number.isInteger(port) || port <= 0 || port > 65_535) {
+    if (at === -1 || name === undefined || !Number.isInteger(port) || port <= 0 || port > 65_535) {
       return { stubPorts, error: `${who}: --stub must be a <host>:<port> pair, the host a declared stub is dialed by and the port its service answers on` }
     }
-    stubPorts.push({ host, port })
+    stubPorts.push({ host: name, port })
   }
   return { stubPorts, error: undefined }
 }
