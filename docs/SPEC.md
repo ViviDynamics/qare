@@ -1247,8 +1247,9 @@ An assertion decides from what the page settles to, not from one read of it
 (#236). The browser and Electron drivers wait up to five seconds for the text
 or the element to become visible before the assertion fails, so a page that is
 still rendering is not a page without the element. A reference matches a name
-as part of a longer one, so several elements may answer it: the assertion
-holds when the first is visible, as a text assertion does. When the driver
+as part of a longer one, so several elements may answer it, and a page may
+carry a text twice with one copy folded away: an assertion holds when any
+match is visible. When the driver
 cannot read the page at all, the check is unverified with the driver's own
 words, never failed. A criterion that a check failed names what failed in its
 reason, for every kind of check that gives one: a failed flow names the

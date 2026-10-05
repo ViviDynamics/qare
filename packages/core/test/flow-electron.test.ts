@@ -42,6 +42,7 @@ function fakeWindow(events: string[], title: string, url: string, shows: string[
       selectOption: async (value: { label: string }) => events.push(`choose ${name}=${value.label} in ${title}`),
       isVisible: async () => visible.has(name),
       first: () => self,
+      filter: () => self,
     }
     return self
   }

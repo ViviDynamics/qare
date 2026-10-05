@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import type { CellRecord, ClientCell } from './client-cell.js'
 import { describeElement, FlowAssertUndecidedError, type FlowDriverCapabilities, type FlowElement, type FlowPage, type FlowTrace } from './flow.js'
-import { captureMasks, followPage, resolveFlowElement, takeFrame } from './flow-playwright.js'
+import { captureMasks, firstVisible, followPage, resolveFlowElement, takeFrame } from './flow-playwright.js'
 import { MAX_PLATFORM_LOG_LINE_CHARACTERS as MAX_LINE_CHARACTERS, makePlatformLog, type PlatformLogEntry } from './platform-log.js'
 import { pathOnTarget } from './profile.js'
 import { normaliseAriaSnapshot } from './snapshot.js'
@@ -582,11 +582,11 @@ export async function makeElectronFlowSession(opts: {
     // criterion the application meets (#236). It gives up sooner than an
     // action, because what it names may rightly never appear.
     assertText: async (text) => {
-      if (!(await asserted((page) => page.getByText(text).first())))
+      if (!(await asserted((page) => firstVisible(page.getByText(text)))))
         throw new Error(`assert failed: the text ${JSON.stringify(text)} is not visible in any open window`)
     },
     assertElement: async (element) => {
-      if (!(await asserted((page) => resolveFlowElement(page, element).first())))
+      if (!(await asserted((page) => firstVisible(resolveFlowElement(page, element)))))
         throw new Error('assert failed: the element is not visible in any open window')
     },
     conceals: true,

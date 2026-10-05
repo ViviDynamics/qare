@@ -165,6 +165,16 @@ export function resolveFlowElement(page: PlaywrightPage, element: FlowElement): 
 }
 
 /**
+ * The element an assertion reads, of all that answer a locator (#236): the
+ * first one that is visible. A page often carries a text twice, once in a
+ * menu that is folded away, and reading only the first in document order
+ * failed an assertion about a text the reader can plainly see.
+ */
+export function firstVisible(locator: PlaywrightLocator): PlaywrightLocator {
+  return locator.filter({ visible: true }).first()
+}
+
+/**
  * What a capture of one page blacks out (#119, #78): the profile's masks,
  * and every element the flow concealed because a secret was typed into it.
  * The browser paints them over while it takes the picture, so the pixels on
@@ -339,7 +349,7 @@ export async function makePlaywrightFlowSession(
     },
     assertText: async (text) => {
       const started = await start()
-      if (!(await becomesVisible(started.page.getByText(text).first()))) {
+      if (!(await becomesVisible(firstVisible(started.page.getByText(text))))) {
         throw new Error(`assert failed: the text ${JSON.stringify(text)} is not visible`)
       }
     },
@@ -347,10 +357,10 @@ export async function makePlaywrightFlowSession(
       const started = await start()
       // A reference names an element by role and name, and a name matches
       // as part of a longer one: when several elements answer, the assertion
-      // holds if the first is visible, as a text assertion already does. Read
+      // holds if one of them is visible, as a text assertion does. Read
       // strictly, a second match (a banner the site shows some visitors) was
       // an error, and the error read as the element missing (#236).
-      if (!(await becomesVisible(resolveFlowElement(started.page, element).first()))) {
+      if (!(await becomesVisible(firstVisible(resolveFlowElement(started.page, element))))) {
         throw new Error(`assert failed: the element is not visible`)
       }
     },
