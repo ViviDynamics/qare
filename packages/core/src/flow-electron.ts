@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import type { CellRecord, ClientCell } from './client-cell.js'
-import { describeElement, type FlowDriverCapabilities, type FlowElement, type FlowPage, type FlowTrace } from './flow.js'
+import { describeElement, FlowAssertUndecidedError, type FlowDriverCapabilities, type FlowElement, type FlowPage, type FlowTrace } from './flow.js'
 import { captureMasks, followPage, resolveFlowElement, takeFrame } from './flow-playwright.js'
 import { MAX_PLATFORM_LOG_LINE_CHARACTERS as MAX_LINE_CHARACTERS, makePlatformLog, type PlatformLogEntry } from './platform-log.js'
 import { pathOnTarget } from './profile.js'
@@ -514,17 +514,33 @@ export async function makeElectronFlowSession(opts: {
     }
   }
   // Whether any open window comes to show what an assertion names, asked
-  // until the assertion's time runs out.
+  // until the assertion's time runs out. A window that errors is passed over
+  // while another can still answer, but when the time runs out and no window
+  // could be read at all, nothing said the application lacks what was named:
+  // the assertion is undecided, with the window's own error, never failed (#236).
   const asserted = async (locate: (page: Page) => Locator): Promise<boolean> => {
     const deadline = Date.now() + assertTimeoutMs
     for (;;) {
-      for (const window of newestFirst()) {
-        if (await shows(window, locate)) {
-          current = window
-          return true
+      const windows = newestFirst()
+      let read = 0
+      let unreadable: unknown
+      for (const window of windows) {
+        try {
+          if (await locate(window.page).isVisible()) {
+            current = window
+            return true
+          }
+          read += 1
+        } catch (error) {
+          unreadable = error
         }
       }
-      if (Date.now() >= deadline) return false
+      if (Date.now() >= deadline) {
+        if (windows.length === 0) throw new FlowAssertUndecidedError('the assertion could not be read: the application has no window open')
+        if (read === 0)
+          throw new FlowAssertUndecidedError(`the assertion could not be read in any open window: ${String(unreadable)}`, { cause: unreadable })
+        return false
+      }
       await sleep(pollIntervalMs)
     }
   }

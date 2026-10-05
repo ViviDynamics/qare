@@ -4,6 +4,7 @@ import { chmod, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
+import { FlowAssertUndecidedError } from '../src/flow.js'
 import { ELECTRON_FLOW_DRIVER, ElectronFlowSessionError, electronDisplayProblem, makeElectronFlowSession, pathInApplication, startVirtualDisplay } from '../src/flow-electron.js'
 
 const ENDPOINT = 'ws://127.0.0.1:41000/devtools/browser/abc'
@@ -355,6 +356,27 @@ test('a window that goes away while an assertion asks it is a window that does n
 
   await expect(started.page.assertText('Greeter')).resolves.toBeUndefined()
   await expect(started.page.assertElement({ role: 'heading', name: 'Greeter' })).resolves.toBeUndefined()
+  await started.dispose()
+})
+
+test('an assertion no window could be read for is undecided, not failed (#236)', async () => {
+  const closing = fakeWindow([], 'Details', 'file:///opt/app/details.html')
+  const gone = (): never => {
+    throw new Error('Target page, context or browser has been closed')
+  }
+  closing.page.getByText = gone
+  closing.page.getByRole = gone
+  const { session } = harness({ windows: [closing], findTimeoutMs: 60 })
+  const started = await session()
+
+  // The only window answers with an error: nothing said the text is absent.
+  const text = started.page.assertText('Greeter')
+  await expect(text).rejects.toBeInstanceOf(FlowAssertUndecidedError)
+  await expect(text).rejects.toThrow('the assertion could not be read in any open window: Error: Target page, context or browser has been closed')
+  await expect(started.page.assertElement({ role: 'heading', name: 'Greeter' })).rejects.toBeInstanceOf(FlowAssertUndecidedError)
+  // With every window closed there is nothing left to read either.
+  closing.close()
+  await expect(started.page.assertText('Greeter')).rejects.toThrow('the assertion could not be read: the application has no window open')
   await started.dispose()
 })
 
