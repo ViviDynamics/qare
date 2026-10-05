@@ -105,6 +105,19 @@ describe('flagAddedStubs', () => {
     expect(result.verdict).toBe('refused')
   })
 
+  test('a stub that only gains or changes ports is a modified stub, and refuses (#224)', () => {
+    const base = [stub('payments', ['api.payments.example'])]
+    const head = [{ ...stub('payments', ['api.payments.example']), ports: [8080] }]
+    let result = flagAddedStubs(diffStubs(base, head), { requiredServices: ['payments'] })
+    expect(result.findings).toEqual(['stub-modified-in-change: payments (hosts: api.payments.example)'])
+    expect(result.verdict).toBe('refused')
+    result = flagAddedStubs(
+      diffStubs([{ ...stub('payments', ['api.payments.example']), ports: [8080] }], [{ ...stub('payments', ['api.payments.example']), ports: [8080, 9090] }]),
+      { requiredServices: ['payments'] },
+    )
+    expect(result.findings).toEqual(['stub-modified-in-change: payments (hosts: api.payments.example)'])
+  })
+
   test('a modified non-required stub is flagged but allowed', () => {
     const diff = diffStubs([stub('mail', ['api.mail.example'])], [stub('mail', ['api.mail-v2.example'])])
     const result = flagAddedStubs(diff, { requiredServices: ['payments'] })

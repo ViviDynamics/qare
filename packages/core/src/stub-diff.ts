@@ -85,5 +85,13 @@ function sameStub(a: ProfileStub, b: ProfileStub): boolean {
   for (let i = 0; i < aHosts.length; i++) {
     if (aHosts[i] !== bHosts[i]) return false
   }
+  // The ports a stub names are part of what the change hands the command: a
+  // stub that gains or changes them is a changed stub, not an untouched one (#224).
+  const aPorts = [...(a.ports ?? [])].sort((x, y) => x - y)
+  const bPorts = [...(b.ports ?? [])].sort((x, y) => x - y)
+  if (aPorts.length !== bPorts.length) return false
+  for (let i = 0; i < aPorts.length; i++) {
+    if (aPorts[i] !== bPorts[i]) return false
+  }
   return (a.provided_by?.compose_service ?? '') === (b.provided_by?.compose_service ?? '')
 }

@@ -750,9 +750,10 @@ it is dialed by; a stub that names no ports is reached as http or https
 alone, read from the connection the way a browser dials it. A stub's ports
 may not be 80 or 443, the gate's own two: the gate answers every host by
 those already, so a declaration of them names nothing the command could not
-reach. On a target run,
-which boots no stack, a declared host is the target's own, on whatever port
-it answers — carried like any port that is not the gate's own two. An
+reach. On a target run, which boots no stack, a declared host is the
+target's own, on whatever port it answers, carried like any port that is not
+the gate's own two; a target on the machine's own loopback is refused, for
+the gate reaches no loopback but its own. An
 undeclared name resolves to nothing, and a connection to one is refused,
 exactly as the build's cell refuses.
 

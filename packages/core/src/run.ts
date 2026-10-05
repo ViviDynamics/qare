@@ -267,6 +267,11 @@ function appSchemeOf(profile: QaProfile, values: RunValues): 'http' | 'https' {
  * network the gate joins. Undefined when the profile names no command that
  * runs contained, for then nothing asks for a cell.
  */
+/** The names a URL's host takes when it means the machine the run itself is on (#224). */
+function isLoopbackName(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '::1' || hostname === '::' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)
+}
+
 function commandCellContextOf(profile: QaProfile, isolation: RunIsolation | undefined, values: RunValues, opts: SideOpts): CommandCellContext | undefined {
   const commands = Object.values(profile.commands ?? {})
   if (commands.length === 0 || commands.every((command) => command.egress === 'uncontained')) return undefined
@@ -290,7 +295,14 @@ function commandCellContextOf(profile: QaProfile, isolation: RunIsolation | unde
     // has, and carries the port the URL names when it is not the gate's own.
     // The destinations the profile declares the target may reach besides its
     // own host are the cell's to carry too, wildcards and all (#122, #224).
+    // A target on the machine's own loopback is the one target the gate
+    // cannot carry: the gate runs beside the cell, on the bridge, and no
+    // container reaches a loopback but its own (#224).
     const url = new URL(substituteValues(profile.target.url, values))
+    if (isLoopbackName(url.hostname))
+      throw new Error(
+        'a contained command cannot reach a target on the machine\'s own loopback, which the gate reaches no more than its own container does: mark the command egress: uncontained, or name the target by a host the machine\'s network carries',
+      )
     const scheme = url.protocol.replace(':', '') as 'http' | 'https'
     const port = url.port === '' ? (scheme === 'https' ? 443 : 80) : Number(url.port)
     const declaredHosts = [...new Set([...hosts, url.hostname, ...(profile.target.hosts ?? [])])]

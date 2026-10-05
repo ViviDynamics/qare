@@ -134,12 +134,13 @@ own directory is not in the cell.
 
 What is not claimed:
 
-- **The rest of the step.** A command check, a suite and a compose service
-  still run with the network the step has, and still hold the daemon. The
-  execute container is not a sandbox (ADR-0005), and this record does not
-  make it one. A named command is contained since #224; a pull request that
-  wants the network from anything else still can. The boundary for that
-  remains the machine: no secret on it.
+- **The rest of the step.** A suite and a compose service still run with the
+  network the step has, and still hold the daemon. A command check that
+  names no command of the profile also does. The execute container is not a
+  sandbox (ADR-0005), and this record does not make it one. A named command
+  is contained since #224; a pull request that wants the network from
+  anything else still can. The boundary for that remains the machine: no
+  secret on it.
 - **Who writes the list.** The profile is a file in the repository, so a pull
   request can add a host to `client.hosts`. The addition is in the diff and
   in `outbound.json`; containment makes reaching a host a declared act, not

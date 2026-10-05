@@ -277,6 +277,28 @@ test("a target run's cell carries the target's own host and the destinations it 
   expect(asked[0]).toMatchObject({ hosts: ['qa.example.test', 'data.vendor.example'] })
 })
 
+test("a contained command on a run whose target is the machine's own loopback is refused (#224)", async () => {
+  const LOCAL_TARGET = ['http:', '//127.0.0.1:4173'].join('')
+  const job = await makeJob({
+    criteria: commandCriteria('echo hi'),
+    profile: {
+      inline: {
+        target: {
+          url: LOCAL_TARGET,
+          health: { http: ['http:', '//127.0.0.1:4173/up'].join(''), timeout: '120s' },
+        },
+        suites: [],
+        visual: { widths: [], themes: [] },
+        commands: COMMANDS,
+      } as QaProfile,
+    },
+  })
+
+  await expect(runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }) } })).rejects.toThrow(
+    'a contained command cannot reach a target on the machine\'s own loopback',
+  )
+})
+
 test("the cell is told the scheme the app's health URL carries, not always http (#224)", async () => {
   const asked: unknown[] = []
   const HTTPS_HEALTH_URL = ['https:', '//localhost:3000/up'].join('')
