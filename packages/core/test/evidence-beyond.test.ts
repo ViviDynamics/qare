@@ -146,6 +146,7 @@ test('a failing check leaves a recording, a log excerpt and a tree snapshot, and
         `${check}/failure.log`,
         `${check}/outbound.json`,
       ],
+      reason: 'assert failed: the text "A greeting nobody wrote" is not visible',
     },
   ])
   const dir = join(job.evidenceDir, check)

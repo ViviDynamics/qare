@@ -358,8 +358,9 @@ test('a flow whose assertion fails is failed by the flow, and what was audited o
 
   const criterion = criterionOf(result, 'saves')
   expect(criterion.outcome).toBe('failed')
-  // The flow failed it: the audit's reason is not offered as the cause.
-  expect('reason' in criterion).toBe(false)
+  // The flow failed it: the reason is the flow's own (#236), and the
+  // audit's is not offered as the cause.
+  expect(criterion).toMatchObject({ reason: 'assert failed: the text "Saved" is not visible' })
   expect(criterion.evidence).toContain('checks/saves/0/a11y.json')
   expect(criterion.a11y).toMatchObject({ new: 1 })
 })

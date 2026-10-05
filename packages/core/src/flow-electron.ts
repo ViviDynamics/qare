@@ -570,7 +570,7 @@ export async function makeElectronFlowSession(opts: {
         throw new Error(`assert failed: the text ${JSON.stringify(text)} is not visible in any open window`)
     },
     assertElement: async (element) => {
-      if (!(await asserted((page) => resolveFlowElement(page, element))))
+      if (!(await asserted((page) => resolveFlowElement(page, element).first())))
         throw new Error('assert failed: the element is not visible in any open window')
     },
     conceals: true,

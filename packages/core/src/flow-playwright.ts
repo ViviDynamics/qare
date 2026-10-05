@@ -1,5 +1,5 @@
 import type { EgressAttempt } from './egress.js'
-import type { FlowCaptureOpts, FlowDriverCapabilities, FlowElement, FlowPage, FlowTrace } from './flow.js'
+import { FlowAssertUndecidedError, type FlowCaptureOpts, type FlowDriverCapabilities, type FlowElement, type FlowPage, type FlowTrace } from './flow.js'
 import { RECORDING_FRAME_TIMEOUT_MS } from './flow-recording.js'
 import { parseSegment, splitSegments } from './locator.js'
 import type { A11yAuditNode, A11yAuditViolation } from './a11y.js'
@@ -301,7 +301,15 @@ export async function makePlaywrightFlowSession(
   const becomesVisible = async (locator: { isVisible: () => Promise<boolean> }): Promise<boolean> => {
     const deadline = Date.now() + assertTimeoutMs
     for (;;) {
-      if (await locator.isVisible()) return true
+      let visible: boolean
+      try {
+        visible = await locator.isVisible()
+      } catch (error) {
+        // The read itself failed: that is the driver's trouble, not an
+        // element the application left out.
+        throw new FlowAssertUndecidedError(`the assertion could not be read: ${String(error)}`, { cause: error })
+      }
+      if (visible) return true
       if (Date.now() >= deadline) return false
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
     }
@@ -337,7 +345,12 @@ export async function makePlaywrightFlowSession(
     },
     assertElement: async (element) => {
       const started = await start()
-      if (!(await becomesVisible(resolveFlowElement(started.page, element)))) {
+      // A reference names an element by role and name, and a name matches
+      // as part of a longer one: when several elements answer, the assertion
+      // holds if the first is visible, as a text assertion already does. Read
+      // strictly, a second match (a banner the site shows some visitors) was
+      // an error, and the error read as the element missing (#236).
+      if (!(await becomesVisible(resolveFlowElement(started.page, element).first()))) {
         throw new Error(`assert failed: the element is not visible`)
       }
     },

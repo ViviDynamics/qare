@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vitest'
 import { attemptOf, BROWSER_FLOW_DRIVER, makePlaywrightFlowSession, markInPage, runAxeInPage, unmarkInPage } from '../src/flow-playwright.js'
+import { FlowAssertUndecidedError } from '../src/flow.js'
 
 const NOT_INSTALLED_MESSAGE =
   'playwright-core is not installed; flow checks are unverified without a browser backend'
@@ -7,26 +8,30 @@ const NOT_INSTALLED_MESSAGE =
 const APP_URL = ['http:', '//localhost:3000/up'].join('')
 const TRACE_PATH = '/tmp/qare-flow-trace.zip'
 
-function fakeChromium(events: string[], opts: { visible?: boolean; visibleAfterReads?: number; subresources?: string[]; sockets?: string[] } = {}) {
+function fakeChromium(events: string[], opts: { visible?: boolean; visibleAfterReads?: number; ambiguous?: boolean; unreadable?: boolean; subresources?: string[]; sockets?: string[] } = {}) {
   let reads = 0
   const onSocket: Array<(socket: { url: () => string }) => void> = []
   const onRequest: Array<(request: { url: () => string }) => void> = []
   const request = (url: string) => {
     for (const handler of onRequest) handler({ url: () => url })
   }
-  const locator = (name: string) => {
-    const self = {
+  const locator = (name: string, narrowed = false): Record<string, unknown> => {
+    const self: Record<string, unknown> = {
       click: async () => events.push(`click ${name}`),
       fill: async (value: string) => events.push(`fill ${name}=${value}`),
       selectOption: async (value: { label: string }) => events.push(`choose ${name}=${value.label}`),
       waitFor: async (opts: { state: string }) => events.push(`waitFor ${name} until ${opts.state}`),
       isVisible: async () => {
+        if (opts.unreadable === true) throw new Error('Target page, context or browser has been closed')
+        // Several elements answer the reference: the browser refuses to read
+        // them as one, as its strict mode does.
+        if (opts.ambiguous === true && !narrowed) throw new Error(`strict mode violation: ${name} resolved to 3 elements`)
         events.push(`visible ${name}`)
         reads += 1
         if (opts.visibleAfterReads !== undefined) return reads > opts.visibleAfterReads
         return opts.visible ?? true
       },
-      first: () => self,
+      first: () => locator(name, true),
     }
     return self
   }
@@ -225,6 +230,24 @@ test('an assertion waits for what the page is still rendering, and gives up once
   await expect(never.page.assertText('Late greeting')).rejects.toThrow('assert failed: the text "Late greeting" is not visible')
   expect(Date.now() - started).toBeGreaterThanOrEqual(40)
   expect(Date.now() - started).toBeLessThan(1_500)
+})
+
+test('an element assertion holds when several elements answer the reference, and a read that fails is not the element missing (#236)', async () => {
+  const session = await makePlaywrightFlowSession({
+    loadPlaywright: async () => ({ chromium: fakeChromium([], { ambiguous: true }) }) as never,
+    assertTimeoutMs: 30,
+    pollIntervalMs: 5,
+  })
+  await expect(session.page.assertElement({ role: 'link', name: 'Donate' })).resolves.toBeUndefined()
+
+  const closed = await makePlaywrightFlowSession({
+    loadPlaywright: async () => ({ chromium: fakeChromium([], { unreadable: true }) }) as never,
+    assertTimeoutMs: 30,
+    pollIntervalMs: 5,
+  })
+  const read = closed.page.assertElement({ role: 'link', name: 'Donate' })
+  await expect(read).rejects.toBeInstanceOf(FlowAssertUndecidedError)
+  await expect(read).rejects.toThrow('the assertion could not be read: Error: Target page, context or browser has been closed')
 })
 
 test('the session records every connection its page attempted, and nothing that stays in the browser (#122)', async () => {

@@ -80,6 +80,20 @@ export interface FlowTotpConfig {
   backupCode?: string
 }
 
+/**
+ * What a driver throws when an assertion could not be decided (#236): the
+ * page went away, or the driver itself failed while it looked. It is not the
+ * application failing the assertion, so the check is unverified with the
+ * driver's own words, never failed. Any other error from an assertion means
+ * what it named was not there.
+ */
+export class FlowAssertUndecidedError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'FlowAssertUndecidedError'
+  }
+}
+
 /** What a capture is asked beside the profile's masks, which the driver holds itself. */
 export interface FlowCaptureOpts {
   /**
@@ -658,7 +672,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
       // A flow that was stopped has no failure of its own to report.
       if (stopped()) break
       failedAt = now()
-      if (action.action === 'assertText' || action.action === 'assertElement') {
+      if ((action.action === 'assertText' || action.action === 'assertElement') && !(error instanceof FlowAssertUndecidedError)) {
         outcome = 'failed'
         reason =
           action.action === 'assertText'
