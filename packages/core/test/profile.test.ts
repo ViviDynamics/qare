@@ -45,6 +45,28 @@ test('the valid .qa/ fixture loads with the expected profile shape', async () =>
   ])
 })
 
+test('a stub may declare the ports its service answers on, and a bad port is refused (#224)', async () => {
+  const dir = copiedProfile()
+  const withPorts = (ports: string): string =>
+    fixtureConfig().replace('hosts: ["api.billing-vendor.example"]', `hosts: ["api.billing-vendor.example"]\n${ports}`)
+  writeFileSync(join(dir, 'config.yml'), withPorts('    ports: [8080, 443]'))
+  expect((await loadProfile(dir)).stubs?.[0]).toEqual({
+    service: 'billing',
+    hosts: ['api.billing-vendor.example'],
+    ports: [8080, 443],
+    provided_by: { compose_service: 'billing-stub' },
+  })
+
+  writeFileSync(join(dir, 'config.yml'), withPorts('    ports: zero'))
+  expect((await profileError(() => loadProfile(dir))).message).toContain('stub ports must be an array of port numbers')
+  for (const ports of ['    ports: [0]', '    ports: [65536]', '    ports: [80.5]']) {
+    writeFileSync(join(dir, 'config.yml'), withPorts(ports))
+    const error = await profileError(() => loadProfile(dir))
+    expect(error.field).toBe('stubs[0].ports')
+    expect(error.message).toContain('a stub port is a number in 1..65535')
+  }
+})
+
 test('a base section states what the base side costs: which criteria, and how long (#147)', async () => {
   const dir = copiedProfile()
   writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\nbase:\n  criteria: ledger\n  budget: 10m\n`)

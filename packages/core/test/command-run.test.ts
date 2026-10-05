@@ -1,7 +1,7 @@
 import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn, execSync } from 'node:child_process'
 import { expect, test } from 'vitest'
 import type { CellProcess, CellRecord } from '../src/client-cell.js'
 import { runJob, type Job, type JobCriterion, type QaProfile } from '../src/index.js'
@@ -339,4 +339,59 @@ test('a contained check runs from the cwd it names, with the whole checkout copi
   // runs from: a command under packages/foo still reads the repository's own
   // files, and its repository-relative scratch stays repository-relative.
   expect(asked[0]).toMatchObject({ checkout: job.repoPath, cwd: 'packages/foo' })
+})
+
+test('the cell is handed the ports the stubs declare, beside the app the run boots (#224)', async () => {
+  const asked: unknown[] = []
+  const job = await makeJob({
+    criteria: commandCriteria('echo hi'),
+    profile: {
+      inline: {
+        ...PROFILE,
+        stubs: [{ service: 'billing', hosts: ['api.billing-vendor.example'], ports: [8080, 443], provided_by: { compose_service: 'billing' } }],
+        commands: COMMANDS,
+      },
+    },
+  })
+
+  const { result } = await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }, asked) } })
+
+  expect(result.criteria[0].outcome).toBe('proven')
+  expect(asked[0]).toMatchObject({
+    hosts: ['api.billing-vendor.example'],
+    map: { 'api.billing-vendor.example': 'billing' },
+    stubPorts: [
+      { host: 'api.billing-vendor.example', port: 8080 },
+      { host: 'api.billing-vendor.example', port: 443 },
+    ],
+  })
+})
+
+test('a refusal for overlapping commands is decided by every run: a cached refusal never stands in (#224)', async () => {
+  const job = await makeJob({
+    criteria: commandCriteria('tool smoke'),
+    profile: {
+      inline: {
+        ...PROFILE,
+        commands: {
+          test: { run: 'tool {{name}}', about: 'runs any tool' },
+          smoke: { run: 'tool smoke', about: 'runs the smoke check' },
+        },
+      },
+    },
+  })
+  execSync('git init -q && git -c user.name=t -c user.email=t@example.test commit -q --allow-empty -m build', { cwd: job.repoPath })
+  const cached = { ...job, baseRef: 'HEAD', headRef: 'HEAD' }
+  const cacheDir = join(job.repoPath, '..', `${job.id}-cache-${Date.now()}`)
+  const first = await runJob(cached, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }) }, cacheDir })
+  const second = await runJob({ ...cached, evidenceDir: join(job.repoPath, 'evidence-2') }, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }) }, cacheDir })
+
+  expect(first.result.criteria[0].outcome).toBe('unverified')
+  expect(first.result.criteria[0].reason).toBe(
+    'refused: the profile declares overlapping commands (tool {{name}} and tool smoke); a check is contained by the one command its run names',
+  )
+  expect(second.result.criteria[0].outcome).toBe('unverified')
+  expect(second.result.criteria[0].reason).toBe(first.result.criteria[0].reason)
+  // The second run refused by its own answer: a refusal is never cached.
+  expect(second.result.criteria[0].cached).toBeUndefined()
 })

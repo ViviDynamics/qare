@@ -46,6 +46,12 @@ export interface CellLaunchOptions {
   /** The port where the run's booted app answers, and how; the shim intercepts it for the build (#224). */
   appPort?: number
   appScheme?: 'http' | 'https'
+  /**
+   * A declared stub host and the port its service answers on (#224): the
+   * shim intercepts the pair by the host's own address, so a command dials
+   * the stub on the port the profile names and the gate asks about it.
+   */
+  stubPorts?: { host: string; port: number }[]
   /** A command check needs no display: the launcher asks for no Xvfb and starts none (#224). */
   noDisplay?: boolean
   xvfb?: () => string | undefined
@@ -63,6 +69,7 @@ export async function launchInCell(opts: CellLaunchOptions): Promise<number> {
       cdpPort: opts.cdpPort,
       ...(opts.appPort === undefined ? {} : { appPort: opts.appPort }),
       ...(opts.appScheme === undefined ? {} : { appScheme: opts.appScheme }),
+      ...(opts.stubPorts === undefined ? {} : { stubPorts: opts.stubPorts }),
     })
   } catch (error) {
     opts.err(`qare cell: the cell's network could not be set up: ${(error as Error).message}`)
@@ -120,7 +127,7 @@ export async function launchInCell(opts: CellLaunchOptions): Promise<number> {
 }
 
 const USAGE =
-  'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... [--app <host>:<port>[:<dial-port>]] | qare cell launch --socket-dir <dir> --cdp-port <port> [--no-display] -- <command> [args...]'
+  'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... [--app <host>:<port>[:<dial-port>]] | qare cell launch --socket-dir <dir> --cdp-port <port> [--no-display] [--stub <host>:<port>]... -- <command> [args...]'
 
 /** The `--port <port> <scheme>` flags, named by both the gate and the launcher for the app the run boots (#224). */
 function parsePorts(flags: string[], who: string): { ports: { port: number; protocol: 'http' | 'https' }[]; error: string | undefined } {
@@ -135,6 +142,22 @@ function parsePorts(flags: string[], who: string): { ports: { port: number; prot
     ports.push({ port, protocol })
   }
   return { ports, error: undefined }
+}
+
+/** The `--stub <host>:<port>` flags a launch carries: a declared host and the port its service answers on (#224). */
+function parseStubPorts(flags: string[], who: string): { stubPorts: { host: string; port: number }[]; error: string | undefined } {
+  const stubPorts: { host: string; port: number }[] = []
+  for (let index = 0; index < flags.length; index++) {
+    if (flags[index] !== '--stub') continue
+    const at = (flags[index + 1] ?? '').lastIndexOf(':')
+    const host = at === -1 ? '' : flags[index + 1]?.slice(0, at) ?? ''
+    const port = Number(flags[index + 1]?.slice(at + 1))
+    if (at === -1 || hostName(host) === undefined || !Number.isInteger(port) || port <= 0 || port > 65_535) {
+      return { stubPorts, error: `${who}: --stub must be a <host>:<port> pair, the host a declared stub is dialed by and the port its service answers on` }
+    }
+    stubPorts.push({ host, port })
+  }
+  return { stubPorts, error: undefined }
 }
 
 export interface CellCommandIo {
@@ -181,6 +204,11 @@ export async function runCellCommand(argv: string[], io: CellCommandIo): Promise
       io.err('qare cell launch: one --port is all a launch carries')
       return 4
     }
+    const parsedStubs = parseStubPorts(flags, 'qare cell launch')
+    if (parsedStubs.error !== undefined) {
+      io.err(parsedStubs.error)
+      return 4
+    }
     const app = parsed.ports[0]
     return launchInCell({
       command: command[0] as string,
@@ -188,6 +216,7 @@ export async function runCellCommand(argv: string[], io: CellCommandIo): Promise
       socketDir,
       cdpPort,
       ...(app === undefined ? {} : { appPort: app.port, appScheme: app.protocol }),
+      ...(parsedStubs.stubPorts.length === 0 ? {} : { stubPorts: parsedStubs.stubPorts }),
       ...(flags.includes('--no-display') ? { noDisplay: true } : {}),
       err: io.err,
       signals,

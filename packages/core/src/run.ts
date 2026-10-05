@@ -273,6 +273,10 @@ function commandCellContextOf(profile: QaProfile, isolation: RunIsolation | unde
   const stubs = profile.stubs ?? []
   const map = Object.fromEntries(stubs.flatMap((stub) => stub.hosts.map((host) => [host, stub.provided_by.compose_service])))
   const hosts = [...new Set(stubs.flatMap((stub) => stub.hosts))]
+  // The ports the stubs name are the cell's to carry: a command dials a
+  // declared host on the port its service answers at, and the shim
+  // intercepts the pair by address (#224).
+  const stubPorts = [...new Map(stubs.flatMap((stub) => (stub.ports ?? []).flatMap((port) => stub.hosts.map((host) => ({ host, port })))).map((entry) => [`${entry.host}:${entry.port}`, entry] as const)).values()]
   let request: Omit<CommandCellOptions, 'checkout' | 'scratch' | 'id' | 'image'>
   if (isolation !== undefined) {
     // The app is published on the port the run gave it: a command reaches it
@@ -280,7 +284,7 @@ function commandCellContextOf(profile: QaProfile, isolation: RunIsolation | unde
     // on the port inside the stack the published port leads to. The scheme
     // is the health URL's, not always http: an app that answers over https
     // is dialed as it answers.
-    request = { hosts, map, app: { host: 'localhost', port: isolation.port ?? 3000, scheme: appSchemeOf(profile, values) }, composeProject: isolation.project }
+    request = { hosts, map, ...(stubPorts.length === 0 ? {} : { stubPorts }), app: { host: 'localhost', port: isolation.port ?? 3000, scheme: appSchemeOf(profile, values) }, composeProject: isolation.project }
   } else if (profile.target !== undefined) {
     // A target is reached as itself: the gate dials it with the egress it
     // has, and carries the port the URL names when it is not the gate's own.
@@ -290,9 +294,14 @@ function commandCellContextOf(profile: QaProfile, isolation: RunIsolation | unde
     const scheme = url.protocol.replace(':', '') as 'http' | 'https'
     const port = url.port === '' ? (scheme === 'https' ? 443 : 80) : Number(url.port)
     const declaredHosts = [...new Set([...hosts, url.hostname, ...(profile.target.hosts ?? [])])]
-    request = { hosts: declaredHosts, map, ...(port === 80 || port === 443 ? {} : { ports: [{ port, protocol: scheme }] }) }
+    request = {
+      hosts: declaredHosts,
+      map,
+      ...(stubPorts.length === 0 ? {} : { stubPorts }),
+      ...(port === 80 || port === 443 ? {} : { ports: [{ port, protocol: scheme }] }),
+    }
   } else {
-    request = { hosts, map }
+    request = { hosts, map, ...(stubPorts.length === 0 ? {} : { stubPorts }) }
   }
   return { request, start: opts.commandCell?.start ?? ((made) => startCommandCell({ ...made, image: process.env.QARE_IMAGE_REF ?? '' })) }
 }
@@ -2617,7 +2626,10 @@ async function runCriterion(
       // no one declaration to hold it to, and the answer must not depend on
       // the order the YAML happened to name them in: refused, wherever the
       // check would have been contained or not.
-      if (declared.length > 1)
+      if (declared.length > 1) {
+        // A refusal is never cached (#224): the common refused handling below
+        // is not reached from here, so the mark is made before the return.
+        notCacheable = true
         return {
           status: 'unverified' as const,
           stdout: '',
@@ -2625,6 +2637,7 @@ async function runCriterion(
           refused: true,
           reason: `refused: the profile declares overlapping commands (${declared.map((command) => command.run).join(' and ')}); a check is contained by the one command its run names`,
         }
+      }
       // A named command is contained by default (#224); the opt-out is
       // explicit, and the evidence of a command that opted out says so. A
       // check whose run names no command the profile declares runs as it

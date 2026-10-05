@@ -177,6 +177,33 @@ test("a declared host on a port other than the gate's own two has that port carr
   await cell.dispose()
 })
 
+test("a stub with declared ports has them handed to the launch as host and port pairs, beside the gate's own two (#224)", async () => {
+  const { docker, spawned } = fakeDocker()
+  const cell = await startCommandCell({
+    image: 'qare-web:test',
+    hosts: ['api.stubs.test', 'api.mail.test'],
+    map: { 'api.stubs.test': 'billing-stub', 'api.mail.test': 'mailpit' },
+    app: { host: 'localhost', port: 34567, scheme: 'http' as const },
+    stubPorts: [
+      { host: 'api.stubs.test', port: 8080 },
+      { host: 'api.mail.test', port: 8081 },
+    ],
+    composeProject: 'stack',
+    checkout: '/work/repo',
+    id: 'ghi901',
+    docker,
+  })
+  // The gate takes the hosts, not the ports: it asks about what it is asked.
+  expect(spawned[0]?.args.filter((arg) => arg === '--stub')).toEqual([])
+  cell.run(['true'], {})
+  expect(spawned[1]?.args.slice(spawned[1]?.args.indexOf('--port'))).toEqual([
+    '--port', '34567', 'http',
+    '--stub', 'api.stubs.test:8080', '--stub', 'api.mail.test:8081',
+    '--', 'true',
+  ])
+  await cell.dispose()
+})
+
 test('an app published on the gate\'s own port is mapped to its service without a port of its own (#224)', async () => {
   const { docker, spawned } = fakeDocker({ ps: 'stack-web-1\t127.0.0.1:80->3000/tcp\n' })
   await startCommandCell({

@@ -62,6 +62,14 @@ export interface CommandCellOptions {
    * service as well as carried.
    */
   ports?: readonly CarriedPort[]
+  /**
+   * A declared stub host and a port the profile says its service answers on
+   * (#224): the shim intercepts the pair by address, so a command reaches the
+   * stub on the port the profile names, over any protocol, and the gate
+   * records the dial as the host it names. Pairs the run carries beside the
+   * gate's own two and the app's, whose port the shim reads as http or https.
+   */
+  stubPorts?: readonly { host: string; port: number }[]
   /** The compose project's network the gate joins to reach the stubs, when a stack is booted. */
   network?: string
   /**
@@ -304,7 +312,8 @@ export async function startCommandCell(opts: CommandCellOptions): Promise<Comman
         ...Object.entries(env ?? {}).flatMap(([key, value]) => ['-e', `${key}=${value}`]),
         // No display is asked for: a command needs none, and the images a
         // command runs in ship no Xvfb to start one with (#224).
-        opts.image, 'qare', 'cell', 'launch', '--socket-dir', SOCKET_DIR, '--cdp-port', String(GATE_RELAY_PORT), '--no-display', ...carried, '--',
+        opts.image, 'qare', 'cell', 'launch', '--socket-dir', SOCKET_DIR, '--cdp-port', String(GATE_RELAY_PORT), '--no-display', ...carried,
+        ...(opts.stubPorts ?? []).flatMap(({ host, port }) => ['--stub', `${host}:${port}`]), '--',
         argv[0] ?? 'true', ...argv.slice(1),
       ]), // prettier-ignore
     record: () => {

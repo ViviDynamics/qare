@@ -9,8 +9,8 @@ import { askGate } from './cell-sockets.js'
 
 function seams(events: string[]) {
   return {
-    startShim: async (opts: { socketDir: string; cdpPort: number; appPort?: number; appScheme?: 'http' | 'https' }) => {
-      events.push(`shim ${opts.socketDir} ${opts.cdpPort}${opts.appPort === undefined ? '' : ` app=${opts.appPort} ${String(opts.appScheme)}`}`)
+    startShim: async (opts: { socketDir: string; cdpPort: number; appPort?: number; appScheme?: 'http' | 'https'; stubPorts?: { host: string; port: number }[] }) => {
+      events.push(`shim ${opts.socketDir} ${opts.cdpPort}${opts.appPort === undefined ? '' : ` app=${opts.appPort} ${String(opts.appScheme)}`}${opts.stubPorts === undefined ? '' : ` stubs=${opts.stubPorts.map((stub) => `${stub.host}:${stub.port}`).join(' ')}`}`)
       return { ports: { dns: 53, http: 80, https: 443 }, stop: async () => void events.push('shim stopped') }
     },
     xvfb: () => '/usr/bin/Xvfb',
@@ -124,7 +124,7 @@ test('qare cell launch and qare cell gate read their arguments, and refuse what 
   expect(await runCellCommand(['gate', '--host', 'api.example.test'], io)).toBe(4)
   expect(await runCellCommand(['gate', '--socket-dir', '/tmp', '--host', 'not a host'], io)).toBe(4)
   expect(said).toEqual([
-    'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... [--app <host>:<port>[:<dial-port>]] | qare cell launch --socket-dir <dir> --cdp-port <port> [--no-display] -- <command> [args...]',
+    'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... [--app <host>:<port>[:<dial-port>]] | qare cell launch --socket-dir <dir> --cdp-port <port> [--no-display] [--stub <host>:<port>]... -- <command> [args...]',
     'qare cell launch: no command to launch after --',
     'qare cell launch: --socket-dir is required',
     'qare cell gate: --socket-dir is required',
@@ -195,6 +195,46 @@ test('the launcher hands the shim the app port the run named, and refuses a seco
     await runCellCommand(['launch', '--socket-dir', '/tmp', '--cdp-port', '9222', '--port', '30007', 'http', '--port', '30008', 'https', '--', '/bin/true'], io),
   ).toBe(4)
   expect(said).toEqual(['qare cell launch: one --port is all a launch carries'])
+})
+
+test('the launcher hands the shim the stub ports the profile named, and refuses what is malformed (#224)', async () => {
+  const events: string[] = []
+  const code = await launchInCell({
+    command: '/bin/sh',
+    args: ['-c', 'exit 0'],
+    socketDir: '/run/qare-cell',
+    cdpPort: 9222,
+    noDisplay: true,
+    stubPorts: [
+      { host: 'api.billing-vendor.example', port: 8080 },
+      { host: 'api.mailgun.net', port: 8081 },
+      { host: 'api.mailgun.net', port: 8082 },
+    ],
+    env: { PATH: process.env.PATH },
+    err: () => events.push('err'),
+    signals: new EventEmitter(),
+    ...seams(events),
+  })
+  expect(code).toBe(0)
+  expect(events).toEqual([
+    'shim /run/qare-cell 9222 stubs=api.billing-vendor.example:8080 api.mailgun.net:8081 api.mailgun.net:8082',
+    'shim stopped',
+  ])
+  const said: string[] = []
+  const io = { out: () => {}, err: (line: string) => said.push(line), signals: new EventEmitter() }
+  const launch = (...flags: string[]): Promise<number> => runCellCommand(['launch', '--socket-dir', '/tmp', '--cdp-port', '9222', ...flags, '--', '/bin/true'], io)
+  expect(await launch('--stub', 'api.billing-vendor.example')).toBe(4)
+  expect(await launch('--stub', 'api.billing-vendor.example:not-a-port')).toBe(4)
+  expect(await launch('--stub', 'not a host:8080')).toBe(4)
+  expect(await launch('--stub', 'api.billing-vendor.example:0')).toBe(4)
+  expect(await launch('--stub', 'api.billing-vendor.example:70000')).toBe(4)
+  expect(said).toEqual([
+    'qare cell launch: --stub must be a <host>:<port> pair, the host a declared stub is dialed by and the port its service answers on',
+    'qare cell launch: --stub must be a <host>:<port> pair, the host a declared stub is dialed by and the port its service answers on',
+    'qare cell launch: --stub must be a <host>:<port> pair, the host a declared stub is dialed by and the port its service answers on',
+    'qare cell launch: --stub must be a <host>:<port> pair, the host a declared stub is dialed by and the port its service answers on',
+    'qare cell launch: --stub must be a <host>:<port> pair, the host a declared stub is dialed by and the port its service answers on',
+  ])
 })
 
 test('qare cell gate serves until it is told to stop, then writes its record (#223)', async () => {

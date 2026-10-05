@@ -174,6 +174,7 @@ app:
 stubs:
   - service: billing
     hosts: ["api.billing-vendor.example"]
+    ports: [8080]                  # optional: ports the stub answers on, when a contained command dials them (#224)
     provided_by: { compose_service: billing-stub }
   - service: mail
     hosts: ["api.mailgun.net"]
@@ -741,12 +742,16 @@ The cell's one way out is the same gate the build's cell uses, handed the
 hosts the profile's stack declares: the booted app, answered on the port the
 run published it alone and dialled as the compose service that publishes it,
 on the port inside the stack the published port leads to; and every stub's
-declared hosts, dialed as the compose service that provides them, so a stub
-answers on whatever port it listens on. On a target run, which boots no
-stack, a declared host is the target's own, on whatever port it answers —
-carried like any port that is not the gate's own two. An undeclared name
-resolves to nothing, and a connection to one is refused, exactly as the
-build's cell refuses.
+declared hosts, dialed as the compose service that provides them. Each host a
+stub the profile gives ports for (`stubs.<name>.ports`) is answered on its
+own loopback address at those ports, so the command reaches the stub on the
+port it names, over any protocol, and the gate records the dial as the host
+it is dialed by; a stub that names no ports is reached as http or https
+alone, read from the connection the way a browser dials it. On a target run,
+which boots no stack, a declared host is the target's own, on whatever port
+it answers — carried like any port that is not the gate's own two. An
+undeclared name resolves to nothing, and a connection to one is refused,
+exactly as the build's cell refuses.
 
 A contained command check writes `outbound.json` beside its stdout and
 stderr, in the shape the build's evidence carries:

@@ -165,6 +165,12 @@ export interface ProfileStub {
   service: string
   hosts: string[]
   provided_by: { compose_service: string }
+  /**
+   * The ports the stub's service answers on, when a contained command dials
+   * it on a port other than the gate's own two (#224). Absent for a stub a
+   * command reaches as http or https alone, which the cell carries anyway.
+   */
+  ports?: number[]
 }
 
 export interface ProfileVisual {
@@ -992,9 +998,19 @@ function parseStub(value: unknown, index: number): ProfileStub {
   if (!isRecord(value)) fail(base, 'stub must be a YAML object with service, hosts and provided_by')
   if (!isRecord(value.provided_by))
     fail(`${base}.provided_by`, 'stub provided_by must be a YAML object with compose_service')
+  let ports: number[] | undefined
+  if (value.ports !== undefined) {
+    if (!Array.isArray(value.ports)) fail(`${base}.ports`, 'stub ports must be an array of port numbers')
+    ports = value.ports.map((entry) => {
+      if (typeof entry !== 'number' || !Number.isInteger(entry) || entry <= 0 || entry > 65_535)
+        fail(`${base}.ports`, 'a stub port is a number in 1..65535')
+      return entry
+    })
+  }
   return {
     service: nonEmptyString(value.service, `${base}.service`, 'service name'),
     hosts: stringArray(value.hosts, `${base}.hosts`, 'stub hosts'),
+    ...(ports === undefined ? {} : { ports }),
     provided_by: {
       compose_service: nonEmptyString(
         value.provided_by.compose_service,
