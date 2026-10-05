@@ -393,6 +393,17 @@ test('an element is looked for in every open window, newest first, so a flow fol
   ])
 })
 
+test('an assertion waits for what a window is still rendering (#236)', async () => {
+  const main = fakeWindow([], 'Greeter', HOME)
+  const { session } = harness({ windows: [main], findTimeoutMs: 2_000 })
+  const started = await session()
+
+  setTimeout(() => main.show('text=Hello', 'status=Greeting shown'), 30)
+  await expect(started.page.assertText('Hello')).resolves.toBeUndefined()
+  await expect(started.page.assertElement({ role: 'status', name: 'Greeting shown' })).resolves.toBeUndefined()
+  await started.dispose()
+})
+
 test('an element no window shows fails the action naming the element and the windows that are open (#72)', async () => {
   const main = fakeWindow([], 'Greeter', HOME)
   const { session } = harness({ windows: [main], findTimeoutMs: 60 })
@@ -402,7 +413,7 @@ test('an element no window shows fails the action naming the element and the win
     'no open window shows role=button name=Missing within 60 ms (open windows: 1 "Greeter")',
   )
   await expect(started.page.waitFor({ testId: 'gone' })).rejects.toThrow(/no open window shows testId=gone/)
-  // An assertion is the page as it stands: it does not wait.
+  // An assertion waits no longer than an action does, then fails (#236).
   await expect(started.page.assertText('Hello')).rejects.toThrow('assert failed: the text "Hello" is not visible in any open window')
   await expect(started.page.assertElement({ role: 'status', name: 'Greeting shown' })).rejects.toThrow('assert failed: the element is not visible in any open window')
   main.close()

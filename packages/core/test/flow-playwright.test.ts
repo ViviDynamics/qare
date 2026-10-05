@@ -7,7 +7,8 @@ const NOT_INSTALLED_MESSAGE =
 const APP_URL = ['http:', '//localhost:3000/up'].join('')
 const TRACE_PATH = '/tmp/qare-flow-trace.zip'
 
-function fakeChromium(events: string[], opts: { visible?: boolean; subresources?: string[]; sockets?: string[] } = {}) {
+function fakeChromium(events: string[], opts: { visible?: boolean; visibleAfterReads?: number; subresources?: string[]; sockets?: string[] } = {}) {
+  let reads = 0
   const onSocket: Array<(socket: { url: () => string }) => void> = []
   const onRequest: Array<(request: { url: () => string }) => void> = []
   const request = (url: string) => {
@@ -21,6 +22,8 @@ function fakeChromium(events: string[], opts: { visible?: boolean; subresources?
       waitFor: async (opts: { state: string }) => events.push(`waitFor ${name} until ${opts.state}`),
       isVisible: async () => {
         events.push(`visible ${name}`)
+        reads += 1
+        if (opts.visibleAfterReads !== undefined) return reads > opts.visibleAfterReads
         return opts.visible ?? true
       },
       first: () => self,
@@ -179,6 +182,8 @@ test('assertText throws naming the text when the page shows something else', asy
   const events: string[] = []
   const session = await makePlaywrightFlowSession({
     loadPlaywright: async () => ({ chromium: fakeChromium(events, { visible: false }) }) as never,
+    assertTimeoutMs: 30,
+    pollIntervalMs: 5,
   })
 
   await expect(session.page.assertText('Goodbye')).rejects.toThrow(
@@ -190,11 +195,36 @@ test('assertElement throws when the element is not visible (#70)', async () => {
   const events: string[] = []
   const session = await makePlaywrightFlowSession({
     loadPlaywright: async () => ({ chromium: fakeChromium(events, { visible: false }) }) as never,
+    assertTimeoutMs: 30,
+    pollIntervalMs: 5,
   })
 
   await expect(session.page.assertElement({ testId: 'welcome-banner' })).rejects.toThrow(
     'assert failed: the element is not visible',
   )
+})
+
+test('an assertion waits for what the page is still rendering, and gives up once its time runs out (#236)', async () => {
+  const events: string[] = []
+  const session = await makePlaywrightFlowSession({
+    loadPlaywright: async () => ({ chromium: fakeChromium(events, { visibleAfterReads: 2 }) }) as never,
+    assertTimeoutMs: 2_000,
+    pollIntervalMs: 1,
+  })
+
+  // Hidden for the first two reads, as an element a script has yet to place.
+  await expect(session.page.assertElement({ role: 'link', name: 'Donate' })).resolves.toBeUndefined()
+  expect(events.filter((event) => event === 'visible link=Donate')).toHaveLength(3)
+
+  const never = await makePlaywrightFlowSession({
+    loadPlaywright: async () => ({ chromium: fakeChromium([], { visible: false }) }) as never,
+    assertTimeoutMs: 40,
+    pollIntervalMs: 5,
+  })
+  const started = Date.now()
+  await expect(never.page.assertText('Late greeting')).rejects.toThrow('assert failed: the text "Late greeting" is not visible')
+  expect(Date.now() - started).toBeGreaterThanOrEqual(40)
+  expect(Date.now() - started).toBeLessThan(1_500)
 })
 
 test('the session records every connection its page attempted, and nothing that stays in the browser (#122)', async () => {

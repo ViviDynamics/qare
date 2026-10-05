@@ -205,6 +205,10 @@ export class PlaywrightFlowSessionError extends Error {
   }
 }
 
+/** How long an assertion waits for what it names: five seconds, as a browser test's own assertion does. */
+const DEFAULT_ASSERT_TIMEOUT_MS = 5_000
+const DEFAULT_POLL_INTERVAL_MS = 100
+
 /**
  * A flow session backed by a real Playwright chromium: one browser, one context
  * and one page, all launched lazily on first use and shared by the page and
@@ -219,6 +223,9 @@ export async function makePlaywrightFlowSession(
     /** Where the accessibility rule engine's source comes from (#149); axe-core by default. */
     loadAxe?: () => Promise<{ source: string }>
     masks?: string[]
+    /** How long an assertion waits for what it names before it fails (#236). */
+    assertTimeoutMs?: number
+    pollIntervalMs?: number
   } = {},
 ): Promise<{
   capabilities: FlowDriverCapabilities
@@ -285,6 +292,20 @@ export async function makePlaywrightFlowSession(
     return starting
   }
 
+  // An assertion decides from what the page settles to, not from one read
+  // of it: a page still placing an element is not a page without it, and a
+  // single read failed criteria the application met (#236). The wait is
+  // bounded, so what never appears still fails.
+  const assertTimeoutMs = opts.assertTimeoutMs ?? DEFAULT_ASSERT_TIMEOUT_MS
+  const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
+  const becomesVisible = async (locator: { isVisible: () => Promise<boolean> }): Promise<boolean> => {
+    const deadline = Date.now() + assertTimeoutMs
+    for (;;) {
+      if (await locator.isVisible()) return true
+      if (Date.now() >= deadline) return false
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
+    }
+  }
   const page: FlowPage = {
     open: async (url) => {
       const started = await start()
@@ -310,16 +331,13 @@ export async function makePlaywrightFlowSession(
     },
     assertText: async (text) => {
       const started = await start()
-      const locator = started.page.getByText(text).first()
-      const visible = await locator.isVisible()
-      if (!visible) {
+      if (!(await becomesVisible(started.page.getByText(text).first()))) {
         throw new Error(`assert failed: the text ${JSON.stringify(text)} is not visible`)
       }
     },
     assertElement: async (element) => {
       const started = await start()
-      const visible = await resolveFlowElement(started.page, element).isVisible()
-      if (!visible) {
+      if (!(await becomesVisible(resolveFlowElement(started.page, element)))) {
         throw new Error(`assert failed: the element is not visible`)
       }
     },
