@@ -747,7 +747,10 @@ stub the profile gives ports for (`stubs.<name>.ports`) is answered on its
 own loopback address at those ports, so the command reaches the stub on the
 port it names, over any protocol, and the gate records the dial as the host
 it is dialed by; a stub that names no ports is reached as http or https
-alone, read from the connection the way a browser dials it. A stub's ports
+alone, read from the connection the way a browser dials it. The gate holds a
+mapped host to those ports on its own account, asked on the mounted socket
+or not: the shim's bindings are the shim's, and a port the stub does not
+name is refused at the gate as it is at the shim. A stub's ports
 may not be 80 or 443, the gate's own two: the gate answers every host by
 those already, so a declaration of them names nothing the command could not
 reach. On a target run, which boots no stack, a declared host is the

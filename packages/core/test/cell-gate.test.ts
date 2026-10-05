@@ -23,7 +23,7 @@ async function upstream(): Promise<{ port: number }> {
 
 async function gate(
   hosts: string[],
-  extra: { maxEntries?: number; dialPort?: number; map?: Record<string, string>; ports?: { port: number; protocol: 'http' | 'https' }[]; app?: { host: string; port: number; dialPort?: number } } = {},
+  extra: { maxEntries?: number; dialPort?: number; map?: Record<string, string>; ports?: { port: number; protocol: 'http' | 'https' }[]; app?: { host: string; port: number; dialPort?: number }; stubPorts?: { host: string; port: number }[] } = {},
 ): Promise<{ gate: Gate; dir: string; lines: string[]; dialled: string[] }> {
   const dir = await mkdtemp(join(tmpdir(), 'qare-gate-'))
   cleanups.push(() => rm(dir, { recursive: true, force: true }))
@@ -43,6 +43,7 @@ async function gate(
     ...(extra.maxEntries === undefined ? {} : { maxEntries: extra.maxEntries }),
     ...(extra.map === undefined ? {} : { map: extra.map }),
     ...(extra.ports === undefined ? {} : { ports: extra.ports }),
+    ...(extra.stubPorts === undefined ? {} : { stubPorts: extra.stubPorts }),
     ...(extra.app === undefined ? {} : { app: extra.app }),
   })
   cleanups.push(() => started.stop().then(() => {}))
@@ -138,19 +139,26 @@ test('a map key with a wildcard carries every host the pattern names, dialled as
   await started.stop()
 })
 
-test('an exact mapping is resolved however the profile spelled the host (#224)', async () => {
+test('an exact mapping is resolved however the profile spelled the host, and held to the ports its stub declares (#224)', async () => {
   const { port } = await upstream()
   const { gate: started, dir, dialled } = await gate(['api.billing.example.test', '*.vendor.example.test'], {
     dialPort: port,
     map: { 'API.BILLING.EXAMPLE.TEST': 'billing-stub', '*.VENDOR.EXAMPLE.TEST': 'vendor-stub' },
+    stubPorts: [{ host: 'api.billing.example.test', port: 8080 }],
   })
   // The request is the lowercase name it resolved to; the map is the
   // profile's own casing. Either way, the stub answers, not a host on the
   // internet that happens to spell the same.
   expect((await ask(dir, { op: 'connect', host: 'api.billing.example.test', port: 8080 })).reply).toEqual({ ok: true })
   expect(dialled).toEqual(['billing-stub:8080'])
-  expect((await ask(dir, { op: 'connect', host: 'a.vendor.example.test', port: 8080 })).reply).toEqual({ ok: true })
-  expect(dialled).toEqual(['billing-stub:8080', 'vendor-stub:8080'])
+  // A pattern names no ports: a stub that names ports names each host
+  // exactly, so the hosts the pattern carries answer on the gate's own two.
+  expect((await ask(dir, { op: 'connect', host: 'a.vendor.example.test', port: 8080 })).reply).toEqual({
+    ok: false,
+    reason: 'a stub answers on the gate\'s own two and the ports its stub declares only',
+  })
+  expect((await ask(dir, { op: 'connect', host: 'a.vendor.example.test', port: 443 })).reply).toEqual({ ok: true })
+  expect(dialled).toEqual(['billing-stub:8080', 'vendor-stub:443'])
   await started.stop()
 })
 
@@ -181,21 +189,30 @@ test('the app is answered on its published port alone, and dialled as its servic
   ])
 })
 
-test("a mapped host is reached on any port the stack answers on; an unmapped one is held to the gate's own two (#224)", async () => {
+test("a mapped host is held to the ports its stub declares; an unmapped one to the gate's own two (#224)", async () => {
   const { port } = await upstream()
   const { gate: started, dir, lines, dialled } = await gate(['api.billing.example.test', 'plain.example.test'], {
     dialPort: port,
     map: { 'api.billing.example.test': 'billing-stub' },
+    stubPorts: [{ host: 'api.billing.example.test', port: 8080 }],
   })
   const { reply } = await ask(dir, { op: 'connect', host: 'api.billing.example.test', port: 8080 })
   expect(reply).toEqual({ ok: true })
   expect(dialled).toEqual(['billing-stub:8080'])
+  // The gate is asked on the socket it mounts, and the shim's bindings are
+  // no rule of its own: a port the stub does not name is no port the stub
+  // answers on, whatever listens there.
+  expect((await ask(dir, { op: 'connect', host: 'api.billing.example.test', port: 2375 })).reply).toEqual({
+    ok: false,
+    reason: 'a stub answers on the gate\'s own two and the ports its stub declares only',
+  })
   expect((await ask(dir, { op: 'connect', host: 'plain.example.test', port: 8080 })).reply).toEqual({
     ok: false,
     reason: 'the gate carries ports 80 and 443 only',
   })
   await started.stop()
   expect(summaryOf(lines).reached).toEqual([
+    { host: 'api.billing.example.test', port: 2375, protocol: 'tcp', declared: false, count: 1 },
     { host: 'api.billing.example.test', port: 8080, protocol: 'tcp', declared: true, count: 1 },
     { host: 'plain.example.test', port: 8080, protocol: 'tcp', declared: false, count: 1 },
   ])

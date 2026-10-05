@@ -204,9 +204,12 @@ export async function startCommandCell(opts: CommandCellOptions): Promise<Comman
   const map = { ...(opts.map ?? {}), ...(app === undefined ? {} : { [app.host]: app.service }) }
   const hosts = [...new Set([...opts.hosts, ...(opts.app === undefined ? [] : [opts.app.host])])]
   const mapArgs = Object.entries(map).flatMap(([host, name]) => ['--map', `${host}=${name}`])
+  // The stub ports travel to the gate as well as the shim: the gate holds a
+  // mapped host to them on its own account, not on the shim's bindings (#224).
+  const stubArgs = (opts.stubPorts ?? []).flatMap(({ host, port }) => ['--stub', `${host}:${port}`])
   const gate = docker.spawn([
     'run', '--rm', '--name', gateName, ...common,
-    opts.image, 'qare', 'cell', 'gate', '--socket-dir', SOCKET_DIR, ...hosts.flatMap((host) => ['--host', host]), ...carried, ...mapArgs,
+    opts.image, 'qare', 'cell', 'gate', '--socket-dir', SOCKET_DIR, ...hosts.flatMap((host) => ['--host', host]), ...carried, ...mapArgs, ...stubArgs,
     ...(app === undefined ? [] : ['--app', `${app.host}:${app.port}:${app.dialPort}`]),
   ]) // prettier-ignore
   let gateExit: string | undefined

@@ -30,12 +30,14 @@ In:
   (what `{{run.target_url}}` names, on the port the run published it on) and
   each stub's declared hosts. A stub host is dialed as the compose service
   the stub names (`provided_by.compose_service`) on the compose project's
-  network, with the port the connection asked for, so a stub answers on
-  whatever port it listens on. A host on a target run (no stack booted) is
-  the target's own. The gate carries any port on a declared host, not only
-  80 and 443, because a stack publishes the app on the run's own port; the
-  shim gains the interception port for it, with the scheme the profile's
-  target names. An undeclared name resolves to nothing and an undeclared
+  network, on the gate's own two and the ports the stub declares
+  (`stubs.<name>.ports`), and on no other port, whatever listens there: the
+  gate holds a mapped host to its stub's ports on its own account, asked on
+  the mounted socket or not (#224). A host on a target run (no stack booted)
+  is the target's own. The gate carries the app's published port beside 80
+  and 443, because a stack publishes the app on the run's own port; the shim
+  gains the interception port for it, with the scheme the profile's target
+  names. An undeclared name resolves to nothing and an undeclared
   connection is refused, exactly as the client cell's gate refuses.
 
 - **Writes: declared scratch paths.** The checkout is copied into the cell

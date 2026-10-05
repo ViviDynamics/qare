@@ -124,7 +124,7 @@ test('qare cell launch and qare cell gate read their arguments, and refuse what 
   expect(await runCellCommand(['gate', '--host', 'api.example.test'], io)).toBe(4)
   expect(await runCellCommand(['gate', '--socket-dir', '/tmp', '--host', 'not a host'], io)).toBe(4)
   expect(said).toEqual([
-    'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... [--app <host>:<port>[:<dial-port>]] | qare cell launch --socket-dir <dir> --cdp-port <port> [--no-display] [--stub <host>:<port>]... -- <command> [args...]',
+    'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... [--stub <host>:<port>]... [--app <host>:<port>[:<dial-port>]] | qare cell launch --socket-dir <dir> --cdp-port <port> [--no-display] [--stub <host>:<port>]... -- <command> [args...]',
     'qare cell launch: no command to launch after --',
     'qare cell launch: --socket-dir is required',
     'qare cell gate: --socket-dir is required',
@@ -144,6 +144,7 @@ test('qare cell gate reads the port, the mapping and the app a stack needs, and 
   expect(await runCellCommand(['gate', '--socket-dir', '/tmp', '--app', 'localhost:x:3000'], io)).toBe(4)
   expect(await runCellCommand(['gate', '--socket-dir', '/tmp', '--app', 'not a host:3000'], io)).toBe(4)
   expect(await runCellCommand(['gate', '--socket-dir', '/tmp', '--app', 'localhost:70000:3000'], io)).toBe(4)
+  expect(await runCellCommand(['gate', '--socket-dir', '/tmp', '--stub', 'not a host:8080'], io)).toBe(4)
   expect(said).toEqual([
     'qare cell gate: --port must be a port and a scheme, http or https',
     'qare cell gate: --port must be a port and a scheme, http or https',
@@ -154,6 +155,7 @@ test('qare cell gate reads the port, the mapping and the app a stack needs, and 
     'qare cell gate: "localhost:x:3000" is not an <host>:<port>[:<dial-port>] app',
     'qare cell gate: "not a host:3000" is not an <host>:<port>[:<dial-port>] app',
     'qare cell gate: "localhost:70000:3000" is not an <host>:<port>[:<dial-port>] app',
+    'qare cell gate: --stub must be a <host>:<port> pair, the host a declared stub is dialed by and the port its service answers on',
   ])
   const dir = await mkdtemp(join(tmpdir(), 'qare-cell-cmd-'))
   const lines: string[] = []
@@ -170,6 +172,26 @@ test('qare cell gate reads the port, the mapping and the app a stack needs, and 
   signals.emit('SIGTERM')
   expect(await running).toBe(0)
   // The gate started with what the run handed it: the summary closes it.
+  expect(JSON.parse(lines.at(-1) as string).event).toBe('summary')
+})
+
+test('qare cell gate holds a mapped host to the stub ports the run hands it (#224)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-cell-cmd-'))
+  const lines: string[] = []
+  const signals = new EventEmitter()
+  let ready: (() => void) | undefined
+  const isReady = new Promise<void>((resolve) => (ready = resolve))
+  const running = runCellCommand(
+    ['gate', '--socket-dir', dir, '--relay-port', '0', '--host', 'api.example.test', '--map', 'api.example.test=billing-stub', '--stub', 'api.example.test:8080'],
+    { out: (line) => (lines.push(line), ready?.()), err: () => {}, signals },
+  )
+  await isReady
+  // The gate asks the shim's bindings no questions: a port the stub does not
+  // name is refused on the gate's own account, over the mounted socket.
+  const asked = await askGate(dir, { op: 'connect', host: 'api.example.test', port: 8081 })
+  expect(asked.reply).toEqual({ ok: false, reason: 'a stub answers on the gate\'s own two and the ports its stub declares only' })
+  signals.emit('SIGTERM')
+  expect(await running).toBe(0)
   expect(JSON.parse(lines.at(-1) as string).event).toBe('summary')
 })
 

@@ -77,6 +77,13 @@ export interface GateOptions {
    * those two.
    */
   ports?: readonly CarriedPort[]
+  /**
+   * A port a declared stub names, beside the gate's own two (#224). The gate
+   * is asked over the socket it mounts, and the shim's bindings are not the
+   * gate's to trust, so a mapped stub host is dialled on its declared ports
+   * alone, and on no other port whatever answers there.
+   */
+  stubPorts?: readonly { host: string; port: number }[]
   /** The directory the gate and the cell share. */
   socketDir: string
   relayPort?: number
@@ -145,6 +152,12 @@ export async function startGate(opts: GateOptions): Promise<Gate> {
   const dial = opts.dial ?? ((host: string, port: number): Socket => connect({ host, port }))
   // The app, with its host named the way requests name hosts: lowercase.
   const app = opts.app === undefined ? undefined : { ...opts.app, host: hostName(opts.app.host) ?? opts.app.host }
+  // Whether the port is one the gate's own two, or one a declared stub
+  // names for the host: the two ways a mapped host answers (#224). A name
+  // matches its stub's own, or the pattern the stub declares, the way every
+  // declaration is matched.
+  const stubDeclares = (host: string, port: number): boolean =>
+    port === 80 || port === 443 || (opts.stubPorts ?? []).some((entry) => entry.port === port && matchesStub(host, [{ hosts: [entry.host] }]))
   const reached = new Map<string, ReachedHost>()
   let capped = false
   const open = new Set<Socket>()
@@ -195,13 +208,18 @@ export async function startGate(opts: GateOptions): Promise<Gate> {
     }
     // The app is one service at one port: a request for its host on any
     // other port is not the app, however a service on the machine the app
-    // is published from may answer (#224). What is left holds for every
-    // other mapped host: the stack's own services answer on whatever port
-    // they listen on.
+    // is published from may answer (#224).
     const served = app !== undefined && host === app.host ? app : undefined
     if (served !== undefined && port !== served.port) {
       record(host, port, protocol ?? 'tcp', false)
       return answer(socket, { ok: false, reason: 'the app answers on its published port only' }, true)
+    }
+    // A mapped stub host answers on the gate's own two and the ports its
+    // stub declares alone (#224): the cell can speak for itself on the
+    // mounted socket, and what the shim binds is no rule of the gate's.
+    if (served === undefined && dialAs(host) !== host && !stubDeclares(host, port)) {
+      record(host, port, protocol ?? 'tcp', false)
+      return answer(socket, { ok: false, reason: 'a stub answers on the gate\'s own two and the ports its stub declares only' }, true)
     }
     if (protocol === undefined && dialAs(host) === host) {
       // A host the cell dials by its own name reaches out through the gate's

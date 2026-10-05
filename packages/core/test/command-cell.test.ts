@@ -177,7 +177,7 @@ test("a declared host on a port other than the gate's own two has that port carr
   await cell.dispose()
 })
 
-test("a stub with declared ports has them handed to the launch as host and port pairs, beside the gate's own two (#224)", async () => {
+test('a stub with declared ports has them handed to the launch and the gate as host and port pairs (#224)', async () => {
   const { docker, spawned } = fakeDocker()
   const cell = await startCommandCell({
     image: 'qare-web:test',
@@ -193,8 +193,12 @@ test("a stub with declared ports has them handed to the launch as host and port 
     id: 'ghi901',
     docker,
   })
-  // The gate takes the hosts, not the ports: it asks about what it is asked.
-  expect(spawned[0]?.args.filter((arg) => arg === '--stub')).toEqual([])
+  // The gate takes the ports on its own account too: a mapped host is held
+  // to them on the mounted socket, not on the shim's bindings.
+  expect(spawned[0]?.args.slice(spawned[0]?.args.indexOf('--stub'))).toEqual([
+    '--stub', 'api.stubs.test:8080', '--stub', 'api.mail.test:8081',
+    '--app', 'localhost:34567:3000',
+  ])
   cell.run(['true'], {})
   expect(spawned[1]?.args.slice(spawned[1]?.args.indexOf('--port'))).toEqual([
     '--port', '34567', 'http',

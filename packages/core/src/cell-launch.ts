@@ -127,7 +127,7 @@ export async function launchInCell(opts: CellLaunchOptions): Promise<number> {
 }
 
 const USAGE =
-  'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... [--app <host>:<port>[:<dial-port>]] | qare cell launch --socket-dir <dir> --cdp-port <port> [--no-display] [--stub <host>:<port>]... -- <command> [args...]'
+  'usage: qare cell gate --socket-dir <dir> [--host <name>]... [--port <port> <scheme>] [--map <host>=<name>]... [--stub <host>:<port>]... [--app <host>:<port>[:<dial-port>]] | qare cell launch --socket-dir <dir> --cdp-port <port> [--no-display] [--stub <host>:<port>]... -- <command> [args...]'
 
 /** The `--port <port> <scheme>` flags, named by both the gate and the launcher for the app the run boots (#224). */
 function parsePorts(flags: string[], who: string): { ports: { port: number; protocol: 'http' | 'https' }[]; error: string | undefined } {
@@ -242,6 +242,13 @@ export async function runCellCommand(argv: string[], io: CellCommandIo): Promise
     return 4
   }
   const ports = parsedPorts.ports
+  // A port a declared stub names, beside the gate's own two (#224): the gate
+  // holds a mapped host to them, whether or not the shim's bindings hold.
+  const parsedStubs = parseStubPorts(flags, 'qare cell gate')
+  if (parsedStubs.error !== undefined) {
+    io.err(parsedStubs.error)
+    return 4
+  }
   // A declared host dialed as the name that answers: the compose service that
   // provides a stub, or the address the run's bridge answers the app at (#224).
   const map: Record<string, string> = {}
@@ -280,6 +287,7 @@ export async function runCellCommand(argv: string[], io: CellCommandIo): Promise
       write: io.out,
       ...(relayPort === undefined ? {} : { relayPort: Number(relayPort) }),
       ...(ports.length === 0 ? {} : { ports }),
+      ...(parsedStubs.stubPorts.length === 0 ? {} : { stubPorts: parsedStubs.stubPorts }),
       ...(Object.keys(map).length === 0 ? {} : { map }),
       ...(app === undefined ? {} : { app }),
     })

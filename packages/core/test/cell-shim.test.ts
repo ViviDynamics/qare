@@ -51,6 +51,7 @@ async function cell(hosts: string[], opts: { gate?: boolean; app?: { port: numbe
           },
           ...(opts.app === undefined ? {} : { ports: [{ port: opts.app.port, protocol: opts.app.scheme }] }),
           ...(opts.map === undefined ? {} : { map: opts.map }),
+          ...(opts.stubs === undefined ? {} : { stubPorts: opts.stubs }),
         })
   if (gate !== undefined) cleanups.push(() => gate.stop())
   const shim = await startShim({
