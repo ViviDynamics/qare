@@ -73,3 +73,15 @@ test('a contained client build is launched in a Linux cell, so it cannot require
   expect(validateProfileConfig({ ...CLIENT, requires: { os: 'linux' } }).requires).toEqual({ os: 'linux' })
   expect(validateProfileConfig({ client: { ...CLIENT.client, egress: 'uncontained' }, requires: { os: 'windows' } }).requires).toEqual({ os: 'windows' })
 })
+
+test('a contained command is launched in a Linux cell, so it cannot require another operating system (#224)', () => {
+  const commands = { test: { run: 'npm test', about: 'runs the suite' } }
+  const refused = refusal({ ...TARGET, commands, requires: { os: 'macos' } })
+  expect(refused.field).toBe('requires.os')
+  expect(refused.message).toContain(
+    'a contained command is launched in a cell, which is a Linux container, so it cannot require macos: a command for macos says egress: uncontained',
+  )
+  // A profile whose commands all opt out asks the host for what it says.
+  const optedOut = { test: { run: 'npm test', about: 'runs the suite', egress: 'uncontained' } }
+  expect(validateProfileConfig({ ...TARGET, commands: optedOut, requires: { os: 'macos' } }).requires).toEqual({ os: 'macos' })
+})

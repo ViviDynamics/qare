@@ -69,9 +69,23 @@ export function planFingerprint(criteria: JobCriterion[]): string {
  */
 const CLIENT_CONTAINMENT = 'client-egress-cell-v1'
 
+/**
+ * What a profile's named commands and suites were proven under (#224): a
+ * command runs in a cell by default, with the gate's record in the check's
+ * evidence, and a suite's evidence carries the containment record in as many
+ * words. It is part of the fingerprint, so a result cached before the record
+ * existed, which holds none, is never replayed as one that does.
+ */
+const COMMAND_CONTAINMENT = 'command-egress-cell-v1'
+
 export function profileFingerprint(profile: QaProfile, digest: (text: string) => string = sha256): string {
   const text = stableStringify(profile)
-  return digest(profile.client === undefined ? text : `${CLIENT_CONTAINMENT}:${text}`)
+  const marked = [
+    ...(profile.client === undefined ? [] : [CLIENT_CONTAINMENT]),
+    ...(profile.commands === undefined || Object.keys(profile.commands).length === 0 ? [] : [COMMAND_CONTAINMENT]),
+    ...(profile.suites === undefined || profile.suites.length === 0 ? [] : [COMMAND_CONTAINMENT]),
+  ]
+  return digest(marked.length === 0 ? text : `${marked.join(':')}:${text}`)
 }
 
 /**

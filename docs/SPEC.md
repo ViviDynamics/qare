@@ -174,6 +174,7 @@ app:
 stubs:
   - service: billing
     hosts: ["api.billing-vendor.example"]
+    ports: [8080]                  # optional: ports the stub answers on, when a contained command dials them (#224)
     provided_by: { compose_service: billing-stub }
   - service: mail
     hosts: ["api.mailgun.net"]
@@ -189,6 +190,11 @@ commands:                        # optional: invocations the planner may rely on
     about: runs the tests of one package whose name matches the pattern
     filter: pattern              # which placeholder is the test filter (#157)
     report: vitest-json          # the machine-readable report the command prints: vitest-json, junit-xml or node-tap
+    scratch: [tmp/scratch]       # optional: paths the command may write, each inside the repository (#224)
+  smoke:                         # a command opts out of its cell in as many words (#224)
+    run: "pnpm exec vitest run"
+    about: runs the whole suite with the network its step has
+    egress: uncontained          # optional; scratch beside egress: uncontained is refused at load
 base:                            # optional: what the base side of a run costs (#147)
   criteria: ledger               # all (default), ledger (only criteria the base's ledger carries), or none
   budget: 10m                    # the base side's wall clock; what did not run is "not compared"
@@ -713,6 +719,92 @@ is withheld, and the evidence says so. The same sweep follows the code: a
 command that echoes a mail-borne link or code publishes it redacted, and a flow
 failure whose reason quotes a value the flow put on the page publishes the
 reason redacted.
+
+### Containing a command (#224)
+
+A named command is pull request code that runs on the runner with the
+toolchain the image carries, the repository's checkout and the booted stack
+on its loopback. What it reaches from there, the run contains the way it
+contains a build (#223): a named command runs in a **cell** of its own,
+through the same docker daemon, from the same image. The command container
+has no network and no capability, and the checkout is copied into it,
+read-only, whole: a command that runs from a subdirectory still reads the
+repository's own files, so its cell holds the repository root and the
+command runs from the working directory its check names. A named command may
+declare the paths it may write (`commands.<name>.scratch`, each inside the
+repository), and each is a writable tmpfs mounted over the copy at the same
+repository-relative path. A write anywhere else fails against the read-only
+copy, and the failure names itself in the command's output. No display is
+asked for: a command opens no windows, and the images a command runs in ship
+no Xvfb to start one with.
+
+The cell's one way out is the same gate the build's cell uses, handed the
+hosts the profile's stack declares: the booted app, answered on the port the
+run published it alone and dialled as the compose service that publishes it,
+on the port inside the stack the published port leads to; and every stub's
+declared hosts, dialed as the compose service that provides them. Each host a
+stub the profile gives ports for (`stubs.<name>.ports`) is answered on its
+own loopback address at those ports, so the command reaches the stub on the
+port it names, over any protocol, and the gate records the dial as the host
+it is dialed by, on the protocol the dial is: a stub's declared port is
+tcp, however the app's own port may share its number; a stub that names no
+ports is reached as http or https
+alone, read from the connection the way a browser dials it. The gate holds a
+mapped host to those ports on its own account, asked on the mounted socket
+or not: the shim's bindings are the shim's, and a port the stub does not
+name is refused at the gate as it is at the shim. A stub's ports
+may not be 80 or 443, the gate's own two: the gate answers every host by
+those already, so a declaration of them names nothing the command could not
+reach. On a target run, which boots no stack, a declared host is the
+target's own, on whatever port it answers, carried like any port that is not
+the gate's own two; a target on the machine's own loopback is refused, for
+the gate reaches no loopback but its own. An
+undeclared name resolves to nothing, and a connection to one is refused,
+exactly as the build's cell refuses.
+
+A contained command check writes `outbound.json` beside its stdout and
+stderr, in the shape the build's evidence carries:
+
+```json
+{
+  "command": "pnpm --filter web exec vitest run -t greeting",
+  "containment": "cell",
+  "declared": ["api.billing-vendor.example"],
+  "reached": [{ "host": "api.billing-vendor.example", "port": 443, "protocol": "https", "declared": true, "count": 2 }]
+}
+```
+
+A destination the profile does not declare makes the check `unverified` with
+`refused: undeclared host: <host>:<port> (<protocol>); the profile does not
+list it in the command's declared hosts`, and a refusal is never cached: the
+cache key names the containment, so a result cached before commands were
+contained is not replayed as one that was. The host is held to the cell
+before anything boots: a profile whose named commands are contained requires
+the docker daemon and the image, and a run on a host that lacks them is
+`refused` by name before a base checkout or a compose boot, as a contained
+build is.
+
+A command opts out in as many words:
+
+```yaml
+commands:
+  test:
+    run: "pnpm exec vitest run"
+    about: runs the suite
+    egress: uncontained
+```
+
+The command then runs beside the run, with the network its step has, and its
+evidence carries `"containment": "none"` and the reason nothing is listed. A
+command cannot both opt out and declare scratch: the scratch promise is kept
+by the cell, so one without the other is a contradiction, refused when the
+profile loads.
+
+**Suites are not contained.** A suite may need the docker daemon (`docker
+compose exec` inside a booted service), which a cell withholds, and a suite
+that is both contained and able to start containers is a privilege handed
+twice. The suite's evidence says in as many words that it ran uncontained, so
+a reader knows its traffic is not recorded.
 
 ## The criteria ledger
 
@@ -1302,13 +1394,14 @@ And what its shape already implies:
 | boots a server (`app`), or names a `target` | nothing: the browser runs headless anywhere |
 | launches a contained client build (the default) | a **cell**: a docker daemon on the machine that holds the image the run is in (#223) |
 | launches an uncontained client build (`client.egress: uncontained`) | a **display**, or an Xvfb the driver can start one with (#72) |
+| declares a named command that runs contained (the default, #224) | a **cell**: the same docker daemon and image |
 | drives a device (#73, #74) | adds its row when the driver lands |
 
 A profile is a file a pull request can edit, so `requires` takes only those
 three keys and only values the run can hold a host to, and a section that
 contradicts the profile is refused when it loads: a contained build is
 launched in a cell, which is a Linux container, so it cannot require macOS or
-Windows.
+Windows, and so is a named command that runs contained (#224).
 
 The run holds the host to the table before anything is provisioned: before a
 base checkout, a build command, an install, a compose boot or a health probe.
@@ -1592,7 +1685,7 @@ not in the cell: a build that reads files outside its own directory does not
 find them. Both sides of a comparison are contained alike, and each side's
 flow checks carry their own `outbound.json`. A build command (`client.artefact.*.build`) is a
 command, not the build: it runs with the step's network, as a command check
-does.
+that names no command of the profile does.
 
 | The build reaches for | Inside the cell | In the evidence |
 | --- | --- | --- |
@@ -1637,11 +1730,11 @@ both opt out and declare hosts.
 
 What the cell does not do:
 
-- It contains the build, not the step. A command check, a suite and a
-  compose service still run with the network the step has
-  ([ADR-0005](./decisions/adr-0005-execute-docker-access.md)). Containing
-  them is the same decision applied to a process that needs the repository's
-  toolchain and the booted stack, and is not done yet (#224).
+- It contains the build, not the step. A suite and a compose service still
+  run with the network the step has
+  ([ADR-0005](./decisions/adr-0005-execute-docker-access.md)). A named
+  command runs contained now (#224); a suite does not, because it may need
+  the daemon a cell withholds.
 - The profile is a file in the repository, so a pull request can add a host
   to it. The addition is in the diff and in `outbound.json`.
 - A runtime's own background traffic becomes a host nobody declared.
@@ -1895,12 +1988,14 @@ check's `outbound.json`, however the flow ended, a timeout included. A browser
 backend that cannot report what it reached leaves the flow `unverified`. The target's own host is always allowed, and `target.hosts`
 names the rest, with the same `*.` wildcards as a stub's hosts. A host that is
 neither refuses the run, as a missing stub does in a booted run, except that no
-stub issue is filed: a target has no stubs. Command checks and suites are not intercepted:
-a suite drives its own browser, which QARE cannot see. Only the traffic of the
-browser QARE drives is recorded. A process the run starts is contained rather
-than watched; that is done for the build a client profile launches
-([Containing the build](#containing-the-build)) and not yet for command
-checks and suites (#224).
+stub issue is filed: a target has no stubs. A named command the profile
+contains is held to the same list: its cell carries the target's own host and
+every host `target.hosts` declares ([Containing a
+command](#containing-a-command)). Suites are not intercepted: a suite drives
+its own browser, which QARE cannot see. Only the traffic of the browser QARE
+drives is recorded. A process the run starts is contained rather than watched;
+that is done for the build a client profile launches ([Containing the
+build](#containing-the-build)) and for command checks (#224).
 
 There is only one side, so nothing runs at a base revision and no regression is
 looked for. The result carries `target: { url, comparison: "none" }` and the

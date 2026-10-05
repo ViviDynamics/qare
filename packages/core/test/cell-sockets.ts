@@ -28,6 +28,7 @@ export async function unixServer(path: string, onSocket: (socket: Socket) => voi
 }
 
 export const dialLoopback = (port: number): Socket => connect({ host: '127.0.0.1', port })
+export const dialAddress = (address: string, port: number): Socket => connect({ host: address, port })
 export const dialUnix = (path: string): Socket => connect(path)
 
 /** One request to the gate: the line it is sent, the line it answers, and the socket for what follows. */

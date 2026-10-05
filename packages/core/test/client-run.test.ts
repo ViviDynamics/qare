@@ -268,7 +268,7 @@ test('what a build reached is recorded however its flow ended, a timeout include
 test('a host that cannot contain a client build refuses the run by name, and launches nothing (#223, #76)', async () => {
   const events: string[] = []
   const job = await clientJob()
-  const reason = 'a client build runs contained, in a cell the docker daemon makes, and no daemon answered (docker exited 127)'
+  const reason = 'a contained build or command runs in a cell the docker daemon makes, and no daemon answered (docker exited 127)'
   const { result } = await runJob(job, { ...WITH_DISPLAY, clientCell: { problem: async () => reason }, flowSession: desktopSession(events, () => ({ reached: [] })) })
   // The cell is a requirement of the host like any other (#76): unmet, the run is refused before anything is provisioned.
   expect(result.verdict).toBe('refused')

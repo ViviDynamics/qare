@@ -13,11 +13,12 @@ import { GATE_RELAY_PORT, type GateSummary, type ReachedHost } from './cell-gate
  */
 
 /** Where the shared volume is mounted in both containers. */
-const SOCKET_DIR = '/run/qare-cell'
-const GATE_READY_TIMEOUT_MS = 60_000
+export const SOCKET_DIR = '/run/qare-cell'
+export const GATE_READY_TIMEOUT_MS = 60_000
 /** How long the gate is given to write its record once asked to stop. */
-const GATE_STOP_SECONDS = 10
-const OPT_OUT = 'a profile that must run its build uncontained says so with client.egress: uncontained, and the evidence then says it too'
+export const GATE_STOP_SECONDS = 10
+const OPT_OUT =
+  'a profile that must run uncontained says so: a build with client.egress: uncontained, a command with commands.<name>.egress: uncontained, and the evidence then says it too'
 
 /** The part of a child process a cell uses: what the Electron driver reads its application through. */
 export interface CellProcess {
@@ -65,7 +66,7 @@ export const defaultCellDocker: CellDocker = {
   },
 }
 
-const firstLine = (text: string): string => text.trim().split('\n')[0]?.trim() ?? ''
+export const firstLine = (text: string): string => text.trim().split('\n')[0]?.trim() ?? ''
 
 /** An image reference is an argument to docker, so it is held to looking like one. */
 const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/
@@ -76,16 +77,18 @@ const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/
  * blocks the run by name instead of running the build uncontained.
  */
 export async function clientCellProblem(env: NodeJS.ProcessEnv = process.env, docker: CellDocker = defaultCellDocker): Promise<string | undefined> {
+  // The probe serves a contained build and a contained command alike (#224),
+  // so the refusal names the requirement, not which of the two asked for it.
   const image = env.QARE_IMAGE_REF ?? ''
   if (image === '')
-    return `a client build runs contained, in a cell made from the image the run is in, and QARE_IMAGE_REF names none (the pipeline's execute step sets it); ${OPT_OUT}`
-  if (!IMAGE_REFERENCE.test(image)) return `a client build runs contained, in a cell made from the image the run is in, and QARE_IMAGE_REF is not an image reference; ${OPT_OUT}`
+    return `a contained build or command runs in a cell made from the image the run is in, and QARE_IMAGE_REF names none (the pipeline's execute step sets it); ${OPT_OUT}`
+  if (!IMAGE_REFERENCE.test(image)) return `a contained build or command runs in a cell made from the image the run is in, and QARE_IMAGE_REF is not an image reference; ${OPT_OUT}`
   const daemon = await docker.run(['version', '--format', '{{.Server.Version}}'])
   if (daemon.code !== 0)
-    return `a client build runs contained, in a cell the docker daemon makes, and no daemon answered (${firstLine(daemon.stderr) || `docker exited ${daemon.code}`}); ${OPT_OUT}`
+    return `a contained build or command runs in a cell the docker daemon makes, and no daemon answered (${firstLine(daemon.stderr) || `docker exited ${daemon.code}`}); ${OPT_OUT}`
   const present = await docker.run(['image', 'inspect', '--format', '{{.Id}}', image])
   if (present.code !== 0)
-    return `a client build runs contained, in a cell made from the image the run is in, and the docker daemon does not have ${image}; ${OPT_OUT}`
+    return `a contained build or command runs in a cell made from the image the run is in, and the docker daemon does not have ${image}; ${OPT_OUT}`
   return undefined
 }
 
@@ -178,7 +181,8 @@ function isReached(value: unknown): value is ReachedHost {
   return typeof entry.host === 'string' && typeof entry.port === 'number' && typeof entry.protocol === 'string' && typeof entry.declared === 'boolean' && typeof entry.count === 'number'
 }
 
-function summaryIn(line: string): GateSummary | undefined {
+/** The gate's record line, when the line is one. Shared with the command cell, which reads the same record. */
+export function summaryIn(line: string): GateSummary | undefined {
   let parsed: unknown
   try {
     parsed = JSON.parse(line)

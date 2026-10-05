@@ -326,3 +326,25 @@ test('the profile hash moves with the profile the run loaded', () => {
   expect(profileFingerprint(profile)).not.toBe(profileFingerprint(changed))
   expect(profileFingerprint(profile)).toBe(profileFingerprint({ suites: [] }))
 })
+
+test('a profile with named commands hashes under what commands were proven under (#224)', () => {
+  const profile: QaProfile = { suites: [] }
+  const withCommands: QaProfile = { ...profile, commands: { test: { run: 'echo hi', about: 'runs' } } }
+  const optedOut: QaProfile = { ...withCommands, commands: { test: { run: 'echo hi', about: 'runs', egress: 'uncontained' } } }
+  const marked = (p: QaProfile): string => profileFingerprint(p, (text) => text)
+  // What a command was proven under is part of the fingerprint: the marker
+  // prefixes the hashed input, so a result cached before commands were
+  // contained, which holds no gate record, is never replayed as one that does.
+  expect(marked(withCommands)).toMatch(/^command-egress-cell-v1:/)
+  expect(marked(optedOut)).toMatch(/^command-egress-cell-v1:/)
+  expect(marked(profile)).not.toMatch(/^command-egress-cell-v1:/)
+})
+
+test('a profile with suites hashes under what suites were proven under (#224)', () => {
+  const withSuites: QaProfile = { suites: [{ name: 'e2e', command: 'echo suite ran', kind: 'flow' }] }
+  const marked = (p: QaProfile): string => profileFingerprint(p, (text) => text)
+  // The suite's evidence carries the containment record now, so a suite
+  // criterion cached before the record existed is not replayed as one that
+  // carries it.
+  expect(marked(withSuites)).toMatch(/^command-egress-cell-v1:/)
+})

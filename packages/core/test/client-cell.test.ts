@@ -217,15 +217,15 @@ test('what a cell needs is checked by name: the image the run is in, and a daemo
   expect(calls).toEqual([['version', '--format', '{{.Server.Version}}'], ['image', 'inspect', '--format', '{{.Id}}', 'qare-web:test']])
 
   expect(await clientCellProblem({}, docker)).toBe(
-    'a client build runs contained, in a cell made from the image the run is in, and QARE_IMAGE_REF names none (the pipeline\'s execute step sets it); a profile that must run its build uncontained says so with client.egress: uncontained, and the evidence then says it too',
+    'a contained build or command runs in a cell made from the image the run is in, and QARE_IMAGE_REF names none (the pipeline\'s execute step sets it); a profile that must run uncontained says so: a build with client.egress: uncontained, a command with commands.<name>.egress: uncontained, and the evidence then says it too',
   )
   const noDaemon = fakeDocker({ fail: { version: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock.\nIs the docker daemon running?' } })
   expect(await clientCellProblem({ QARE_IMAGE_REF: 'qare-web:test' }, noDaemon.docker)).toBe(
-    'a client build runs contained, in a cell the docker daemon makes, and no daemon answered (Cannot connect to the Docker daemon at unix:///var/run/docker.sock.); a profile that must run its build uncontained says so with client.egress: uncontained, and the evidence then says it too',
+    'a contained build or command runs in a cell the docker daemon makes, and no daemon answered (Cannot connect to the Docker daemon at unix:///var/run/docker.sock.); a profile that must run uncontained says so: a build with client.egress: uncontained, a command with commands.<name>.egress: uncontained, and the evidence then says it too',
   )
   const noImage = fakeDocker({ fail: { image: 'Error: No such image: qare-web:test' } })
   expect(await clientCellProblem({ QARE_IMAGE_REF: 'qare-web:test' }, noImage.docker)).toMatch(
-    /^a client build runs contained, in a cell made from the image the run is in, and the docker daemon does not have qare-web:test; /,
+    /^a contained build or command runs in a cell made from the image the run is in, and the docker daemon does not have qare-web:test; /,
   )
   // An image reference is handed to docker as an argument, so it is held to being one.
   expect(await clientCellProblem({ QARE_IMAGE_REF: '--privileged' }, docker)).toMatch(/QARE_IMAGE_REF is not an image reference/)

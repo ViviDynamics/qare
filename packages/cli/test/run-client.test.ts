@@ -70,6 +70,8 @@ test('qare run --plan against a contained client profile on a host that cannot m
   const result = JSON.parse(await readFile(join(dir, 'evidence', 'result.json'), 'utf8'))
   expect(result.verdict).toBe('refused')
   expect(result.requirements).toEqual({ cell: true })
-  expect(result.criteria[0].reason).toMatch(/^refused: unmet requirement: a client build runs contained, .*QARE_IMAGE_REF names none.*Nothing was provisioned\.$/)
-  expect(err.lines.join('')).toContain('refused: unmet requirement: a client build runs contained')
+  expect(result.criteria[0].reason).toMatch(
+    /^refused: unmet requirement: a contained build or command runs in a cell made from the image the run is in, and QARE_IMAGE_REF names none.*Nothing was provisioned\.$/,
+  )
+  expect(err.lines.join('')).toContain('refused: unmet requirement: a contained build or command runs in a cell made from the image')
 })

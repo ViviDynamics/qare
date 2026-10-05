@@ -481,7 +481,7 @@ test('a host that cannot contain the build refuses an artefact profile before an
   const ran: string[] = []
   const { result } = await runJob(job, {
     clientEnv: WITH_DISPLAY.clientEnv,
-    clientCell: { problem: async () => 'a client build runs contained, in a cell the docker daemon makes, and no daemon answered (docker exited 127)' },
+    clientCell: { problem: async () => 'a contained build or command runs in a cell the docker daemon makes, and no daemon answered (docker exited 127)' },
     provision: {
       installRoot,
       health: UP,
@@ -495,7 +495,7 @@ test('a host that cannot contain the build refuses an artefact profile before an
   // The cell is a requirement of the host (#76): unmet, the run is refused before either side is provisioned.
   expect(result.verdict).toBe('refused')
   expect(result.criteria[0]?.reason).toBe(
-    'refused: unmet requirement: a client build runs contained, in a cell the docker daemon makes, and no daemon answered (docker exited 127). Nothing was provisioned.',
+    'refused: unmet requirement: a contained build or command runs in a cell the docker daemon makes, and no daemon answered (docker exited 127). Nothing was provisioned.',
   )
   expect(ran).toEqual([])
   expect(readdirSync(installRoot)).toEqual([])

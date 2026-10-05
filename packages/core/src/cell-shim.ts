@@ -12,9 +12,14 @@ import { DNS_TYPE_A, dnsReply, httpHost, readDnsQuestion, tlsServerName, type Pe
  * about it:
  *
  * - the resolver on loopback asks the gate about every name, and answers a
- *   declared one with loopback and any other with no such name;
+ *   declared one with the address the shim holds for it and any other with
+ *   no such name;
  * - ports 80 and 443 on loopback read which host a connection is for and
- *   ask the gate to connect it, carrying the bytes untouched;
+ *   ask the gate to connect it, carrying the bytes untouched; so does the
+ *   port where the run's booted app answers, when the run names one (#224);
+ * - a stub host the profile gives ports for is answered on its own address,
+ *   so a command dials it on the port the profile names, over any protocol
+ *   (#224);
  * - the build's DevTools endpoint is exposed on a socket the gate relays to
  *   the driver.
  *
@@ -24,6 +29,8 @@ import { DNS_TYPE_A, dnsReply, httpHost, readDnsQuestion, tlsServerName, type Pe
  */
 
 const LOOPBACK = '127.0.0.1'
+/** Every local address: a stub host's own listener outranks it for the address it names (#224). */
+const ANY = '0.0.0.0'
 /** How long the gate is given to answer one request. */
 const GATE_TIMEOUT_MS = 20_000
 /** How long a connection is given to say which host it is for. */
@@ -34,12 +41,26 @@ export interface ShimOptions {
   dnsPort?: number
   httpPort?: number
   httpsPort?: number
+  /**
+   * The loopback port where the run's booted app answers, and how (#224).
+   * A named command connects to the app's name on this port; the shim reads
+   * the connection the same way it reads 80 and 443, and asks the gate.
+   */
+  appPort?: number
+  appScheme?: 'http' | 'https'
+  /**
+   * A declared stub host and a port the profile says its service answers on
+   * (#224). The shim gives every named host its own loopback address and
+   * answers the port there, so a command reaches the stub on the port the
+   * profile named, and the gate is asked with the host it is dialed by.
+   */
+  stubPorts?: { host: string; port: number }[]
   /** The loopback port the build's DevTools endpoint listens on. */
   cdpPort: number
 }
 
 export interface Shim {
-  ports: { dns: number; http: number; https: number }
+  ports: { dns: number; http: number; https: number; app?: number }
   stop: () => Promise<void>
 }
 
@@ -111,20 +132,36 @@ export async function startShim(opts: ShimOptions): Promise<Shim> {
     return socket
   }
 
-  // The resolver. A declared name is on loopback, where the two listeners
-  // below are; no query is ever forwarded, so a lookup carries nothing out.
+  // Every host the profile gave ports for answers on its own loopback
+  // address, so two stubs that name the same port do not collide and a
+  // connection is attributed by the address it was made to. The first
+  // address after the resolver's is the first host named (#224).
+  const addresses = new Map<string, string>()
+  for (const { host } of opts.stubPorts ?? []) {
+    if (addresses.has(host)) continue
+    const place = addresses.size + 2
+    if (place > 254) throw new Error(`the profile names more stub hosts with ports than the cell's loopback has addresses for: ${host} is the 254th`)
+    addresses.set(host, `127.0.0.${place}`)
+  }
+
+  // The resolver. A declared name is answered with the address the shim
+  // holds for it, where the listeners below are; no query is ever
+  // forwarded, so a lookup carries nothing out.
   const dns = createSocket('udp4')
   dns.on('error', () => {})
   dns.on('message', (message, from) => {
     const query = readDnsQuestion(message)
     if (query === undefined) return
     const send = (reply: Buffer): void => dns.send(reply, from.port, from.address, () => {})
-    const allowed = (): void => send(dnsReply(query, query.type === DNS_TYPE_A ? { address: LOOPBACK } : 'empty'))
-    if (query.name === 'localhost' || query.name?.endsWith('.localhost') === true) return allowed()
+    const allowed = (name: string | undefined): void => {
+      const address = (name !== undefined ? addresses.get(name) : undefined) ?? LOOPBACK
+      send(dnsReply(query, query.type === DNS_TYPE_A ? { address } : 'empty'))
+    }
+    if (query.name === 'localhost' || query.name?.endsWith('.localhost') === true) return allowed(query.name)
     askGate(opts.socketDir, { op: 'resolve', host: query.name ?? '' }).then(
       ({ reply, socket }) => {
         socket.destroy()
-        if (reply.ok === true) allowed()
+        if (reply.ok === true) allowed(query.name)
         else send(dnsReply(query, 'nxdomain'))
       },
       () => send(dnsReply(query, 'nxdomain')),
@@ -178,8 +215,51 @@ export async function startShim(opts: ShimOptions): Promise<Shim> {
     })
   const http = carry(80, httpHost)
   const https = carry(443, tlsServerName)
-  await listening(http, opts.httpPort ?? 80, LOOPBACK)
-  await listening(https, opts.httpsPort ?? 443, LOOPBACK)
+  // The two peeked ports are bound to every local address, so a dial to a
+  // stub host's own address lands on its listener when it has one, and on
+  // the reader of host headers when it does not (#224).
+  await listening(http, opts.httpPort ?? 80, ANY)
+  await listening(https, opts.httpsPort ?? 443, ANY)
+  // The booted app answers on the port the run gave it, not on either of
+  // those two; the shim reads it as http or https, as the run booted it (#224).
+  const app: Server | undefined =
+    opts.appPort === undefined ? undefined : carry(opts.appPort, opts.appScheme === 'https' ? tlsServerName : httpHost)
+  if (opts.appPort !== undefined && app !== undefined) await listening(app, opts.appPort, LOOPBACK)
+
+  // A declared stub port is answered on the host's own address, and the
+  // gate is asked with that host: no reading of what the connection is for,
+  // because the address already says it (#224). A stub may not name the
+  // gate's own two, which are bound to every local address already (#224).
+  const gatePorts = [opts.httpPort ?? 80, opts.httpsPort ?? 443]
+  const stubs: Server[] = []
+  for (const { host, port } of opts.stubPorts ?? []) {
+    if (gatePorts.includes(port)) throw new Error(`a stub port may not be 80 or 443: those are the gate's own two, and the gate already answers the host by them`)
+    const address = addresses.get(host)
+    if (address === undefined) continue
+    const server = createServer((socket) => {
+      track(socket)
+      askGate(opts.socketDir, { op: 'connect', host, port }).then(
+        ({ reply, socket: upstream, rest }) => {
+          track(upstream)
+          if (reply.ok !== true) {
+            upstream.destroy()
+            socket.destroy()
+            return
+          }
+          if (rest.length > 0) socket.write(rest)
+          socket.pipe(upstream)
+          upstream.pipe(socket)
+          socket.on('close', () => upstream.destroy())
+          upstream.on('close', () => socket.destroy())
+          upstream.resume()
+          socket.resume()
+        },
+        () => socket.destroy(),
+      )
+    })
+    await listening(server, port, address)
+    stubs.push(server)
+  }
 
   // The driver's way in, from the gate's side of the shared directory.
   const devtools = createServer((socket) => {
@@ -196,9 +276,9 @@ export async function startShim(opts: ShimOptions): Promise<Shim> {
 
   const dnsAddress = dns.address()
   return {
-    ports: { dns: dnsAddress.port, http: portOf(http), https: portOf(https) },
+    ports: { dns: dnsAddress.port, http: portOf(http), https: portOf(https), ...(app === undefined ? {} : { app: portOf(app) }) },
     stop: async () => {
-      const closed = Promise.all([http, https, devtools].map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
+      const closed = Promise.all([http, https, ...stubs, ...(app === undefined ? [] : [app]), devtools].map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
       for (const socket of open) socket.destroy()
       await new Promise<void>((resolve) => dns.close(() => resolve()))
       await closed

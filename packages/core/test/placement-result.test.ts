@@ -81,7 +81,7 @@ test('what a profile requires is said in words a reader of the comment can check
     'a macos host',
     'hardware virtualisation',
     'an attached android device',
-    'a cell the docker daemon makes for the build',
+    'a cell the docker daemon makes',
     'a display',
   ])
 })
