@@ -180,6 +180,14 @@ test('collect reads the criteria without a model, and an issue that states none 
   expect(section('plan')).not.toContain('--issue')
 })
 
+test('the pipeline needs no GitHub CLI on the runner: collect reads a linked issue from the API, and says which one it could not read (#238)', () => {
+  // A command position, not the word in a sentence: the start of a line, or after a pipe, a semicolon or `$(`.
+  expect(workflow).not.toMatch(/^\s*(.*[|;(&]\s*)?gh\s+[a-z]+\s/m)
+  const collect = section('collect')
+  expect(collect).toContain('"$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/$number"')
+  expect(collect).toContain('linked issue #$number could not be read')
+})
+
 test('nothing runs when the change states no criteria', () => {
   // Neutral, not red: a chore states no acceptance criteria, and a pipeline
   // that is red by default hides the failure that matters.
