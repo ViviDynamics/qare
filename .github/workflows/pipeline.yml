@@ -111,6 +111,12 @@ on:
         description: The endpoint of an OpenAI-compatible model service. Empty means the provider's own.
         type: string
         default: ''
+      nare-stream:
+        description: >-
+          Stream the planner's and the verifier's model turns, so an edge proxy
+          sees bytes flowing and no idle timeout cuts the turn short.
+        type: boolean
+        default: false
       model-key-env:
         description: The environment variable the provider reads its key from. The model-key secret is exported under this name.
         type: string
@@ -428,6 +434,7 @@ jobs:
           NARE_PROVIDER: ${{ inputs.nare-provider }}
           NARE_BASE_URL: ${{ inputs.nare-base-url }}
           NARE_MODEL: ${{ inputs.nare-model }}
+          NARE_STREAM: ${{ inputs.nare-stream && 'true' || 'false' }}
           PROFILE: ${{ inputs.profile }}
         run: |
           set -euo pipefail
@@ -1008,6 +1015,7 @@ jobs:
           NARE_PROVIDER: ${{ inputs.nare-provider }}
           NARE_BASE_URL: ${{ inputs.nare-base-url }}
           NARE_MODEL: ${{ inputs.nare-model }}
+          NARE_STREAM: ${{ inputs.nare-stream && 'true' || 'false' }}
         run: |
           set -euo pipefail
           # Fail closed (rule 6), as the plan step does: no key, no verifier.
