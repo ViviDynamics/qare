@@ -107,7 +107,7 @@ interface CheckAttempt {
 /** How a check's attempts fold together: unstable means the run quarantines it. */
 type AttemptFold =
   | { kind: 'passed' }
-  | { kind: 'failed' }
+  | { kind: 'failed'; reason?: string }
   | { kind: 'unverified'; reason?: string }
   | { kind: 'unstable'; attempts: number }
 
@@ -130,7 +130,7 @@ async function settleCheck(run: (attempt: number) => Promise<CheckAttempt>, atte
     attemptsRun += 1
   }
   if (last.status === 'passed') return sawFailure ? { kind: 'unstable', attempts: attemptsRun } : { kind: 'passed' }
-  if (last.status === 'failed') return { kind: 'failed' }
+  if (last.status === 'failed') return { kind: 'failed', ...(last.reason === undefined ? {} : { reason: last.reason }) }
   return { kind: 'unverified', ...(last.reason === undefined ? {} : { reason: last.reason }) }
 }
 
@@ -2379,7 +2379,13 @@ async function runCriterion(
       return `quarantined (${record.quarantinedAt}): ${record.reason}`
     }
     const foldCriterion = (fold: AttemptFold): void => {
-      if (fold.kind === 'failed') failed = true
+      if (fold.kind === 'failed') {
+        failed = true
+        // What failed is named with the criterion (#236): the reason column
+        // is read before any evidence file is opened. An a11y failure has
+        // already recorded its own, swept, and keeps it.
+        if (fold.reason !== undefined && !failedReasons.has(index)) failedReasons.set(index, redactText(fold.reason, sweepRules))
+      }
       else if (fold.kind === 'unstable') {
         quarantinedHere = true
         if (unverifiedReason === undefined) unverifiedReason = quarantinedReason(fold)
@@ -2539,7 +2545,6 @@ async function runCriterion(
               ...(repair.refusedReason === undefined ? {} : { refusedReason: redactText(repair.refusedReason, sweepRules) }),
             })),
           )
-        if (outcome.status === 'failed') return { status: 'failed' as const }
         // The flow's reason quotes what the action saw, and the flow types
         // what it read from mail: the dynamic sweep covers model- and
         // evidence-facing text alike, result.json included (#64).
@@ -2557,7 +2562,6 @@ async function runCriterion(
       const fold = await settleCheck(async (attempt) => {
         const outcome = await runToolCheckJob(substituted, flow.mcp, job.evidenceDir, dirFor(index, attempt), sweepRules)
         evidence.push(...outcome.evidence)
-        if (outcome.status === 'failed') return { status: 'failed' as const }
         return {
           status: outcome.status,
           reason: outcome.reason === undefined ? undefined : redactText(outcome.reason, sweepRules),
@@ -2597,7 +2601,6 @@ async function runCriterion(
         })
         evidence.push(...outcome.evidence)
         if (outcome.transient === true) notCacheable = true
-        if (outcome.status === 'failed') return { status: 'failed' as const }
         return { status: outcome.status, reason: outcome.reason === undefined ? undefined : redactText(outcome.reason, sweepRules) }
       }, policy.attempts)
       foldCriterion(fold)
@@ -2705,7 +2708,6 @@ async function runCriterion(
       // command's own failure, and the next run re-judges it from scratch:
       // what the gate refused depends on where the run happens to land.
       if (outcome.refused === true) notCacheable = true
-      if (outcome.status === 'failed') return { status: 'failed' as const }
       return { status: outcome.status, reason: outcome.reason }
     }, policy.attempts)
     foldCriterion(fold)

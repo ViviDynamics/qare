@@ -4,8 +4,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import type { CellRecord, ClientCell } from './client-cell.js'
-import { describeElement, type FlowDriverCapabilities, type FlowElement, type FlowPage, type FlowTrace } from './flow.js'
-import { captureMasks, followPage, resolveFlowElement, takeFrame } from './flow-playwright.js'
+import { describeElement, FlowAssertUndecidedError, type FlowDriverCapabilities, type FlowElement, type FlowPage, type FlowTrace } from './flow.js'
+import { captureMasks, firstVisible, followPage, resolveFlowElement, takeFrame } from './flow-playwright.js'
 import { MAX_PLATFORM_LOG_LINE_CHARACTERS as MAX_LINE_CHARACTERS, makePlatformLog, type PlatformLogEntry } from './platform-log.js'
 import { pathOnTarget } from './profile.js'
 import { normaliseAriaSnapshot } from './snapshot.js'
@@ -36,6 +36,8 @@ const DEFAULT_LAUNCH_TIMEOUT_MS = 30_000
 /** How long an element is looked for across the windows; Playwright's own action timeout. */
 const DEFAULT_FIND_TIMEOUT_MS = 30_000
 const DEFAULT_POLL_INTERVAL_MS = 100
+/** How long an assertion waits for what it names: a window still rendering is not a failure (#236). */
+const DEFAULT_ASSERT_TIMEOUT_MS = 5_000
 const DEFAULT_CLOSE_GRACE_MS = 5_000
 /** How much of the output a failed start quotes in its reason. */
 const FAILURE_OUTPUT_LINES = 20
@@ -238,6 +240,8 @@ export async function makeElectronFlowSession(opts: {
   cell?: () => Promise<ClientCell>
   launchTimeoutMs?: number
   findTimeoutMs?: number
+  /** How long an assertion waits for what it names. Never longer than an action is given. */
+  assertTimeoutMs?: number
   pollIntervalMs?: number
   closeGraceMs?: number
 }): Promise<{
@@ -255,6 +259,7 @@ export async function makeElectronFlowSession(opts: {
   const launchTimeoutMs = opts.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS
   const findTimeoutMs = opts.findTimeoutMs ?? DEFAULT_FIND_TIMEOUT_MS
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
+  const assertTimeoutMs = Math.min(opts.assertTimeoutMs ?? DEFAULT_ASSERT_TIMEOUT_MS, findTimeoutMs)
   const closeGraceMs = opts.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS
 
   let playwright: PlaywrightModule
@@ -508,6 +513,37 @@ export async function makeElectronFlowSession(opts: {
       await sleep(pollIntervalMs)
     }
   }
+  // Whether any open window comes to show what an assertion names, asked
+  // until the assertion's time runs out. A window that errors is passed over
+  // while another can still answer, but when the time runs out and no window
+  // could be read at all, nothing said the application lacks what was named:
+  // the assertion is undecided, with the window's own error, never failed (#236).
+  const asserted = async (locate: (page: Page) => Locator): Promise<boolean> => {
+    const deadline = Date.now() + assertTimeoutMs
+    for (;;) {
+      const windows = newestFirst()
+      let read = 0
+      let unreadable: unknown
+      for (const window of windows) {
+        try {
+          if (await locate(window.page).isVisible()) {
+            current = window
+            return true
+          }
+          read += 1
+        } catch (error) {
+          unreadable = error
+        }
+      }
+      if (Date.now() >= deadline) {
+        if (windows.length === 0) throw new FlowAssertUndecidedError('the assertion could not be read: the application has no window open')
+        if (read === 0)
+          throw new FlowAssertUndecidedError(`the assertion could not be read in any open window: ${String(unreadable)}`, { cause: unreadable })
+        return false
+      }
+      await sleep(pollIntervalMs)
+    }
+  }
   const acting = (element: FlowElement): Promise<Locator> =>
     windowShowing(describeElement(element), (page) => resolveFlowElement(page, element)).then((page) => resolveFlowElement(page, element))
 
@@ -541,25 +577,17 @@ export async function makeElectronFlowSession(opts: {
     waitFor: async (element) => {
       await acting(element)
     },
-    // An assertion is the application as it stands: every open window is
-    // asked once, and nothing is waited for.
+    // An assertion waits, as an action does, for a window that is still
+    // rendering: a single read of a page that has not settled fails a
+    // criterion the application meets (#236). It gives up sooner than an
+    // action, because what it names may rightly never appear.
     assertText: async (text) => {
-      for (const window of newestFirst()) {
-        if (await shows(window, (page) => page.getByText(text).first())) {
-          current = window
-          return
-        }
-      }
-      throw new Error(`assert failed: the text ${JSON.stringify(text)} is not visible in any open window`)
+      if (!(await asserted((page) => firstVisible(page.getByText(text)))))
+        throw new Error(`assert failed: the text ${JSON.stringify(text)} is not visible in any open window`)
     },
     assertElement: async (element) => {
-      for (const window of newestFirst()) {
-        if (await shows(window, (page) => resolveFlowElement(page, element))) {
-          current = window
-          return
-        }
-      }
-      throw new Error('assert failed: the element is not visible in any open window')
+      if (!(await asserted((page) => firstVisible(resolveFlowElement(page, element)))))
+        throw new Error('assert failed: the element is not visible in any open window')
     },
     conceals: true,
     screenshot: async (path, capture) => {

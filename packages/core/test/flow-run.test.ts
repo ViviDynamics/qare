@@ -193,6 +193,9 @@ test('a failed assert fails its criterion, with the failure screenshot as eviden
 
   expect(result.verdict).toBe('failed')
   expect(result.criteria[0].outcome).toBe('failed')
+  // The criterion says which assertion failed (#236): the table's reason
+  // column is where a reader looks first, before any evidence file.
+  expect(result.criteria[0]).toMatchObject({ reason: 'assert failed: the text "Welcome" is not visible' })
   expect(result.criteria[0].evidence).toEqual([
     'checks/criterion-1/0/actions.log',
     'checks/criterion-1/0/failure.png',

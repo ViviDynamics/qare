@@ -1,5 +1,5 @@
 import type { EgressAttempt } from './egress.js'
-import type { FlowCaptureOpts, FlowDriverCapabilities, FlowElement, FlowPage, FlowTrace } from './flow.js'
+import { FlowAssertUndecidedError, type FlowCaptureOpts, type FlowDriverCapabilities, type FlowElement, type FlowPage, type FlowTrace } from './flow.js'
 import { RECORDING_FRAME_TIMEOUT_MS } from './flow-recording.js'
 import { parseSegment, splitSegments } from './locator.js'
 import type { A11yAuditNode, A11yAuditViolation } from './a11y.js'
@@ -165,6 +165,16 @@ export function resolveFlowElement(page: PlaywrightPage, element: FlowElement): 
 }
 
 /**
+ * The element an assertion reads, of all that answer a locator (#236): the
+ * first one that is visible. A page often carries a text twice, once in a
+ * menu that is folded away, and reading only the first in document order
+ * failed an assertion about a text the reader can plainly see.
+ */
+export function firstVisible(locator: PlaywrightLocator): PlaywrightLocator {
+  return locator.filter({ visible: true }).first()
+}
+
+/**
  * What a capture of one page blacks out (#119, #78): the profile's masks,
  * and every element the flow concealed because a secret was typed into it.
  * The browser paints them over while it takes the picture, so the pixels on
@@ -205,6 +215,10 @@ export class PlaywrightFlowSessionError extends Error {
   }
 }
 
+/** How long an assertion waits for what it names: five seconds, as a browser test's own assertion does. */
+const DEFAULT_ASSERT_TIMEOUT_MS = 5_000
+const DEFAULT_POLL_INTERVAL_MS = 100
+
 /**
  * A flow session backed by a real Playwright chromium: one browser, one context
  * and one page, all launched lazily on first use and shared by the page and
@@ -219,6 +233,9 @@ export async function makePlaywrightFlowSession(
     /** Where the accessibility rule engine's source comes from (#149); axe-core by default. */
     loadAxe?: () => Promise<{ source: string }>
     masks?: string[]
+    /** How long an assertion waits for what it names before it fails (#236). */
+    assertTimeoutMs?: number
+    pollIntervalMs?: number
   } = {},
 ): Promise<{
   capabilities: FlowDriverCapabilities
@@ -285,6 +302,28 @@ export async function makePlaywrightFlowSession(
     return starting
   }
 
+  // An assertion decides from what the page settles to, not from one read
+  // of it: a page still placing an element is not a page without it, and a
+  // single read failed criteria the application met (#236). The wait is
+  // bounded, so what never appears still fails.
+  const assertTimeoutMs = opts.assertTimeoutMs ?? DEFAULT_ASSERT_TIMEOUT_MS
+  const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
+  const becomesVisible = async (locator: { isVisible: () => Promise<boolean> }): Promise<boolean> => {
+    const deadline = Date.now() + assertTimeoutMs
+    for (;;) {
+      let visible: boolean
+      try {
+        visible = await locator.isVisible()
+      } catch (error) {
+        // The read itself failed: that is the driver's trouble, not an
+        // element the application left out.
+        throw new FlowAssertUndecidedError(`the assertion could not be read: ${String(error)}`, { cause: error })
+      }
+      if (visible) return true
+      if (Date.now() >= deadline) return false
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
+    }
+  }
   const page: FlowPage = {
     open: async (url) => {
       const started = await start()
@@ -310,16 +349,18 @@ export async function makePlaywrightFlowSession(
     },
     assertText: async (text) => {
       const started = await start()
-      const locator = started.page.getByText(text).first()
-      const visible = await locator.isVisible()
-      if (!visible) {
+      if (!(await becomesVisible(firstVisible(started.page.getByText(text))))) {
         throw new Error(`assert failed: the text ${JSON.stringify(text)} is not visible`)
       }
     },
     assertElement: async (element) => {
       const started = await start()
-      const visible = await resolveFlowElement(started.page, element).isVisible()
-      if (!visible) {
+      // A reference names an element by role and name, and a name matches
+      // as part of a longer one: when several elements answer, the assertion
+      // holds if one of them is visible, as a text assertion does. Read
+      // strictly, a second match (a banner the site shows some visitors) was
+      // an error, and the error read as the element missing (#236).
+      if (!(await becomesVisible(firstVisible(resolveFlowElement(started.page, element))))) {
         throw new Error(`assert failed: the element is not visible`)
       }
     },

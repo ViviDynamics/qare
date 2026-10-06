@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vitest'
 import { attemptOf, BROWSER_FLOW_DRIVER, makePlaywrightFlowSession, markInPage, runAxeInPage, unmarkInPage } from '../src/flow-playwright.js'
+import { FlowAssertUndecidedError } from '../src/flow.js'
 
 const NOT_INSTALLED_MESSAGE =
   'playwright-core is not installed; flow checks are unverified without a browser backend'
@@ -7,23 +8,34 @@ const NOT_INSTALLED_MESSAGE =
 const APP_URL = ['http:', '//localhost:3000/up'].join('')
 const TRACE_PATH = '/tmp/qare-flow-trace.zip'
 
-function fakeChromium(events: string[], opts: { visible?: boolean; subresources?: string[]; sockets?: string[] } = {}) {
+function fakeChromium(events: string[], opts: { visible?: boolean; visibleAfterReads?: number; ambiguous?: boolean; unreadable?: boolean; hiddenFirst?: boolean; subresources?: string[]; sockets?: string[] } = {}) {
+  let reads = 0
   const onSocket: Array<(socket: { url: () => string }) => void> = []
   const onRequest: Array<(request: { url: () => string }) => void> = []
   const request = (url: string) => {
     for (const handler of onRequest) handler({ url: () => url })
   }
-  const locator = (name: string) => {
-    const self = {
+  const locator = (name: string, narrowed = false, onlyVisible = false): Record<string, unknown> => {
+    const self: Record<string, unknown> = {
       click: async () => events.push(`click ${name}`),
       fill: async (value: string) => events.push(`fill ${name}=${value}`),
       selectOption: async (value: { label: string }) => events.push(`choose ${name}=${value.label}`),
       waitFor: async (opts: { state: string }) => events.push(`waitFor ${name} until ${opts.state}`),
       isVisible: async () => {
+        if (opts.unreadable === true) throw new Error('Target page, context or browser has been closed')
+        // Several elements answer the reference: the browser refuses to read
+        // them as one, as its strict mode does.
+        if (opts.ambiguous === true && !narrowed) throw new Error(`strict mode violation: ${name} resolved to 3 elements`)
         events.push(`visible ${name}`)
+        reads += 1
+        // The first match in document order is folded away in a menu: only a
+        // locator narrowed to what is visible lands on the one a reader sees.
+        if (opts.hiddenFirst === true) return onlyVisible
+        if (opts.visibleAfterReads !== undefined) return reads > opts.visibleAfterReads
         return opts.visible ?? true
       },
-      first: () => self,
+      first: () => locator(name, true, onlyVisible),
+      filter: (options: { visible?: boolean }) => locator(name, narrowed, options.visible === true),
     }
     return self
   }
@@ -179,6 +191,8 @@ test('assertText throws naming the text when the page shows something else', asy
   const events: string[] = []
   const session = await makePlaywrightFlowSession({
     loadPlaywright: async () => ({ chromium: fakeChromium(events, { visible: false }) }) as never,
+    assertTimeoutMs: 30,
+    pollIntervalMs: 5,
   })
 
   await expect(session.page.assertText('Goodbye')).rejects.toThrow(
@@ -190,11 +204,65 @@ test('assertElement throws when the element is not visible (#70)', async () => {
   const events: string[] = []
   const session = await makePlaywrightFlowSession({
     loadPlaywright: async () => ({ chromium: fakeChromium(events, { visible: false }) }) as never,
+    assertTimeoutMs: 30,
+    pollIntervalMs: 5,
   })
 
   await expect(session.page.assertElement({ testId: 'welcome-banner' })).rejects.toThrow(
     'assert failed: the element is not visible',
   )
+})
+
+test('an assertion waits for what the page is still rendering, and gives up once its time runs out (#236)', async () => {
+  const events: string[] = []
+  const session = await makePlaywrightFlowSession({
+    loadPlaywright: async () => ({ chromium: fakeChromium(events, { visibleAfterReads: 2 }) }) as never,
+    assertTimeoutMs: 2_000,
+    pollIntervalMs: 1,
+  })
+
+  // Hidden for the first two reads, as an element a script has yet to place.
+  await expect(session.page.assertElement({ role: 'link', name: 'Donate' })).resolves.toBeUndefined()
+  expect(events.filter((event) => event === 'visible link=Donate')).toHaveLength(3)
+
+  const never = await makePlaywrightFlowSession({
+    loadPlaywright: async () => ({ chromium: fakeChromium([], { visible: false }) }) as never,
+    assertTimeoutMs: 40,
+    pollIntervalMs: 5,
+  })
+  const started = Date.now()
+  await expect(never.page.assertText('Late greeting')).rejects.toThrow('assert failed: the text "Late greeting" is not visible')
+  expect(Date.now() - started).toBeGreaterThanOrEqual(40)
+  expect(Date.now() - started).toBeLessThan(1_500)
+})
+
+test('an assertion reads the match a reader can see, not a hidden one that comes first in the page (#236)', async () => {
+  const session = await makePlaywrightFlowSession({
+    loadPlaywright: async () => ({ chromium: fakeChromium([], { hiddenFirst: true }) }) as never,
+    assertTimeoutMs: 30,
+    pollIntervalMs: 5,
+  })
+
+  await expect(session.page.assertText('Wikipedia')).resolves.toBeUndefined()
+  await expect(session.page.assertElement({ role: 'link', name: 'Donate' })).resolves.toBeUndefined()
+})
+
+test('an element assertion holds when several elements answer the reference, and a read that fails is not the element missing (#236)', async () => {
+  const session = await makePlaywrightFlowSession({
+    loadPlaywright: async () => ({ chromium: fakeChromium([], { ambiguous: true }) }) as never,
+    assertTimeoutMs: 30,
+    pollIntervalMs: 5,
+  })
+  await expect(session.page.assertElement({ role: 'link', name: 'Donate' })).resolves.toBeUndefined()
+
+  const closed = await makePlaywrightFlowSession({
+    loadPlaywright: async () => ({ chromium: fakeChromium([], { unreadable: true }) }) as never,
+    assertTimeoutMs: 30,
+    pollIntervalMs: 5,
+  })
+  const read = closed.page.assertElement({ role: 'link', name: 'Donate' })
+  await expect(read).rejects.toBeInstanceOf(FlowAssertUndecidedError)
+  await expect(read).rejects.toThrow('the assertion could not be read: Error: Target page, context or browser has been closed')
 })
 
 test('the session records every connection its page attempted, and nothing that stays in the browser (#122)', async () => {

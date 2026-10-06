@@ -3,6 +3,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { expect, test } from 'vitest'
 import {
+  FlowAssertUndecidedError,
   runFlowCheck,
   runSuiteCheck,
   totpCode,
@@ -122,6 +123,22 @@ test('the action log is redacted with the run rules before it is written', async
   const log = await actionsLog(dir)
   expect(log).not.toContain(APP_URL)
   expect(log).toContain('open [redacted]')
+})
+
+test('an assertion the driver could not read is unverified with the driver\'s words, never failed (#236)', async () => {
+  const { page } = fakePage({ assertElement: new FlowAssertUndecidedError('the assertion could not be read: the page closed') })
+
+  const result = await runFlowCheck({
+    outDir: await outDir(),
+    page,
+    actions: [
+      { action: 'open', url: APP_URL },
+      { action: 'assertElement', element: { role: 'link', name: 'Donate' } },
+    ],
+  })
+
+  expect(result.outcome).toBe('unverified')
+  expect(result.reason).toBe('action 1 failed: FlowAssertUndecidedError: the assertion could not be read: the page closed')
 })
 
 test('reports failed for a mismatched assert, with the failure screenshot', async () => {

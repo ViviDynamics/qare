@@ -4,6 +4,7 @@ import { chmod, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
+import { FlowAssertUndecidedError } from '../src/flow.js'
 import { ELECTRON_FLOW_DRIVER, ElectronFlowSessionError, electronDisplayProblem, makeElectronFlowSession, pathInApplication, startVirtualDisplay } from '../src/flow-electron.js'
 
 const ENDPOINT = 'ws://127.0.0.1:41000/devtools/browser/abc'
@@ -41,6 +42,7 @@ function fakeWindow(events: string[], title: string, url: string, shows: string[
       selectOption: async (value: { label: string }) => events.push(`choose ${name}=${value.label} in ${title}`),
       isVisible: async () => visible.has(name),
       first: () => self,
+      filter: () => self,
     }
     return self
   }
@@ -358,6 +360,27 @@ test('a window that goes away while an assertion asks it is a window that does n
   await started.dispose()
 })
 
+test('an assertion no window could be read for is undecided, not failed (#236)', async () => {
+  const closing = fakeWindow([], 'Details', 'file:///opt/app/details.html')
+  const gone = (): never => {
+    throw new Error('Target page, context or browser has been closed')
+  }
+  closing.page.getByText = gone
+  closing.page.getByRole = gone
+  const { session } = harness({ windows: [closing], findTimeoutMs: 60 })
+  const started = await session()
+
+  // The only window answers with an error: nothing said the text is absent.
+  const text = started.page.assertText('Greeter')
+  await expect(text).rejects.toBeInstanceOf(FlowAssertUndecidedError)
+  await expect(text).rejects.toThrow('the assertion could not be read in any open window: Error: Target page, context or browser has been closed')
+  await expect(started.page.assertElement({ role: 'heading', name: 'Greeter' })).rejects.toBeInstanceOf(FlowAssertUndecidedError)
+  // With every window closed there is nothing left to read either.
+  closing.close()
+  await expect(started.page.assertText('Greeter')).rejects.toThrow('the assertion could not be read: the application has no window open')
+  await started.dispose()
+})
+
 test('an element is looked for in every open window, newest first, so a flow follows the application into a window it opens and back (#72)', async () => {
   const events: string[] = []
   const main = fakeWindow(events, 'Greeter', HOME, ['button=Open details', 'button=Shared', 'text=Greeter'])
@@ -393,6 +416,17 @@ test('an element is looked for in every open window, newest first, so a flow fol
   ])
 })
 
+test('an assertion waits for what a window is still rendering (#236)', async () => {
+  const main = fakeWindow([], 'Greeter', HOME)
+  const { session } = harness({ windows: [main], findTimeoutMs: 2_000 })
+  const started = await session()
+
+  setTimeout(() => main.show('text=Hello', 'status=Greeting shown'), 30)
+  await expect(started.page.assertText('Hello')).resolves.toBeUndefined()
+  await expect(started.page.assertElement({ role: 'status', name: 'Greeting shown' })).resolves.toBeUndefined()
+  await started.dispose()
+})
+
 test('an element no window shows fails the action naming the element and the windows that are open (#72)', async () => {
   const main = fakeWindow([], 'Greeter', HOME)
   const { session } = harness({ windows: [main], findTimeoutMs: 60 })
@@ -402,7 +436,7 @@ test('an element no window shows fails the action naming the element and the win
     'no open window shows role=button name=Missing within 60 ms (open windows: 1 "Greeter")',
   )
   await expect(started.page.waitFor({ testId: 'gone' })).rejects.toThrow(/no open window shows testId=gone/)
-  // An assertion is the page as it stands: it does not wait.
+  // An assertion waits no longer than an action does, then fails (#236).
   await expect(started.page.assertText('Hello')).rejects.toThrow('assert failed: the text "Hello" is not visible in any open window')
   await expect(started.page.assertElement({ role: 'status', name: 'Greeting shown' })).rejects.toThrow('assert failed: the element is not visible in any open window')
   main.close()
