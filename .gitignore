@@ -28,3 +28,4 @@ repo.env
 .opencode/*
 !.opencode/skill
 qare-evidence/
+benchmark-out/
