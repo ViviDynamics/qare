@@ -1,0 +1,14 @@
+[
+  { "id": "T1", "expect": "proven", "text": "Searching Wikipedia for Alan Turing shows his article" },
+  { "id": "T2", "expect": "proven", "text": "The Ada Lovelace article says she worked with Charles Babbage" },
+  { "id": "T3", "expect": "proven", "text": "The Wikipedia main page offers a link to log in" },
+  { "id": "T4", "expect": "proven", "text": "The article on Python (programming language) names Guido van Rossum" },
+  { "id": "T5", "expect": "proven", "text": "Searching Wikipedia for Grace Hopper leads to an article that mentions COBOL" },
+  { "id": "T6", "expect": "proven", "text": "The Alan Turing article offers a View history link" },
+  { "id": "F1", "expect": "failed", "text": "The Ada Lovelace article says she was born in 1915" },
+  { "id": "F2", "expect": "failed", "text": "The Wikipedia main page offers a Checkout button" },
+  { "id": "F3", "expect": "failed", "text": "Searching Wikipedia for Alan Turing shows an article about a French painter" },
+  { "id": "F4", "expect": "failed", "text": "The article on Python (programming language) says it was designed by Dennis Ritchie" },
+  { "id": "F5", "expect": "failed", "text": "The Wikipedia main page shows a shopping cart with items in it" },
+  { "id": "F6", "expect": "failed", "text": "The Grace Hopper article says she walked on the Moon" }
+]

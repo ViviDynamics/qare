@@ -1,0 +1,69 @@
+name: Benchmark
+
+# The verdict benchmark (#246): criteria whose answers are known, run through
+# `qare check` against live Wikipedia with a real model, on demand. It runs
+# the default branch only and no pull request code, so the model key never
+# shares a machine with a change nobody has reviewed (constitution rule 7).
+# qare runs in the published web image of the version this revision carries.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: The model the planner and the verifier ask, as the endpoint names it.
+        type: string
+        default: claude-haiku
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmark
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: verdicts against known answers
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Run the benchmark in the published image
+        shell: bash
+        env:
+          MODEL_KEY: ${{ secrets.QARE_PLANNER_KEY }}
+          NARE_PROVIDER: openai
+          NARE_BASE_URL: https://llm.vividynamics.com/v1
+          NARE_MODEL: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MODEL_KEY" ]; then
+            echo "no model key: the QARE_PLANNER_KEY secret is not set, so there is no model to ask" | tee -a "$GITHUB_STEP_SUMMARY" >&2
+            exit 1
+          fi
+          version="$(jq -r .version package.json)"
+          image="ghcr.io/vividynamics/qare-web:$version"
+          docker pull --quiet "$image"
+          # The key reaches the container in a file outside the workspace,
+          # never as an argument, as in the pipeline's plan step.
+          key_file="$(mktemp "$RUNNER_TEMP/model-key.XXXXXX")"
+          trap 'rm -f "$key_file"' EXIT
+          chmod 600 "$key_file"
+          printf 'OPENAI_API_KEY=%s\n' "$MODEL_KEY" > "$key_file"
+          unset MODEL_KEY
+          QARE_BENCH_COMMAND="$(jq -cn --arg uid "$(id -u):$(id -g)" --arg key "$key_file" --arg pwd "$PWD" --arg image "$image" \
+            '["docker","run","--rm","-u",$uid,"-e","HOME=/tmp","--env-file",$key,"-e","NARE_PROVIDER","-e","NARE_MODEL","-e","NARE_BASE_URL","-v",($pwd+":"+$pwd),"-w",$pwd,$image,"qare"]')"
+          export QARE_BENCH_COMMAND
+          node examples/benchmark/run.mjs --out benchmark-out
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-out
+          path: benchmark-out/
+          if-no-files-found: ignore
