@@ -91,7 +91,7 @@ UX review".
 | `nare-model` | required | The model the planner and the verifier ask, as the provider names it. |
 | `nare-provider` | `openai` | The nare provider that reaches the model. `openai` is any service that speaks Chat Completions (OpenAI, a LiteLLM proxy, vLLM, Ollama); `anthropic` is Anthropic's API. |
 | `nare-base-url` | empty | The endpoint of an OpenAI-compatible service. Empty means the provider's own. |
-| `nare-stream` | `false` | Stream the planner's and the verifier's model turns, so an edge proxy that cuts idle connections before a turn completes is not the failure. nare streams only when this is set; the output is the same either way. |
+| `nare-stream` | empty | Set to `true` to stream the planner's and the verifier's model turns, so an edge proxy that cuts idle connections before a turn completes is not the failure. Empty keeps the default, non-streaming; the output is the same either way. |
 | `model-key-env` | `OPENAI_API_KEY` | The environment variable the provider reads its key from. Set it to `ANTHROPIC_API_KEY` with `nare-provider: anthropic`. |
 | `profile` | `.qa` | The directory that holds the QA profile. |
 | `runs-on` | `"ubuntu-latest"` | Where every job runs, as JSON: one label, or a list of labels for your own runners. |
