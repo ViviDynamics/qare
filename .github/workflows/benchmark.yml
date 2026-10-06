@@ -49,6 +49,11 @@ jobs:
           version="$(jq -r .version package.json)"
           image="ghcr.io/vividynamics/qare-web:$version"
           docker pull --quiet "$image"
+          # The evidence names the image that produced it, by digest, as the
+          # pipeline's execute step does.
+          QARE_IMAGE_REF="$image"
+          QARE_IMAGE_DIGEST="$(docker image inspect -f '{{index .RepoDigests 0}}' "$image")"
+          export QARE_IMAGE_REF QARE_IMAGE_DIGEST
           # The key reaches the container in a file outside the workspace,
           # never as an argument, as in the pipeline's plan step.
           key_file="$(mktemp "$RUNNER_TEMP/model-key.XXXXXX")"
@@ -57,7 +62,7 @@ jobs:
           printf 'OPENAI_API_KEY=%s\n' "$MODEL_KEY" > "$key_file"
           unset MODEL_KEY
           QARE_BENCH_COMMAND="$(jq -cn --arg uid "$(id -u):$(id -g)" --arg key "$key_file" --arg pwd "$PWD" --arg image "$image" \
-            '["docker","run","--rm","-u",$uid,"-e","HOME=/tmp","--env-file",$key,"-e","NARE_PROVIDER","-e","NARE_MODEL","-e","NARE_BASE_URL","-v",($pwd+":"+$pwd),"-w",$pwd,$image,"qare"]')"
+            '["docker","run","--rm","-u",$uid,"-e","HOME=/tmp","--env-file",$key,"-e","NARE_PROVIDER","-e","NARE_MODEL","-e","NARE_BASE_URL","-e","QARE_IMAGE_REF","-e","QARE_IMAGE_DIGEST","-v",($pwd+":"+$pwd),"-w",$pwd,$image,"qare"]')"
           export QARE_BENCH_COMMAND
           node examples/benchmark/run.mjs --out benchmark-out
       - name: Upload the evidence

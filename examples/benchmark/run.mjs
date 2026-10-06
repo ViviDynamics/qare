@@ -17,9 +17,16 @@ const here = fileURLToPath(new URL('.', import.meta.url))
 const args = process.argv.slice(2)
 const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined)
 const outDir = resolve(flag('--out') ?? 'benchmark-out')
-const only = flag('--only')?.split(',')
+const only = flag('--only')?.split(',').filter((id) => id !== '')
 const command = JSON.parse(process.env.QARE_BENCH_COMMAND ?? JSON.stringify(['node', 'packages/cli/dist/index.js']))
-const criteria = JSON.parse(readFileSync(join(here, 'criteria.json'), 'utf8')).filter((criterion) => only === undefined || only.includes(criterion.id))
+const all = JSON.parse(readFileSync(join(here, 'criteria.json'), 'utf8'))
+// A selection that names nothing would score 0 of 0 and pass: refuse it by name.
+const unknown = (only ?? []).filter((id) => !all.some((criterion) => criterion.id === id))
+if (unknown.length > 0 || only?.length === 0) {
+  process.stderr.write(`--only names no criterion of the benchmark: ${unknown.join(', ') || '(empty)'} (known: ${all.map((criterion) => criterion.id).join(', ')})\n`)
+  process.exit(2)
+}
+const criteria = all.filter((criterion) => only === undefined || only.includes(criterion.id))
 
 mkdirSync(outDir, { recursive: true })
 const results = []
