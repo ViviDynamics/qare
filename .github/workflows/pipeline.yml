@@ -165,7 +165,7 @@ on:
           workflow ships in, so pin the release in `uses:` and leave this
           alone.
         type: string
-        default: '2026.10.4'
+        default: '2026.10.11'
     secrets:
       model-key:
         description: >-
@@ -261,9 +261,19 @@ jobs:
       - name: Read the version of the pinned qare
         id: qare
         shell: bash
+        env:
+          QARE_REF: ${{ inputs.qare-ref }}
         run: |
           set -euo pipefail
-          version="$(jq -r '.version // empty' .qare-pipeline/package.json)"
+          # A release tag names its own images (#242): a release the
+          # automation computed carries the last stamped version in its
+          # package.json, and reading that ran an older release's images.
+          # Any other revision is named by the version it carries.
+          if [[ "$QARE_REF" =~ ^20[0-9]{2}\.[0-9]+\.[0-9]+$ ]]; then
+            version="$QARE_REF"
+          else
+            version="$(jq -r '.version // empty' .qare-pipeline/package.json)"
+          fi
           if [ -z "$version" ]; then
             echo "the qare revision this pipeline pinned carries no version in its package.json, so no image can be named for it" >&2
             exit 1
