@@ -294,7 +294,15 @@ jobs:
           fi
           issues=()
           while read -r number; do
-            gh issue view "$number" --json body --jq .body > "issue-${number}.md"
+            # Read from the API with curl and jq, which every runner has: a
+            # repository's own runner need not carry the GitHub CLI (#238).
+            if ! curl --fail --silent --show-error --location \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/$number" > "issue-${number}.json"; then
+              echo "::error::linked issue #$number could not be read"
+              exit 1
+            fi
+            jq -r '.body // ""' "issue-${number}.json" > "issue-${number}.md"
             issues+=("issue-${number}.md")
           done < linked.txt
           # Read here, without a model: an issue that states no criteria (a bug

@@ -220,7 +220,7 @@ the job and the permission.
 ## What the runner needs
 
 A GitHub-hosted runner has all of it. Your own runner needs `docker`, `git`,
-`jq` and the `gh` CLI. It does not need node, pnpm or Python set up by hand:
+`curl` and `jq`. It does not need the GitHub CLI, nor node, pnpm or Python set up by hand:
 plan, execute and judge run qare and nare inside the published images
 (`ghcr.io/vividynamics/qare-core` and the flavour the profile names), and
 the three jobs that hold only the GitHub token set up node themselves.
