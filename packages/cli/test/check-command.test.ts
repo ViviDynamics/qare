@@ -114,12 +114,12 @@ test('every criterion proven is a passed verdict and exit 0; a verifier finding 
   const passed = await main(['check', PLAN.criteria[0]!.text, ...args(repo, '--nare', (await fakeNare(one)).binary)], capture().writer, capture().writer, UP)
   expect(passed).toBe(0)
 
-  const findings = [{ criterionId: 'check-1', problem: 'the output shows the URL, not the article' }]
+  const findings = [{ criterionId: 'check-1', problem: 'the output shows the URL, not the article', kind: 'contradicted', evidence: 'checks/check-1/0/stdout.txt' }]
   const out = capture()
   const failed = await main(['check', PLAN.criteria[0]!.text, ...args(repo, '--nare', (await fakeNare(one, findings)).binary)], out.writer, capture().writer, UP)
   expect(failed).toBe(1)
   expect(out.text()).toContain('check-1 failed')
-  expect(out.text()).toContain('verifier: the output shows the URL, not the article')
+  expect(out.text()).toContain('verifier: the output shows the URL, not the article (checks/check-1/0/stdout.txt)')
 })
 
 test('criteria come from a file too, one per line, skipping blanks and comments', async () => {
@@ -248,7 +248,7 @@ test('what the verifier overturned is reported, as qare judge reports it', async
   const one = { schemaVersion: '1', criteria: [PLAN.criteria[0]] }
   const err = capture()
 
-  await main(['check', PLAN.criteria[0]!.text, ...args(repo, '--nare', (await fakeNare(one, [{ criterionId: 'check-1', problem: 'wrong page' }])).binary)], capture().writer, err.writer, UP)
+  await main(['check', PLAN.criteria[0]!.text, ...args(repo, '--nare', (await fakeNare(one, [{ criterionId: 'check-1', problem: 'wrong page', kind: 'contradicted', evidence: 'checks/check-1/0/stdout.txt' }])).binary)], capture().writer, err.writer, UP)
 
-  expect(err.text()).toContain('verifier: check-1 failed: verifier: wrong page')
+  expect(err.text()).toContain('verifier: check-1 failed: verifier: wrong page (checks/check-1/0/stdout.txt)')
 })

@@ -90,7 +90,7 @@ async function judge(args: string[]): Promise<{ code: number; out: string; err: 
 test('a verifier finding fails a run the checks passed, and the comment says why', async () => {
   const { dir, resultPath, planPath, diffPath } = await provenRun()
   const nare = await fakeNare({
-    findings: [{ criterionId: 'export-csv', problem: 'the export wrote 0 rows, so it did not export every row' }],
+    findings: [{ criterionId: 'export-csv', problem: 'the export wrote 0 rows, so it did not export every row', kind: 'contradicted', evidence: 'checks/export-csv/0/stdout.txt' }],
   })
 
   const run = await judge(['--result', resultPath, '--plan', planPath, '--diff', diffPath, '--nare', nare.binary, '--outDir', dir])
@@ -104,7 +104,7 @@ test('a verifier finding fails a run the checks passed, and the comment says why
       id: 'export-csv',
       outcome: 'failed',
       evidence: ['checks/export-csv/0/stdout.txt'],
-      reason: 'verifier: the export wrote 0 rows, so it did not export every row',
+      reason: 'verifier: the export wrote 0 rows, so it did not export every row (checks/export-csv/0/stdout.txt)',
     },
   ])
   expect(await readFile(join(dir, 'comment.md'), 'utf8')).toContain('the export wrote 0 rows')
@@ -178,14 +178,14 @@ test('--runner none judges from the evidence alone, with no plan and no model', 
 
 test('judging a judged result again keeps the reason the verifier gave', async () => {
   const { dir, resultPath, planPath, diffPath } = await provenRun()
-  const nare = await fakeNare({ findings: [{ criterionId: 'export-csv', problem: 'the export wrote 0 rows' }] })
+  const nare = await fakeNare({ findings: [{ criterionId: 'export-csv', problem: 'the export wrote 0 rows', kind: 'contradicted', evidence: 'checks/export-csv/0/stdout.txt' }] })
   await judge(['--result', resultPath, '--plan', planPath, '--diff', diffPath, '--nare', nare.binary, '--outDir', dir])
   const again = join(dir, 'again')
 
   await judge(['--result', join(dir, 'judged-result.json'), '--runner', 'none', '--outDir', again])
 
   const judged = JSON.parse(await readFile(join(again, 'judged-result.json'), 'utf8'))
-  expect(judged.criteria[0].reason).toBe('verifier: the export wrote 0 rows')
+  expect(judged.criteria[0].reason).toBe('verifier: the export wrote 0 rows (checks/export-csv/0/stdout.txt)')
 })
 
 test('the judge sweeps the seeded login secrets the diff carries (#64)', async () => {
@@ -208,7 +208,7 @@ test('the judge sweeps the seeded login secrets the diff carries (#64)', async (
   // must sweep from anything judge publishes about it (#64).
   await writeFile(diffPath, `diff --git a/.qa/config.yml b/.qa/config.yml\n+    totp:\n+      secret: ${secret}\n`, 'utf8')
   const nare = await fakeNare({
-    findings: [{ criterionId: 'export-csv', problem: `the diff seeds the secret ${secret}, so the run is compromised` }],
+    findings: [{ criterionId: 'export-csv', problem: `the diff seeds the secret ${secret}, so the run is compromised`, kind: 'contradicted', evidence: 'diff' }],
   })
 
   const run = await judge([

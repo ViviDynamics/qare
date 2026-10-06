@@ -20,7 +20,10 @@ function fakeChromium(events: string[], opts: { visible?: boolean; visibleAfterR
       click: async () => events.push(`click ${name}`),
       fill: async (value: string) => events.push(`fill ${name}=${value}`),
       selectOption: async (value: { label: string }) => events.push(`choose ${name}=${value.label}`),
-      waitFor: async (opts: { state: string }) => events.push(`waitFor ${name} until ${opts.state}`),
+      waitFor: async (waitOpts: { state: string }) => {
+        if (opts.ambiguous === true && !narrowed) throw new Error(`strict mode violation: ${name} resolved to 3 elements`)
+        events.push(`waitFor ${name} until ${waitOpts.state}`)
+      },
       isVisible: async () => {
         if (opts.unreadable === true) throw new Error('Target page, context or browser has been closed')
         // Several elements answer the reference: the browser refuses to read
@@ -254,6 +257,8 @@ test('an element assertion holds when several elements answer the reference, and
     pollIntervalMs: 5,
   })
   await expect(session.page.assertElement({ role: 'link', name: 'Donate' })).resolves.toBeUndefined()
+  // A wait reads the reference the same way (#244).
+  await expect(session.page.waitFor({ role: 'heading', name: 'Grace Hopper' })).resolves.toBeUndefined()
 
   const closed = await makePlaywrightFlowSession({
     loadPlaywright: async () => ({ chromium: fakeChromium([], { unreadable: true }) }) as never,

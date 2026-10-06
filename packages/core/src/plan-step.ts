@@ -268,6 +268,9 @@ const SYSTEM = [
   'You never decide whether a criterion passes: you only say what would show it.',
   'A criterion you cannot map to a runnable check is marked unplannable with a reason,',
   'and inventing a check that cannot run is worse than saying so.',
+  // A planner that marks a criterion unplannable because it believes it false has decided the outcome (#244).
+  'A criterion you expect to be false is still planned: write the check that would show it and let the run fail it.',
+  'What you believe about the application is never a reason to mark a criterion unplannable.',
 ].join(' ')
 
 /**
@@ -381,6 +384,9 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     'Every criterion below must appear in your answer exactly once, under the id given,',
     'either with a non-empty checks array or with an unplannable reason. Do not add,',
     'rename or drop a criterion.',
+    'Unplannable means no check could observe the criterion, never that you expect it to be false:',
+    'a criterion naming something the application does not have (a button, a page, a text) is planned',
+    'as the check that looks for it, and the run reports that it is not there.',
     '',
     `Criteria:\n${criteria}`,
     '',
