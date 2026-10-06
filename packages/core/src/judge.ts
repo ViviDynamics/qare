@@ -212,7 +212,7 @@ const VERIFIER_INSTRUCTIONS = [
   'Report PROBLEMS ONLY: a finding names a criterion whose evidence does not actually show what the criterion says, or that the diff shows is not met. Report gaps against the criterion, never style.',
   'Say which kind of problem it is. kind "contradicted": an evidence file, or the diff, shows the criterion is NOT met; name that file (or "diff") in "evidence". It downgrades the criterion to failed. Omit kind when the evidence simply does not show the criterion, for example a check that looked for a name where the criterion states a relationship: that downgrades the criterion to unverified. Doubt about a check is never "contradicted".',
   'Findings naming criteria you were not given are dropped: your output can never upgrade a verdict or create a criterion.',
-  'When a criterion was proven by a filtered test command, check that the evidence shows the filter actually selecting tests: a report whose filter selected nothing, or the whole suite, exercised the criterion only by accident. Say so with kind "unexercised"; any other finding needs no kind.',
+  'When a criterion was proven by a filtered test command, check that the evidence shows the filter actually selecting tests: a report whose filter selected nothing, or the whole suite, exercised the criterion only by accident. Say so with kind "unexercised".',
   'Answer with {"findings": [{"criterionId": string, "problem": string, "kind": "contradicted"_OR_"unexercised"_OR_omit, "evidence": string_ONLY_WITH_contradicted}]}. An empty list changes nothing.',
 ].join('\n')
 
@@ -275,22 +275,37 @@ export function prepareVerifierInputs(input: {
 
 /**
  * The only consumption path for verifier output. A finding against a proven
- * criterion downgrades it: to failed when it names the evidence that
- * contradicts the criterion, and to unverified otherwise, because a check
+ * criterion downgrades it: to failed when it names evidence the run saved
+ * for that criterion, or a diff the run supplied, as contradicting it, and to
+ * unverified otherwise, because a check
  * that was too weak proved nothing and disproved nothing (#244). Nothing a
  * finding says can upgrade an outcome, rewrite another reason, or create a
  * criterion.
  */
-export function consumeVerifierFindings(criteria: CriterionVerdict[], findings: VerifierFinding[]): CriterionVerdict[] {
+export function consumeVerifierFindings(
+  criteria: CriterionVerdict[],
+  findings: VerifierFinding[],
+  trusted: { claims: readonly VerifierClaim[]; diff: string } = { claims: [], diff: '' },
+): CriterionVerdict[] {
   const first = new Map<string, VerifierFinding>()
   for (const finding of findings ?? []) {
     if (!first.has(finding.criterionId)) first.set(finding.criterionId, finding)
   }
+  // A contradiction counts only when it cites something the run handed the
+  // verifier: an evidence file saved for that criterion, or a diff that was
+  // really supplied. A citation of anything else is the model's word alone.
+  const cites = (finding: VerifierFinding): string | undefined => {
+    const cited = typeof finding.evidence === 'string' ? finding.evidence.trim() : ''
+    if (finding.kind !== 'contradicted' || cited === '') return undefined
+    if (cited === 'diff') return trusted.diff.trim() === '' ? undefined : cited
+    const saved = trusted.claims.find((claim) => claim.criterionId === finding.criterionId)?.evidence ?? []
+    return saved.includes(cited) ? cited : undefined
+  }
   return (criteria ?? []).map((criterion) => {
     const finding = first.get(criterion.criterionId)
     if (finding === undefined || criterion.outcome !== 'proven') return criterion
-    const shownBy = typeof finding.evidence === 'string' ? finding.evidence.trim() : ''
-    if (finding.kind === 'contradicted' && shownBy !== '')
+    const shownBy = cites(finding)
+    if (shownBy !== undefined)
       return { ...criterion, outcome: 'failed' as const, reason: `verifier: ${finding.problem} (${shownBy})` }
     return { ...criterion, outcome: 'unverified' as const, reason: `verifier: ${finding.problem}` }
   })
@@ -352,7 +367,7 @@ export async function runVerifier(
     }
   const findings = parseVerifierFindings(result.output)
   if (findings === undefined) return { verdicts: verifierUnavailable(criteria, 'its answer was not a findings list'), usage: result.usage }
-  return { verdicts: consumeVerifierFindings(criteria, findings), usage: result.usage }
+  return { verdicts: consumeVerifierFindings(criteria, findings, { claims: inputs.claims, diff: inputs.diff }), usage: result.usage }
 }
 
 function parseVerifierFindings(output: unknown): VerifierFinding[] | undefined {

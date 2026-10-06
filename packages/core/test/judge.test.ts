@@ -189,13 +189,32 @@ describe('consumeVerifierFindings', () => {
   const failed: CriterionVerdict = { criterionId: 'c2', outcome: 'failed', regression: true, reason: 'broke at head' }
   const unverified: CriterionVerdict = { criterionId: 'c3', outcome: 'unverified', regression: false, reason: 'no checks' }
 
+  const trusted = { claims: [{ criterionId: 'c1', text: 'the total updates', evidence: ['checks/c1/0/stdout.txt'] }], diff: 'diff --git a/x b/x' }
+
   test('a finding that names the evidence contradicting a proven criterion downgrades it to failed (#244)', () => {
-    const result = consumeVerifierFindings([proven], [
-      { criterionId: 'c1', problem: 'the response body shows the old total', kind: 'contradicted', evidence: 'checks/c1/0/stdout.txt' },
-    ])
+    const result = consumeVerifierFindings(
+      [proven],
+      [{ criterionId: 'c1', problem: 'the response body shows the old total', kind: 'contradicted', evidence: 'checks/c1/0/stdout.txt' }],
+      trusted,
+    )
     expect(result).toEqual([
       { criterionId: 'c1', outcome: 'failed', regression: false, reason: 'verifier: the response body shows the old total (checks/c1/0/stdout.txt)' },
     ])
+    const byDiff = consumeVerifierFindings([proven], [{ criterionId: 'c1', problem: 'the diff removes the total', kind: 'contradicted', evidence: 'diff' }], trusted)
+    expect(byDiff[0]).toMatchObject({ outcome: 'failed', reason: 'verifier: the diff removes the total (diff)' })
+  })
+
+  test('a contradiction that cites nothing the run handed over is the model\'s word alone: unverified (#244)', () => {
+    const problem = 'the log shows a 500'
+    for (const [evidence, given] of [
+      ['checks/c1/0/invented.txt', trusted],
+      ['checks/other/0/stdout.txt', trusted],
+      ['diff', { ...trusted, diff: '' }],
+      ['checks/c1/0/stdout.txt', undefined],
+    ] as const) {
+      const result = consumeVerifierFindings([proven], [{ criterionId: 'c1', problem, kind: 'contradicted', evidence }], given)
+      expect(result).toEqual([{ criterionId: 'c1', outcome: 'unverified', regression: false, reason: `verifier: ${problem}` }])
+    }
   })
 
   test('a finding that the evidence is too thin leaves a proven criterion unverified, never failed (#244)', () => {
@@ -206,7 +225,7 @@ describe('consumeVerifierFindings', () => {
       { criterionId: 'c1', problem: thin, kind: 'contradicted' as const },
       { criterionId: 'c1', problem: thin, kind: 'contradicted' as const, evidence: '  ' },
     ]) {
-      expect(consumeVerifierFindings([proven], [finding])).toEqual([
+      expect(consumeVerifierFindings([proven], [finding], trusted)).toEqual([
         { criterionId: 'c1', outcome: 'unverified', regression: false, reason: `verifier: ${thin}` },
       ])
     }
@@ -651,10 +670,10 @@ test('a criterion the verifier fails is failed, never a regression: no model out
   const { result } = await judgeExecuted(twoSided(), {
     texts: { kept: 'The old page still loads.' },
     diff: NO_DIFF,
-    verifier: scriptedVerifier(JSON.stringify({ findings: [{ criterionId: 'kept', problem: 'the log shows a 500', kind: 'contradicted', evidence: 'checks/kept/0/stdout.txt' }] })),
+    verifier: scriptedVerifier(JSON.stringify({ findings: [{ criterionId: 'kept', problem: 'the log shows a 500', kind: 'contradicted', evidence: 'head/checks/kept/0/stdout.txt' }] })),
   })
   const kept = result.criteria.find((criterion) => criterion.id === 'kept')
-  expect(kept).toMatchObject({ outcome: 'failed', reason: 'verifier: the log shows a 500 (checks/kept/0/stdout.txt)', base: { outcome: 'proven' } })
+  expect(kept).toMatchObject({ outcome: 'failed', reason: 'verifier: the log shows a 500 (head/checks/kept/0/stdout.txt)', base: { outcome: 'proven' } })
   expect('regression' in (kept as object)).toBe(false)
 })
 
