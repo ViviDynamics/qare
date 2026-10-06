@@ -345,7 +345,8 @@ export async function makePlaywrightFlowSession(
     },
     waitFor: async (element) => {
       const started = await start()
-      await resolveFlowElement(started.page, element).waitFor({ state: 'visible' })
+      // Several elements may answer a reference: the wait is for the first that shows (#244).
+      await firstVisible(resolveFlowElement(started.page, element)).waitFor({ state: 'visible' })
     },
     assertText: async (text) => {
       const started = await start()

@@ -268,6 +268,9 @@ const SYSTEM = [
   'You never decide whether a criterion passes: you only say what would show it.',
   'A criterion you cannot map to a runnable check is marked unplannable with a reason,',
   'and inventing a check that cannot run is worse than saying so.',
+  // A planner that marks a criterion unplannable because it believes it false has decided the outcome (#244).
+  'A criterion you expect to be false is still planned: write the check that would show it and let the run fail it.',
+  'What you believe about the application is never a reason to mark a criterion unplannable.',
 ].join(' ')
 
 /**
