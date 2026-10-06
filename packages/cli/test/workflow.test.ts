@@ -188,6 +188,12 @@ test('the pipeline needs no GitHub CLI on the runner: collect reads a linked iss
   expect(collect).toContain('linked issue #$number could not be read')
 })
 
+test('a release tag passed as qare-ref names the images, and any other revision is named by the version it carries (#242)', () => {
+  const collect = section('collect')
+  expect(collect).toContain('QARE_REF: ${{ inputs.qare-ref }}')
+  expect(collect).toMatch(/if \[\[ "\$QARE_REF" =~ \^20\[0-9\]\{2\}\\\.\[0-9\]\+\\\.\[0-9\]\+\$ \]\]; then\n\s+version="\$QARE_REF"\n\s+else\n\s+version="\$\(jq -r '\.version \/\/ empty' \.qare-pipeline\/package\.json\)"/)
+})
+
 test('nothing runs when the change states no criteria', () => {
   // Neutral, not red: a chore states no acceptance criteria, and a pipeline
   // that is red by default hides the failure that matters.

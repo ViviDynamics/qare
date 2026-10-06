@@ -30,7 +30,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.4
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.11
     with:
       nare-model: gpt-4.1-mini
     secrets:
@@ -67,7 +67,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.4
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.11
     with:
       runs-on: '["self-hosted", "linux", "x64"]'
       profile: services/web/qa
@@ -304,7 +304,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.4
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.11
     with:
       nare-model: gpt-4.1-mini
       artefacts: qare-artefacts
@@ -674,3 +674,15 @@ same release, because each release's `pipeline.yml` pins that release.
 
 Pin a release tag, never `main` and never a commit: `main` carries a
 pipeline that is ahead of the qare its pin names.
+
+Not every release tag can pin itself. qare tags every green merge to its
+default branch, and when a merge did not bump the version the tag is
+computed: its `pipeline.yml` still names the last stamped release as the
+default of `qare-ref`. The release notes of a stamped release match the
+version in its `package.json`; a computed one's do not. To run a computed
+release, name it twice: pin it in `uses:`, and pass the same tag as the
+`qare-ref` input.
+
+With `qare-ref` a release tag, the pipeline builds that release's source and
+pulls the images published under that tag. Left out on a computed release,
+the pipeline runs the stamped release before it.
