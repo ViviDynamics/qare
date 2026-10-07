@@ -17,6 +17,29 @@ export interface AgentBudget {
   maxOutputTokens: number
 }
 
+/**
+ * What the planner and the verifier may write in one turn (#254). A reasoning
+ * model spends this budget thinking before it answers, so the default leaves
+ * room for both; a caller with a model that needs more, or allows less, names
+ * its own in the environment.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 16384
+export const MAX_OUTPUT_TOKENS_ENV = 'QARE_MAX_OUTPUT_TOKENS'
+
+export function outputBudget(env: Record<string, string | undefined> = process.env): AgentBudget {
+  const raw = env[MAX_OUTPUT_TOKENS_ENV]?.trim() ?? ''
+  if (raw === '') return { maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS }
+  if (!/^[1-9]\d*$/.test(raw))
+    throw new Error(`${MAX_OUTPUT_TOKENS_ENV} is "${raw}", and the output budget is a whole number of tokens above zero`)
+  return { maxOutputTokens: Number(raw) }
+}
+
+/** A turn cut off at its budget says what the budget was and what raises it. */
+export function stopDetail(stopReason: AgentStopReason, budget: AgentBudget): string {
+  if (stopReason !== 'max_tokens') return stopReason
+  return `max_tokens: the turn was cut off at its budget of ${budget.maxOutputTokens} output tokens, which ${MAX_OUTPUT_TOKENS_ENV} raises (max-output-tokens in the pipeline)`
+}
+
 export interface AgentRunRequest {
   prompt: string
   system: string

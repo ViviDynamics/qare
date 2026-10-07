@@ -106,6 +106,7 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
   expect(Object.keys(call.inputs).sort()).toEqual([
     'artefacts',
     'execute-runs-on',
+    'max-output-tokens',
     'model-key-env',
     'nare-base-url',
     'nare-model',
@@ -153,6 +154,18 @@ test('the streaming choice reaches the plan and judge containers', () => {
   expect([...text.matchAll(/NARE_STREAM: \$\{\{ inputs\.nare-stream \}\}/g)].length, 'plan and judge both set NARE_STREAM').toBe(2)
   // ...and the docker boundary forwards it, or nare never sees it.
   expect([...text.matchAll(/model_env\+=\(-e NARE_STREAM\)/g)].length, 'plan and judge both forward it into their containers').toBe(2)
+})
+
+// #254: the output budget is the caller's to raise, and it has to cross the
+// same docker boundary the streaming choice does.
+test('the output budget reaches the plan and judge containers, and only when set', () => {
+  expect(call.inputs['max-output-tokens']?.default).toBe('')
+  const text = readFileSync(join(repoRoot, PIPELINE), 'utf8')
+  expect([...text.matchAll(/QARE_MAX_OUTPUT_TOKENS: \$\{\{ inputs\.max-output-tokens \}\}/g)].length, 'plan and judge both set it').toBe(2)
+  for (const [job, name] of [['plan', 'Plan the QA run'], ['judge', 'Judge the result']] as const) {
+    const step = pipeline.jobs[job]?.steps?.find((candidate) => candidate.name === name)
+    expect(step?.run?.replace(/\s+/g, ' '), name).toContain('if [ -n "$QARE_MAX_OUTPUT_TOKENS" ]; then model_env+=(-e QARE_MAX_OUTPUT_TOKENS) fi')
+  }
 })
 
 test('the caller chooses the runners for every job', () => {

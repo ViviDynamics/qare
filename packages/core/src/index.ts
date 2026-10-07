@@ -85,12 +85,16 @@ export type {
   CriterionBase,
 } from './result.js'
 export {
+  DEFAULT_MAX_OUTPUT_TOKENS,
   FakeAgentRunner,
   FakeAgentRunnerError,
+  MAX_OUTPUT_TOKENS_ENV,
   NARE_CONTRACT,
   NareAgentRunner,
   NareRunnerError,
   NotImplemented,
+  outputBudget,
+  stopDetail,
 } from './runner.js'
 export type {
   AgentBudget,
