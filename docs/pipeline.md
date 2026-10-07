@@ -30,7 +30,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.12
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.13
     with:
       nare-model: gpt-4.1-mini
     secrets:
@@ -67,7 +67,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.12
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.13
     with:
       runs-on: '["self-hosted", "linux", "x64"]'
       profile: services/web/qa
@@ -246,6 +246,20 @@ things hold:
 - **Paths are the runner's.** The workspace is mounted at its own path, so a
   bind mount or a build context a compose file names resolves for the daemon
   exactly as it does for the run.
+- **Images are built before the health deadline starts.** A compose file
+  that builds its images is built first, as its own step, bounded by
+  `app.boot.build.timeout` (15m by default). `app.health.timeout` times only
+  the boot, so a runner with no layer cache needs no separate
+  `docker compose build` step in your workflow and no inflated health timeout:
+
+  ```yaml
+  app:
+    boot: { compose: compose.qa.yaml, service: web, build: { timeout: 25m } }
+    health: { http: "http://localhost:{{run.app_port}}/up", timeout: 120s }
+  ```
+
+  A build that fails or outlives its bound ends the run `blocked`, naming the
+  build, with the build's output in `provision.log`.
 - **A suite can run inside the booted service.** The run's compose project is
   `qare-<run id>`, so a suite that needs the stack's own hostnames (a
   database, a stub) names it:
@@ -318,7 +332,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.12
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.13
     with:
       nare-model: gpt-4.1-mini
       artefacts: qare-artefacts

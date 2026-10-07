@@ -29,7 +29,12 @@ export interface ProfileLogin {
 }
 
 export interface ProfileApp {
-  boot: { compose: string; service: string }
+  /**
+   * `build.timeout` bounds the image build that runs before the boot (#241),
+   * a duration like the health timeout; fifteen minutes when the profile
+   * names none.
+   */
+  boot: { compose: string; service: string; build?: { timeout: string } }
   health: { http: string; timeout: string }
   /**
    * What plants the QA data (#240): run once the app is healthy, before any
@@ -937,6 +942,19 @@ function parseTarget(value: unknown): ProfileTarget {
   }
 }
 
+/** The image build's bound (#241), held to being a duration when the profile is read. */
+function bootBuild(value: unknown): { timeout: string } {
+  if (!isRecord(value)) fail('app.boot.build', 'app.boot.build must be a YAML object with timeout')
+  for (const key of Object.keys(value)) if (key !== 'timeout') fail(`app.boot.build.${key}`, `app.boot.build takes timeout, not ${JSON.stringify(key)}`)
+  const timeout = nonEmptyString(value.timeout, 'app.boot.build.timeout', 'build timeout')
+  try {
+    parseDurationMs(timeout)
+  } catch (error) {
+    fail('app.boot.build.timeout', error instanceof Error ? error.message : String(error))
+  }
+  return { timeout }
+}
+
 /** The seed's bound (#240), held to being a duration when the profile is read, not when the seed is due. */
 function seedTimeout(value: unknown): string {
   const timeout = nonEmptyString(value, 'app.seed.timeout', 'seed timeout')
@@ -958,6 +976,7 @@ function parseApp(value: unknown): ProfileApp {
     boot: {
       compose: nonEmptyString(value.boot.compose, 'app.boot.compose', 'compose file'),
       service: nonEmptyString(value.boot.service, 'app.boot.service', 'compose service'),
+      ...(value.boot.build === undefined ? {} : { build: bootBuild(value.boot.build) }),
     },
     health: {
       http: nonEmptyString(value.health.http, 'app.health.http', 'health URL'),

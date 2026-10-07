@@ -221,7 +221,7 @@ test('a blocked boot marks every criterion unverified and the run blocked', asyn
   })
 
   const { result } = await runJob(job, {
-    runCompose: async () => ({ code: 1, stdout: '', stderr: 'compose boom' }),
+    runCompose: async (args) => (args.includes('up') ? { code: 1, stdout: '', stderr: 'compose boom' } : { code: 0, stdout: '', stderr: '' }),
   })
 
   expect(result.verdict).toBe('blocked')
@@ -236,7 +236,7 @@ test('a blocked boot marks every criterion unverified and the run blocked', asyn
 
 test('a blocked boot that said nothing attaches no log: nothing links to a file that is not there (#75)', async () => {
   const job = await makeJob({ criteria: commandCriteria('echo ok'), profile: { inline: INLINE_PROFILE } })
-  const { result } = await runJob(job, { runCompose: async () => ({ code: 1, stdout: '', stderr: '' }) })
+  const { result } = await runJob(job, { runCompose: async (args) => ({ code: args.includes('up') ? 1 : 0, stdout: '', stderr: '' }) })
   expect(result.criteria).toEqual([{ id: 'criterion-1', outcome: 'unverified', reason: 'compose up exited 1' }])
   expect(existsSync(join(job.evidenceDir, 'provision.log'))).toBe(false)
 })
@@ -760,10 +760,13 @@ test('an app run records its isolation, boots under its own project, and mints a
   expect(values.app_port).toBe(String(isolation?.port))
   // One id per run: the compose project and the mail address name the same run.
   expect(values.id).toBe(isolation?.runId)
-  expect(captured.calls.length).toBe(1)
-  expect(captured.calls[0]?.args?.[0]).toBe('-p')
-  expect(captured.calls[0]?.args?.[1]).toBe(isolation?.project)
-  expect(captured.calls[0]?.env).toEqual({ QARE_RUN_ID: isolation?.runId, QARE_APP_PORT: String(isolation?.port) })
+  // The build, then the up (#241): both under the run's project and environment.
+  expect(captured.calls.map((call) => call.args?.find((arg) => arg === 'build' || arg === 'up'))).toEqual(['build', 'up'])
+  for (const call of captured.calls) {
+    expect(call.args?.[0]).toBe('-p')
+    expect(call.args?.[1]).toBe(isolation?.project)
+    expect(call.env).toEqual({ QARE_RUN_ID: isolation?.runId, QARE_APP_PORT: String(isolation?.port) })
+  }
 })
 
 test('an app run refuses an isolation that carries no port, so runs cannot fall back to one default port', async () => {
@@ -1339,4 +1342,29 @@ test('an empty selection writes an empty selected.txt: the report was read, noth
   expect(result.criteria[0].outcome).toBe('unverified')
   const selected = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'selected.txt'), 'utf8')
   expect(selected).toBe('')
+})
+
+test('a build that fails blocks the run naming the build, with what the build said as evidence (#241)', async () => {
+  const job = await makeJob({ criteria: commandCriteria('echo ok', 'echo ok'), profile: { inline: INLINE_PROFILE } })
+  const verbs: string[] = []
+
+  const { result } = await runJob(job, {
+    runCompose: async (args) => {
+      verbs.push(args.find((arg) => arg === 'build' || arg === 'up' || arg === 'down') ?? '')
+      return args.includes('build') ? { code: 1, stdout: '', stderr: 'failed to solve: Dockerfile:12\n' } : { code: 0, stdout: '', stderr: '' }
+    },
+    probe: async () => ({ ok: true }),
+    pollIntervalMs: 1,
+  })
+
+  expect(result.verdict).toBe('blocked')
+  const reason = "compose build exited 1: the profile's images did not build, so nothing was booted"
+  expect(result.criteria).toEqual([
+    { id: 'criterion-1', outcome: 'unverified', reason, evidence: ['provision.log'] },
+    { id: 'criterion-2', outcome: 'unverified', reason, evidence: ['provision.log'] },
+  ])
+  expect(await readFile(join(job.evidenceDir, 'provision.log'), 'utf8')).toBe('failed to solve: Dockerfile:12\n')
+  // The app was never started, and so never seeded.
+  expect(verbs).toEqual(['build'])
+  expect(existsSync(join(job.evidenceDir, 'seed.log'))).toBe(false)
 })
