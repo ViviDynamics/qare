@@ -461,6 +461,9 @@ jobs:
           chmod 600 "$key_file"
           printf '%s=%s\n' "$MODEL_KEY_ENV" "$MODEL_KEY" > "$key_file"
           model_env=(--env-file "$key_file" -e NARE_PROVIDER -e NARE_MODEL)
+          if [ -n "$NARE_STREAM" ]; then
+            model_env+=(-e NARE_STREAM)
+          fi
           if [ -n "$NARE_BASE_URL" ]; then
             model_env+=(-e NARE_BASE_URL)
           fi
@@ -1034,6 +1037,9 @@ jobs:
           chmod 600 "$key_file"
           printf '%s=%s\n' "$MODEL_KEY_ENV" "$MODEL_KEY" > "$key_file"
           model_env=(--env-file "$key_file" -e NARE_PROVIDER -e NARE_MODEL)
+          if [ -n "$NARE_STREAM" ]; then
+            model_env+=(-e NARE_STREAM)
+          fi
           if [ -n "$NARE_BASE_URL" ]; then
             model_env+=(-e NARE_BASE_URL)
           fi
