@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'vitest'
+import { afterEach, beforeEach, expect, test } from 'vitest'
 
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
@@ -6,6 +6,7 @@ import {
   MAX_OUTPUT_TOKENS_ENV,
   outputBudget,
   planRun,
+  runUxReview,
   runVerifier,
   type AgentRunResult,
   type PlanInputs,
@@ -38,8 +39,16 @@ const VERIFIER_INPUTS = {
   criteria: [{ criterionId: 'c1', outcome: 'proven' as const, regression: false }],
 }
 
-afterEach(() => {
+// The setting is a supported one, so a caller may have it set: the tests start
+// without it and hand it back afterwards.
+let before: string | undefined
+beforeEach(() => {
+  before = process.env[MAX_OUTPUT_TOKENS_ENV]
   delete process.env[MAX_OUTPUT_TOKENS_ENV]
+})
+afterEach(() => {
+  if (before === undefined) delete process.env[MAX_OUTPUT_TOKENS_ENV]
+  else process.env[MAX_OUTPUT_TOKENS_ENV] = before
 })
 
 test('the default budget leaves a reasoning model room to think and still answer', () => {
@@ -53,7 +62,7 @@ test('the environment sets the budget', () => {
   expect(outputBudget({ QARE_MAX_OUTPUT_TOKENS: '32000' })).toEqual({ maxOutputTokens: 32000 })
 })
 
-test.each(['0', '-5', '12.5', 'lots', '8k'])('a budget of %s is refused by name, never guessed at', (value) => {
+test.each(['0', '-5', '12.5', 'lots', '8k', '9'.repeat(400), '9007199254740993'])('a budget of %s is refused by name, never guessed at', (value) => {
   expect(() => outputBudget({ QARE_MAX_OUTPUT_TOKENS: value })).toThrow(/QARE_MAX_OUTPUT_TOKENS.*whole number/)
 })
 
@@ -102,4 +111,17 @@ test('a budget the verifier cannot read leaves the criterion unverified, by name
   expect(runner.requests).toHaveLength(0)
   expect(verdicts[0].outcome).toBe('unverified')
   expect(verdicts[0].reason).toContain('QARE_MAX_OUTPUT_TOKENS is "lots"')
+})
+
+test('the UX review asks with the same budget', async () => {
+  const screens = { screens: [{ screen: 'checks/signup-form/0', criterionId: 'c1', files: ['checks/signup-form/0/actions.log'] }], texts: {} }
+  // Unscripted, so the review is unavailable; the request is what is read.
+  const byDefault = new FakeAgentRunner([])
+  await runUxReview(byDefault, screens)
+  expect(byDefault.requests[0].budget).toEqual({ maxOutputTokens: 16384 })
+
+  process.env[MAX_OUTPUT_TOKENS_ENV] = '6000'
+  const lowered = new FakeAgentRunner([])
+  await runUxReview(lowered, screens)
+  expect(lowered.requests[0].budget).toEqual({ maxOutputTokens: 6000 })
 })

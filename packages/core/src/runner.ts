@@ -18,7 +18,7 @@ export interface AgentBudget {
 }
 
 /**
- * What the planner and the verifier may write in one turn (#254). A reasoning
+ * What the planner, the verifier and the UX review may write in one turn (#254). A reasoning
  * model spends this budget thinking before it answers, so the default leaves
  * room for both; a caller with a model that needs more, or allows less, names
  * its own in the environment.
@@ -29,9 +29,12 @@ export const MAX_OUTPUT_TOKENS_ENV = 'QARE_MAX_OUTPUT_TOKENS'
 export function outputBudget(env: Record<string, string | undefined> = process.env): AgentBudget {
   const raw = env[MAX_OUTPUT_TOKENS_ENV]?.trim() ?? ''
   if (raw === '') return { maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS }
-  if (!/^[1-9]\d*$/.test(raw))
+  const tokens = Number(raw)
+  // Digits alone are not enough: a number too long to hold exactly would
+  // reach nare rounded, or as Infinity.
+  if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(tokens))
     throw new Error(`${MAX_OUTPUT_TOKENS_ENV} is "${raw}", and the output budget is a whole number of tokens above zero`)
-  return { maxOutputTokens: Number(raw) }
+  return { maxOutputTokens: tokens }
 }
 
 /** A turn cut off at its budget says what the budget was and what raises it. */
