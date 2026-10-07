@@ -31,7 +31,12 @@ export interface ProfileLogin {
 export interface ProfileApp {
   boot: { compose: string; service: string }
   health: { http: string; timeout: string }
-  seed: { command: string }
+  /**
+   * What plants the QA data (#240): run once the app is healthy, before any
+   * check. `timeout` bounds it, a duration like the health timeout; five
+   * minutes when the profile names none.
+   */
+  seed: { command: string; timeout?: string }
   login: ProfileLogin
 }
 
@@ -932,6 +937,17 @@ function parseTarget(value: unknown): ProfileTarget {
   }
 }
 
+/** The seed's bound (#240), held to being a duration when the profile is read, not when the seed is due. */
+function seedTimeout(value: unknown): string {
+  const timeout = nonEmptyString(value, 'app.seed.timeout', 'seed timeout')
+  try {
+    parseDurationMs(timeout)
+  } catch (error) {
+    fail('app.seed.timeout', error instanceof Error ? error.message : String(error))
+  }
+  return timeout
+}
+
 function parseApp(value: unknown): ProfileApp {
   if (!isRecord(value)) fail('app', 'app must be a YAML object with boot, health, seed and login')
   if (!isRecord(value.boot)) fail('app.boot', 'app.boot must be a YAML object with compose and service')
@@ -949,6 +965,7 @@ function parseApp(value: unknown): ProfileApp {
     },
     seed: {
       command: nonEmptyString(value.seed.command, 'app.seed.command', 'seed command'),
+      ...(value.seed.timeout === undefined ? {} : { timeout: seedTimeout(value.seed.timeout) }),
     },
     login: parseLogin(value.login),
   }

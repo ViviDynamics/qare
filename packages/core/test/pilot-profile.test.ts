@@ -12,7 +12,7 @@ test('the pilot admin console example profile loads with the expected shape', as
 
   expect(profile.app.boot).toEqual({ compose: 'compose.qa.yaml', service: 'admin' })
   expect(profile.app.health).toEqual({ http: HEALTH_URL, timeout: '120s' })
-  expect(profile.app.seed).toEqual({ command: 'bin/rails db:seed:qa' })
+  expect(profile.app.seed).toEqual({ command: 'docker compose -p qare-{{run.id}} -f compose.qa.yaml exec -T admin bin/rails db:seed:qa' })
   expect(profile.app.login).toEqual({
     fixture: 'fixtures/users.yml',
     role: 'admin',

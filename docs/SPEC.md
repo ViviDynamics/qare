@@ -128,7 +128,7 @@ Before either side starts, the run settles whether it may execute where it lande
 Execute stages, per side (base, head):
 
 1. Provision the application under test from the `.qa/` profile (#75): boot a server from its compose recipe, install a client build from the artefact the profile names for this side, or reach a preview URL. Then prove it is up with a health check the harness runs: an HTTP probe for a server, a launch that opens its first window for a desktop build. A provisioning that fails is `blocked`, with its log attached as `provision.log`, and no criterion is `failed`. See [Provisioning](#provisioning).
-2. Seed fixtures, log in test accounts.
+2. Seed the application (#240): once it is healthy and before any check, the harness runs the profile's `app.seed.command`, once for each app it booted on the side. A seed that exits non-zero, outlives `app.seed.timeout` or cannot start ends the side `blocked`: every criterion is `unverified`, naming the seed command and how it ended, with `seed.log` as its evidence, and no check runs against an app that was not seeded. See [Seeding](#seeding).
 3. Run `command` checks (exit code and output), `flow` checks (a fixed action set driven by a client driver, or existing suites), `visual` checks (a page captured at named widths and themes; the head's captures are compared with the base side's, see [Visual checks](#visual-checks)), and `mail` checks (a message waited for and read). Each `command` check also writes `command.json` beside its streams: the command as run, its outcome, and the exit code it closed with. A check that passes silently (`test -f`, `grep -q`) saves no output, so the streams alone read as a check that never ran; the record is the evidence that the harness ran it and captured its result.
 4. Record every outbound connection attempt. Anything outside the stub map is a `refused: missing stub` finding.
 5. Tear down what was provisioned. A client build the run installed is removed when its side's checks are done; a booted stack is left up for its logs and taken down by the pipeline when the run ends.
@@ -165,7 +165,7 @@ Sketch of `config.yml`:
 app:
   boot: { compose: compose.qa.yaml, service: admin }
   health: { http: "http://localhost:3000/up", timeout: 120s }
-  seed: { command: "bin/rails db:seed:qa" }
+  seed: { command: "docker compose -p qare-{{run.id}} -f compose.qa.yaml exec -T admin bin/rails db:seed:qa" }  # run once the app is healthy, before any check; add timeout: 10m to give it longer than the default 5m
   login:
     fixture: fixtures/users.yml
     role: admin
@@ -303,6 +303,47 @@ in the result itself, and a named profile is re-read from the .qa root with
 the fixtures and stubs the root shares, exactly as the run loaded it. A
 profile reference the artifact cannot carry is refused, never silently read
 from the app's name alone.
+
+### Seeding
+
+A profile that boots an app names the command that plants its QA data,
+`app.seed.command`, and the harness runs it (#240): once for every app it
+boots, after that app's health check passes and before its first check. The
+head is seeded, the base is seeded when it boots, each app of a several-app
+run is seeded by its own profile's command, and a criterion that boots an app
+of its own has that app seeded before its checks.
+
+The seed runs where a command check and a suite run: on the runner (inside
+the run image, in the pipeline), from the checkout of the side it seeds, split
+on whitespace and spawned without a shell, with run values substituted. The
+application itself is in the compose project, so a seed that belongs inside
+the booted service says so, the way a suite does:
+
+```yaml
+app:
+  seed:
+    command: "docker compose -p qare-{{run.id}} -f compose.qa.yaml exec -T web bin/rails db:seed:qa"
+    timeout: 10m   # optional; 5m when the profile names none
+```
+
+The seed is handed what the run's own compose calls are, `QARE_RUN_ID` and
+`QARE_APP_PORT`, so a compose file that binds the run's port resolves for the
+seed as it did for the boot. Its environment is otherwise a command step's:
+the minimal one on a host, the image's own in a container. A seed command
+that needs a shell (a pipe, `&&`, a quote) is refused at plan time, before
+anything boots, naming `app.seed.command`; the answer is a script the command
+names.
+
+What the seed did is evidence the harness wrote: `seed.log` in the side's
+evidence directory (`seed-<app>.log` in a several-app run,
+`seed-<criterion id>.log` for a criterion's own app) carries the command as
+run, its output and how it ended, on a run that passed as much as on one that
+did not. A seed that exits non-zero, outlives its bound or cannot start
+leaves every criterion it was for `unverified`, naming the command and its
+exit code, with that log as the evidence, and the run is `blocked`: an app
+that was not seeded proves nothing about the change, and nothing is `failed`
+on its account. At the base, a seed that fails means the base did not
+execute, and the head is checked regardless.
 
 ### Run-scoped values
 
@@ -1480,6 +1521,7 @@ client is (#75), and each side of a comparison goes through it:
 | Install | `docker compose up`, under the run's own project | Unpacked into a directory of the run's own, outside the checkout and the evidence |
 | Health | An HTTP probe of `app.health.http` | The driver launches the build once and waits for its first window, within `client.health.timeout` |
 | Teardown | `docker compose down`, by the pipeline when the run ends, so the stack's logs can still be read | Removed by the run when the side's checks are done, on a blocked provisioning, and on a cancelled run |
+| Seed | `app.seed.command`, once the health probe passes (#240) | Nothing: a client profile has no seed |
 | When a step fails | `blocked`, with what compose said attached | `blocked`, naming the artefact, with the provisioning log attached |
 
 A provisioning failure is never a failed criterion: nothing was checked, so

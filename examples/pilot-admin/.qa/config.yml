@@ -1,7 +1,9 @@
 app:
   boot: { compose: compose.qa.yaml, service: admin }
   health: { http: "http://localhost:3000/up", timeout: 120s }
-  seed: { command: "bin/rails db:seed:qa" }
+  # Run by qare once the app is healthy, before any check. The run is not
+  # inside the app's container, so the seed names the booted service.
+  seed: { command: "docker compose -p qare-{{run.id}} -f compose.qa.yaml exec -T admin bin/rails db:seed:qa" }
   login:
     fixture: fixtures/users.yml
     role: admin

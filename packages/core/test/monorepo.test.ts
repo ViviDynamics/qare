@@ -30,7 +30,7 @@ const APP_PROFILE: QaProfile = {
   app: {
     boot: { compose: 'compose.qa.yaml', service: 'admin' },
     health: { http: HEALTH_URL, timeout: '120s' },
-    seed: { command: 'bin/rails db:seed:qa' },
+    seed: { command: 'true' },
     login: { fixture: 'fixtures/users.yml', role: 'admin' },
   },
   stubs: [],
@@ -57,7 +57,7 @@ const APP_BOOT_CONFIG = [
   'app:',
   '  boot: { compose: compose.qa.yaml, service: admin }',
   `  health: { http: '${HEALTH_URL}', timeout: 120s }`,
-  '  seed: { command: bin/rails db:seed:qa }',
+  '  seed: { command: "true" }',
   '  login: { fixture: fixtures/users.yml, role: admin }',
   'stubs: []',
   'visual: { widths: [], themes: [] }',
