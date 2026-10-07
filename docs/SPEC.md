@@ -163,8 +163,8 @@ Sketch of `config.yml`:
 
 ```yaml
 app:
-  boot: { compose: compose.qa.yaml, service: admin }
-  health: { http: "http://localhost:3000/up", timeout: 120s }
+  boot: { compose: compose.qa.yaml, service: admin }  # add build: { timeout: 25m } to give the image build longer than the default 15m
+  health: { http: "http://localhost:3000/up", timeout: 120s }  # times the boot alone: images are built before it starts
   seed: { command: "docker compose -p qare-{{run.id}} -f compose.qa.yaml exec -T admin bin/rails db:seed:qa" }  # run once the app is healthy, before any check; add timeout: 10m to give it longer than the default 5m
   login:
     fixture: fixtures/users.yml
@@ -1522,10 +1522,29 @@ client is (#75), and each side of a comparison goes through it:
 | --- | --- | --- |
 | Obtain | The compose recipe in the side's tree | The artefact the profile names for the side: the file the pipeline already put in the workspace, or, when it is not there, the output of the build command the profile declares |
 | Install | `docker compose up`, under the run's own project | Unpacked into a directory of the run's own, outside the checkout and the evidence |
-| Health | An HTTP probe of `app.health.http` | The driver launches the build once and waits for its first window, within `client.health.timeout` |
+| Build | `docker compose build` of the service and what it depends on, before anything starts, within `app.boot.build.timeout` (#241) | The build command the profile declares, when the artefact is not already there |
+| Health | An HTTP probe of `app.health.http`, within `app.health.timeout`, which starts once the images are built | The driver launches the build once and waits for its first window, within `client.health.timeout` |
 | Teardown | `docker compose down`, by the pipeline when the run ends, so the stack's logs can still be read | Removed by the run when the side's checks are done, on a blocked provisioning, and on a cancelled run |
 | Seed | `app.seed.command`, once the health probe passes (#240) | Nothing: a client profile has no seed |
 | When a step fails | `blocked`, with what compose said attached | `blocked`, naming the artefact, with the provisioning log attached |
+
+A server's images are built before its health deadline starts (#241).
+`docker compose up` builds a missing image itself, so on a runner with no
+layer cache a cold build used to be timed by `app.health.timeout`, and a boot
+that would have come up was blocked as one that had not. The run now builds
+first, as its own step: `docker compose build --with-dependencies <service>`
+under the run's project, bounded by `app.boot.build.timeout` (a duration,
+`15m` when the profile names none). `app.health.timeout` then times the boot
+alone, the `up` and the health probe, and can say what a boot needs rather
+than what a build might. A build that exits non-zero or outlives its bound is
+`blocked`, naming the build (`compose build exited 1`, `compose build exceeded
+its bound of 15m (app.boot.build.timeout)`) and never the health check, with
+what the build wrote as `provision.log`; nothing was started, so nothing is
+seeded and no check runs. Both sides build: the head, and the base when it
+boots, each from its own tree's recipe. A compose file that builds nothing
+has nothing to build, and the step is over at once. A compose plugin too old
+to know `--with-dependencies` builds the service alone, and what it depends
+on is built by the `up`, as before.
 
 A provisioning failure is never a failed criterion: nothing was checked, so
 every criterion is `unverified` with the reason, and carries `provision.log`

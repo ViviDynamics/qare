@@ -127,9 +127,12 @@ test('the two sides boot under isolations of their own, and the base is torn dow
   expect(result.verdict).toBe('passed')
   expect(criterionOf(result, 'kept')).toMatchObject({ outcome: 'proven', base: { outcome: 'proven' } })
 
-  const verbs = boot.calls.map((args) => ({ project: args[1], file: args[3], verb: args.find((arg) => arg === 'up' || arg === 'down') }))
-  expect(verbs.map((call) => call.verb)).toEqual(['up', 'down', 'up'])
-  const [baseUp, baseDown, headUp] = verbs
+  const verbs = boot.calls.map((args) => ({ project: args[1], file: args[3], verb: args.find((arg) => arg === 'build' || arg === 'up' || arg === 'down') }))
+  // Each side builds its images before it boots (#241), from its own tree's recipe.
+  expect(verbs.map((call) => call.verb)).toEqual(['build', 'up', 'down', 'build', 'up'])
+  const [baseBuild, baseUp, baseDown, headBuild, headUp] = verbs
+  expect(baseBuild).toEqual({ ...baseUp, verb: 'build' })
+  expect(headBuild).toEqual({ ...headUp, verb: 'build' })
   expect(baseUp?.project).toMatch(/^qare-/)
   expect(baseDown?.project).toBe(baseUp?.project)
   expect(headUp?.project).toMatch(/^qare-/)
@@ -328,7 +331,9 @@ test('a run over several apps compares each app with its own base (#147, #55)', 
   expect(criterionOf(result, 'shop-page')).toMatchObject({ outcome: 'proven', base: { outcome: 'proven' } })
   expect(result.profiles?.map((profile) => profile.verdict)).toEqual(['failed', 'passed'])
   // Two apps at the base, both torn down, then two at the head.
-  expect(boot.calls.map((args) => args.find((arg) => arg === 'up' || arg === 'down'))).toEqual(['up', 'up', 'down', 'down', 'up', 'up'])
+  expect(boot.calls.filter((args) => !args.includes('build')).map((args) => args.find((arg) => arg === 'up' || arg === 'down'))).toEqual(['up', 'up', 'down', 'down', 'up', 'up'])
+  // Every app's images are built before that app boots (#241).
+  expect(boot.calls.filter((args) => !args.includes('down')).map((args) => args.find((arg) => arg === 'build' || arg === 'up'))).toEqual(['build', 'up', 'build', 'up', 'build', 'up', 'build', 'up'])
 })
 
 test('a profile can turn the base side off: no checkout, no boot, and the run says it had one side (#147)', async () => {

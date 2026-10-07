@@ -713,3 +713,16 @@ test('an a11y section that names an unknown rule set, impact or field fails nami
   expect(error({ accept: [{ reason: 'because' }] }).field).toBe('a11y.accept[0].rule')
   expect(error({ accept: [{ rule: 'x', reason: 'y', selector: 'z' }] }).field).toBe('a11y.accept[0].selector')
 })
+
+test('app.boot.build.timeout bounds the image build, and is held to being a duration (#241)', async () => {
+  const dir = copiedProfile()
+  const withBoot = (boot: string): string => fixtureConfig().replace('boot: { compose: compose.qa.yaml, service: admin }', boot)
+  writeFileSync(join(dir, 'config.yml'), withBoot('boot: { compose: compose.qa.yaml, service: admin, build: { timeout: 25m } }'))
+  expect((await loadProfile(dir)).app?.boot).toEqual({ compose: 'compose.qa.yaml', service: 'admin', build: { timeout: '25m' } })
+
+  writeFileSync(join(dir, 'config.yml'), withBoot('boot: { compose: compose.qa.yaml, service: admin, build: { timeout: a while } }'))
+  expect((await profileError(() => loadProfile(dir))).field).toBe('app.boot.build.timeout')
+
+  writeFileSync(join(dir, 'config.yml'), withBoot('boot: { compose: compose.qa.yaml, service: admin, build: { context: . } }'))
+  expect((await profileError(() => loadProfile(dir))).field).toBe('app.boot.build.context')
+})

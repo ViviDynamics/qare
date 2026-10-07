@@ -125,6 +125,8 @@ export interface BootOpts {
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 500
+/** How long the image build may take when the profile does not say (`app.boot.build.timeout`). */
+export const DEFAULT_BUILD_TIMEOUT = '15m'
 const NO_DEADLINE_MS = 0
 // A killed child gets SIGTERM first; SIGKILL only if it is still running after
 // this grace, mirroring the command-check runner.
@@ -413,6 +415,87 @@ async function probeClient(client: ProfileClient, opts: BootOpts): Promise<BootO
   return { kind: 'up', logs: lines.length === 0 ? '' : `${lines.join('\n')}\n` }
 }
 
+type ComposeResult = { code: number; stdout: string; stderr: string }
+
+/**
+ * Build the images the boot is about to start, before the health deadline
+ * begins (#241). `compose up` builds a missing image itself, so on a runner
+ * with no layer cache a cold build used to be timed by `app.health.timeout`
+ * and a boot that would have come up was blocked as one that had not. The
+ * build is its own step with its own bound, and what the deadline then times
+ * is the boot.
+ *
+ * The service and what it depends on are built, which is what the `up` that
+ * follows would have built. A compose that predates `--with-dependencies`
+ * builds the service alone, and its dependencies are built by the `up`, as
+ * they always were. A compose file that builds nothing has nothing to do
+ * here, and says so at once.
+ *
+ * Returns nothing when the images are there, and what to block with when
+ * they are not: the reason names the build, never the health check, and the
+ * logs are what the build wrote.
+ */
+async function buildImages(
+  app: ProfileApp,
+  runCompose: NonNullable<BootOpts['runCompose']>,
+  isolation: RunIsolation,
+  env: Record<string, string> | undefined,
+): Promise<{ reason: string; logs: string } | undefined> {
+  const timeout = app.boot.build?.timeout ?? DEFAULT_BUILD_TIMEOUT
+  let timeoutMs: number
+  try {
+    timeoutMs = parseDurationMs(timeout)
+  } catch (error) {
+    return { reason: `app.boot.build.timeout ${error instanceof Error ? error.message : String(error)}`, logs: '' }
+  }
+  const deadline = Date.now() + timeoutMs
+  const attempt = async (args: string[]): Promise<ComposeResult | 'watchdog'> => {
+    const remainingMs = Math.max(1, deadline - Date.now())
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const watchdog = new Promise<'watchdog'>((resolve) => {
+      timer = setTimeout(() => resolve('watchdog'), remainingMs)
+    })
+    const started = runCompose(['-p', isolation.project, '-f', app.boot.compose, 'build', ...args], remainingMs, env)
+    void started.catch(() => {})
+    try {
+      const first = await Promise.race([watchdog, started])
+      if (first !== 'watchdog') return first
+      // The default runner kills its child at the deadline and settles with
+      // what the build had written; a runner that never settles is waited
+      // on for a grace only.
+      const drained = new Promise<'watchdog'>((resolve) => {
+        const grace = setTimeout(() => resolve('watchdog'), DRAIN_GRACE_MS)
+        grace.unref()
+      })
+      return await Promise.race([started.catch(() => 'watchdog' as const), drained])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  const outOfTime = (logs: string): { reason: string; logs: string } => ({
+    reason: `compose build exceeded its bound of ${timeout} (app.boot.build.timeout): the profile's images were not built, so nothing was booted`,
+    logs,
+  })
+  let built: ComposeResult | 'watchdog'
+  try {
+    built = await attempt(['--with-dependencies', app.boot.service])
+    if (built !== 'watchdog' && built.code !== 0 && /unknown flag: --with-dependencies/.test(`${built.stdout}${built.stderr}`))
+      built = await attempt([app.boot.service])
+  } catch (error) {
+    return { reason: `compose build failed to start: ${String(error)}`, logs: '' }
+  }
+  if (built === 'watchdog') return outOfTime('')
+  const logs = `${built.stdout}${built.stderr}`
+  if (built.code === 0) return undefined
+  // A build the runner killed at the deadline settles as a failure; the
+  // clock says which it was.
+  if (Date.now() >= deadline) return outOfTime(logs)
+  return {
+    reason: `compose build exited ${built.code}: the profile's images did not build, so nothing was booted`,
+    logs,
+  }
+}
+
 export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<BootOutcome> {
   if (profile.client !== undefined) return probeClient(profile.client, opts)
   if (profile.app === undefined) return probeTarget(profile, opts)
@@ -446,6 +529,11 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
       isolation,
     }
   }
+
+  // The images first, under their own bound (#241): the health deadline
+  // below starts only once they are built, so it times the boot alone.
+  const unbuilt = await buildImages(app, runCompose, isolation, env)
+  if (unbuilt !== undefined) return { kind: 'blocked', ...unbuilt, isolation }
 
   let timer: ReturnType<typeof setTimeout> | undefined
   const watchdog = new Promise<'watchdog'>((resolve) => {

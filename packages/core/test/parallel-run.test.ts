@@ -115,7 +115,7 @@ test('a sharded run boots the shared app once and returns the verdicts in plan o
   const captured: BootOpts = {
     ...SUIT,
     runCompose: async (args, _timeoutMs, env) => {
-      ups.push({ args, env })
+      if (args.includes('up')) ups.push({ args, env })
       return { code: 0, stdout: 'up out', stderr: '' }
     },
   }
@@ -139,7 +139,7 @@ test('a run with one worker behaves exactly as the serial run does', async () =>
   const captured: BootOpts = {
     ...SUIT,
     runCompose: async (args) => {
-      ups.push(args)
+      if (args.includes('up')) ups.push(args)
       return { code: 0, stdout: 'up out', stderr: '' }
     },
   }
@@ -159,7 +159,7 @@ test('an isolated criterion boots an app of its own, records it, and tears it do
     ...SUIT,
     runCompose: async (args, _timeoutMs, env) => {
       if (args.includes('down')) downs.push(env?.QARE_RUN_ID)
-      else ups.push({ args, env })
+      else if (args.includes('up')) ups.push({ args, env })
       return { code: 0, stdout: 'up out', stderr: '' }
     },
   }
@@ -189,7 +189,7 @@ test('an isolated suite routes the criteria that name it through an app of their
   const captured: BootOpts = {
     ...SUIT,
     runCompose: async (args, _timeoutMs, env) => {
-      if (!args.includes('down')) ups.push({ args, env })
+      if (args.includes('up')) ups.push({ args, env })
       return { code: 0, stdout: 'up out', stderr: '' }
     },
   }
