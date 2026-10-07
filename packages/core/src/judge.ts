@@ -3,7 +3,7 @@ import { mergeVerdicts } from './egress.js'
 import { BUILTIN_REDACTION_RULES, redactResult, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionOutcome, type CriterionResult, type RunResult, type RunVerdict } from './result.js'
 import type { ModelUsage } from './metrics.js'
-import type { AgentRunRequest, AgentRunner } from './runner.js'
+import { outputBudget, stopDetail, type AgentBudget, type AgentRunRequest, type AgentRunner } from './runner.js'
 
 export interface SideResult {
   criterionId: string
@@ -343,13 +343,17 @@ export async function runVerifier(
   const criteria = inputs.criteria ?? []
   if (inputs.claims.length === 0) return { verdicts: criteria, usage: undefined }
   const payload = JSON.stringify({ criteria: inputs.claims, diff: inputs.diff })
+  let budget: AgentBudget
   let result: Awaited<ReturnType<AgentRunner['run']>>
   try {
+    // Inside the try: a budget that cannot be read is a verifier that did not
+    // answer, named, and never a crash that loses the verdicts.
+    budget = request.budget ?? outputBudget()
     result = await runner.run({
       system: request.system ?? '',
       toolPolicy: request.toolPolicy ?? 'read-only',
       outputSchema: request.outputSchema ?? JSON.stringify(VERIFIER_OUTPUT_SCHEMA),
-      budget: request.budget ?? { maxOutputTokens: 4096 },
+      budget,
       prompt: `${inputs.instructions}\n\n${payload}`,
     })
   } catch (error) {
@@ -361,7 +365,7 @@ export async function runVerifier(
     return {
       verdicts: verifierUnavailable(
         criteria,
-        `the run stopped (${result.stopReason})${result.error === undefined ? '' : `: ${result.error}`}`,
+        `the run stopped (${stopDetail(result.stopReason, budget)})${result.error === undefined ? '' : `: ${result.error}`}`,
       ),
       usage: result.usage,
     }

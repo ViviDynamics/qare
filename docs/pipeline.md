@@ -30,7 +30,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.17
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.18
     with:
       nare-model: gpt-4.1-mini
     secrets:
@@ -67,7 +67,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.17
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.18
     with:
       runs-on: '["self-hosted", "linux", "x64"]'
       profile: services/web/qa
@@ -92,6 +92,7 @@ UX review".
 | `nare-provider` | `openai` | The nare provider that reaches the model. `openai` is any service that speaks Chat Completions (OpenAI, a LiteLLM proxy, vLLM, Ollama); `anthropic` is Anthropic's API. |
 | `nare-base-url` | empty | The endpoint of an OpenAI-compatible service. Empty means the provider's own. |
 | `nare-stream` | empty | Set to `true` to stream the planner's and the verifier's model turns, so an edge proxy that cuts idle connections before a turn completes is not the failure. Empty keeps the default, non-streaming; the output is the same either way. |
+| `max-output-tokens` | empty | The most the planner, the verifier and the UX review may write in one model turn, in tokens. Empty keeps qare's default of 16384. A reasoning model spends this budget thinking before it answers: raise it when a turn is cut off at `max_tokens` (the plan step says so, with the budget it ran on), and lower it for a model that allows less, knowing a lower budget can cut the UX review short too. Outside the pipeline the same setting is the `QARE_MAX_OUTPUT_TOKENS` environment variable. |
 | `model-key-env` | `OPENAI_API_KEY` | The environment variable the provider reads its key from. Set it to `ANTHROPIC_API_KEY` with `nare-provider: anthropic`. |
 | `profile` | `.qa` | The directory that holds the QA profile. |
 | `runs-on` | `"ubuntu-latest"` | Where every job runs, as JSON: one label, or a list of labels for your own runners. |
@@ -333,7 +334,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.17
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.18
     with:
       nare-model: gpt-4.1-mini
       artefacts: qare-artefacts

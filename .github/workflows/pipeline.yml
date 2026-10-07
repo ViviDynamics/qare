@@ -118,6 +118,14 @@ on:
           turn short. Empty or false keeps the default, non-streaming.
         type: string
         default: ''
+      max-output-tokens:
+        description: >-
+          The most the planner, the verifier and the UX review may write in
+          one model turn, in tokens. A reasoning model spends this budget thinking before it
+          answers; raise it when a turn is cut off at max_tokens, lower it for
+          a model that allows less. Empty keeps qare's default.
+        type: string
+        default: ''
       model-key-env:
         description: The environment variable the provider reads its key from. The model-key secret is exported under this name.
         type: string
@@ -172,7 +180,7 @@ on:
           workflow ships in, so pin the release in `uses:` and leave this
           alone.
         type: string
-        default: '2026.10.17'
+        default: '2026.10.18'
     secrets:
       model-key:
         description: >-
@@ -436,6 +444,7 @@ jobs:
           NARE_BASE_URL: ${{ inputs.nare-base-url }}
           NARE_MODEL: ${{ inputs.nare-model }}
           NARE_STREAM: ${{ inputs.nare-stream }}
+          QARE_MAX_OUTPUT_TOKENS: ${{ inputs.max-output-tokens }}
           PROFILE: ${{ inputs.profile }}
         run: |
           set -euo pipefail
@@ -463,6 +472,9 @@ jobs:
           model_env=(--env-file "$key_file" -e NARE_PROVIDER -e NARE_MODEL)
           if [ -n "$NARE_STREAM" ]; then
             model_env+=(-e NARE_STREAM)
+          fi
+          if [ -n "$QARE_MAX_OUTPUT_TOKENS" ]; then
+            model_env+=(-e QARE_MAX_OUTPUT_TOKENS)
           fi
           if [ -n "$NARE_BASE_URL" ]; then
             model_env+=(-e NARE_BASE_URL)
@@ -1020,6 +1032,7 @@ jobs:
           NARE_BASE_URL: ${{ inputs.nare-base-url }}
           NARE_MODEL: ${{ inputs.nare-model }}
           NARE_STREAM: ${{ inputs.nare-stream }}
+          QARE_MAX_OUTPUT_TOKENS: ${{ inputs.max-output-tokens }}
         run: |
           set -euo pipefail
           # Fail closed (rule 6), as the plan step does: no key, no verifier.
@@ -1039,6 +1052,9 @@ jobs:
           model_env=(--env-file "$key_file" -e NARE_PROVIDER -e NARE_MODEL)
           if [ -n "$NARE_STREAM" ]; then
             model_env+=(-e NARE_STREAM)
+          fi
+          if [ -n "$QARE_MAX_OUTPUT_TOKENS" ]; then
+            model_env+=(-e QARE_MAX_OUTPUT_TOKENS)
           fi
           if [ -n "$NARE_BASE_URL" ]; then
             model_env+=(-e NARE_BASE_URL)

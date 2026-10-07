@@ -1,4 +1,4 @@
-import type { AgentRunner, AgentToolChannel } from './runner.js'
+import { outputBudget, stopDetail, type AgentRunner, type AgentToolChannel } from './runner.js'
 import { undeclaredCheckKinds, type FlowDriverCapabilities } from './flow.js'
 import { EXPLORATION_TOOLS, isExplorableUrl, type ExplorationTool } from './explore.js'
 import { channelToolName } from './mcp.js'
@@ -761,6 +761,7 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
   const exploration = inputs.exploration === undefined ? undefined : exploreChannel(inputs.exploration)
   const mcp = inputs.mcp === undefined ? undefined : mcpChannel(inputs.mcp)
 
+  const budget = outputBudget()
   let correction: string | undefined
   let usage: ModelUsage | undefined
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -769,7 +770,7 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
       system: SYSTEM,
       toolPolicy: 'none',
       outputSchema: JSON.stringify(planOutputSchema(inputs.flowActions ?? [], inputs.driver)),
-      budget: { maxOutputTokens: 4096 },
+      budget,
       ...(exploration === undefined ? {} : { tools: exploration }),
       ...(mcp === undefined ? {} : { mcp }),
     })
@@ -779,7 +780,7 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
     usage = sumUsage(usage, run.usage)
     if (run.status !== 'completed')
       throw new PlanStepError(
-        `the planning run did not complete (stop reason ${run.stopReason}), so there is no plan` +
+        `the planning run did not complete (stop reason ${stopDetail(run.stopReason, budget)}), so there is no plan` +
           (run.error ? `: ${run.error}` : ''),
       )
     if (typeof run.output !== 'string')

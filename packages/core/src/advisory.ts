@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import type { ModelUsage } from './metrics.js'
 import { BUILTIN_REDACTION_RULES, redactAdvisory, redactText, type RedactionRule } from './redact.js'
 import type { RunResult } from './result.js'
-import type { AgentRunRequest, AgentRunner } from './runner.js'
+import { outputBudget, type AgentRunRequest, type AgentRunner } from './runner.js'
 
 /**
  * The advisory UX review (#150). Some problems a change introduces are
@@ -344,7 +344,7 @@ export async function runUxReview(
       system: request.system ?? '',
       toolPolicy: request.toolPolicy ?? 'read-only',
       outputSchema: request.outputSchema ?? JSON.stringify(UX_REVIEW_OUTPUT_SCHEMA),
-      budget: request.budget ?? { maxOutputTokens: 4096 },
+      budget: request.budget ?? outputBudget(),
       prompt: `${UX_REVIEW_INSTRUCTIONS}\n\n${payload}`,
       signal: controller.signal,
     })
