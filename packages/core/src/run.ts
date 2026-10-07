@@ -1427,7 +1427,13 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
   const cancelCleanup = installCancelCleanup(bootedShard, { ...opts, isolation: shardIsolation })
   try {
     const boot = await bootApp(bootedShard, { ...opts, isolation: shardIsolation })
-    if (boot.kind === 'blocked') return { id: criterion.id, outcome: 'unverified', reason: boot.reason ?? 'boot did not come up' }
+    if (boot.kind === 'blocked') {
+      // What the boot or its image build said (#75, #241) is kept with the
+      // criterion it stopped, in the criterion's own evidence directory.
+      const logName = `checks/${criterion.id}/${PROVISION_LOG}`
+      const attached = await writeProvisionLog(job.evidenceDir, boot.logs, ctx.rules, logName)
+      return { id: criterion.id, outcome: 'unverified', reason: boot.reason ?? 'boot did not come up', ...(attached ? { evidence: [logName] } : {}) }
+    }
     // An app of the criterion's own starts as empty as the run's did, so it
     // is seeded the same way before the criterion's checks (#240).
     // Its log is in the criterion's own evidence directory, where no app's

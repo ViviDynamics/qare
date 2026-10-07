@@ -418,6 +418,16 @@ async function probeClient(client: ProfileClient, opts: BootOpts): Promise<BootO
 type ComposeResult = { code: number; stdout: string; stderr: string }
 
 /**
+ * Whether compose itself refused `--with-dependencies` (#241). Its option
+ * parser answers before any build starts: nothing on stdout, and the refusal
+ * as the first thing on stderr. The same words further down a build's output
+ * are some tool of the build's own talking, and that build failed.
+ */
+function flagUnknown(result: ComposeResult): boolean {
+  return result.stdout.trim() === '' && /^unknown flag: --with-dependencies\b/.test(result.stderr.trimStart())
+}
+
+/**
  * Build the images the boot is about to start, before the health deadline
  * begins (#241). `compose up` builds a missing image itself, so on a runner
  * with no layer cache a cold build used to be timed by `app.health.timeout`
@@ -479,8 +489,7 @@ async function buildImages(
   let built: ComposeResult | 'watchdog'
   try {
     built = await attempt(['--with-dependencies', app.boot.service])
-    if (built !== 'watchdog' && built.code !== 0 && /unknown flag: --with-dependencies/.test(`${built.stdout}${built.stderr}`))
-      built = await attempt([app.boot.service])
+    if (built !== 'watchdog' && built.code !== 0 && flagUnknown(built)) built = await attempt([app.boot.service])
   } catch (error) {
     return { reason: `compose build failed to start: ${String(error)}`, logs: '' }
   }

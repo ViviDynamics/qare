@@ -408,3 +408,23 @@ test('a compose that predates --with-dependencies builds the service alone, and 
   expect(outcome.kind).toBe('up')
   expect(composeArgs).toEqual([BUILD, ['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'build', 'admin'], UP])
 })
+
+test('a build that fails with the flag\'s words in its own output is a failed build, not an old compose (#241)', async () => {
+  const profile = await profileWith({ app: { health: { timeout: '1s' } } })
+  const composeArgs: string[][] = []
+
+  const outcome = await bootApp(profile, {
+    runCompose: async (args) => {
+      composeArgs.push(args)
+      // A dependency's own build step prints the phrase; compose took the flag.
+      return { code: 1, stdout: '#4 [db 2/3] RUN tool sync\n', stderr: '#4 0.412 tool: unknown flag: --with-dependencies\nfailed to solve\n' }
+    },
+    probe: async () => ({ ok: true }),
+    pollIntervalMs: 1,
+  })
+
+  expect(outcome.kind).toBe('blocked')
+  expect(outcome.reason).toContain('compose build exited 1')
+  // No second, narrower build, and no up for the dependency's build to hide in.
+  expect(composeArgs).toEqual([BUILD])
+})

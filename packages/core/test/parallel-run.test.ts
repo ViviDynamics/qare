@@ -231,3 +231,31 @@ test('a target run runs its isolated criterion against the declared target, boot
   expect(ups.length).toBe(0)
   expect(result.criteria.map((criterion) => criterion.outcome)).toEqual(['proven', 'proven'])
 })
+
+test('a criterion whose own app does not build keeps what the build said as its evidence (#241)', async () => {
+  let builds = 0
+  const captured: BootOpts = {
+    ...SUIT,
+    runCompose: async (args) => {
+      // The run's shared app builds; the criterion's own does not.
+      if (args.includes('build') && ++builds === 2) return { code: 1, stdout: '', stderr: 'failed to solve: no space left on device\n' }
+      return { code: 0, stdout: 'up out', stderr: '' }
+    },
+  }
+  const criteria: JobCriterion[] = [
+    ...commandCriteria('echo shared'),
+    { id: 'mutator-1', text: 'mutates', isolated: true, checks: [{ kind: 'command', run: 'echo own' }] },
+  ]
+  const job = await makeJob({ criteria, profile: { inline: INLINE_PROFILE } })
+
+  const { result } = await runJob(job, { ...captured, workers: 2 })
+
+  expect(result.criteria[0]?.outcome).toBe('proven')
+  expect(result.criteria[1]).toEqual({
+    id: 'mutator-1',
+    outcome: 'unverified',
+    reason: "compose build exited 1: the profile's images did not build, so nothing was booted",
+    evidence: ['checks/mutator-1/provision.log'],
+  })
+  expect(await readFile(join(job.evidenceDir, 'checks', 'mutator-1', 'provision.log'), 'utf8')).toBe('failed to solve: no space left on device\n')
+})
