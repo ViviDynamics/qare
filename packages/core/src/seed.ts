@@ -85,11 +85,11 @@ export async function runSeed(
   if (outcome.status === 'passed') return { ok: true, command, log: `${streams}[exit 0]\n` }
   if (outcome.status === 'failed') {
     const ended = outcome.code === undefined ? 'was killed before it exited' : `exited ${outcome.code}`
-    return { ok: false, command, reason: `the seed command ${ended}, so the app was not seeded and nothing was checked: ${command}`, log: `${streams}[${ended}]\n` }
+    return { ok: false, command, reason: `the seed command ${ended}, so the app was not seeded and no check ran against it: ${command}`, log: `${streams}[${ended}]\n` }
   }
   // Unverified: the seed outlived its bound, or its program is not there.
   const why = outcome.reason?.startsWith('check timed out') === true ? `did not finish within ${timeout} (app.seed.timeout)` : `could not run (${outcome.reason ?? 'no reason given'})`
-  return { ok: false, command, reason: `the seed command ${why}, so the app was not seeded and nothing was checked: ${command}`, log: `${streams}[${why}]\n` }
+  return { ok: false, command, reason: `the seed command ${why}, so the app was not seeded and no check ran against it: ${command}`, log: `${streams}[${why}]\n` }
 }
 
 function section(name: string, text: string, truncated: boolean | undefined): string {

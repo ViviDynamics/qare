@@ -331,19 +331,22 @@ The seed is handed what the run's own compose calls are, `QARE_RUN_ID` and
 seed as it did for the boot. Its environment is otherwise a command step's:
 the minimal one on a host, the image's own in a container. A seed command
 that needs a shell (a pipe, `&&`, a quote) is refused at plan time, before
-anything boots, naming `app.seed.command`; the answer is a script the command
-names.
+its app boots, naming `app.seed.command`; the answer is a script the command
+names. Like every other plan-time refusal, it is made when that app's turn
+comes: in a several-app run the apps before it have run, and in a two-sided
+run the base has.
 
 What the seed did is evidence the harness wrote: `seed.log` in the side's
 evidence directory (`seed-<app>.log` in a several-app run,
-`seed-<criterion id>.log` for a criterion's own app) carries the command as
+`checks/<criterion id>/seed.log` for a criterion's own app) carries the command as
 run, its output and how it ended, on a run that passed as much as on one that
 did not. A seed that exits non-zero, outlives its bound or cannot start
 leaves every criterion it was for `unverified`, naming the command and its
 exit code, with that log as the evidence, and the run is `blocked`: an app
 that was not seeded proves nothing about the change, and nothing is `failed`
 on its account. At the base, a seed that fails means the base did not
-execute, and the head is checked regardless.
+execute, with `base/seed.log` kept as the reason's evidence, and the head is
+checked regardless.
 
 ### Run-scoped values
 

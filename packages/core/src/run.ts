@@ -840,7 +840,8 @@ async function writeProvisionLog(evidenceDir: string, log: string, rules: readon
     log.length <= MAX_PROVISION_LOG_CHARACTERS
       ? log
       : `[the log is cut to its last ${MAX_PROVISION_LOG_CHARACTERS} characters]\n${log.slice(-MAX_PROVISION_LOG_CHARACTERS)}`
-  await mkdir(evidenceDir, { recursive: true })
+  // A name may carry a directory: a criterion's own log sits in its own.
+  await mkdir(dirname(join(evidenceDir, name)), { recursive: true })
   await writeFile(join(evidenceDir, name), redactText(kept.endsWith('\n') ? kept : `${kept}\n`, rules))
   return true
 }
@@ -1429,7 +1430,9 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
     if (boot.kind === 'blocked') return { id: criterion.id, outcome: 'unverified', reason: boot.reason ?? 'boot did not come up' }
     // An app of the criterion's own starts as empty as the run's did, so it
     // is seeded the same way before the criterion's checks (#240).
-    const unseeded = await seedBooted(bootedShard, shardValues, shardIsolation, job.repoPath, job.evidenceDir, ctx.rules, ctx.execution, `seed-${criterion.id}.log`)
+    // Its log is in the criterion's own evidence directory, where no app's
+    // seed log can have the same name.
+    const unseeded = await seedBooted(bootedShard, shardValues, shardIsolation, job.repoPath, job.evidenceDir, ctx.rules, ctx.execution, `checks/${criterion.id}/${SEED_LOG}`)
     if (unseeded !== undefined) return { id: criterion.id, outcome: 'unverified', ...unseeded }
     // The criterion's artefact ledger starts empty: what its flow checks
     // publish or spend belongs to this app alone, never the run's (#69).
@@ -1809,7 +1812,13 @@ async function runBaseSide(
     const { result } = await runSide(baseJobOf(job, basePath), baseOpts, side)
     if (!side.ran) {
       const first = result.criteria.find((criterion) => criterion.outcome === 'unverified')
-      return { status: 'not-executed', reason: first?.outcome === 'unverified' ? first.reason : `the base side reached no check (verdict ${result.verdict})` }
+      return {
+        status: 'not-executed',
+        reason: first?.outcome === 'unverified' ? first.reason : `the base side reached no check (verdict ${result.verdict})`,
+        // What stopped the side is kept with it: a seed that failed at the
+        // base left its log there (#240), as a blocked provisioning does.
+        ...(first?.evidence === undefined ? {} : { evidence: first.evidence }),
+      }
     }
     return { status: 'executed', result }
   } catch (error) {
@@ -2022,7 +2031,9 @@ export function installCancelCleanup(profile: QaProfile, opts: BootOpts): () => 
  * Walk every user-authored string that can carry a `{{run.<name>}}` reference and
  * reject unknown names before anything boots. The seed command is validated here
  * although it runs only once the app is up (#240), so a bad name in the seed is
- * a plan-time failure and never a boot that was wasted. The driver's own declaration is walked the
+ * refused before its app boots and never costs a boot. In a several-app run
+ * each app's strings are walked as that app's turn comes, so the refusal is
+ * before that app boots, not before the first one does. The driver's own declaration is walked the
  * same way: a flow naming an action the driver lacks refuses the run before
  * anything boots, naming the action and the driver (#70).
  */

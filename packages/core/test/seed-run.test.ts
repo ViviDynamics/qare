@@ -201,7 +201,7 @@ test('a criterion that boots an app of its own has that app seeded too (#240)', 
   expect(seeded).toHaveLength(2)
   expect(new Set(seeded).size).toBe(2)
   expect(seeded).toContain(isolation?.runId)
-  expect(await readFile(join(job.evidenceDir, 'seed-own.log'), 'utf8')).toContain('[exit 0]')
+  expect(await readFile(join(job.evidenceDir, 'checks', 'own', 'seed.log'), 'utf8')).toContain('[exit 0]')
 })
 
 test('the base side is seeded too, from its own checkout and under its own run id (#240)', async () => {
@@ -223,6 +223,48 @@ test('the base side is seeded too, from its own checkout and under its own run i
   // Each side's seed log is in that side's evidence.
   expect(await readFile(join(job.evidenceDir, 'head', 'seed.log'), 'utf8')).toContain('[exit 0]')
   expect(await readFile(join(job.evidenceDir, 'base', 'seed.log'), 'utf8')).toContain('[exit 0]')
+})
+
+test('a seed that fails at the base leaves the base not executed, with its log kept, and the head is checked (#240)', async () => {
+  const head = await makeRepo({ 'seed.mjs': "import { writeFileSync } from 'node:fs'\nwriteFileSync('seeded.txt', '')" })
+  const base = await makeRepo({ 'seed.mjs': "console.error('the base has no such task'); process.exit(4)" })
+  const job = jobIn(head, profileSeededBy('node seed.mjs'), [{ id: 'reads-the-seed', text: 'seeded', checks: [{ kind: 'command', run: 'test -f seeded.txt' }] }])
+
+  const { result } = await runJob(job, { ...bootSeam(), base: { repoPath: base } })
+
+  expect(result.verdict).toBe('passed')
+  expect(result.base?.status).toBe('not-executed')
+  expect(result.base?.reason).toContain('the seed command exited 4')
+  expect(result.criteria[0]).toMatchObject({ outcome: 'proven', base: { outcome: 'not-compared', evidence: ['base/seed.log'] } })
+  expect(await readFile(join(job.evidenceDir, 'base', 'seed.log'), 'utf8')).toContain('the base has no such task')
+})
+
+test('a criterion named like an app keeps its own seed log apart from the app\'s (#240)', async () => {
+  const repoPath = await makeRepo({ 'seed.mjs': "console.log(`seeded ${process.env.QARE_RUN_ID}`)" })
+  const job: Job = {
+    id: 'job-seed-names',
+    repoPath,
+    baseRef: 'main',
+    headRef: 'HEAD',
+    profiles: [
+      {
+        name: 'admin',
+        profile: { inline: profileSeededBy('node seed.mjs') },
+        criteria: [{ id: 'admin', text: 'admin', isolated: true, checks: [{ kind: 'command', run: 'true' }] }],
+      },
+    ],
+    evidenceDir: join(repoPath, 'evidence'),
+    post: 'none',
+  }
+
+  const { result } = await runJob(job, bootSeam())
+
+  expect(result.criteria[0]?.outcome).toBe('proven')
+  const app = await readFile(join(job.evidenceDir, 'seed-admin.log'), 'utf8')
+  const own = await readFile(join(job.evidenceDir, 'checks', 'admin', 'seed.log'), 'utf8')
+  expect(app).toContain('[exit 0]')
+  expect(own).toContain('[exit 0]')
+  expect(own).not.toBe(app)
 })
 
 test('the profile loader reads app.seed.timeout and refuses one that is not a duration (#240)', async () => {
