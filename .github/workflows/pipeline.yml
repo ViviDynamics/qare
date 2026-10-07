@@ -172,7 +172,7 @@ on:
           workflow ships in, so pin the release in `uses:` and leave this
           alone.
         type: string
-        default: '2026.10.16'
+        default: '2026.10.17'
     secrets:
       model-key:
         description: >-

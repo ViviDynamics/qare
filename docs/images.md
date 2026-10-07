@@ -136,7 +136,7 @@ inside it. The contract-conformant fixture stamped with the release version
 is the fallback for a release whose published base is not reachable, so the
 check stays about the example and the contract rather than the base.
 
-The shared core runtime pins nare **2026.10.4**, machine contract 1. All derived
+The shared core runtime pins nare **2026.10.6**, machine contract 1. All derived
 flavours and the pipeline planner/judge inherit that installation. Host callers
-can install the same wheel from the [nare release](https://github.com/ViviDynamics/nare/releases/tag/2026.10.4)
+can install the same wheel from the [nare release](https://github.com/ViviDynamics/nare/releases/tag/2026.10.6)
 in a separate Python 3.12+ environment.

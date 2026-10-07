@@ -92,6 +92,16 @@ test('the pipeline is a reusable workflow and nothing else triggers it', () => {
     expect(Object.keys(pipeline.jobs)).toContain(job)
 })
 
+// #248: the planner and the verifier run inside a container, so the input has
+// to reach the step's environment and then cross into the container by name.
+test('nare-stream reaches the planner and the verifier containers, and only when set', () => {
+  for (const [job, name] of [['plan', 'Plan the QA run'], ['judge', 'Judge the result']] as const) {
+    const step = pipeline.jobs[job]?.steps?.find((candidate) => candidate.name === name)
+    expect(step?.env?.NARE_STREAM, name).toBe('${{ inputs.nare-stream }}')
+    expect(step?.run?.replace(/\s+/g, ' '), name).toContain('if [ -n "$NARE_STREAM" ]; then model_env+=(-e NARE_STREAM) fi')
+  }
+})
+
 test('the interface a caller sees: its inputs, their defaults, and its secrets', () => {
   expect(Object.keys(call.inputs).sort()).toEqual([
     'artefacts',
@@ -115,6 +125,9 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
   expect(Object.entries(call.inputs).filter(([, input]) => input.required === true).map(([name]) => name)).toEqual(['nare-model'])
   expect(call.inputs.profile?.default).toBe('.qa')
   expect(call.inputs['nare-provider']?.default).toBe('openai')
+  // Streaming stays off unless the caller asks for it: the default is the
+  // empty string, which nare treats as false.
+  expect(call.inputs['nare-stream']?.default).toBe('')
   expect(call.inputs['model-key-env']?.default).toBe('OPENAI_API_KEY')
   // A JSON string, because an input cannot be a list: one label or several.
   expect(JSON.parse(String(call.inputs['runs-on']?.default))).toBe('ubuntu-latest')
@@ -132,6 +145,14 @@ test('every input the pipeline declares is one it reads', () => {
     const read = text.includes(`inputs.${name} `) || text.includes(`inputs.${name})`) || text.includes(`inputs['${name}']`)
     expect(read, `the input ${name} is declared but never read`).toBe(true)
   }
+})
+
+test('the streaming choice reaches the plan and judge containers', () => {
+  const text = readFileSync(join(repoRoot, PIPELINE), 'utf8')
+  // Both model steps map the input into the step environment...
+  expect([...text.matchAll(/NARE_STREAM: \$\{\{ inputs\.nare-stream \}\}/g)].length, 'plan and judge both set NARE_STREAM').toBe(2)
+  // ...and the docker boundary forwards it, or nare never sees it.
+  expect([...text.matchAll(/model_env\+=\(-e NARE_STREAM\)/g)].length, 'plan and judge both forward it into their containers').toBe(2)
 })
 
 test('the caller chooses the runners for every job', () => {
