@@ -94,3 +94,12 @@ test('the verifier asks with the same budget, and a cut-off verdict names it', a
   expect(verdicts[0].outcome).toBe('unverified')
   expect(verdicts[0].reason).toMatch(/max_tokens.*6000 output tokens.*QARE_MAX_OUTPUT_TOKENS/)
 })
+
+test('a budget the verifier cannot read leaves the criterion unverified, by name, and asks nothing', async () => {
+  process.env[MAX_OUTPUT_TOKENS_ENV] = 'lots'
+  const runner = new FakeAgentRunner([])
+  const { verdicts } = await runVerifier(runner, VERIFIER_INPUTS)
+  expect(runner.requests).toHaveLength(0)
+  expect(verdicts[0].outcome).toBe('unverified')
+  expect(verdicts[0].reason).toContain('QARE_MAX_OUTPUT_TOKENS is "lots"')
+})
