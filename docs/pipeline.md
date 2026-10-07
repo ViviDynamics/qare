@@ -257,6 +257,20 @@ things hold:
       kind: flow
   ```
 
+- **The seed runs inside the booted service the same way.** The run executes
+  `app.seed.command` once the app is healthy and before any check. It runs
+  inside the run image, where your application's runtime is not, so a seed
+  that needs the app's own code names the service:
+
+  ```yaml
+  app:
+    seed: { command: "docker compose -p qare-{{run.id}} -f compose.qa.yaml exec -T web bin/rails db:seed:qa" }
+  ```
+
+  A seed that exits non-zero ends the run `blocked`, naming the command and
+  its exit code, with `seed.log` in the evidence. `app.seed.timeout` bounds it
+  (5m by default).
+
 When the run ends, the pipeline takes its compose projects down, volumes
 included. Images the stack built stay in the runner's cache.
 

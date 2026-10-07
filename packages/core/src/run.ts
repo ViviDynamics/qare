@@ -34,6 +34,7 @@ import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, mailEviden
 import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunProfileSummary, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
 import { runVisualCheckJob, visualPageUrl, type VisualComparison, type VisualContext, type VisualSessionFactory } from './visual-run.js'
+import { runSeed, SEED_LOG, unrunnableSeedReason } from './seed.js'
 import { mintRunValues, mintedMailAddress, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
 import {
   addQuarantineRecord,
@@ -735,6 +736,17 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     // left what it installed and how; rewritten with the teardown at the end.
     if (client !== undefined) await writeProvisionLog(job.evidenceDir, client.log(), rules)
 
+    // The app is up: its seed runs now, once, before any check (#240). An
+    // app that was not seeded proves nothing, so the run stops here, blocked,
+    // with the seed's output attached and no criterion read as failed.
+    const unseeded = await seedBooted(profile, values, isolation, job.repoPath, job.evidenceDir, rules, execution)
+    if (unseeded !== undefined) {
+      const criteria: CriterionResult[] = job.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified', ...unseeded }))
+      const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria, startedAt, ...targetNote }, rules, values, execution, opts.host)
+      await feedIfOptedIn(opts, job, finished.result)
+      return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
+    }
+
     const mail = mailContextOf(profile, values, opts)
     // Single-use artefacts are a per-run ledger: what was consumed in this run
     // says nothing about any other run (#69).
@@ -789,6 +801,29 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
   }
 }
 
+/**
+ * Seed an app that has just come up (#240), and publish what the seed did as
+ * evidence either way: the harness ran it, so the record is the harness's
+ * (rule 4). Says why when the app is not seeded, with the log to attach; a
+ * profile that boots no app has nothing to seed.
+ */
+async function seedBooted(
+  profile: QaProfile,
+  values: RunValues,
+  isolation: RunIsolation | undefined,
+  repoPath: string,
+  evidenceDir: string,
+  rules: readonly RedactionRule[],
+  execution: ExecutionKind,
+  name: string = SEED_LOG,
+): Promise<{ reason: string; evidence?: string[] } | undefined> {
+  if (profile.app === undefined) return undefined
+  const seed = await runSeed(profile.app, values, isolation, repoPath, execution)
+  const attached = await writeProvisionLog(evidenceDir, seed.log, rules, name)
+  if (seed.ok) return undefined
+  return { reason: seed.reason ?? 'the seed command did not succeed', ...(attached ? { evidence: [name] } : {}) }
+}
+
 /** The provisioning log's name in a side's evidence (#75). */
 const PROVISION_LOG = 'provision.log'
 /** What the published log keeps: a boot's output is the application's, and it is bounded like any other evidence. */
@@ -805,7 +840,8 @@ async function writeProvisionLog(evidenceDir: string, log: string, rules: readon
     log.length <= MAX_PROVISION_LOG_CHARACTERS
       ? log
       : `[the log is cut to its last ${MAX_PROVISION_LOG_CHARACTERS} characters]\n${log.slice(-MAX_PROVISION_LOG_CHARACTERS)}`
-  await mkdir(evidenceDir, { recursive: true })
+  // A name may carry a directory: a criterion's own log sits in its own.
+  await mkdir(dirname(join(evidenceDir, name)), { recursive: true })
   await writeFile(join(evidenceDir, name), redactText(kept.endsWith('\n') ? kept : `${kept}\n`, rules))
   return true
 }
@@ -1170,6 +1206,17 @@ async function runProfileGroup(
         ...(isolation === undefined ? {} : { isolation }),
       }
     }
+    // Each app is seeded by its own profile's command, and its seed log is
+    // its own, named for the app (#240).
+    const unseeded = await seedBooted(profile, values, isolation, job.repoPath, job.evidenceDir, rules, execution, `seed-${group.name}.log`)
+    if (unseeded !== undefined) {
+      return {
+        criteria: unverifiedAll(unseeded.reason).map((criterion) => ({ ...criterion, ...unseeded })),
+        verdict: 'blocked',
+        values,
+        ...(isolation === undefined ? {} : { isolation }),
+      }
+    }
     const mail = mailContextOf(profile, values, opts)
     // Single-use artefacts are a per-run ledger; per app, the ledger starts
     // empty, so one app's checks cannot spend another app's artefacts (#69).
@@ -1381,6 +1428,12 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
   try {
     const boot = await bootApp(bootedShard, { ...opts, isolation: shardIsolation })
     if (boot.kind === 'blocked') return { id: criterion.id, outcome: 'unverified', reason: boot.reason ?? 'boot did not come up' }
+    // An app of the criterion's own starts as empty as the run's did, so it
+    // is seeded the same way before the criterion's checks (#240).
+    // Its log is in the criterion's own evidence directory, where no app's
+    // seed log can have the same name.
+    const unseeded = await seedBooted(bootedShard, shardValues, shardIsolation, job.repoPath, job.evidenceDir, ctx.rules, ctx.execution, `checks/${criterion.id}/${SEED_LOG}`)
+    if (unseeded !== undefined) return { id: criterion.id, outcome: 'unverified', ...unseeded }
     // The criterion's artefact ledger starts empty: what its flow checks
     // publish or spend belongs to this app alone, never the run's (#69).
     // The criterion's app carries its own catcher, published on its own port:
@@ -1759,7 +1812,13 @@ async function runBaseSide(
     const { result } = await runSide(baseJobOf(job, basePath), baseOpts, side)
     if (!side.ran) {
       const first = result.criteria.find((criterion) => criterion.outcome === 'unverified')
-      return { status: 'not-executed', reason: first?.outcome === 'unverified' ? first.reason : `the base side reached no check (verdict ${result.verdict})` }
+      return {
+        status: 'not-executed',
+        reason: first?.outcome === 'unverified' ? first.reason : `the base side reached no check (verdict ${result.verdict})`,
+        // What stopped the side is kept with it: a seed that failed at the
+        // base left its log there (#240), as a blocked provisioning does.
+        ...(first?.evidence === undefined ? {} : { evidence: first.evidence }),
+      }
     }
     return { status: 'executed', result }
   } catch (error) {
@@ -1971,14 +2030,20 @@ export function installCancelCleanup(profile: QaProfile, opts: BootOpts): () => 
 /**
  * Walk every user-authored string that can carry a `{{run.<name>}}` reference and
  * reject unknown names before anything boots. The seed command is validated here
- * even though its execution lands with the orchestrator, so a bad name in the
- * seed is still a plan-time failure. The driver's own declaration is walked the
+ * although it runs only once the app is up (#240), so a bad name in the seed is
+ * refused before its app boots and never costs a boot. In a several-app run
+ * each app's strings are walked as that app's turn comes, so the refusal is
+ * before that app boots, not before the first one does. The driver's own declaration is walked the
  * same way: a flow naming an action the driver lacks refuses the run before
  * anything boots, naming the action and the driver (#70).
  */
 function validatePlanValues(criteria: JobCriterion[], profile: QaProfile, values: RunValues, flowDriver: FlowDriverCapabilities): void {
   if (profile.app !== undefined) {
     validateValueReferences(profile.app.seed.command, values, 'app.seed.command')
+    // The seed is spawned without a shell, as a command check is (#240): one
+    // that needs a shell is refused here, before anything boots.
+    const unrunnable = unrunnableSeedReason(substituteValues(profile.app.seed.command, values))
+    if (unrunnable !== undefined) throw new JobValidationError('app.seed.command', unrunnable)
     // The health URL may name the port the run publishes the app on (#53).
     validateValueReferences(profile.app.health.http, values, 'app.health.http')
   }

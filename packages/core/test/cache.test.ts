@@ -34,7 +34,7 @@ const APP_PROFILE = {
   app: {
     boot: { compose: 'compose.qa.yaml', service: 'admin' },
     health: { http: localUrl('//app-host:3000/up'), timeout: '5s' },
-    seed: { command: 'bin/rails' },
+    seed: { command: 'true' },
     login: { fixture: 'fixtures/users.yml', role: 'admin' },
   },
   stubs: [],

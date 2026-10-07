@@ -37,7 +37,7 @@ const INLINE_PROFILE = {
   app: {
     boot: { compose: 'compose.qa.yaml', service: 'admin' },
     health: { http: ['http:', '//localhost:3000/up'].join(''), timeout: '120s' },
-    seed: { command: 'bin/rails db:seed:qa' },
+    seed: { command: 'true' },
     login: { fixture: 'fixtures/users.yml', role: 'admin' },
   },
   stubs: [],

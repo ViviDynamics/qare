@@ -30,7 +30,7 @@ const INLINE_PROFILE: QaProfile = {
   app: {
     boot: { compose: 'compose.qa.yaml', service: 'admin' },
     health: { http: HEALTH_URL, timeout: '120s' },
-    seed: { command: 'bin/rails db:seed:qa' },
+    seed: { command: 'true' },
     login: { fixture: 'fixtures/users.yml', role: 'admin' },
   },
   stubs: [
@@ -197,6 +197,10 @@ test('a job with a profile path boots through the injected compose and proves it
     criteria: commandCriteria('echo ok'),
     profile: { path: fixtureDir.pathname },
   })
+  // The fixture's seed is the checkout's own bin/rails, found from the
+  // checkout the run seeds (#240).
+  await mkdir(join(job.repoPath, 'bin'), { recursive: true })
+  await writeFile(join(job.repoPath, 'bin', 'rails'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
 
   const { result } = await runJob(job, HEALTHY_BOOT)
 

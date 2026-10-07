@@ -96,6 +96,7 @@ The evidence directory holds everything a run produced:
   result.json                      # the machine contract, at the root
   isolation.json                   # an app run: the compose project, run id and port it booted under (#53)
   provision.log                    # what provisioning did (#75): a client build's install, health check and removal; or what a boot that blocked said
+  seed.log                         # an app run: the profile's seed command as run, its output and how it ended (#240)
   checks/<criterion id>/<n>/       # one directory per executed check
     stdout.txt
     stderr.txt

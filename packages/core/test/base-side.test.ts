@@ -25,7 +25,7 @@ const APP_PROFILE: QaProfile = {
   app: {
     boot: { compose: 'compose.qa.yaml', service: 'admin' },
     health: { http: HEALTH_URL, timeout: '120s' },
-    seed: { command: 'bin/seed' },
+    seed: { command: 'true' },
     login: { fixture: 'fixtures/users.yml', role: 'admin' },
   },
   stubs: [],
@@ -361,6 +361,9 @@ test('the base boots from the base tree\'s own profile: a base without one is no
   // The head carries a profile on disk, named by an absolute path as the CLI
   // names it; the base revision predates it.
   await cp(validProfileDir, join(trees.head, '.qa'), { recursive: true })
+  // The profile's seed is the checkout's own bin/rails (#240).
+  await mkdir(join(trees.head, 'bin'), { recursive: true })
+  await writeFile(join(trees.head, 'bin', 'rails'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
   const job: Job = { ...jobFor(trees.head, [fileCheck('old-behaviour', 'old.txt')]), profile: { path: join(trees.head, '.qa') } }
   const boot = recordingBoot()
   const { result } = await runJob(job, { ...boot, base: { repoPath: trees.base } })

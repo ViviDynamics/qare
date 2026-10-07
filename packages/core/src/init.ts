@@ -234,6 +234,8 @@ function appConfig(service: ComposeService, composeLabel: string, inventory: Rea
       : []),
     `  health: { http: ${JSON.stringify(health)}, timeout: 120s }`,
     `  # ${INIT_PLACEHOLDER} name the command that seeds the QA data, in place of "true"`,
+    '  # qare runs it once the app is healthy, before any check, from the runner. A',
+    `  # seed inside the service: docker compose -p qare-{{run.id}} -f ${compose} exec -T ${service.name} <command>`,
     '  seed: { command: "true" }',
     `  # ${INIT_PLACEHOLDER} describe the user QA signs in as in .qa/fixtures/users.yml, and name its role here`,
     '  login: { fixture: fixtures/users.yml, role: admin }',
