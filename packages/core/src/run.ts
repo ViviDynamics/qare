@@ -3026,6 +3026,19 @@ async function runFlowCheckJob(
     const outcome = await runSuiteCheck({ name: suite.name, command }, { cwd: repoPath, timeoutMs: check.timeoutMs, execution })
     const dir = join(evidenceDir, checkDir)
     await mkdir(dir, { recursive: true })
+    // What the suite wrote is evidence like a command check's streams are
+    // (#272): without it a failed suite says only that it exited, and a
+    // flaky suite cannot be told from a real failure. Swept like every
+    // other evidence file, and bounded with the end kept.
+    const streams = { stdout: suiteStream(outcome.stdout, outcome.stdoutTruncated), stderr: suiteStream(outcome.stderr, outcome.stderrTruncated) }
+    await writeFile(join(dir, 'stdout.txt'), redactText(streams.stdout, rules))
+    await writeFile(join(dir, 'stderr.txt'), redactText(streams.stderr, rules))
+    // A failed suite's reason carries how its output ended, so the reason
+    // column says what failed before any file is opened (#236, #272).
+    const reason =
+      outcome.outcome === 'failed' && outcome.reason !== undefined
+        ? redactText(`${outcome.reason}${suiteOutputTail(outcome.stdout, outcome.stderr)}`, rules)
+        : outcome.reason
     // A suite may need the docker daemon, which a cell withholds, so suites
     // are never contained (#224): the evidence says so in as many words, so
     // a reader knows the suite's traffic is not recorded.
@@ -3037,7 +3050,8 @@ async function runFlowCheckJob(
           containment: 'none',
           note: 'a suite runs uncontained, so it may reach for whatever its step can reach and its traffic is not recorded',
           outcome: outcome.outcome,
-          ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+          ...(outcome.code === undefined ? {} : { exit_code: outcome.code }),
+          ...(reason === undefined ? {} : { reason }),
         },
         null,
         2,
@@ -3047,8 +3061,8 @@ async function runFlowCheckJob(
     await writeFile(join(dir, 'suite.txt'), `${text}\n`)
     return {
       status: outcome.outcome,
-      ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
-      evidence: inEvidence(['suite.txt']),
+      ...(reason === undefined ? {} : { reason }),
+      evidence: inEvidence(['suite.txt', 'stdout.txt', 'stderr.txt']),
     }
   }
   // The masks are the profile's own (#119): they black out their page regions
@@ -3861,6 +3875,12 @@ export function runCommandCheck(
   selection?: Selection,
   /** How a contained check's process is had (#224): the cell's docker run. Absent, the command is spawned here. */
   inCell?: (tokens: string[], cwd: string, env: Record<string, string> | undefined) => CellProcess,
+  /**
+   * Which end of an output past the capture limit is kept (#272). A command
+   * check keeps the start, as it always did. A suite keeps the end: a test
+   * run says what failed last.
+   */
+  keep: 'head' | 'tail' = 'head',
 ): Promise<CheckOutcome> {
   const env = checkEnvironment(check.env, execution)
   return new Promise((resolve) => {
@@ -3909,11 +3929,23 @@ export function runCommandCheck(
       timeoutMs + KILL_GRACE_MS + HARD_SETTLE_GRACE_MS,
     )
     child.stdout?.on('data', (chunk) => {
-      if (stdout.length < MAX_CAPTURE_BYTES) stdout += chunk
+      if (keep === 'tail') {
+        stdout += chunk
+        if (stdout.length > MAX_CAPTURE_BYTES) {
+          stdout = stdout.slice(-MAX_CAPTURE_BYTES)
+          stdoutTruncated = true
+        }
+      } else if (stdout.length < MAX_CAPTURE_BYTES) stdout += chunk
       else stdoutTruncated = true
     })
     child.stderr?.on('data', (chunk) => {
-      if (stderr.length < MAX_CAPTURE_BYTES) stderr += chunk
+      if (keep === 'tail') {
+        stderr += chunk
+        if (stderr.length > MAX_CAPTURE_BYTES) {
+          stderr = stderr.slice(-MAX_CAPTURE_BYTES)
+          stderrTruncated = true
+        }
+      } else if (stderr.length < MAX_CAPTURE_BYTES) stderr += chunk
       else stderrTruncated = true
     })
     child.on('error', (error) => {
@@ -4075,6 +4107,48 @@ async function runContainedCommandCheck(
 async function writeOutbound(dir: string, record: Record<string, unknown>, rules: readonly RedactionRule[]): Promise<void> {
   await mkdir(dir, { recursive: true })
   await writeFile(join(dir, 'outbound.json'), `${JSON.stringify(redactValue(record, rules), null, 2)}\n`)
+}
+
+/**
+ * A suite's stream as it is saved (#272). Past the capture limit only the end
+ * is kept, and the file says so first. The cut falls anywhere, so the partial
+ * first line is dropped with it: half a line is no use to a reader, and half
+ * a secret is one the sweep cannot recognise.
+ */
+function suiteStream(text: string, truncated: boolean | undefined): string {
+  if (truncated !== true) return text
+  const firstBreak = text.indexOf('\n')
+  return `[the start was dropped: only the last 1 MiB is kept]\n${firstBreak === -1 ? text : text.slice(firstBreak + 1)}`
+}
+
+const SUITE_REASON_STDOUT_LINES = 6
+const SUITE_REASON_STDERR_LINES = 3
+const SUITE_REASON_LINE_CHARS = 200
+// Colour and cursor codes a test runner prints for a terminal; they stay in
+// the saved file, which is what the suite wrote, and out of the reason.
+// The escape character is spelled by its code, so no control character sits
+// in a regular expression literal.
+const ANSI_CODES = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`, 'g')
+
+function lastLines(text: string, count: number): string[] {
+  return text
+    .replace(ANSI_CODES, '')
+    .split(/\r?\n|\r/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+    .slice(-count)
+    .map((line) => (line.length > SUITE_REASON_LINE_CHARS ? `${line.slice(0, SUITE_REASON_LINE_CHARS)}...` : line))
+}
+
+/**
+ * How a failed suite's output ended, for its reason (#272): the last lines
+ * of each stream, each bounded, joined on one line so the reason stays one
+ * cell of the comment's table. The whole output is in the files beside it.
+ */
+function suiteOutputTail(stdout: string, stderr: string): string {
+  const out = lastLines(stdout, SUITE_REASON_STDOUT_LINES)
+  const err = lastLines(stderr, SUITE_REASON_STDERR_LINES)
+  return (out.length === 0 ? '' : `; its output ended: ${out.join(' / ')}`) + (err.length === 0 ? '' : `; stderr ended: ${err.join(' / ')}`)
 }
 
 function truncationNote(outcome: CheckOutcome, stream: 'stdout' | 'stderr'): string {

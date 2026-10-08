@@ -232,7 +232,7 @@ test('a suite flow runs the suite command and records the outcome in suite.txt',
   const { result } = await runJob(job, { ...HEALTHY_BOOT, flowSession: factory })
 
   expect(result.verdict).toBe('passed')
-  expect(result.criteria[0].evidence).toEqual(['checks/criterion-1/0/suite.txt'])
+  expect(result.criteria[0].evidence).toEqual(['checks/criterion-1/0/suite.txt', 'checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt'])
   const suiteText = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'suite.txt'), 'utf8')
   expect(JSON.parse(suiteText)).toMatchObject({ suite: 'browser-e2e', outcome: 'passed' })
 })
