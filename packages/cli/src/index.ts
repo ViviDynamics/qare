@@ -32,6 +32,7 @@ import {
   BUILTIN_REDACTION_RULES,
   BROWSER_FLOW_DRIVER,
   loadProfile,
+  browserlessFlavour,
   flowDriverFor,
   redactEvidenceDir,
   redactText,
@@ -83,6 +84,7 @@ import type {
   BootOpts,
   RunJobOpts,
   FlowDriverCapabilities,
+  PlanSuite,
   IngestOutcome,
   IntroducedCriterion,
   Job,
@@ -744,10 +746,35 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
     // it is the driver's capability declaration (#94).
     // A profile that names a client plans against that client's driver (#72).
     const declared = flowDriverFor(profile)
-    const driver: FlowDriverCapabilities =
-      declared !== BROWSER_FLOW_DRIVER || flowActions.length === 0
-        ? declared
-        : { ...BROWSER_FLOW_DRIVER, actions: [...BROWSER_FLOW_DRIVER.actions, ...flowActions] }
+    // Unless the image execute will run in ships no browser (#258): then
+    // there is no driver to plan against, and the planner is offered suites
+    // and commands instead of flows that would end at browserType.launch.
+    const browserless = browserlessFlavour(profile)
+    const driver: FlowDriverCapabilities | undefined =
+      browserless !== undefined
+        ? undefined
+        : declared !== BROWSER_FLOW_DRIVER || flowActions.length === 0
+          ? declared
+          : { ...BROWSER_FLOW_DRIVER, actions: [...BROWSER_FLOW_DRIVER.actions, ...flowActions] }
+    if (browserless !== undefined)
+      out.write(
+        `the profile's flavour is ${browserless}, whose image ships no browser, so the plan uses suites and commands: set "flavour: web" in ${join(profilePath ?? '.qa', 'config.yml')} to plan browser checks\n`,
+      )
+    // The profile's own suites reach the planner with what they run (#258),
+    // beside any the caller named that the profile does not declare.
+    // A command crosses to the model, so the seeded values are swept from it
+    // here, as they are from the diff (#64); the plan step sweeps the
+    // built-in and profile rules itself.
+    const seeded = valueRules([profile?.app?.login?.totp?.secret, profile?.app?.login?.backupCode?.value])
+    const declaredSuites: PlanSuite[] = (profile?.suites ?? []).map((suite) => ({
+      name: suite.name,
+      kind: suite.kind,
+      command: redactText(suite.command, seeded),
+    }))
+    const plannerSuites: (string | PlanSuite)[] = [
+      ...declaredSuites,
+      ...(suites ?? []).filter((name) => !declaredSuites.some((suite) => suite.name === name)),
+    ]
     await mkdir(dirname(outPath), { recursive: true })
     let plan: Plan
     // The profile's registered MCP servers the plan step may look through (#93):
@@ -767,10 +794,11 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       plan = await planRun(runner, {
         criteria,
         diff,
-        driver,
+        ...(driver === undefined ? {} : { driver }),
+        ...(browserless === undefined ? {} : { noBrowser: { flavour: browserless } }),
         repoPath: process.cwd(),
         runInputs: { paths: declaredRunPaths(outPath, profilePath, diff) },
-        ...(suites === undefined ? {} : { suites }),
+        ...(suites === undefined && declaredSuites.length === 0 ? {} : { suites: plannerSuites }),
         ...(flowActions.length === 0 ? {} : { flowActions }),
         ...(profile?.client === undefined ? {} : { client: profile.client.driver }),
         ...(profile?.instructions ? { qaMd: profile.instructions } : {}),

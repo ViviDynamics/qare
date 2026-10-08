@@ -1,5 +1,5 @@
 import { outputBudget, stopDetail, type AgentRunner, type AgentToolChannel } from './runner.js'
-import { undeclaredCheckKinds, type FlowDriverCapabilities } from './flow.js'
+import { DRIVER_CHECK_KINDS, undeclaredCheckKinds, type FlowDriverCapabilities } from './flow.js'
 import { EXPLORATION_TOOLS, isExplorableUrl, type ExplorationTool } from './explore.js'
 import { channelToolName } from './mcp.js'
 import { isUnsafeProfileName, type ProfileCommand } from './profile.js'
@@ -8,7 +8,7 @@ import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './
 import { placeholderValue, shellCharacter, tokenFillsTemplate } from './run.js'
 import { existsSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
-import { redactText, redactionRules, type ProfileRedaction } from './redact.js'
+import { redactText, redactionRules, type ProfileRedaction, type RedactionRule } from './redact.js'
 
 export interface PlanCriterionInput {
   id: string
@@ -42,8 +42,21 @@ export interface PlanInputs {
    * and command checks are validated only against the no-shell contract.
    */
   runInputs?: DeclaredRunInputs
-  /** Suite names the profile declares, which a flow or command check may name. */
-  suites?: string[]
+  /**
+   * The suites the profile declares, which a flow check may name: a bare name,
+   * or the name with what the suite is and runs (#258), so the planner can
+   * tell which suite covers a criterion instead of guessing from the name.
+   */
+  suites?: (string | PlanSuite)[]
+  /**
+   * Set when the image the checks run in ships no browser (#258): the profile
+   * runs on the browser driver and its flavour carries none. The planner is
+   * then offered no action flow, visual or a11y check, only suites, commands
+   * and mail, and a plan that holds one is corrected and then refused, naming
+   * the flavour and the setting that changes it. It replaces `driver`: there
+   * is no driver to hold a flow to.
+   */
+  noBrowser?: { flavour: string }
   /** The URL of a running target the profile names (#122), which checks reach it at. */
   target?: string
   /** The client driver of a profile that names a build to launch (#72), so the planner knows there is no URL. */
@@ -100,6 +113,31 @@ export interface PlanInputs {
   redact?: ProfileRedaction
   /** Named invocations the profile declares (#156), which command checks use instead of guessing. */
   commands?: Record<string, ProfileCommand>
+}
+
+/** A suite the profile declares, as the planner is told of it (#258). */
+export interface PlanSuite {
+  name: string
+  /** The profile's own word for it: command, flow or visual. */
+  kind?: string
+  /** What the suite runs, as the profile wrote it. */
+  command?: string
+}
+
+function suiteName(suite: string | PlanSuite): string {
+  return typeof suite === 'string' ? suite : suite.name
+}
+
+/**
+ * A suite's command crosses to the model like QA.md does, so it is swept by
+ * the same rules first: a token or a fixture value written into a command
+ * never reaches the prompt (#258).
+ */
+function suiteLine(suite: string | PlanSuite, rules: readonly RedactionRule[]): string {
+  if (typeof suite === 'string') return `- ${suite}`
+  const command = suite.command === undefined ? undefined : redactText(suite.command, rules)
+  const what = [suite.kind === undefined ? undefined : `a ${suite.kind} suite`, command].filter((part) => part !== undefined)
+  return what.length === 0 ? `- ${suite.name}` : `- ${suite.name} (${what.join(': ')})`
 }
 
 /**
@@ -283,12 +321,33 @@ const SYSTEM = [
  * `parsePlan` remains the authority, which is also the constitution's rule that
  * code decides rather than the model.
  */
-export function planOutputSchema(extraFlowActions: readonly string[] = [], driver?: FlowDriverCapabilities) {
+export function planOutputSchema(
+  extraFlowActions: readonly string[] = [],
+  driver?: FlowDriverCapabilities,
+  /** No browser where the checks run (#258): whether a suite is there for a flow to name. */
+  browserless?: { suites: boolean },
+) {
   const base = driver === undefined ? FLOW_ACTION_KINDS : FLOW_ACTION_KINDS.filter((kind) => driver.actions.includes(kind))
   const kinds = [...new Set([...base, ...extraFlowActions])]
   // A check kind the driver does not serve is not offered at all (#72).
   const unserved = undeclaredCheckKinds(driver)
-  const checkKinds = ['command', 'flow', 'visual', 'mail', 'a11y'].filter((kind) => !unserved.includes(kind))
+  const checkKinds =
+    browserless === undefined
+      ? ['command', 'flow', 'visual', 'mail', 'a11y'].filter((kind) => !unserved.includes(kind))
+      : ['command', ...(browserless.suites ? ['flow'] : []), 'mail']
+  const schema = planSchemaOver(checkKinds, kinds)
+  if (browserless === undefined) return schema
+  // Without a browser a flow is a suite and nothing else, so the fields only
+  // a browser check carries are not in the schema at all (#258).
+  const properties = schema.properties.criteria.items.properties.checks.items.properties as Record<string, unknown>
+  for (const field of BROWSER_CHECK_FIELDS) delete properties[field]
+  return schema
+}
+
+/** What only an action flow, a visual check or an a11y check carries. */
+const BROWSER_CHECK_FIELDS = ['actions', 'screenshot', 'url', 'widths', 'themes']
+
+function planSchemaOver(checkKinds: string[], kinds: string[]) {
   return {
   type: 'object',
   properties: {
@@ -370,9 +429,11 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     .map((criterion) => `- ${criterion.id}: ${criterion.text}`)
     .join('\n')
   const flowActionKinds = offeredKinds(inputs)
-  const unserved = undeclaredCheckKinds(inputs.driver)
+  const noBrowser = inputs.noBrowser
+  // Nothing a browser serves is offered when there is none to launch (#258).
+  const unserved = noBrowser === undefined ? undeclaredCheckKinds(inputs.driver) : [...DRIVER_CHECK_KINDS]
   const suites = inputs.suites?.length
-    ? `Suites this repository declares, which a check may name:\n${inputs.suites.map((suite) => `- ${suite}`).join('\n')}`
+    ? `Suites this repository declares, which a check may name:\n${inputs.suites.map((suite) => suiteLine(suite, redactionRules(inputs.redact))).join('\n')}`
     : 'This repository declares no suites, so every check must stand on its own.'
   const qaMd =
     inputs.qaMd === undefined
@@ -404,7 +465,11 @@ function prompt(inputs: PlanInputs, correction?: string): string {
         ]),
     'A check is one of:',
     '- command: {"kind":"command","name":...,"command":"an executable followed by its arguments"}',
-    '- flow: {"kind":"flow","name":...,"suite":"an existing suite"} or {"kind":"flow","name":...,"actions":[{"action":"open","url":"the url to open first"},{"action":"type","element":{"role":"searchbox","name":"Search"},"value":"Ada Lovelace"},{"action":"click","element":{"role":"button","name":"Search"}},{"action":"assertText","text":"the text that must be visible"}]}',
+    ...(noBrowser === undefined
+      ? ['- flow: {"kind":"flow","name":...,"suite":"an existing suite"} or {"kind":"flow","name":...,"actions":[{"action":"open","url":"the url to open first"},{"action":"type","element":{"role":"searchbox","name":"Search"},"value":"Ada Lovelace"},{"action":"click","element":{"role":"button","name":"Search"}},{"action":"assertText","text":"the text that must be visible"}]}']
+      : inputs.suites?.length
+        ? ['- flow: {"kind":"flow","name":...,"suite":"an existing suite"}']
+        : []),
     ...(unserved.includes('visual') ? [] : ['- visual: {"kind":"visual","name":...,"screenshot":"name","url":"/the/page","widths":[390],"themes":["light"]}']),
     '- mail: {"kind":"mail","name":...,"address":"{{run.mail_address}}","subject":"a substring to match", "timeoutMs":60000}',
     ...(unserved.includes('a11y') ? [] : ['- a11y: {"kind":"a11y","name":...,"url":"/the/page"}']),
@@ -428,8 +493,22 @@ function prompt(inputs: PlanInputs, correction?: string): string {
           'it "inferred": true unless the criterion itself asks for accessibility. It proves nothing about what a page says or does.',
           '',
         ]),
+    // What the image cannot do is said, with what to plan instead (#258).
+    ...(noBrowser === undefined
+      ? []
+      : [
+          `The checks run in the qare-${noBrowser.flavour} image (the profile's flavour is ${noBrowser.flavour}), which ships no browser: nothing there can open a page,`,
+          'so there is no flow of actions, no visual check and no a11y check to plan.',
+          inputs.suites?.length
+            ? 'Plan each criterion with a suite or a command: a flow check names a declared suite, which runs its own command, and a suite that'
+            : 'Plan each criterion with a command: no suite is declared, so a flow check has nothing to name, and a command that',
+          'already exercises what the criterion says is the check to choose. A criterion that only a browser could show, with no suite',
+          `or command that covers it, is unplannable: say that the ${noBrowser.flavour} flavour ships no browser, and that "flavour: web" in the profile's`,
+          'config.yml is what changes it.',
+          '',
+        ]),
     // What the driver cannot do is said, so the planner does not reach for it (#72).
-    ...(unserved.length === 0
+    ...(unserved.length === 0 || noBrowser !== undefined
       ? []
       : [`The checks run against the ${inputs.driver?.name} driver, which declares ${unserved.map((kind) => `no ${kind} check`).join(' and ')}: plan ${unserved.length === 1 ? 'none' : 'neither'}.`, '']),
     'A command check is spawned with no shell: its command is split on whitespace and each token',
@@ -467,31 +546,39 @@ function prompt(inputs: PlanInputs, correction?: string): string {
           'Plan the check against the declared run inputs, or mark the criterion unplannable.',
           '',
         ]),
-    `A flow action is one of ${flowActionKinds.join(', ')}. An element reference is semantic:`,
-    '{"role":"the aria role","name":"the accessible name"} or {"testId":"the data-testid value"}.',
-    'Never a CSS selector, never coordinates, never a free-form instruction.',
-    'A role-and-name reference may pin the element\'s snapshot path as authored, one complete object with the quotes the snapshot writes escaped:',
-    '{"role":"button","name":"Search","at":"document/main/region \\"Billing\\"/button \\"Save\\""}. The path is what locator repair compares an identity',
-    'against when the markup around the element moves (#83), so carry it for every element the exploration snapshot showed.',
-    'choose picks an option by its accessible name: {"action":"choose","element":{"role":"combobox","name":"Country"},"value":"the option to choose"}.',
-    'waitFor waits for an element to become visible before the next action: {"action":"waitFor","element":{...}}.',
-    'assertElement asserts an element is visible: {"action":"assertElement","element":{...}}. capture takes a screenshot:',
-    '{"action":"capture"}.',
-    'A totp action types the second-factor code the harness generates from the profile\'s seeded login.totp secret:',
-    '{"action":"totp","element":{"role":"textbox","name":"Verification code"}}. A backupCode action types the profile\'s seeded',
-    'backup code the same way. Never write a secret, a code or a recovery value into the plan: the profile seeds them.',
-    ...(inputs.flowActions?.length
-      ? [
-          `The change under test introduces the flow actions ${inputs.flowActions.join(', ')}: plan them as`,
-          '{"action":"<name>", ...} with the element the change\'s own docs say applies.',
-        ]
-      : []),
+    ...(noBrowser !== undefined
+      ? []
+      : [
+          `A flow action is one of ${flowActionKinds.join(', ')}. An element reference is semantic:`,
+          '{"role":"the aria role","name":"the accessible name"} or {"testId":"the data-testid value"}.',
+          'Never a CSS selector, never coordinates, never a free-form instruction.',
+          'A role-and-name reference may pin the element\'s snapshot path as authored, one complete object with the quotes the snapshot writes escaped:',
+          '{"role":"button","name":"Search","at":"document/main/region \\"Billing\\"/button \\"Save\\""}. The path is what locator repair compares an identity',
+          'against when the markup around the element moves (#83), so carry it for every element the exploration snapshot showed.',
+          'choose picks an option by its accessible name: {"action":"choose","element":{"role":"combobox","name":"Country"},"value":"the option to choose"}.',
+          'waitFor waits for an element to become visible before the next action: {"action":"waitFor","element":{...}}.',
+          'assertElement asserts an element is visible: {"action":"assertElement","element":{...}}. capture takes a screenshot:',
+          '{"action":"capture"}.',
+          'A totp action types the second-factor code the harness generates from the profile\'s seeded login.totp secret:',
+          '{"action":"totp","element":{"role":"textbox","name":"Verification code"}}. A backupCode action types the profile\'s seeded',
+          'backup code the same way. Never write a secret, a code or a recovery value into the plan: the profile seeds them.',
+          ...(inputs.flowActions?.length
+            ? [
+                `The change under test introduces the flow actions ${inputs.flowActions.join(', ')}: plan them as`,
+                '{"action":"<name>", ...} with the element the change\'s own docs say applies.',
+              ]
+            : []),
+        ]),
     'A mail check waits for one message at an address. Use {{run.mail_address}}, the address minted for this run, wherever',
     'the app is asked to send and as the address the mail check waits at, never the address of a person or a shared inbox.',
     'Put the check that makes the app send before the mail check, in the same criterion: only a message that arrives after',
     'the criterion started is read.',
-    'When a criterion\'s second factor arrives by email instead, give the mail check "code": {} and later checks read',
-    '{"action":"type","element":{...},"value":"{{mail.<name>.code}}"}, or follow {{mail.<name>.link}} in an open action.',
+    ...(noBrowser !== undefined
+      ? []
+      : [
+          'When a criterion\'s second factor arrives by email instead, give the mail check "code": {} and later checks read',
+          '{"action":"type","element":{...},"value":"{{mail.<name>.code}}"}, or follow {{mail.<name>.link}} in an open action.',
+        ]),
     '',
     ...(inputs.exploration === undefined
       ? []
@@ -503,11 +590,15 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     ...(inputs.target === undefined
       ? []
       : [
-          `The app is already running at ${inputs.target}. A flow opens its pages by path, such as {"action":"open","url":"/some/page"},`,
-          'which resolves against that URL, and a command check reaches it through {{run.target_url}}, which carries no trailing slash.',
-          'A visual check names its page by path the same way. A running app has no base revision, so its captures are',
-          'evidence of what the page looks like and are compared with nothing. An a11y check names its page by path too, and',
-          'with no base revision to excuse a violation, every one it finds fails the criterion.',
+          ...(noBrowser !== undefined
+            ? [`The app is already running at ${inputs.target}. A command check reaches it through {{run.target_url}}, which carries no trailing slash.`]
+            : [
+                `The app is already running at ${inputs.target}. A flow opens its pages by path, such as {"action":"open","url":"/some/page"},`,
+                'which resolves against that URL, and a command check reaches it through {{run.target_url}}, which carries no trailing slash.',
+                'A visual check names its page by path the same way. A running app has no base revision, so its captures are',
+                'evidence of what the page looks like and are compared with nothing. An a11y check names its page by path too, and',
+                'with no base revision to excuse a violation, every one it finds fails the criterion.',
+              ]),
           '',
         ]),
     ...(inputs.client === undefined
@@ -539,6 +630,28 @@ function coverage(plan: Plan, inputs: PlanInputs): string | undefined {
   ]
     .filter(Boolean)
     .join(' and ')
+}
+
+/**
+ * A check that drives a browser, in a plan for an image that ships none
+ * (#258): refused here, naming the flavour and the setting that changes it,
+ * instead of ending unverified at `browserType.launch` once the run is paid for.
+ */
+function browserGap(plan: Plan, inputs: PlanInputs): string | undefined {
+  if (inputs.noBrowser === undefined) return undefined
+  const { flavour } = inputs.noBrowser
+  for (const criterion of plan.criteria) {
+    if (!('checks' in criterion)) continue
+    for (const check of criterion.checks) {
+      if (check.kind === 'command' || check.kind === 'mail') continue
+      if (check.kind === 'flow' && check.suite !== undefined) continue
+      return (
+        `criterion ${criterion.id} ${check.kind} check "${check.name}" drives a browser, and the checks run in the qare-${flavour} image ` +
+        `(the profile's flavour is ${flavour}), which ships none: "flavour: web" in the profile's config.yml is the setting that runs browser checks`
+      )
+    }
+  }
+  return undefined
 }
 
 const SHELL_BUILTINS = ['cd', 'source', 'eval', 'export', 'exit', 'set', 'unset', 'alias', 'shift', 'local']
@@ -769,7 +882,13 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
       prompt: prompt(inputs, correction),
       system: SYSTEM,
       toolPolicy: 'none',
-      outputSchema: JSON.stringify(planOutputSchema(inputs.flowActions ?? [], inputs.driver)),
+      outputSchema: JSON.stringify(
+        planOutputSchema(
+          inputs.flowActions ?? [],
+          inputs.driver,
+          inputs.noBrowser === undefined ? undefined : { suites: (inputs.suites?.length ?? 0) > 0 },
+        ),
+      ),
       budget,
       ...(exploration === undefined ? {} : { tools: exploration }),
       ...(mcp === undefined ? {} : { mcp }),
@@ -796,6 +915,14 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
     const gap = coverage(plan, inputs)
     if (gap !== undefined) {
       correction = `${gap}. Every criterion must appear exactly once, under the id given.`
+      continue
+    }
+    const browser = browserGap(plan, inputs)
+    if (browser !== undefined) {
+      correction =
+        `${browser}. Until then, plan the criterion with ` +
+        (inputs.suites?.length ? `a declared suite (${inputs.suites.map(suiteName).join(', ')}) or a command` : 'a command') +
+        ', or mark it unplannable.'
       continue
     }
     const violation = commandContractGap(plan)
