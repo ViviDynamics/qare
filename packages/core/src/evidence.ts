@@ -390,12 +390,26 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
       '',
       'The message each mail check read, as the harness read it from the mail source: the sender, the subject, an excerpt and the links in it. Addresses and one-time codes are redacted, and the links are what the harness extracted, not what a model claimed.',
       '',
-      '| criterion | check | sender | subject | excerpt | links |',
-      '| --- | --- | --- | --- | --- | --- |',
-      ...messages.map(
-        (message) =>
-          `| ${cell(message.criterion)} | ${cell(message.check)} | ${cell(message.from)} | ${cell(message.subject)} | ${cell(message.excerpt)} | ${message.links.map((link) => cell(link)).join(' ')} |`,
-      ),
+      // How a message was delivered sits beside it (#218), in a column only a
+      // run that asserted it carries: the receiving provider's results and
+      // the placement, as the harness read them.
+      ...(messages.some((message) => message.delivery !== undefined)
+        ? [
+            '| criterion | check | sender | subject | excerpt | links | delivery |',
+            '| --- | --- | --- | --- | --- | --- | --- |',
+            ...messages.map(
+              (message) =>
+                `| ${cell(message.criterion)} | ${cell(message.check)} | ${cell(message.from)} | ${cell(message.subject)} | ${cell(message.excerpt)} | ${message.links.map((link) => cell(link)).join(' ')} | ${message.delivery === undefined ? '' : cell(message.delivery)} |`,
+            ),
+          ]
+        : [
+            '| criterion | check | sender | subject | excerpt | links |',
+            '| --- | --- | --- | --- | --- | --- |',
+            ...messages.map(
+              (message) =>
+                `| ${cell(message.criterion)} | ${cell(message.check)} | ${cell(message.from)} | ${cell(message.subject)} | ${cell(message.excerpt)} | ${message.links.map((link) => cell(link)).join(' ')} |`,
+            ),
+          ]),
     )
   }
   // What the UX reviewer reported (#150): advisory, in a section that says so.

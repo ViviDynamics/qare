@@ -27,6 +27,7 @@ import type { FlowActionStep } from './plan.js'
 import { feedRunLedger } from './ledger-feed.js'
 import { FileLedgerStore } from './ledger.js'
 import { mailReader, mailSourceOf, type DeclaredMailSource, type MailSource } from './mail-source.js'
+import { assessDelivery } from './mail-auth.js'
 import { extractCode, mailEvidence, runMailCheck, type MailProof, type ReadMail } from './mailbox.js'
 import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCapabilities, mcpDriverServer, type McpToolResult } from './mcp.js'
 import { ProfileMissingError, clientExecutableName, loadProfile, pathOnTarget, validateProfileConfig, type ProfileClient, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
@@ -1356,6 +1357,8 @@ interface FlowContext {
  */
 interface MailContext {
   label?: string
+  /** The receiving provider the profile declares its source to be (#218), by the id its results are written under. */
+  authserv?: string
   readMail?: ReadMail
   source?: MailSource
   /** Every address a mail check of this run waited at, for the cleanup. */
@@ -1375,6 +1378,7 @@ function mailContextOf(profile: QaProfile, values: RunValues, opts: { readMail?:
   return {
     // The inbox contract has always been named by its URL alone.
     label: profile.mail?.inbox ?? source.describe,
+    ...(declared.authserv === undefined ? {} : { authserv: declared.authserv }),
     readMail: injected ?? mailReader(source),
     source,
     waited,
@@ -2612,10 +2616,32 @@ async function runCriterion(
           ),
           sweepRules,
         )
-        criterionMail.push({ check: substituted.name ?? String(index), from: swept.from, subject: swept.subject, excerpt: swept.excerpt, links: swept.links })
-        const text = JSON.stringify(swept, null, 2)
+        // How the message was delivered, when the check asserts it (#218): the
+        // receiving provider's results and the placement, read by the harness
+        // from the message's headers and from what the mailbox says. They are
+        // evidence whichever way the assertion goes, so they are written
+        // before the outcome is returned.
+        const delivery = assessDelivery(outcome.message, substituted, {
+          describe: mail.label ?? `the mail source for ${substituted.address}`,
+          ...(mail.authserv === undefined ? {} : { authserv: mail.authserv }),
+        })
+        const deliveryLine = delivery.summary === undefined ? undefined : redactText(delivery.summary, sweepRules)
+        criterionMail.push({
+          check: substituted.name ?? String(index),
+          from: swept.from,
+          subject: swept.subject,
+          excerpt: swept.excerpt,
+          links: swept.links,
+          ...(deliveryLine === undefined ? {} : { delivery: deliveryLine }),
+        })
+        const text = JSON.stringify({ ...swept, ...redactValue(delivery.evidence ?? {}, sweepRules) }, null, 2)
         await writeFile(join(job.evidenceDir, checkDir, 'message.json'), `${text}\n`)
         evidence.push(`${checkDir}/message.json`)
+        // A message that did not pass the provider's checks, or did not land
+        // where the check expects, is a fault in the environment (a DNS
+        // record, a relay setting): unverified with the record named, never
+        // failed, and nothing it carries is published to later checks.
+        if (delivery.status === 'unverified') return { status: 'unverified' as const, reason: redactText(delivery.reason ?? 'the delivery of the message could not be shown', sweepRules) }
         // The artefact a later `{{mail.<name>.link}}` reference reads is the first
         // link of the message this check waited for (#69).
         if (substituted.name !== undefined)

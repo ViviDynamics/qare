@@ -780,7 +780,9 @@ function parseMailProofs(value: unknown, base: string): MailProof[] {
     const record = { check: text('check'), from: text('from'), subject: text('subject'), excerpt: text('excerpt') }
     const links = entry.links
     if (!Array.isArray(links) || !links.every((link): link is string => typeof link === 'string')) fail(`${at}.links`, 'mail.links must be an array of strings')
-    return { ...record, links }
+    const delivery = entry.delivery
+    if (delivery !== undefined && typeof delivery !== 'string') fail(`${at}.delivery`, 'mail.delivery must be a string')
+    return { ...record, links, ...(delivery === undefined ? {} : { delivery }) }
   })
 }
 

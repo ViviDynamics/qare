@@ -126,3 +126,64 @@ test('the Mailpit adapter reads and deletes past one page of results', async () 
   expect(await source.delete({ address: 'qare-abc@localhost' })).toBe(450)
   expect(caught).toEqual([])
 })
+
+// #218: a message carries the headers a source can report, and where the
+// mailbox says it landed, so a mail check can assert how it was delivered.
+test('the Mailpit adapter reads a message\'s headers from the catcher, names in lower case, and a catcher that reports none leaves them out', async () => {
+  const results = 'mx.receiver.example; spf=pass smtp.mailfrom=app.test; dkim=pass header.d=app.test; dmarc=pass header.from=app.test'
+  const fake = fakeMailpit([
+    caughtMessage({ headers: { 'Authentication-Results': [results], Received: ['from a', 'from b'], Subject: ['Confirm your account'] } }),
+    caughtMessage({ ID: 'bare' }),
+  ])
+  const source = mailpitSource(MAILPIT_URL, fake.transport)
+
+  const read = await source.read('JErteJnrGgnzfkBut4FbSx')
+  expect(read.headers).toEqual({ 'authentication-results': [results], received: ['from a', 'from b'], subject: ['Confirm your account'] })
+  expect(fake.requests).toContain('GET /mailpit/api/v1/message/JErteJnrGgnzfkBut4FbSx/headers')
+  // Mailpit says nothing of placement: it is a catcher, not a mailbox with folders.
+  expect(read).not.toHaveProperty('placement')
+
+  const bare = await source.read('bare')
+  expect(bare).not.toHaveProperty('headers')
+  expect(bare.subject).toBe('Confirm your account')
+})
+
+test('the inbox contract may list headers and a placement with a message, and refuses ones it cannot read', async () => {
+  const listing = (extra: Record<string, unknown>) =>
+    inboxSource(
+      INBOX_URL,
+      answering(() => Response.json({ messages: [{ from: 'App <no-reply@app.test>', subject: 'Welcome', body: 'hello', received_at: '2026-10-03T16:52:30.702Z', ...extra }] })),
+    )
+  const source = listing({ headers: { 'Authentication-Results': 'mx.receiver.example; dmarc=pass header.from=app.test', Received: ['from a', 'from b'] }, placement: ' Spam ' })
+  const [ref] = await source.list({ address: 'qa@localhost' })
+  expect(await source.read(ref?.id ?? '')).toEqual({
+    from: 'App <no-reply@app.test>',
+    subject: 'Welcome',
+    body: 'hello',
+    received_at: '2026-10-03T16:52:30.702Z',
+    headers: { 'authentication-results': ['mx.receiver.example; dmarc=pass header.from=app.test'], received: ['from a', 'from b'] },
+    placement: 'Spam',
+  })
+
+  await expect(listing({ headers: ['not', 'an', 'object'] }).list({ address: 'qa@localhost' })).rejects.toThrow('headers that are not an object')
+  await expect(listing({ headers: { Received: 7 } }).list({ address: 'qa@localhost' })).rejects.toThrow('Received header that is neither a string nor a list of strings')
+  await expect(listing({ placement: '' }).list({ address: 'qa@localhost' })).rejects.toThrow('placement that is not a non-empty string')
+})
+
+// The signal bounds every poll of a wait: a headers endpoint that stalls must
+// end the read, not let a message be returned after its check ran out of time.
+test('a headers read that runs out of time ends the read; only a catcher that does not serve headers is tolerated', async () => {
+  const fake = fakeMailpit([caughtMessage({ headers: { Subject: ['Confirm your account'] } })])
+  const stalled: Transport = answering(async (input, init) => {
+    if (!String(input).endsWith('/headers')) return fake.transport(input, init)
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('this operation was aborted')))
+    })
+  })
+  await expect(mailpitSource(MAILPIT_URL, stalled).read('JErteJnrGgnzfkBut4FbSx', AbortSignal.timeout(20))).rejects.toThrow('aborted')
+
+  // The same failure with no signal spent is a catcher that cannot answer: the message is read without headers.
+  const refusing: Transport = answering((input, init) => (String(input).endsWith('/headers') ? new Response('nope', { status: 500 }) : fake.transport(input, init)))
+  const read = await mailpitSource(MAILPIT_URL, refusing).read('JErteJnrGgnzfkBut4FbSx')
+  expect(read).not.toHaveProperty('headers')
+})

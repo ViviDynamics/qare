@@ -1222,7 +1222,19 @@ function parseMail(value: unknown): ProfileMail {
   // The URL may name run values ({{run.app_port}}), which the run substitutes
   // and validates; here each stands for a value that leaves a URL a URL.
   httpUrl(url.replace(/\{\{run\.[A-Za-z_][A-Za-z0-9_]*\}\}/g, '1'), 'mail.source.url', 'mail source URL')
-  return { source: { kind: kind as MailSourceKind, url }, ...domain }
+  // The receiver whose authentication results a mail check may trust (#218).
+  // A catcher in the stack receives mail without judging it and strips no
+  // forged header, so it is never one: declaring it so would let the app
+  // under test vouch for its own mail.
+  let authserv: string | undefined
+  if (value.source.authserv !== undefined) {
+    if (kind === 'mailpit')
+      fail('mail.source.authserv', 'a mailpit catcher judges no mail and removes no forged header, so its messages carry no authentication results that can be trusted; authserv is for a source that reads a receiving provider')
+    if (typeof value.source.authserv !== 'string' || !MAIL_DOMAIN.test(value.source.authserv))
+      fail('mail.source.authserv', `mail source authserv ${JSON.stringify(value.source.authserv)} must be a lower-case host name, such as mx.example.com: the id the receiving provider writes its Authentication-Results under`)
+    authserv = value.source.authserv as string
+  }
+  return { source: { kind: kind as MailSourceKind, url, ...(authserv === undefined ? {} : { authserv }) }, ...domain }
 }
 
 const MAIL_DOMAIN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/

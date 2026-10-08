@@ -8,6 +8,8 @@ export interface Caught {
   subject: string
   text: string
   created: string
+  /** The message's headers, as Mailpit's headers endpoint answers them: a name to its values. */
+  headers?: Record<string, string[]>
 }
 
 /**
@@ -51,6 +53,12 @@ export function fakeMailpit(caught: Caught[]): { transport: Transport; requests:
       const start = Number(url.searchParams.get('start') ?? '0')
       const limit = Number(url.searchParams.get('limit') ?? '50')
       return Response.json({ total: caught.length, messages_count: matched.length, start, messages: matched.slice(start, start + limit).map(summary) })
+    }
+    if (method === 'GET' && /^message\/[^/]+\/headers$/.test(path)) {
+      const message = caught.find((entry) => entry.ID === path.split('/')[1])
+      // A catcher that carries none for the message answers as an older one would: not found.
+      if (message?.headers === undefined) return new Response('not found', { status: 404 })
+      return Response.json(message.headers)
     }
     if (method === 'GET' && path.startsWith('message/')) {
       const message = caught.find((entry) => entry.ID === path.slice('message/'.length))
