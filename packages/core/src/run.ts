@@ -3030,14 +3030,21 @@ async function runFlowCheckJob(
     // (#272): without it a failed suite says only that it exited, and a
     // flaky suite cannot be told from a real failure. Swept like every
     // other evidence file, and bounded with the end kept.
-    const streams = { stdout: suiteStream(outcome.stdout, outcome.stdoutTruncated), stderr: suiteStream(outcome.stderr, outcome.stderrTruncated) }
-    await writeFile(join(dir, 'stdout.txt'), redactText(streams.stdout, rules))
-    await writeFile(join(dir, 'stderr.txt'), redactText(streams.stderr, rules))
+    const truncatedOut = outcome.stdoutTruncated === true
+    const truncatedErr = outcome.stderrTruncated === true
+    const swept = {
+      stdout: redactText(suiteStream(outcome.stdout, truncatedOut), rules),
+      stderr: redactText(suiteStream(outcome.stderr, truncatedErr), rules),
+    }
+    await writeFile(join(dir, 'stdout.txt'), swept.stdout)
+    await writeFile(join(dir, 'stderr.txt'), swept.stderr)
     // A failed suite's reason carries how its output ended, so the reason
-    // column says what failed before any file is opened (#236, #272).
+    // column says what failed before any file is opened (#236, #272). The
+    // lines are taken from the swept text, never the raw: a line is cut
+    // short for the reason, and a secret cut short is one no rule matches.
     const reason =
       outcome.outcome === 'failed' && outcome.reason !== undefined
-        ? redactText(`${outcome.reason}${suiteOutputTail(outcome.stdout, outcome.stderr)}`, rules)
+        ? redactText(`${outcome.reason}${suiteOutputTail(suiteBody(swept.stdout, truncatedOut), suiteBody(swept.stderr, truncatedErr))}`, rules)
         : outcome.reason
     // A suite may need the docker daemon, which a cell withholds, so suites
     // are never contained (#224): the evidence says so in as many words, so
@@ -3852,6 +3859,40 @@ function selectionVerdict(
 }
 
 /**
+ * The end of a stream, bounded in bytes (#272). Chunks are kept as they
+ * arrive and whole leading ones are let go once the rest still fills the
+ * bound, so a suite that prints for an hour costs the bound and no more. The
+ * text is decoded once, at the end, from the last `limit` bytes: a character
+ * cut in half by the bound is dropped rather than shown as a replacement.
+ */
+class TailCapture {
+  private chunks: Buffer[] = []
+  private bytes = 0
+  private dropped = false
+
+  constructor(private readonly limit: number) {}
+
+  push(chunk: Buffer | string): void {
+    const buffer = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk
+    this.chunks.push(buffer)
+    this.bytes += buffer.length
+    while (this.chunks.length > 1 && this.bytes - (this.chunks[0] as Buffer).length >= this.limit) {
+      this.bytes -= (this.chunks.shift() as Buffer).length
+      this.dropped = true
+    }
+  }
+
+  read(): { text: string; truncated: boolean } {
+    const all = Buffer.concat(this.chunks)
+    if (all.length <= this.limit) return { text: all.toString('utf8'), truncated: this.dropped }
+    let start = all.length - this.limit
+    // A UTF-8 continuation byte is 10xxxxxx: step past the rest of a character the bound cut.
+    while (start < all.length && ((all[start] as number) & 0xc0) === 0x80) start += 1
+    return { text: all.subarray(start).toString('utf8'), truncated: true }
+  }
+}
+
+/**
  * Whether a command's exit says the program could not do its job, as
  * distinct from doing it and answering no (#262). Only where the program's
  * own contract draws that line: grep exits 0 for a match, 1 for none, and 2
@@ -3892,13 +3933,21 @@ export function runCommandCheck(
     let timedOut = false
     let settled = false
     let killTimer: NodeJS.Timeout | undefined
+    // A stream whose end is kept is held as bytes until the check settles
+    // (#272): the bound is a size on disk, and a character is not a byte.
+    const tail = keep === 'tail' ? { stdout: new TailCapture(MAX_CAPTURE_BYTES), stderr: new TailCapture(MAX_CAPTURE_BYTES) } : undefined
     const settle = (outcome: CheckOutcome) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       clearTimeout(hardTimer)
       if (killTimer !== undefined) clearTimeout(killTimer)
-      resolve(outcome)
+      if (tail === undefined) resolve(outcome)
+      else {
+        const out = tail.stdout.read()
+        const err = tail.stderr.read()
+        resolve({ ...outcome, stdout: out.text, stderr: err.text, stdoutTruncated: out.truncated, stderrTruncated: err.truncated })
+      }
     }
     // detached puts the check in its own process group so a group-wide kill also
     // reaches grandchildren that inherited the stdio pipes. A contained check's
@@ -3929,23 +3978,13 @@ export function runCommandCheck(
       timeoutMs + KILL_GRACE_MS + HARD_SETTLE_GRACE_MS,
     )
     child.stdout?.on('data', (chunk) => {
-      if (keep === 'tail') {
-        stdout += chunk
-        if (stdout.length > MAX_CAPTURE_BYTES) {
-          stdout = stdout.slice(-MAX_CAPTURE_BYTES)
-          stdoutTruncated = true
-        }
-      } else if (stdout.length < MAX_CAPTURE_BYTES) stdout += chunk
+      if (tail !== undefined) tail.stdout.push(chunk)
+      else if (stdout.length < MAX_CAPTURE_BYTES) stdout += chunk
       else stdoutTruncated = true
     })
     child.stderr?.on('data', (chunk) => {
-      if (keep === 'tail') {
-        stderr += chunk
-        if (stderr.length > MAX_CAPTURE_BYTES) {
-          stderr = stderr.slice(-MAX_CAPTURE_BYTES)
-          stderrTruncated = true
-        }
-      } else if (stderr.length < MAX_CAPTURE_BYTES) stderr += chunk
+      if (tail !== undefined) tail.stderr.push(chunk)
+      else if (stderr.length < MAX_CAPTURE_BYTES) stderr += chunk
       else stderrTruncated = true
     })
     child.on('error', (error) => {
@@ -4117,8 +4156,21 @@ async function writeOutbound(dir: string, record: Record<string, unknown>, rules
  */
 function suiteStream(text: string, truncated: boolean | undefined): string {
   if (truncated !== true) return text
-  const firstBreak = text.indexOf('\n')
-  return `[the start was dropped: only the last 1 MiB is kept]\n${firstBreak === -1 ? text : text.slice(firstBreak + 1)}`
+  // A line ends at a line feed or at a carriage return, which is how a
+  // progress display ends its lines. With no line end after the cut there
+  // is no whole line to keep, and a fragment is not kept.
+  const lineEnd = /\r\n|\n|\r/.exec(text)
+  const kept = lineEnd === null ? '[the kept part held no complete line, so nothing of it is shown]\n' : text.slice(lineEnd.index + lineEnd[0].length)
+  return `[the start was dropped: only the last 1 MiB is kept]\n${kept}`
+}
+
+/** A saved stream without the notes `suiteStream` wrote into it, which are not the suite's words. */
+function suiteBody(saved: string, truncated: boolean): string {
+  if (!truncated) return saved
+  return saved
+    .split('\n')
+    .filter((line) => line !== '[the start was dropped: only the last 1 MiB is kept]' && line !== '[the kept part held no complete line, so nothing of it is shown]')
+    .join('\n')
 }
 
 const SUITE_REASON_STDOUT_LINES = 6
