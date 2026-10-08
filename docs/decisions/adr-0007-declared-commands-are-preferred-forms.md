@@ -8,11 +8,12 @@ containment gap it describes.
 
 **Read this first.** Under this decision alone, the form a planner picks for
 a command decides whether pull request code runs inside the no-network cell
-or outside it. That gap is not accepted here, by anyone. It is closed by
-issue #286, which contains a command check by the program it runs, whatever
-its form. This ADR is only about which forms the plan step accepts; it is
-sound only together with #286, and must not be read as leaving containment
-to the planner.
+or outside it. **That gap is open as this is written**, and it is not
+accepted here, by anyone. Issue #286 is the change that is to close it, by
+containing a command check by the program it runs, whatever its form; it is
+open, and until it lands the gap stands. This ADR is only about which forms
+the plan step accepts; it is sound only once #286 has shipped, and must not
+be read as leaving containment to the planner.
 
 ## Context
 
@@ -108,12 +109,12 @@ So option 2 is the stricter of the two on containment, and option 1 is the
 one that breaks no accepted plan. Neither closes the gap whole, and the gap
 is not something to leave open: it is a matter of a constitution rule.
 
-It is closed by #286, where containment is decided: at run time and by what
-the check runs, not by how it is written. A check whose program a declared
-command contains runs in the cell whatever its arguments or form. That keeps
-`node --version` plannable and contains it too, which refusing forms at the
-plan step would not. #286 also says what becomes of a standard tool no
-declared command covers, since "uncontained by default" is the thing rule 7
+#286 is to close it where containment is decided: at run time and by what
+the check runs, not by how it is written. Under #286 a check whose program a
+declared command contains will run in the cell whatever its arguments or
+form. That keeps `node --version` plannable and contains it too, which
+refusing forms at the plan step would not. #286 is also to say what becomes
+of a standard tool no declared command covers, since "uncontained by default" is the thing rule 7
 is about. This ADR proposes option 1 on the footing that #286 ships; without
 it, option 2 is the better choice, and "Reversing this" says how to take it.
 
@@ -130,12 +131,13 @@ it, option 2 is the better choice, and "Reversing this" says how to take it.
   run, not by the plan step. When such a failure shows up in evidence, the fix
   is a rule for that program's own contract, as for grep, not the general rule.
 
-## The change that closes the gap
+## The change that is to close the gap
 
 - Issue #286: a command check is contained by the program it runs, whatever
   its form, so that the form a planner picks cannot decide whether pull
-  request code has the network. It is shipped straight after this ADR, not
-  left as a follow-up. When it lands, this ADR is updated to say so.
+  request code has the network. It is open as this is written, and is the
+  next change after this ADR, not a follow-up to leave. When it lands, this
+  ADR is updated to say so.
 
 ## Reversing this
 
