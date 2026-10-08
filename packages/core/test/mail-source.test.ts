@@ -169,3 +169,21 @@ test('the inbox contract may list headers and a placement with a message, and re
   await expect(listing({ headers: { Received: 7 } }).list({ address: 'qa@localhost' })).rejects.toThrow('Received header that is neither a string nor a list of strings')
   await expect(listing({ placement: '' }).list({ address: 'qa@localhost' })).rejects.toThrow('placement that is not a non-empty string')
 })
+
+// The signal bounds every poll of a wait: a headers endpoint that stalls must
+// end the read, not let a message be returned after its check ran out of time.
+test('a headers read that runs out of time ends the read; only a catcher that does not serve headers is tolerated', async () => {
+  const fake = fakeMailpit([caughtMessage({ headers: { Subject: ['Confirm your account'] } })])
+  const stalled: Transport = answering(async (input, init) => {
+    if (!String(input).endsWith('/headers')) return fake.transport(input, init)
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('this operation was aborted')))
+    })
+  })
+  await expect(mailpitSource(MAILPIT_URL, stalled).read('JErteJnrGgnzfkBut4FbSx', AbortSignal.timeout(20))).rejects.toThrow('aborted')
+
+  // The same failure with no signal spent is a catcher that cannot answer: the message is read without headers.
+  const refusing: Transport = answering((input, init) => (String(input).endsWith('/headers') ? new Response('nope', { status: 500 }) : fake.transport(input, init)))
+  const read = await mailpitSource(MAILPIT_URL, refusing).read('JErteJnrGgnzfkBut4FbSx')
+  expect(read).not.toHaveProperty('headers')
+})

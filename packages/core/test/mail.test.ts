@@ -572,6 +572,8 @@ test('two concurrent runs on one source each read their own message and delete o
 
 const PASSING_RESULTS = 'mx.receiver.example; spf=pass smtp.mailfrom=bounce.example.test; dkim=pass header.d=example.test header.s=s1; dmarc=pass header.from=example.test'
 const DKIM_FAILING = 'mx.receiver.example; spf=pass smtp.mailfrom=bounce.example.test; dkim=fail header.d=example.test header.s=s1; dmarc=fail header.from=example.test'
+/** A source the profile declares to be a receiving provider: its results are written under this id. */
+const PROVIDER = { source: { kind: 'inbox', url: INBOX_URL, authserv: 'mx.receiver.example' } }
 
 test('a mail check parses the delivery it asserts, with all three mechanisms when it names none (#218)', () => {
   const parse = (extra: Record<string, unknown>) =>
@@ -585,8 +587,8 @@ test('a mail check parses the delivery it asserts, with all three mechanisms whe
     placement: 'inbox',
   })
   // Named mechanisms are kept in one order, and the domains are read in lower case.
-  expect(parse({ authentication: { require: ['dmarc', 'dkim'], domain: 'Example.Test', authserv: 'MX.Receiver.Example' } })).toMatchObject({
-    authentication: { require: ['dkim', 'dmarc'], domain: 'example.test', authserv: 'mx.receiver.example' },
+  expect(parse({ authentication: { require: ['dmarc', 'dkim'], domain: 'Example.Test' } })).toMatchObject({
+    authentication: { require: ['dkim', 'dmarc'], domain: 'example.test' },
   })
   expect(parse({})).not.toHaveProperty('authentication')
 })
@@ -596,8 +598,9 @@ test.each([
   [{ authentication: { require: [] } }, /authentication\.require.*non-empty list of spf, dkim, dmarc/],
   [{ authentication: { require: ['dkim', 'arc'] } }, /authentication\.require/],
   [{ authentication: { domain: 'not a domain' } }, /authentication\.domain.*host name/],
-  [{ authentication: { authserv: 7 } }, /authentication\.authserv.*host name/],
-  [{ authentication: { requires: ['dkim'] } }, /authentication\.requires.*takes require, domain and authserv/],
+  // The receiver whose results count is never a plan's to name: a plan is a model's output.
+  [{ authentication: { authserv: 'mx.receiver.example' } }, /authentication\.authserv.*the profile's to name \(mail\.source\.authserv\), never a plan's/],
+  [{ authentication: { requires: ['dkim'] } }, /authentication\.requires.*takes require and domain/],
   [{ placement: '' }, /placement.*non-empty string/],
   [{ placement: 3 }, /placement.*non-empty string/],
 ])('a delivery assertion that is not what it should be is refused at plan time, naming the field: %j (#218)', (extra, message) => {
@@ -637,7 +640,7 @@ test('a plan mail check carries its delivery assertions into the job the runner 
 })
 
 test('a message that passes all three is proven, with the results in the evidence and beside the message (#218)', async () => {
-  const job = await makeJob(mailCriteria({ address: 'qa@localhost', subject: 'Sign in', authentication: { require: ['spf', 'dkim', 'dmarc'], domain: 'example.test' }, placement: 'inbox' }))
+  const job = await makeJob(mailCriteria({ address: 'qa@localhost', subject: 'Sign in', authentication: { require: ['spf', 'dkim', 'dmarc'], domain: 'example.test' }, placement: 'inbox' }), PROVIDER)
   const { result } = await runJob(job, {
     ...HEALTHY_BOOT,
     readMail: reader(() => message({ headers: { 'authentication-results': [PASSING_RESULTS] }, placement: 'inbox' })),
@@ -663,7 +666,7 @@ test('a message that passes all three is proven, with the results in the evidenc
 })
 
 test('a message that arrives failing authentication is unverified with the record at fault named, never failed, and its results are still evidence (#218)', async () => {
-  const job = await makeJob(mailCriteria({ address: 'qa@localhost', authentication: { require: ['spf', 'dkim', 'dmarc'] } }))
+  const job = await makeJob(mailCriteria({ address: 'qa@localhost', authentication: { require: ['spf', 'dkim', 'dmarc'] } }), PROVIDER)
   const { result } = await runJob(job, {
     ...HEALTHY_BOOT,
     readMail: reader(() => message({ headers: { 'authentication-results': [DKIM_FAILING] } })),
@@ -691,8 +694,9 @@ test('a sink that reports no authentication results leaves the assertion unverif
 
   expect(result.verdict).not.toBe('passed')
   expect(result.criteria[0]?.outcome).toBe('unverified')
-  expect(result.criteria[0]?.reason).toMatch(/mailpit at \S+ reports no authentication results for the message/)
-  expect(result.criteria[0]?.reason).toContain('only a receiving provider adds them')
+  expect(result.criteria[0]?.reason).toMatch(/mailpit at \S+ is not declared as a receiver that judges mail/)
+  expect(result.criteria[0]?.reason).toContain('it reports no authentication results for the message')
+  expect(result.criteria[0]?.reason).toContain('Only a receiving provider adds results that can be trusted')
 })
 
 test('a failing message publishes nothing to later checks: its link is not an artefact (#218)', async () => {
@@ -705,7 +709,7 @@ test('a failing message publishes nothing to later checks: its link is not an ar
         { kind: 'command', run: 'echo {{mail.welcome.link}}' },
       ],
     },
-  ])
+  ], PROVIDER)
   const { result } = await runJob(job, { ...HEALTHY_BOOT, readMail: reader(() => message({ headers: { 'authentication-results': [DKIM_FAILING] } })) })
   expect(result.criteria[0]?.outcome).toBe('unverified')
   expect(result.criteria[0]?.reason).toContain('dkim=fail')
@@ -719,4 +723,44 @@ test('a mail check that asserts nothing about delivery is unchanged: no delivery
   const recorded = JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'message.json'), 'utf8'))
   expect(recorded).not.toHaveProperty('authentication')
   expect(recorded).not.toHaveProperty('placement')
+})
+
+// The application under test is the sender, and a sender can write an
+// Authentication-Results header. A catcher adds none and strips none, so
+// against it a message that vouches for itself must never pass.
+test('a message that carries its own passing Authentication-Results header does not pass against a catcher: the header is the sender\'s word (#218)', async () => {
+  const sink = catcher((address) => [
+    caughtMessage({
+      to: address,
+      created: new Date(Date.now() + 5).toISOString(),
+      from: { Name: 'App', Address: 'no-reply@example.test' },
+      headers: { 'Authentication-Results': [PASSING_RESULTS] },
+    }),
+  ])
+  const job = await makeJob(mailCriteria({ address: '{{run.mail_address}}', authentication: { require: ['spf', 'dkim', 'dmarc'], domain: 'example.test' } }), CATCHER)
+  const { result } = await runJob(job, sink.opts)
+
+  expect(result.verdict).not.toBe('passed')
+  expect(result.criteria[0]?.outcome).toBe('unverified')
+  expect(result.criteria[0]?.reason).toContain('the message carries an Authentication-Results header, but the sender can write one')
+  expect(result.criteria[0]?.mail?.[0]).not.toHaveProperty('delivery')
+  const recorded = JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'message.json'), 'utf8'))
+  expect(recorded).not.toHaveProperty('authentication')
+})
+
+test('the same header under a provider the profile declares is read, and one under any other id is not (#218)', async () => {
+  const other = PASSING_RESULTS.replace('mx.receiver.example', 'mx.sender-controlled.example')
+  const job = await makeJob(mailCriteria({ address: 'qa@localhost', authentication: { require: ['dmarc'] } }), PROVIDER)
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, readMail: reader(() => message({ headers: { 'authentication-results': [other] } })) })
+  expect(result.criteria[0]?.outcome).toBe('unverified')
+  expect(result.criteria[0]?.reason).toContain('reports no authentication results from mx.receiver.example')
+})
+
+test('a profile names the receiving provider its mail source reads, and a catcher cannot be one (#218)', () => {
+  const profile = (source: Record<string, unknown>) => validateProfileConfig({ ...INLINE_PROFILE, mail: { source } })
+  expect(profile({ kind: 'inbox', url: INBOX_URL, authserv: 'mx.receiver.example' }).mail?.source).toEqual({ kind: 'inbox', url: INBOX_URL, authserv: 'mx.receiver.example' })
+  expect(profile({ kind: 'inbox', url: INBOX_URL }).mail?.source).toEqual({ kind: 'inbox', url: INBOX_URL })
+  expect(() => profile({ kind: 'mailpit', url: INBOX_URL, authserv: 'mx.receiver.example' })).toThrow(/mail\.source\.authserv.*a mailpit catcher judges no mail/)
+  expect(() => profile({ kind: 'inbox', url: INBOX_URL, authserv: 'Not A Host' })).toThrow(/mail\.source\.authserv.*lower-case host name/)
+  expect(() => profile({ kind: 'inbox', url: INBOX_URL, authserv: 7 })).toThrow(/mail\.source\.authserv/)
 })

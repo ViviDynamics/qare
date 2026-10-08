@@ -210,6 +210,7 @@ a11y:                            # optional: what an accessibility audit holds a
     - { rule: color-contrast, page: /legacy, reason: "brand grey, replaced in the redesign" }
 mail:                            # optional: where mail checks read from (#65)
   source: { kind: mailpit, url: "http://localhost:8025" }  # the catcher in the stack
+  # source: { kind: inbox, url: "https://mail.example.com/qa-inbox", authserv: mx.example.com }  # a receiving provider, whose authentication results a mail check may trust (#218)
   # domain: qa-mail.example.com  # what follows the @ of the address a run mints
 ux:                              # optional: the advisory UX review (#150), which never decides a verdict
   review: true                   # false turns it off (default: on, for runs whose flows drove pages)
@@ -687,17 +688,36 @@ arrived (#218):
 - `authentication.require` names the mechanisms that must pass;
   `authentication: {}` asks for all three. `authentication.domain` is the
   sending domain expected: the domain of the message's From header, which the
-  passing results must be for or align with. `authentication.authserv` names
-  the receiving server whose results count.
+  passing results must be for or align with.
 - `placement` is where the mailbox must say the message landed.
 
 **The receiving provider's verdict is the evidence.** qare reads the
 `Authentication-Results` header (RFC 8601) the receiver added to the message:
 the server that judged, each `method=result`, and the domain each was
 evaluated for (`smtp.mailfrom` for SPF, `header.d` for DKIM, `header.from`
-for DMARC). It verifies no signature and asks no DNS itself. A sender can
-write that header too, and a receiver adds its own above what it was sent, so
-the topmost header is the one read, or the one whose server the check names.
+for DMARC). It verifies no signature and asks no DNS itself.
+
+**A header proves nothing by itself, so the profile names the receiver.** A
+sender can write `Authentication-Results` too, and the application under
+test is the sender. Results count only when the profile declares its mail
+source to be a receiver that judges mail, by the id that receiver writes its
+results under:
+
+```yaml
+mail:
+  source: { kind: inbox, url: "https://mail.example.com/qa-inbox", authserv: mx.example.com }
+```
+
+Only a header under that id is read, wherever it sits in the message: a
+receiver deletes any header a message arrives with that claims its own id
+(RFC 8601, section 5), so a header under it is the receiver's own. With no
+`authserv` declared, no header in a message is trusted, whatever it says, and
+an authentication assertion is `unverified`. A Mailpit catcher cannot be
+declared one: it judges no mail and removes no forged header, so
+`mail.source.authserv` beside `kind: mailpit` is refused when the profile
+loads. The receiver is the profile's to name and never the plan's: a plan is
+a model's output, and `authentication.authserv` in a plan is refused.
+
 One passing DKIM signature is enough; with a sending domain expected, it must
 be one for a domain that aligns with it, since a relay's own signature
 passing says nothing about the domain the message claims to be from.
@@ -715,9 +735,12 @@ SPF record of the envelope sender's domain, the DMARC record
 `_dmarc.<from domain>`), and whose verdict it is. It is never `failed`: a DNS
 record or a relay setting is not what the change under test did. Nothing such
 a message carries (its link, its code) is published to later checks. A source
-that reports no authentication results, as a catcher in the stack does,
-leaves the assertion `unverified` naming the source, never passed; so does a
-mailbox that does not say where a message landed.
+that reports no authentication results under the declared receiver's id, and
+a source that is no declared receiver at all, as a catcher in the stack is,
+leave the assertion `unverified` naming the source, never passed; so does a
+mailbox that does not say where a message landed. A diagnostic names the
+property the receiver evaluated (`smtp.helo` where SPF was checked for the
+HELO name, not always `smtp.mailfrom`).
 
 Whichever way it goes, `message.json` carries what was read, `authentication`
 (the server, the From domain, and each result with its domain and whether it
@@ -744,10 +767,12 @@ optional `mail` section names one source:
   delivery reads (#218).
 
 The Mailpit adapter reads a message's headers from the catcher
-(`/api/v1/message/{id}/headers`). A catcher adds no `Authentication-Results`
-header of its own and has no folders, so against it an authentication or a
-placement assertion is `unverified`; they mean something against a receiving
-provider.
+(`/api/v1/message/{id}/headers`); a catcher that does not serve them leaves
+the message without headers, and a read that runs out of its check's time
+ends the read. A catcher adds no `Authentication-Results` header of its own,
+removes none the sender wrote, and has no folders, so against it an
+authentication or a placement assertion is always `unverified`; they mean
+something against a receiving provider the profile names.
 
 A source URL may carry `{{run.<name>}}` values, so a stack can serve its
 catcher behind the one port a run mints. The runner polls until a message

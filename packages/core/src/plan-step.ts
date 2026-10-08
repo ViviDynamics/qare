@@ -521,7 +521,6 @@ function planSchemaOver(checkKinds: string[], kinds: string[]) {
                   properties: {
                     require: { type: 'array', items: { type: 'string', enum: ['spf', 'dkim', 'dmarc'] } },
                     domain: { type: 'string' },
-                    authserv: { type: 'string' },
                   },
                 },
                 placement: { type: 'string' },

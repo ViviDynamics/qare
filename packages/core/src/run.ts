@@ -1357,6 +1357,8 @@ interface FlowContext {
  */
 interface MailContext {
   label?: string
+  /** The receiving provider the profile declares its source to be (#218), by the id its results are written under. */
+  authserv?: string
   readMail?: ReadMail
   source?: MailSource
   /** Every address a mail check of this run waited at, for the cleanup. */
@@ -1376,6 +1378,7 @@ function mailContextOf(profile: QaProfile, values: RunValues, opts: { readMail?:
   return {
     // The inbox contract has always been named by its URL alone.
     label: profile.mail?.inbox ?? source.describe,
+    ...(declared.authserv === undefined ? {} : { authserv: declared.authserv }),
     readMail: injected ?? mailReader(source),
     source,
     waited,
@@ -2618,7 +2621,10 @@ async function runCriterion(
         // from the message's headers and from what the mailbox says. They are
         // evidence whichever way the assertion goes, so they are written
         // before the outcome is returned.
-        const delivery = assessDelivery(outcome.message, substituted, mail.label ?? `the mail source for ${substituted.address}`)
+        const delivery = assessDelivery(outcome.message, substituted, {
+          describe: mail.label ?? `the mail source for ${substituted.address}`,
+          ...(mail.authserv === undefined ? {} : { authserv: mail.authserv }),
+        })
         const deliveryLine = delivery.summary === undefined ? undefined : redactText(delivery.summary, sweepRules)
         criterionMail.push({
           check: substituted.name ?? String(index),

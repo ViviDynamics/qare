@@ -19,15 +19,18 @@ function message(fields: Partial<MailMessage> = {}): MailMessage {
   }
 }
 
-const SOURCE = 'mailpit at the catcher'
+/** A source the profile declares to be a receiving provider, by the id its results are written under. */
+const SOURCE = { describe: 'inbox at the provider', authserv: 'mx.receiver.example' }
+/** A catcher: it receives mail and judges nothing, so the profile declares no receiver for it. */
+const CATCHER = { describe: 'mailpit at the catcher' }
 
 test('an Authentication-Results header is read into the server that judged, each result and the domain it was evaluated for', () => {
   expect(parseAuthenticationResults(PASSING)).toEqual({
     authserv: 'mx.receiver.example',
     results: [
-      { method: 'spf', result: 'pass', domain: 'bounce.sender.example', properties: { 'smtp.mailfrom': 'bounce.sender.example' } },
-      { method: 'dkim', result: 'pass', domain: 'sender.example', selector: 's1', properties: { 'header.d': 'sender.example', 'header.s': 's1' } },
-      { method: 'dmarc', result: 'pass', domain: 'sender.example', properties: { 'header.from': 'sender.example' } },
+      { method: 'spf', result: 'pass', domain: 'bounce.sender.example', property: 'smtp.mailfrom', properties: { 'smtp.mailfrom': 'bounce.sender.example' } },
+      { method: 'dkim', result: 'pass', domain: 'sender.example', property: 'header.d', selector: 's1', properties: { 'header.d': 'sender.example', 'header.s': 's1' } },
+      { method: 'dmarc', result: 'pass', domain: 'sender.example', property: 'header.from', properties: { 'header.from': 'sender.example' } },
     ],
   })
 })
@@ -125,23 +128,55 @@ test('a source that reports no authentication results leaves the assertion unver
   for (const headers of [undefined, {}, { 'authentication-results': ['mx.receiver.example; none'] }]) {
     const outcome = assessDelivery(message({ headers }), { authentication: { require: ['spf', 'dkim', 'dmarc'] } }, SOURCE)
     expect(outcome.status).toBe('unverified')
-    expect(outcome.reason).toContain(SOURCE)
-    expect(outcome.reason).toContain('reports no authentication results')
+    expect(outcome.reason).toContain(SOURCE.describe)
+    expect(outcome.reason).toContain('reports no authentication results from mx.receiver.example')
   }
+  const sink = assessDelivery(message({ headers: {} }), { authentication: { require: ['dkim'] } }, CATCHER)
+  expect(sink.status).toBe('unverified')
+  expect(sink.reason).toContain('mailpit at the catcher is not declared as a receiver that judges mail')
+  expect(sink.reason).toContain('a catcher in the stack receives mail without judging it')
 })
 
-test("only the receiving server's own header counts: the topmost, or the one the check names, never one the sender wrote", () => {
-  const forged = 'mx.receiver.example; spf=pass smtp.mailfrom=sender.example; dkim=pass header.d=sender.example; dmarc=pass header.from=sender.example'
-  const real = 'mx.receiver.example; spf=fail smtp.mailfrom=sender.example; dkim=fail header.d=sender.example; dmarc=fail header.from=sender.example'
-  // Headers are listed top first, and a receiver adds its own above what it was sent.
-  const stacked = message({ headers: { 'authentication-results': [real, forged] } })
-  expect(assessDelivery(stacked, { authentication: { require: ['dmarc'] } }, SOURCE).status).toBe('unverified')
+// The application under test is the sender, and a sender can write this
+// header. Against a source nobody declared to be a receiver, a message that
+// vouches for itself proves nothing: it must never pass.
+test('a header the sender could have written is never trusted: on a source that is no declared receiver, a passing header leaves the assertion unverified', () => {
+  const forged = message({ headers: { 'authentication-results': [PASSING] } })
+  const outcome = assessDelivery(forged, { authentication: { require: ['spf', 'dkim', 'dmarc'], domain: 'sender.example' } }, CATCHER)
+  expect(outcome.status).toBe('unverified')
+  expect(outcome.reason).toContain('the message carries an Authentication-Results header, but the sender can write one')
+  expect(outcome.reason).toContain('mail.source.authserv')
+  // Nothing of the header is recorded as a result: it was not read as one.
+  expect(outcome.evidence).toBeUndefined()
+  expect(outcome.summary).toBeUndefined()
+})
 
-  const named = message({ headers: { 'authentication-results': ['relay.internal; dmarc=fail header.from=sender.example', PASSING] } })
-  expect(assessDelivery(named, { authentication: { require: ['dmarc'], authserv: 'mx.receiver.example' } }, SOURCE).status).toBe('passed')
-  const absent = assessDelivery(named, { authentication: { require: ['dmarc'], authserv: 'mx.other.example' } }, SOURCE)
+test("only the declared receiver's own header counts, wherever it sits, and never one under another id", () => {
+  const failing = 'mx.receiver.example; spf=fail smtp.mailfrom=sender.example; dkim=fail header.d=sender.example; dmarc=fail header.from=sender.example'
+  // A header under another server's id, above or below, is not the receiver's verdict and cannot stand in for it.
+  const relay = 'relay.internal; spf=pass smtp.mailfrom=sender.example; dkim=pass header.d=sender.example; dmarc=pass header.from=sender.example'
+  for (const headers of [[relay, failing], [failing, relay]]) {
+    const outcome = assessDelivery(message({ headers: { 'authentication-results': headers } }), { authentication: { require: ['dmarc'] } }, SOURCE)
+    expect(outcome.status).toBe('unverified')
+    expect(outcome.reason).toContain('dmarc=fail')
+  }
+  expect(assessDelivery(message({ headers: { 'authentication-results': [relay, PASSING] } }), { authentication: { require: ['dmarc'] } }, SOURCE).status).toBe('passed')
+
+  const absent = assessDelivery(message({ headers: { 'authentication-results': [relay] } }), { authentication: { require: ['dmarc'] } }, SOURCE)
   expect(absent.status).toBe('unverified')
-  expect(absent.reason).toContain('no authentication results from mx.other.example')
+  expect(absent.reason).toContain('reports no authentication results from mx.receiver.example')
+  expect(absent.reason).toContain('it carries results under relay.internal, which the profile does not name as its receiver')
+})
+
+test('a diagnostic names the property the receiver evaluated: SPF for the HELO name is not called the envelope sender', () => {
+  const helo = 'mx.receiver.example; spf=fail smtp.helo=mta.sender.example'
+  const outcome = assessDelivery(message({ headers: { 'authentication-results': [helo] } }), { authentication: { require: ['spf'] } }, SOURCE)
+  expect(outcome.reason).toContain('spf=fail for smtp.helo=mta.sender.example; look at the SPF record of mta.sender.example')
+  expect(outcome.reason).not.toContain('smtp.mailfrom')
+  expect(parseAuthenticationResults(helo)?.results[0]).toMatchObject({ property: 'smtp.helo', domain: 'mta.sender.example' })
+  // A DKIM result that names only the signing identity is named by it.
+  const identity = assessDelivery(message({ headers: { 'authentication-results': ['mx.receiver.example; dkim=fail header.i=@mail.sender.example'] } }), { authentication: { require: ['dkim'] } }, SOURCE)
+  expect(identity.reason).toContain('dkim=fail for header.i=mail.sender.example')
 })
 
 test('where the message landed is asserted from what the mailbox says, and a mailbox that does not say leaves it unverified', () => {
@@ -156,7 +191,7 @@ test('where the message landed is asserted from what the mailbox says, and a mai
 
   const silent = assessDelivery(message(), { placement: 'inbox' }, SOURCE)
   expect(silent.status).toBe('unverified')
-  expect(silent.reason).toContain(`${SOURCE} does not say where a message landed`)
+  expect(silent.reason).toContain(`${SOURCE.describe} does not say where a message landed`)
 })
 
 test('a check that asserts nothing about delivery is not assessed, whatever the message carries', () => {

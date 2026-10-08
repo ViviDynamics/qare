@@ -7,8 +7,9 @@ const HOST_NAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])
 /**
  * The delivery assertions of a `mail` check (#218), as a plan and a job both
  * carry them, read by one parser so the two cannot disagree: `authentication`
- * (which mechanisms must pass, the sending domain expected, and the receiving
- * server whose results count) and `placement`.
+ * (which mechanisms must pass, and the sending domain expected) and
+ * `placement`. The receiver whose results count is not among them: a plan
+ * is a model's output, and the trust comes from the profile.
  *
  * `authentication: {}` asks for all three mechanisms. Anything that is not
  * what it should be is refused with the field named, at plan time: an
@@ -24,10 +25,15 @@ export function parseMailDelivery(
   if (authentication !== undefined) {
     const field = `${base}.authentication`
     if (typeof authentication !== 'object' || authentication === null || Array.isArray(authentication))
-      fail(field, 'authentication must be an object with require, and optionally domain and authserv')
+      fail(field, 'authentication must be an object with require, and optionally domain')
     const record = authentication as Record<string, unknown>
-    const unknown = Object.keys(record).filter((key) => key !== 'require' && key !== 'domain' && key !== 'authserv')
-    if (unknown.length > 0) fail(`${field}.${unknown[0] ?? ''}`, `authentication takes require, domain and authserv, not ${unknown.join(', ')}`)
+    const unknown = Object.keys(record).filter((key) => key !== 'require' && key !== 'domain')
+    if (unknown.length > 0)
+      fail(
+        `${field}.${unknown[0] ?? ''}`,
+        `authentication takes require and domain, not ${unknown.join(', ')}` +
+          (unknown.includes('authserv') ? ": the receiver whose results count is the profile's to name (mail.source.authserv), never a plan's" : ''),
+      )
     let require: AuthMechanism[] = [...AUTH_MECHANISMS]
     if (record.require !== undefined) {
       const listed = record.require
@@ -35,15 +41,12 @@ export function parseMailDelivery(
         fail(`${field}.require`, `require must be a non-empty list of ${AUTH_MECHANISMS.join(', ')}`)
       require = AUTH_MECHANISMS.filter((mechanism) => (listed as AuthMechanism[]).includes(mechanism))
     }
-    const named = (key: 'domain' | 'authserv'): string | undefined => {
-      const held = record[key]
-      if (held === undefined) return undefined
-      if (typeof held !== 'string' || !HOST_NAME.test(held.trim())) fail(`${field}.${key}`, `${key} must be a host name, such as mail.example.com`)
-      return (held as string).trim().toLowerCase()
+    let domain: string | undefined
+    if (record.domain !== undefined) {
+      if (typeof record.domain !== 'string' || !HOST_NAME.test(record.domain.trim())) fail(`${field}.domain`, 'domain must be a host name, such as mail.example.com')
+      domain = (record.domain as string).trim().toLowerCase()
     }
-    const domain = named('domain')
-    const authserv = named('authserv')
-    out.authentication = { require, ...(domain === undefined ? {} : { domain }), ...(authserv === undefined ? {} : { authserv }) }
+    out.authentication = { require, ...(domain === undefined ? {} : { domain }) }
   }
   const placement = value.placement
   if (placement !== undefined) {

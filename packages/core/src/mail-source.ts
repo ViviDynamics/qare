@@ -34,6 +34,13 @@ export interface MailRef {
 export interface DeclaredMailSource {
   kind: MailSourceKind
   url: string
+  /**
+   * The authserv-id of the receiving provider this source reads from (#218):
+   * the id it writes its `Authentication-Results` under. Declared, a mail
+   * check may trust the results under that id; absent, no header in a message
+   * is trusted, since the sender can write one. A catcher is never one.
+   */
+  authserv?: string
 }
 
 export const MAIL_SOURCE_KINDS = ['mailpit', 'inbox'] as const
@@ -164,7 +171,11 @@ export function mailpitSource(url: string, fetchImpl: typeof fetch = fetch): Mai
     let parsed: unknown
     try {
       parsed = await (await request(`message/${encodeURIComponent(id)}/headers`, { signal })).json()
-    } catch {
+    } catch (error) {
+      // A catcher that does not serve the headers is tolerated. A read that
+      // ran out of the time its check has is not: the signal bounds every
+      // poll, and a stalled endpoint must end the wait, not outlast it.
+      if (signal?.aborted === true) throw error
       return undefined
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined

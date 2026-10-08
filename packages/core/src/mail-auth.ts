@@ -21,7 +21,23 @@ export interface MailAuthenticationAssertion {
   require: AuthMechanism[]
   /** The sending domain expected: the domain of the From header, which the passing results must align with. */
   domain?: string
-  /** The receiving server whose results count, by its authserv-id. Absent, the topmost header's. */
+}
+
+/**
+ * The source a message was read from, as far as its authentication results go
+ * (#218). A header in a message proves nothing by itself: the sender can
+ * write `Authentication-Results` too, and the application under test is the
+ * sender. Results count only when the profile declares the source to be a
+ * receiver that judges mail, by the authserv-id it writes its results under
+ * (`mail.source.authserv`). A receiver deletes any header a message arrives
+ * with that claims its own id (RFC 8601, section 5), so a header under that
+ * id is the receiver's own. The profile is reviewed; a plan is a model's
+ * output, and is never where the trust comes from.
+ */
+export interface MailSourceTrust {
+  /** What a reason calls the source. */
+  describe: string
+  /** The authserv-id of the receiver the profile declares the source to be. */
   authserv?: string
 }
 
@@ -31,6 +47,8 @@ export interface AuthResult {
   result: string
   /** The domain the method was evaluated for: smtp.mailfrom or smtp.helo, header.d, header.from. */
   domain?: string
+  /** The property the domain was read from, as the receiver wrote it: `smtp.helo`, say, where SPF was evaluated for the HELO name. */
+  property?: string
   /** The DKIM selector, when the receiver reported it. */
   selector?: string
   reason?: string
@@ -167,20 +185,17 @@ export function parseAuthenticationResults(header: string): AuthenticationResult
       else if (name.includes('.')) properties[name] = value
     }
     const method = (methodPair[1] ?? '').toLowerCase()
-    const named =
-      method === 'spf'
-        ? (properties['smtp.mailfrom'] ?? properties['smtp.helo'])
-        : method === 'dkim'
-          ? (properties['header.d'] ?? properties['header.i'])
-          : method === 'dmarc'
-            ? properties['header.from']
-            : undefined
-    const domain = named === undefined ? undefined : domainOf(named)
+    // The property the domain is read from is kept, so a diagnostic names
+    // what the receiver evaluated and not what is usual.
+    const candidates = method === 'spf' ? ['smtp.mailfrom', 'smtp.helo'] : method === 'dkim' ? ['header.d', 'header.i'] : method === 'dmarc' ? ['header.from'] : []
+    const property = candidates.find((name) => properties[name] !== undefined)
+    const domain = property === undefined ? undefined : domainOf(properties[property] ?? '')
     const selector = method === 'dkim' ? properties['header.s'] : undefined
     results.push({
       method,
       result: unquote(methodPair[2] ?? '').toLowerCase(),
       ...(domain === undefined ? {} : { domain }),
+      ...(domain === undefined || property === undefined ? {} : { property }),
       ...(selector === undefined ? {} : { selector }),
       ...(reason === undefined ? {} : { reason }),
       properties,
@@ -201,16 +216,16 @@ function aligns(one: string, other: string): boolean {
 
 /** The DNS record a failing result points at, in the words a person would look it up by. */
 function recordAtFault(result: { method: string; domain?: string; selector?: string }, from: string | undefined): string {
-  if (result.method === 'spf') return result.domain === undefined ? 'the SPF record of the envelope sender' : `the SPF record of ${result.domain}`
+  if (result.method === 'spf') return result.domain === undefined ? 'the SPF record of the sending host' : `the SPF record of ${result.domain}`
   if (result.method === 'dkim')
     return result.domain === undefined ? "the DKIM key of the signing domain" : `the DKIM key ${result.selector ?? '<selector>'}._domainkey.${result.domain}`
   const domain = result.domain ?? from
   return domain === undefined ? 'the DMARC record of the From domain' : `the DMARC record _dmarc.${domain}`
 }
 
-function propertyOf(result: { method: string; domain?: string }): string {
+function propertyOf(result: { method: string; domain?: string; property?: string }): string {
   if (result.domain === undefined) return ''
-  const name = result.method === 'spf' ? 'smtp.mailfrom' : result.method === 'dkim' ? 'header.d' : 'header.from'
+  const name = result.property ?? (result.method === 'spf' ? 'smtp.mailfrom' : result.method === 'dkim' ? 'header.d' : 'header.from')
   return ` for ${name}=${result.domain}`
 }
 
@@ -224,8 +239,9 @@ function propertyOf(result: { method: string; domain?: string }): string {
 export function assessDelivery(
   message: MailMessage,
   check: { authentication?: MailAuthenticationAssertion; placement?: string },
-  source: string,
+  trust: MailSourceTrust,
 ): DeliveryOutcome {
+  const source = trust.describe
   if (check.authentication === undefined && check.placement === undefined) return { status: 'passed' }
   const evidence: MailDeliveryEvidence = {}
   const summary: string[] = []
@@ -234,15 +250,24 @@ export function assessDelivery(
   if (check.authentication !== undefined) {
     const assertion = check.authentication
     const headers = (message.headers?.['authentication-results'] ?? []).map(parseAuthenticationResults).filter((parsed): parsed is AuthenticationResults => parsed !== undefined)
-    // A sender can write this header too. A receiver adds its own above what
-    // it was sent, so the topmost is the receiver's unless the check names it.
-    const wanted = assertion.authserv?.toLowerCase()
-    const judged = wanted === undefined ? headers[0] : headers.find((parsed) => parsed.authserv === wanted)
-    if (judged === undefined || judged.results.length === 0) {
+    // A sender can write this header too, and the application under test is
+    // the sender. Only a header under the id of the receiver the profile
+    // declares counts; with none declared, no header in the message does,
+    // whatever it says and wherever it sits.
+    const wanted = trust.authserv?.toLowerCase()
+    const judged = wanted === undefined ? undefined : headers.find((parsed) => parsed.authserv === wanted)
+    if (wanted === undefined) {
       reasons.push(
-        wanted !== undefined && headers.length > 0
-          ? `${source} reports no authentication results from ${wanted} for the message (it carries results from ${[...new Set(headers.map((parsed) => parsed.authserv))].join(', ')}), so its authentication cannot be shown`
-          : `${source} reports no authentication results for the message, so its authentication cannot be shown: a catcher in the stack receives mail without judging it, and only a receiving provider adds them`,
+        `${source} is not declared as a receiver that judges mail, so the message's authentication cannot be shown: ` +
+          (headers.length === 0
+            ? 'it reports no authentication results for the message, and a catcher in the stack receives mail without judging it'
+            : 'the message carries an Authentication-Results header, but the sender can write one, and nothing says a receiver wrote this one') +
+          '. Only a receiving provider adds results that can be trusted, and the profile names it (mail.source.authserv)',
+      )
+    } else if (judged === undefined || judged.results.length === 0) {
+      const others = [...new Set(headers.map((parsed) => parsed.authserv).filter((authserv) => authserv !== wanted))]
+      reasons.push(
+        `${source} reports no authentication results from ${wanted} for the message${others.length === 0 ? '' : ` (it carries results under ${others.join(', ')}, which the profile does not name as its receiver)`}, so its authentication cannot be shown`,
       )
     } else {
       const from = fromDomain(message.from)
@@ -254,10 +279,22 @@ export function assessDelivery(
           method: result.method,
           result: result.result,
           ...(result.domain === undefined ? {} : { domain: result.domain }),
+          ...(result.property === undefined ? {} : { property: result.property }),
           ...(result.selector === undefined ? {} : { selector: result.selector }),
           ...(result.domain === undefined || reference === undefined ? {} : { aligned: aligns(result.domain, reference) }),
         }))
-      evidence.authentication = { authserv: judged.authserv, ...(from === undefined ? {} : { from_domain: from }), results }
+      evidence.authentication = {
+        authserv: judged.authserv,
+        ...(from === undefined ? {} : { from_domain: from }),
+        // The property a domain was read from is for the diagnostic; the evidence names the domain.
+        results: results.map((result) => ({
+          method: result.method,
+          result: result.result,
+          ...(result.domain === undefined ? {} : { domain: result.domain }),
+          ...(result.selector === undefined ? {} : { selector: result.selector }),
+          ...(result.aligned === undefined ? {} : { aligned: result.aligned }),
+        })),
+      }
       summary.push(`${results.map((result) => `${result.method}=${result.result}${result.domain === undefined ? '' : ` (${result.domain})`}`).join(', ')}, judged by ${judged.authserv}`)
 
       if (expected !== undefined && (from === undefined || !aligns(from, expected)))

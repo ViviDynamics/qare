@@ -10,8 +10,9 @@ In:
   may list both with a message.
 - `packages/core/src/mail-auth.ts`: an `Authentication-Results` parser (RFC
   8601) and `assessDelivery`, which holds a message to what a check asserts.
-- `authentication` (`require`, `domain`, `authserv`) and `placement` on the
-  `mail` check, in the plan and the job, parsed by one function
+- `mail.source.authserv` in the profile: the receiving provider a source
+  reads, by the id it writes its results under. Results count only under it.
+- `authentication` (`require`, `domain`) and `placement` on the `mail` check, in the plan and the job, parsed by one function
   (`packages/core/src/mail-delivery.ts`), carried through `jobFromPlan`, the
   plan lock, the planner's output schema and its prompt.
 - The run writes what was read into `message.json` and one line into the
@@ -38,9 +39,12 @@ Out:
 - The same goes for a sending domain or a placement that is not the one
   expected: unverified, never failed. A message from the wrong domain could
   be the product's doing; without a way to tell, it is not reported as one.
-- The topmost `Authentication-Results` header is the one read, unless the
-  check names the server. A sender can write that header, and a receiver puts
-  its own on top.
+- A header proves nothing by itself: the sender can write it, and the app
+  under test is the sender. The first draft read the topmost header and let a
+  plan name the server, which let a message vouch for itself against a
+  catcher (found in review). Results now count only under the id of a
+  receiver the profile declares, a catcher cannot be declared one, and a plan
+  cannot name it.
 - Alignment is read without the public suffix list: same domain, or one a
   subdomain of the other. The receiver's `dmarc=` result is what counts.
 - A message whose delivery is not as asserted publishes no artefact (link,
