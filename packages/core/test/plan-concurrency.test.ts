@@ -310,6 +310,20 @@ test('an error that is not a planning gap stops new batches, waits for the ones 
   expect(runner.requests).toHaveLength(2)
 })
 
+test('with an exploration channel the batches run one at a time whatever the concurrency, because every turn would steer the same page', async () => {
+  const runner = new GatedRunner((ids) => completed(planFor(ids)))
+  const planning = planRun(runner, { ...INPUTS, criteria: CRITERIA.slice(0, 3), concurrency: 3, exploration: { endpoint: ['http:', '//127.0.0.1:1'].join('') } })
+  for (const id of ['c1', 'c2', 'c3']) {
+    await settle()
+    // One turn navigates and snapshots at a time: no other turn can move the page under it.
+    expect(runner.waiting).toEqual([id])
+    runner.release(id)
+  }
+  const plan = await planning
+  expect(runner.most).toBe(1)
+  expect(plan.criteria.map((criterion) => criterion.id)).toEqual(['c1', 'c2', 'c3'])
+})
+
 test('a caller whose batch report throws ends the step the same way: after the turn in flight, with no batch started behind it', async () => {
   const runner = new GatedRunner((ids) => completed(planFor(ids)))
   let settled = false

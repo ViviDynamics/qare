@@ -1183,7 +1183,12 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, () => worker()))
+  // The exploration channel serves one page to every turn (#87): two turns
+  // exploring at once would navigate it under each other, and a turn would
+  // plan from a screen another turn opened. Until a turn has a page of its
+  // own, a plan that explores runs one batch at a time whatever was asked.
+  const workers = exploration === undefined ? Math.min(concurrency, batches.length) : 1
+  await Promise.all(Array.from({ length: workers }, () => worker()))
   if (fatal !== undefined) throw fatal.error
 
   // Merged in the order asked, whatever order the batches ended in.
