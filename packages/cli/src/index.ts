@@ -762,7 +762,15 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       )
     // The profile's own suites reach the planner with what they run (#258),
     // beside any the caller named that the profile does not declare.
-    const declaredSuites: PlanSuite[] = (profile?.suites ?? []).map((suite) => ({ name: suite.name, kind: suite.kind, command: suite.command }))
+    // A command crosses to the model, so the seeded values are swept from it
+    // here, as they are from the diff (#64); the plan step sweeps the
+    // built-in and profile rules itself.
+    const seeded = valueRules([profile?.app?.login?.totp?.secret, profile?.app?.login?.backupCode?.value])
+    const declaredSuites: PlanSuite[] = (profile?.suites ?? []).map((suite) => ({
+      name: suite.name,
+      kind: suite.kind,
+      command: redactText(suite.command, seeded),
+    }))
     const plannerSuites: (string | PlanSuite)[] = [
       ...declaredSuites,
       ...(suites ?? []).filter((name) => !declaredSuites.some((suite) => suite.name === name)),

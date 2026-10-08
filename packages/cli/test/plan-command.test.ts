@@ -310,7 +310,7 @@ test('the planner never sees the seeded values the diff carries (#64)', async ()
   await writeFile(join(dir, '.qa', 'fixtures', 'seed.sql'), '', 'utf8')
   await writeFile(
     join(dir, '.qa', 'config.yml'),
-    `app:\n  boot: { compose: compose.yml, service: app }\n  health: { http: ${healthUrl}, timeout: 1s }\n  seed: { command: "true" }\n  login:\n    fixture: seed.sql\n    role: admin\n    totp:\n      secret: ${secret}\nstubs: []\nvisual:\n  widths: [390]\n  themes: [light]\nsuites: []\n`,
+    `app:\n  boot: { compose: compose.yml, service: app }\n  health: { http: ${healthUrl}, timeout: 1s }\n  seed: { command: "true" }\n  login:\n    fixture: seed.sql\n    role: admin\n    totp:\n      secret: ${secret}\nstubs: []\nvisual:\n  widths: [390]\n  themes: [light]\nsuites:\n  - { name: sign-in, command: "bin/sign-in --otp-seed ${secret}", kind: flow }\n`,
     'utf8',
   )
   const argvPath = join(dir, 'argv.json')
@@ -352,6 +352,8 @@ test('the planner never sees the seeded values the diff carries (#64)', async ()
   const argv = JSON.parse(await readFile(argvPath, 'utf8')) as string[]
   expect(argv[1]).not.toContain(secret)
   expect(argv[1]).toContain('[redacted]')
+  // The profile's suites reach the planner too, and their commands are swept the same way (#258).
+  expect(argv[1]).toContain('- sign-in (a flow suite: bin/sign-in --otp-seed [redacted])')
 })
 
 test('qare plan declares the run contract paths to the planner (#162)', async () => {

@@ -153,3 +153,22 @@ test('a flavour with a browser plans as it did: action flows, visual and a11y ch
   expect(runner.requests[0].prompt).toContain('A flow action is one of')
   expect(runner.requests[0].prompt).not.toContain('ships no browser')
 })
+
+test('a suite command reaches the planner redacted, by the built-in rules and the profile\'s own', async () => {
+  const runner = new FakeAgentRunner([completed(answer(SUITE_CHECK))])
+
+  await planRun(runner, {
+    ...INPUTS,
+    suites: [
+      { name: 'sign-in', kind: 'flow', command: 'bundle exec cucumber features/sign_in.feature API_TOKEN=hunter2-live-value' },
+      { name: 'billing', kind: 'flow', command: 'bin/billing --account fixture-account-7781' },
+    ],
+    redact: { values: ['fixture-account-7781'] },
+  })
+
+  const [request] = runner.requests
+  expect(request.prompt).not.toContain('hunter2-live-value')
+  expect(request.prompt).not.toContain('fixture-account-7781')
+  expect(request.prompt).toContain('- sign-in (a flow suite: bundle exec cucumber features/sign_in.feature API_TOKEN=[redacted])')
+  expect(request.prompt).toContain('- billing (a flow suite: bin/billing --account [redacted])')
+})

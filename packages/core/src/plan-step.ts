@@ -8,7 +8,7 @@ import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './
 import { placeholderValue, shellCharacter, tokenFillsTemplate } from './run.js'
 import { existsSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
-import { redactText, redactionRules, type ProfileRedaction } from './redact.js'
+import { redactText, redactionRules, type ProfileRedaction, type RedactionRule } from './redact.js'
 
 export interface PlanCriterionInput {
   id: string
@@ -128,9 +128,15 @@ function suiteName(suite: string | PlanSuite): string {
   return typeof suite === 'string' ? suite : suite.name
 }
 
-function suiteLine(suite: string | PlanSuite): string {
+/**
+ * A suite's command crosses to the model like QA.md does, so it is swept by
+ * the same rules first: a token or a fixture value written into a command
+ * never reaches the prompt (#258).
+ */
+function suiteLine(suite: string | PlanSuite, rules: readonly RedactionRule[]): string {
   if (typeof suite === 'string') return `- ${suite}`
-  const what = [suite.kind === undefined ? undefined : `a ${suite.kind} suite`, suite.command].filter((part) => part !== undefined)
+  const command = suite.command === undefined ? undefined : redactText(suite.command, rules)
+  const what = [suite.kind === undefined ? undefined : `a ${suite.kind} suite`, command].filter((part) => part !== undefined)
   return what.length === 0 ? `- ${suite.name}` : `- ${suite.name} (${what.join(': ')})`
 }
 
@@ -427,7 +433,7 @@ function prompt(inputs: PlanInputs, correction?: string): string {
   // Nothing a browser serves is offered when there is none to launch (#258).
   const unserved = noBrowser === undefined ? undeclaredCheckKinds(inputs.driver) : [...DRIVER_CHECK_KINDS]
   const suites = inputs.suites?.length
-    ? `Suites this repository declares, which a check may name:\n${inputs.suites.map(suiteLine).join('\n')}`
+    ? `Suites this repository declares, which a check may name:\n${inputs.suites.map((suite) => suiteLine(suite, redactionRules(inputs.redact))).join('\n')}`
     : 'This repository declares no suites, so every check must stand on its own.'
   const qaMd =
     inputs.qaMd === undefined
