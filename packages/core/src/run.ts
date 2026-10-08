@@ -1526,8 +1526,9 @@ async function runCriteriaAcrossLanes(criteria: JobCriterion[], lanes: LanePlan,
   // which is what more workers asks for. The sequential criteria still run
   // one at a time, in plan order. One with an app of its own may run while
   // the workers do, because nothing it touches is theirs. One on the shared
-  // app (it hands mail on) waits until the workers have drained: it never
-  // runs beside a shared criterion on the app they share (#278).
+  // app (it hands mail on, or it is isolated where there is no app to boot
+  // for it) waits until the workers have drained: it never runs beside a
+  // shared criterion on the app they share (#278).
   const workers = Promise.all(
     lanes.shared.map(async (slice) => {
       for (const index of slice) await runShared(index)
@@ -1536,9 +1537,14 @@ async function runCriteriaAcrossLanes(criteria: JobCriterion[], lanes: LanePlan,
   // A worker that throws must not be left unobserved while the sequential
   // lane is still running: the failure is raised when the workers are awaited.
   workers.catch(() => {})
+  // An app of its own is something only a profile that boots one can give:
+  // on a target or a client build an isolated criterion runs on the shared
+  // one like its neighbours, so it waits for the workers like a mail
+  // criterion does.
+  const ownsApp = (entry: { ownBoot: boolean }): boolean => entry.ownBoot && ctx.profile.app !== undefined
   let drained = false
   for (const entry of lanes.sequential) {
-    if (!entry.ownBoot && !drained) {
+    if (!ownsApp(entry) && !drained) {
       await workers
       drained = true
     }

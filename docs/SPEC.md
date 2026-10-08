@@ -1156,9 +1156,11 @@ no setting that widens it:
   sequential criteria still run one at a time, in plan order between
   themselves. A sequential criterion with an app of its own may run while
   the workers do, because nothing it touches is theirs. A sequential
-  criterion on the shared app, which is one that hands mail on, runs only
-  once the workers have drained: it is never in flight beside a shared
-  criterion on the app they share.
+  criterion on the shared app runs only once the workers have drained: it is
+  never in flight beside a shared criterion on the app they share. That is
+  a criterion that hands mail on, and also an isolated criterion of a
+  profile that boots no app (a target, or a client build), which has no app
+  of its own to be given and runs on the shared one.
 
 Either way the results come back in plan order, and a mail hand-off between
 criteria sees plan order.
