@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import type { BootOpts } from './boot.js'
 import { flowDriverFor } from './flow-driver.js'
 import { jobFromPlan } from './job-from-plan.js'
+import { plannerAddress } from './app-address.js'
 import { judgeExecuted } from './judge.js'
 import type { ReadMail } from './mailbox.js'
 import { startMcpToolServer, startRegisteredMcpSources, mcpRecordsFile, type McpCallRecord, type McpSource, type McpToolServer } from './mcp.js'
@@ -206,8 +207,9 @@ async function planOrReport(
       // the mapping is the capability declaration, so plan time rejects an
       // action the mapped tools cannot perform, before anything runs.
       driver: flowDriverFor(profile),
-      ...(profile.client === undefined ? {} : { client: profile.client.driver }),
-      ...(profile.target === undefined ? {} : { target: profile.target.url }),
+      // How the app is addressed, whichever of target, client and booted app
+      // the profile names (#267).
+      ...plannerAddress(profile),
       ...(server === undefined
         ? {}
         : {

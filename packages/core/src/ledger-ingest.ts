@@ -1,3 +1,5 @@
+import type { PlannerAddress } from './app-address.js'
+import type { FlowDriverCapabilities } from './flow.js'
 import { BROWSER_FLOW_DRIVER } from './flow-playwright.js'
 import { normalizeWording } from './criterion-identity.js'
 import { IssueCriteriaError, criteriaFromIssue } from './issue-criteria.js'
@@ -70,7 +72,14 @@ export async function ingestCriteria(
     ledger: LedgerEntry[]
     planner: AgentRunner
     suites?: string[]
-    target?: string
+    /** How the profile's app is addressed (#267), from `plannerAddress`: the planner is told what the profile knows. */
+    address?: PlannerAddress
+    /**
+     * The driver the profile's flows run against, from `flowDriverFor` (#267):
+     * a plan is held to what that driver can do, so a client build is not
+     * offered the browser's checks. Absent, the browser, as it always was.
+     */
+    driver?: FlowDriverCapabilities
     /** The profile's QA.md instructions (#156), redacted and size capped before they reach the prompt. */
     qaMd?: string
     /** The profile's redaction rules (#52), which the QA.md text is redacted with. */
@@ -114,11 +123,11 @@ export async function ingestCriteria(
       : await planRun(opts.planner, {
           criteria: candidates,
           ...(opts.suites === undefined ? {} : { suites: opts.suites }),
-          ...(opts.target === undefined ? {} : { target: opts.target }),
+          ...(opts.address ?? {}),
           ...(opts.qaMd === undefined ? {} : { qaMd: opts.qaMd }),
           ...(opts.redact === undefined ? {} : { redact: opts.redact }),
           ...(opts.commands === undefined ? {} : { commands: opts.commands }),
-          driver: BROWSER_FLOW_DRIVER,
+          driver: opts.driver ?? BROWSER_FLOW_DRIVER,
           diff: NO_DIFF,
           // Asked once, as the note above says, whatever the environment's
           // batch size (#259): a batch lost to an outage would come back as

@@ -1,5 +1,5 @@
 import { isolatedHealthUrl, pinsToRunPort } from './isolation.js'
-import { pathOnTarget } from './profile.js'
+import { pathOnTarget, type QaProfile } from './profile.js'
 import { substituteValues, type RunValues } from './values.js'
 
 /**
@@ -20,23 +20,109 @@ export function bootedAppOrigin(appHealth: string, values: RunValues): string | 
   }
 }
 
+/** A host as an address may name it: letters, digits, dots and hyphens, or a bracketed IPv6 address. */
+const HOST_NAME = /^(?:[a-z0-9._-]+|\[[0-9a-f:.]+\])$/i
+
+/** The run's port by name, as a profile writes it in a health URL and as a plan writes it in an address. */
+const RUN_PORT = '{{run.app_port}}'
+const RUN_PORT_WRITTEN = /\{\{\s*run\.app_port\s*\}\}/g
+
 /**
  * The booted app's address as a plan may write it (#264): the origin of the
  * health check as the profile authors it, with the run's port by name. A
  * local health check that names a fixed port is pinned to the run's port when
  * the run boots, so the number in the profile is not where the app will be,
- * and the planner is told `{{run.app_port}}` instead. It is an origin, like
- * `bootedAppOrigin`: credentials the health URL carries are left out.
+ * and the planner is told `{{run.app_port}}` instead.
+ *
+ * The address is written into the model's prompt, and a health check is any
+ * non-empty string to the profile loader, so it is rebuilt from what a URL
+ * parser reads as the scheme, the host and the port, and from nothing else
+ * (#267): never the userinfo, the path, the query or the fragment, and never
+ * text a parser does not read as one of the three. The run's port is the one
+ * run value an address may name, and only as the port: the URL is parsed
+ * twice with two different numbers standing in for it, and what does not
+ * parse, or whose host moves with the stand-in, tells the planner nothing.
  */
 export function plannedAppAddress(appHealth: string): string | undefined {
-  // Scheme and host, without userinfo: a credential in the health URL is the
-  // profile's own, and the address is written into the model's prompt.
-  const parts = /^(https?:\/\/)(?:[^/?#\s@]*@)?([^/?#\s@]+)/i.exec(appHealth.trim())
-  if (parts === null) return undefined
-  const authored = `${parts[1]}${parts[2]}`
-  if (authored.includes('{{')) return authored
-  if (!pinsToRunPort(appHealth)) return authored
-  return authored.replace(/:\d+$/, ':{{run.app_port}}')
+  const written = appHealth.trim()
+  const read = (port: string): URL | undefined => {
+    try {
+      const parsed = new URL(written.replace(RUN_PORT_WRITTEN, port))
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed : undefined
+    } catch {
+      return undefined
+    }
+  }
+  const [one, other] = [read('65001'), read('65002')]
+  if (one === undefined || other === undefined) return undefined
+  if (one.hostname === '' || one.hostname !== other.hostname) return undefined
+  // The parser lets braces and other marks stand in a host. A host is a name
+  // of letters, digits, dots and hyphens, or a bracketed IPv6 address.
+  if (!HOST_NAME.test(one.hostname)) return undefined
+  const origin = `${one.protocol}//${one.hostname}`
+  // The two readings differ in the port exactly when the profile named the run's port there.
+  if (one.port !== other.port) return one.port === '65001' && other.port === '65002' ? `${origin}:${RUN_PORT}` : undefined
+  // A fixed local port is not where this run's app will be: the run pins it to its own.
+  if (pinsToRunPort(written) && isolatedHealthUrl(written, 65003) !== written) return `${origin}:${RUN_PORT}`
+  return one.port === '' ? origin : `${origin}:${one.port}`
+}
+
+/**
+ * How the app under test is addressed, as the planner is told it: the three
+ * inputs of the plan step that say so (`PlanInputs.target`, `client`, `app`).
+ */
+export interface PlannerAddress {
+  /** The URL of a running target the profile names (#122). */
+  target?: string
+  /** The client driver of a profile that names a build to launch (#72). */
+  client?: string
+  /** The app the run boots (#264), by the address a plan may write. */
+  app?: { address: string }
+}
+
+/**
+ * What a profile says about how its app is addressed, as the plan step takes
+ * it (#267). Every caller that plans builds these inputs here, so none of
+ * them can tell the planner less than the profile knows: the pipeline's plan
+ * step once left out the target, and the one-off check the booted app.
+ * A profile names one of target, client and app, so at most one comes back;
+ * no profile, or an address with no origin a parser can read, says nothing.
+ */
+export function plannerAddress(profile: Pick<QaProfile, 'target' | 'client' | 'app'> | undefined): PlannerAddress {
+  if (profile === undefined) return {}
+  const app = profile.app === undefined ? undefined : plannedAppAddress(profile.app.health.http)
+  const target = profile.target === undefined ? undefined : targetOrigin(profile.target.url)
+  return {
+    // The origin and nothing else: this is written into the model's prompt,
+    // and a credential anywhere in the target URL is the profile's own.
+    ...(target === undefined ? {} : { target }),
+    ...(profile.client === undefined ? {} : { client: profile.client.driver }),
+    ...(app === undefined ? {} : { app: { address: app } }),
+  }
+}
+
+/**
+ * The origin of a target, as it is written into a prompt: scheme, host and
+ * port, read by the parser the profile loader uses, and nothing else. The
+ * address is built from the parts that cannot carry a secret, not by taking
+ * the dangerous parts off, so no spelling of a credential (in the userinfo,
+ * the path, the query or the fragment) is one a rule failed to think of.
+ * The planner needs no more: a page is opened by path, which resolves
+ * against the whole target URL at run time, and a command reaches the target
+ * through {{run.target_url}}, which the harness fills. What is not an
+ * http(s) URL has no origin to tell, and the planner is told nothing of it.
+ */
+function targetOrigin(url: string): string | undefined {
+  let parsed: URL
+  try {
+    parsed = new URL(url.trim())
+  } catch {
+    return undefined
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined
+  // The parser lets braces and other marks stand in a host: only a plain host name is written.
+  if (!HOST_NAME.test(parsed.hostname)) return undefined
+  return `${parsed.protocol}//${parsed.hostname}${parsed.port === '' ? '' : `:${parsed.port}`}`
 }
 
 export interface FlowAddressContext {

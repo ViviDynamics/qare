@@ -34,7 +34,7 @@ import {
   loadProfile,
   browserlessFlavour,
   flowDriverFor,
-  plannedAppAddress,
+  plannerAddress,
   redactEvidenceDir,
   redactText,
   redactionRules,
@@ -320,7 +320,10 @@ async function ingestCommand(argv: string[], out: Writer, err: Writer): Promise<
       changes: ledgerDocument.changes,
       planner: nareRunners(nare).planner,
       ...(profile === undefined ? {} : { suites: profile.suites.map((suite) => suite.name) }),
-      ...(profile === undefined || profile.target === undefined ? {} : { target: profile.target.url }),
+      address: plannerAddress(profile),
+      // The driver goes with the address (#267): the planner is told how the
+      // app is addressed and held to what that app's driver can do.
+      ...(profile === undefined ? {} : { driver: flowDriverFor(profile) }),
       ...(profile === undefined || profile.instructions === undefined ? {} : { qaMd: profile.instructions }),
       ...(profile === undefined || profile.redact === undefined ? {} : { redact: profile.redact }),
       ...(profile === undefined || profile.commands === undefined ? {} : { commands: profile.commands }),
@@ -793,7 +796,6 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       ...declaredSuites,
       ...(suites ?? []).filter((name) => !declaredSuites.some((suite) => suite.name === name)),
     ]
-    const appAddress = profile?.app === undefined ? undefined : plannedAppAddress(profile.app.health.http)
     await mkdir(dirname(outPath), { recursive: true })
     let plan: Plan
     // The profile's registered MCP servers the plan step may look through (#93):
@@ -835,9 +837,9 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
           )
         },
         ...(flowActions.length === 0 ? {} : { flowActions }),
-        ...(profile?.client === undefined ? {} : { client: profile.client.driver }),
-        // The address of the app the run boots, as a plan may write it (#264).
-        ...(appAddress === undefined ? {} : { app: { address: appAddress } }),
+        // How the app is addressed (#267): a running target's URL, a client
+        // build's driver, or the address of the app the run boots (#264).
+        ...plannerAddress(profile),
         ...(profile?.instructions ? { qaMd: profile.instructions } : {}),
         ...(profile?.redact === undefined ? {} : { redact: profile.redact }),
         ...(profile?.commands === undefined ? {} : { commands: profile.commands }),
