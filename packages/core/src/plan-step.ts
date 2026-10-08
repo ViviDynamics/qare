@@ -62,6 +62,13 @@ export interface PlanInputs {
   /** The client driver of a profile that names a build to launch (#72), so the planner knows there is no URL. */
   client?: string
   /**
+   * The app the run boots (#264), by the address a plan may write: the origin
+   * of the profile's health check with the run's port by name
+   * (`plannedAppAddress`). The planner is told a page is opened by path or
+   * by this address, so neither is a guess.
+   */
+  app?: { address: string }
+  /**
    * The checkout root, when the caller has one (#201): a plan filling a
    * path placeholder is checked against the checkout, and a path that does
    * not exist is corrected away like any other contract violation.
@@ -664,6 +671,22 @@ function prompt(inputs: PlanInputs, correction?: string): string {
                 'evidence of what the page looks like and are compared with nothing. An a11y check names its page by path too, and',
                 'with no base revision to excuse a violation, every one it finds fails the criterion.',
               ]),
+          '',
+        ]),
+    ...(inputs.app === undefined
+      ? []
+      : [
+          `The run boots the app itself and publishes it on a port chosen for the run, so its address is ${inputs.app.address}.`,
+          ...(noBrowser !== undefined
+            ? ['A command check reaches the app at that address.']
+            : [
+                'A flow opens its pages by path, such as {"action":"open","url":"/some/page"}, which opens that page on the app the run booted,',
+                `or by the full address, {"action":"open","url":"${inputs.app.address}/some/page"}: both open the same page. A visual check and an`,
+                'a11y check name their page by path the same way, and a command check reaches the app at the address.',
+              ]),
+          ...(inputs.app.address.includes('{{run.app_port}}')
+            ? ['Never write a port number: {{run.app_port}} is the port of this run, and a number read from the profile or guessed names another app, or none.']
+            : []),
           '',
         ]),
     ...(inputs.client === undefined

@@ -33,6 +33,7 @@ import { ProfileMissingError, clientExecutableName, loadProfile, pathOnTarget, v
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, mailEvidenceRules, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunProfileSummary, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
+import { flowOpenUrl } from './app-address.js'
 import { runVisualCheckJob, visualPageUrl, type VisualComparison, type VisualContext, type VisualSessionFactory } from './visual-run.js'
 import { runSeed, SEED_LOG, unrunnableSeedReason } from './seed.js'
 import { mintRunValues, mintedMailAddress, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
@@ -2568,13 +2569,28 @@ async function runCriterion(
         if (!resolvedActions.ok) return { status: 'unverified' as const, reason: resolvedActions.reason }
         // The flow types what it read from mail: those values join the sweep.
         if (resolvedActions.values.length > 0) sweepRules.push(...valueRules(resolvedActions.values))
+        // A path a flow opens is a page of the app this side booted (#264):
+        // it resolves on the origin the run proved healthy, per attempt and
+        // per side, so each side of a two-sided run opens its own app. A
+        // path with no app to be a page of is unverified, by name, and the
+        // browser is never asked to open something that is not a URL.
+        const addressed: FlowActionStep[] = []
+        for (const action of resolvedActions.actions) {
+          if (action.action !== 'open') {
+            addressed.push(action)
+            continue
+          }
+          const page = flowOpenUrl(action.url, { ...flow.visual, client: flow.client !== undefined }, values)
+          if (!page.ok) return { status: 'unverified' as const, reason: `${page.reason}; the flow is unverified, not failed` }
+          addressed.push({ ...action, url: page.url })
+        }
         const outcome = await runFlowCheckJob(
           substituted.kind === 'flow'
-            ? { ...substituted, actions: resolvedActions.actions }
+            ? { ...substituted, actions: addressed }
             : {
                 kind: 'flow',
                 ...(substituted.name === undefined ? {} : { name: substituted.name }),
-                actions: resolvedActions.actions,
+                actions: addressed,
                 ...(substituted.timeoutMs === undefined ? {} : { timeoutMs: substituted.timeoutMs }),
               },
           flow.suites,

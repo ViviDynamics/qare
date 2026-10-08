@@ -386,6 +386,24 @@ port in the health URL is pinned to the run's port either way, so the run
 proves the app it booted and not another run's. A URL the harness cannot name
 (a remote target, or one with no explicit port) is left unchanged.
 
+A flow addresses the booted app in one of two ways, and both open the same
+page (#264). A path, `{"action":"open","url":"/auth/sign_in"}`, opens that
+page on the app the run booted: it resolves on the origin of the health URL,
+with the run's values substituted and the port pinned as above, which is the
+origin the run proved healthy, so each side of a two-sided run opens its own
+app. A path cannot leave that origin: leading slashes are a path on the app,
+never a protocol-relative URL. The full address,
+`http://localhost:{{run.app_port}}/auth/sign_in`, names the same origin by
+its run value. A visual check and an a11y check name their page by path the
+same way. The plan step tells the planner this address, with the run's port
+by name even when the profile's health URL writes a number, so neither form
+is a guess and no port number reaches a plan. A path on a target resolves
+below the target URL, and a path in a client build resolves inside the
+application, as they did. A path with no app to be a page of (the run booted
+none and the profile names no target, or the health URL names no http origin)
+is not something a browser can open and says nothing about the change: the
+flow is `unverified`, naming the path and why, and never `failed`.
+
 A run writes `isolation.json` into its evidence before booting — the project,
 the run id, the port, the started-at timestamp — so whatever happened to the
 run, what it booted is findable. Cleanup has three paths: a boot that outlives

@@ -92,6 +92,15 @@ export function allocatePort(): Promise<number> {
 }
 
 /**
+ * Whether a health URL as the profile authors it is one a run pins to its own
+ * port (#264): local, with an explicit port. The number it names is then not
+ * where the booted app will answer.
+ */
+export function pinsToRunPort(url: string): boolean {
+  return EXPLICIT_LOCAL_PORT.test(url.trim())
+}
+
+/**
  * Pin a local health URL to the port this run published its app on, so the
  * health check, and every check the run drives, probes the app this run booted
  * rather than another run's. A URL that is not local, carries no explicit
