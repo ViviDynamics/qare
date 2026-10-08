@@ -922,3 +922,63 @@ test('a profile whose flavour ships a browser plans browser checks as before, an
   expect(plan.criteria.map((criterion) => criterion.checks?.[0]?.kind)).toEqual(['flow', 'visual'])
   expect(out.lines.join('')).not.toContain('no browser')
 })
+
+// #264: the profile names the booted app's address only in its health check,
+// and the planner was told nothing of it.
+test.each([
+  ['the run port by name', '//localhost:{{run.app_port}}/up'],
+  ['a fixed local port, which the run pins to its own', '//localhost:3000/up'],
+])('qare plan tells the planner how the booted app is addressed, for a health check that names %s (#264)', async (_label, health) => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-plan-app-'))
+  const profile = join(dir, '.qa')
+  await mkdir(join(profile, 'fixtures'), { recursive: true })
+  await mkdir(join(profile, 'stubs'), { recursive: true })
+  await writeFile(join(profile, 'QA.md'), '# QA\n', 'utf8')
+  await writeFile(join(profile, 'fixtures', 'users.yml'), '', 'utf8')
+  await writeFile(
+    join(profile, 'config.yml'),
+    [
+      'app:',
+      '  boot: { compose: compose.qa.yaml, service: web }',
+      `  health: { http: "${['http:', health].join('')}", timeout: 120s }`,
+      '  seed: { command: "true" }',
+      '  login: { fixture: fixtures/users.yml, role: admin }',
+      'stubs: []',
+      'visual:',
+      '  widths: [390]',
+      '  themes: [light]',
+      'flavour: web',
+      'suites: []',
+      '',
+    ].join('\n'),
+    'utf8',
+  )
+  const criteriaPath = join(dir, 'criteria.json')
+  const diffPath = join(dir, 'change.diff')
+  await writeFile(criteriaPath, JSON.stringify(CRITERIA), 'utf8')
+  await writeFile(diffPath, 'diff --git a/login.ts b/login.ts', 'utf8')
+  const nare = await recordingNare(dir, PLAN)
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', join(dir, 'plan.json'), '--nare', nare.binary, '--profile', profile],
+    capture().writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  const prompt = await nare.prompt()
+  const address = ['http:', '//localhost:{{run.app_port}}'].join('')
+  expect(prompt).toContain(`its address is ${address}.`)
+  expect(prompt).toContain('{"action":"open","url":"/some/page"}')
+  expect(prompt).toContain(`{"action":"open","url":"${address}/some/page"}`)
+  expect(prompt).not.toContain('localhost:3000')
+})
+
+test('a profile that boots nothing is told nothing about a booted app (#264)', async () => {
+  const { dir, profile, criteriaPath, diffPath } = await flavourProfile('web')
+  const nare = await recordingNare(dir, PLAN)
+
+  expect(await main(['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', join(dir, 'plan.json'), '--nare', nare.binary, '--profile', profile], capture().writer, capture().writer)).toBe(0)
+
+  expect(await nare.prompt()).not.toContain('The run boots the app itself')
+})

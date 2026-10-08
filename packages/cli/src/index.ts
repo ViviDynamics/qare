@@ -34,6 +34,7 @@ import {
   loadProfile,
   browserlessFlavour,
   flowDriverFor,
+  plannedAppAddress,
   redactEvidenceDir,
   redactText,
   redactionRules,
@@ -775,6 +776,7 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       ...declaredSuites,
       ...(suites ?? []).filter((name) => !declaredSuites.some((suite) => suite.name === name)),
     ]
+    const appAddress = profile?.app === undefined ? undefined : plannedAppAddress(profile.app.health.http)
     await mkdir(dirname(outPath), { recursive: true })
     let plan: Plan
     // The profile's registered MCP servers the plan step may look through (#93):
@@ -814,6 +816,8 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         },
         ...(flowActions.length === 0 ? {} : { flowActions }),
         ...(profile?.client === undefined ? {} : { client: profile.client.driver }),
+        // The address of the app the run boots, as a plan may write it (#264).
+        ...(appAddress === undefined ? {} : { app: { address: appAddress } }),
         ...(profile?.instructions ? { qaMd: profile.instructions } : {}),
         ...(profile?.redact === undefined ? {} : { redact: profile.redact }),
         ...(profile?.commands === undefined ? {} : { commands: profile.commands }),
