@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { expect, test } from 'vitest'
+import { afterEach, beforeEach, expect, test } from 'vitest'
 import { NO_DIFF, encodePng, loadResult, type BootOpts, type VisualSessionFactory } from '@qare/core'
 import { main } from '../src/index.js'
 import type { Writer } from '../src/index.js'
@@ -10,6 +10,19 @@ import type { Writer } from '../src/index.js'
 // and the target's health probe is injected.
 const TARGET_URL = ['https:', '//wiki.example.test'].join('')
 const UP = { probe: async () => ({ ok: true }), pollIntervalMs: 1 }
+
+// The fake nare here answers every call with one plan for all the criteria, so
+// these tests pin the plan to one turn; planning in batches (#259) is the
+// default, and has its own tests.
+let batchSizeBefore: string | undefined
+beforeEach(() => {
+  batchSizeBefore = process.env.QARE_PLAN_BATCH_SIZE
+  process.env.QARE_PLAN_BATCH_SIZE = '50'
+})
+afterEach(() => {
+  if (batchSizeBefore === undefined) delete process.env.QARE_PLAN_BATCH_SIZE
+  else process.env.QARE_PLAN_BATCH_SIZE = batchSizeBefore
+})
 
 function capture(): { text: () => string; writer: Writer } {
   const lines: string[] = []
