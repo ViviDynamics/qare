@@ -785,34 +785,53 @@ function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
   return undefined
 }
 
-/** grep's options that take the next token as their value, so it is neither the pattern nor a file. */
-const GREP_VALUE_OPTIONS = new Set([
-  '-m', '-A', '-B', '-C', '-d', '-D',
-  '--max-count', '--after-context', '--before-context', '--context', '--include', '--exclude', '--exclude-dir', '--exclude-from', '--label', '--directories', '--devices',
+/** grep's short options that take a value: attached to the letter, or the next token. */
+const GREP_SHORT_VALUE_OPTIONS = 'mABCdD'
+/** The short options whose value is the pattern (or a file of patterns), so every operand is a file. */
+const GREP_SHORT_PATTERN_OPTIONS = 'ef'
+/** The long options that take a value, as `--name=value` or as the next token. */
+const GREP_LONG_VALUE_OPTIONS = new Set([
+  'max-count', 'after-context', 'before-context', 'context', 'include', 'exclude', 'exclude-dir', 'exclude-from', 'label', 'directories', 'devices', 'binary-files',
 ])
-/** The options that name the pattern themselves, so every operand is a file. */
-const GREP_PATTERN_OPTIONS = new Set(['-e', '-f', '--regexp', '--file'])
+const GREP_LONG_PATTERN_OPTIONS = new Set(['regexp', 'file'])
 
-/** What grep would open as files: its operands after the pattern, by grep's own argument rules. */
+/**
+ * What grep would open as files: its operands after the pattern, read by
+ * grep's own option grammar. Short options cluster (`-ni`), and one that
+ * takes a value takes the rest of its cluster (`-m1`, `-eA`) or, when it
+ * ends the cluster, the next token (`-m 1`, `-e A`). A pattern given by an
+ * option leaves every operand a file.
+ */
 function grepFileOperands(tokens: string[]): string[] {
   const operands: string[] = []
   let patternGiven = false
   let optionsEnded = false
   for (let index = 1; index < tokens.length; index += 1) {
     const token = tokens[index]!
-    if (!optionsEnded && token === '--') {
+    if (optionsEnded || token === '-' || !token.startsWith('-')) {
+      operands.push(token)
+      continue
+    }
+    if (token === '--') {
       optionsEnded = true
       continue
     }
-    if (!optionsEnded && token.startsWith('-') && token !== '-') {
-      if (GREP_PATTERN_OPTIONS.has(token)) {
-        patternGiven = true
-        index += 1
-      } else if (GREP_VALUE_OPTIONS.has(token)) index += 1
-      else if (/^--(regexp|file)=/.test(token)) patternGiven = true
+    if (token.startsWith('--')) {
+      const [name = '', value] = token.slice(2).split(/=(.*)/s, 2)
+      const isPattern = GREP_LONG_PATTERN_OPTIONS.has(name)
+      if (isPattern) patternGiven = true
+      if ((isPattern || GREP_LONG_VALUE_OPTIONS.has(name)) && value === undefined) index += 1
       continue
     }
-    operands.push(token)
+    for (let at = 1; at < token.length; at += 1) {
+      const letter = token[at]!
+      const isPattern = GREP_SHORT_PATTERN_OPTIONS.includes(letter)
+      if (!isPattern && !GREP_SHORT_VALUE_OPTIONS.includes(letter)) continue
+      if (isPattern) patternGiven = true
+      // The value is the rest of the cluster, or the next token when the letter ends it.
+      if (at === token.length - 1) index += 1
+      break
+    }
   }
   return patternGiven ? operands : operands.slice(1)
 }
@@ -854,11 +873,12 @@ function grepGap(plan: Plan, inputs: PlanInputs): string | undefined {
       }
       if (inputs.repoPath === undefined) continue
       for (const operand of grepFileOperands(tokens)) {
-        if (operand.includes('{{') || operand === '-') continue
-        const resolved = resolve(inputs.repoPath, operand)
-        if (existsSync(resolved) || willExist(operand, inputs)) continue
+        if (operand === '-') continue
+        // A run value is never a file of the checkout: grep would open what it names as a local path.
+        const runValue = operand.includes('{{')
+        if (!runValue && (existsSync(resolve(inputs.repoPath, operand)) || willExist(operand, inputs))) continue
         return (
-          `${where}: grep would read ${JSON.stringify(operand)} as a file, and the checkout carries no such file. ` +
+          `${where}: grep would read ${JSON.stringify(operand)} as a file, and ${runValue ? 'a value the run fills in is not a file of the checkout' : 'the checkout carries no such file'}. ` +
           'The command is split on whitespace, so a pattern is one token and every argument after it is a file to search: ' +
           'write the pattern as one token (one word, or a regular expression with . where a space would be), or mark the criterion unplannable'
         )

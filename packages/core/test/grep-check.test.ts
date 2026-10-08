@@ -78,7 +78,11 @@ test.each([
   ['a pattern given with -e, so every other argument is a file', 'grep -n -e addresses docs/SPEC.md packages/core/src/runner.ts'],
   ['a directory searched recursively', 'grep -rn addresses docs'],
   ['no file at all', 'grep -rn addresses'],
-  ['a file the run fills in', 'grep -n addresses {{run.target_url}}'],
+  ['a value attached to its option', 'grep -m1 -A2 addresses docs/SPEC.md'],
+  ['a pattern attached to -e in a cluster', 'grep -neaddresses docs/SPEC.md'],
+  ['long options that carry their value', 'grep --max-count=1 --regexp=addresses docs/SPEC.md'],
+  ['a long option whose value is the next token', 'grep --max-count 1 addresses docs/SPEC.md'],
+  ['a run value in the pattern', 'grep -n {{run.id}} docs/SPEC.md'],
 ])('a grep with %s is left alone', async (_label, command) => {
   const runner = new FakeAgentRunner([completed(planWith(command))])
 
@@ -86,6 +90,21 @@ test.each([
 
   expect(runner.requests).toHaveLength(1)
   expect(plan.criteria[0]).toMatchObject({ checks: [{ command }] })
+})
+
+test.each([
+  ['-e with its pattern attached, so every operand is a file', 'grep -eA flow docs/SPEC.md', '"flow"'],
+  ['-e at the end of a cluster, so the next token is the pattern', 'grep -ne A flow docs/SPEC.md', '"flow"'],
+  ['a value option in a cluster, whose value is the next token', 'grep -nm 1 A flow docs/SPEC.md', '"flow"'],
+  ['--regexp= carrying the pattern', 'grep --regexp=A flow docs/SPEC.md', '"flow"'],
+  ['a run value where a file should be', 'grep -n addresses {{run.target_url}}', '"{{run.target_url}}"'],
+])('a grep with %s is corrected: grep would open the word as a file', async (_label, command, word) => {
+  const runner = new FakeAgentRunner([completed(planWith(command)), completed(planWith('grep -n addresses docs/SPEC.md'))])
+
+  await planRun(runner, await inputs())
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1]?.prompt).toContain(`grep would read ${word} as a file`)
 })
 
 test('a file the change adds is not in the plan step\'s checkout, and a grep that reads it is still planned', async () => {
