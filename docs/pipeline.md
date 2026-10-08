@@ -30,7 +30,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.19
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.21
     with:
       nare-model: gpt-4.1-mini
     secrets:
@@ -67,7 +67,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.19
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.21
     with:
       runs-on: '["self-hosted", "linux", "x64"]'
       profile: services/web/qa
@@ -241,6 +241,41 @@ execute copies the docker client and its plugins under `RUNNER_TEMP` and
 mounts them into the run's container from there, because a daemon that does
 not see the runner's `/usr/bin` cannot mount the client from it.
 
+## Which checks each flavour runs
+
+execute runs in the image the profile's `flavour` names, and a profile that
+names none runs in `core`. The flavour decides which checks can run at all,
+because only one of them ships a browser:
+
+| Check | `core` (the default) | `web` |
+| --- | --- | --- |
+| `command` | yes | yes |
+| `mail` | yes | yes |
+| `flow` that names a suite | yes: the suite's command brings whatever it drives | yes |
+| `flow` of actions (open, click, assertText, and the rest) | no: there is no browser to launch | yes |
+| `visual` | no | yes |
+| `a11y` | no | yes |
+
+```yaml
+# .qa/config.yml
+flavour: web   # the checks need a browser
+```
+
+The plan step reads the flavour before it asks the model. For a profile whose
+flavour ships no browser, the planner is told so and is offered only suites,
+commands and mail: it is handed the profile's suites with the command each
+one runs, so a criterion a suite already covers is planned as that suite. A
+criterion that only a browser could show comes back unplannable, saying that
+`flavour: web` is what changes it. A plan that still holds an action flow, a
+visual check or an a11y check is corrected once and then refused at the plan
+step, naming the flavour and the setting, rather than left to end unverified
+when the browser fails to launch.
+
+Two kinds of profile are not held to this, because their flows do not run on
+the image's browser: one that names a `client` (see "Profiles that install a
+build") plans against that client's driver, and one that maps an MCP driver
+plans against the mapping. Each declares what it can do for itself.
+
 ## Profiles that boot an application
 
 execute runs `qare run` inside the image, and the run boots the profile's
@@ -342,7 +377,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.19
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.21
     with:
       nare-model: gpt-4.1-mini
       artefacts: qare-artefacts
