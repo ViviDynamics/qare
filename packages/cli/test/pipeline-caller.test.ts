@@ -118,6 +118,7 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
     'qare-ref',
     'runs-on',
     'self-hosted',
+    'verify-batch-size',
   ])
   for (const [name, input] of Object.entries(call.inputs)) {
     expect(input.type, name).toBe('string')
@@ -184,6 +185,23 @@ test('the plan batch size reaches the plan container, and only when set', () => 
   // And the caller's documentation names it, with the default it stands in for.
   const docs = readFileSync(join(repoRoot, 'docs', 'pipeline.md'), 'utf8')
   expect(docs).toMatch(/\| `plan-batch-size` \| empty \| .*default of 1.*`QARE_PLAN_BATCH_SIZE`/)
+})
+
+// #275: the verifier's batch size is the caller's to set, and it crosses the
+// docker boundary into the one container that verifies.
+test('the verifier batch size reaches the judge container, and only when set', () => {
+  expect(call.inputs['verify-batch-size']?.default).toBe('')
+  const text = readFileSync(join(repoRoot, PIPELINE), 'utf8')
+  expect([...text.matchAll(/QARE_VERIFY_BATCH_SIZE: \$\{\{ inputs\.verify-batch-size \}\}/g)].length, 'the judge step alone sets it').toBe(1)
+  const judge = pipeline.jobs.judge?.steps?.find((candidate) => candidate.name === 'Judge the result')
+  expect(judge?.env?.QARE_VERIFY_BATCH_SIZE).toBe('${{ inputs.verify-batch-size }}')
+  expect(judge?.run?.replace(/\s+/g, ' ')).toContain('if [ -n "$QARE_VERIFY_BATCH_SIZE" ]; then model_env+=(-e QARE_VERIFY_BATCH_SIZE) fi')
+  // The planner plans and verifies nothing: each step is handed its own setting and not the other's.
+  const plan = pipeline.jobs.plan?.steps?.find((candidate) => candidate.name === 'Plan the QA run')
+  expect(plan?.run).not.toContain('QARE_VERIFY_BATCH_SIZE')
+  expect(judge?.run).not.toContain('QARE_PLAN_BATCH_SIZE')
+  const docs = readFileSync(join(repoRoot, 'docs', 'pipeline.md'), 'utf8')
+  expect(docs).toMatch(/\| `verify-batch-size` \| empty \| .*default of 1.*`QARE_VERIFY_BATCH_SIZE`/)
 })
 
 test('the caller chooses the runners for every job', () => {
