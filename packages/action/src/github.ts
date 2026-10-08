@@ -314,6 +314,22 @@ export class GitHubClient {
     return tree.sha
   }
 
+  /**
+   * Every file path of a tree, read whole (#151). A tree GitHub cut short is
+   * refused: a listing that silently lacks its newest entries would be read
+   * as a repository that recorded no run.
+   */
+  async listTreePaths(tree: string): Promise<string[]> {
+    const listed = await this.request<{ tree?: Array<{ path?: unknown; type?: unknown }>; truncated?: unknown }>(
+      'GET',
+      `/repos/${this.repository}/git/trees/${tree}`,
+      new URLSearchParams({ recursive: '1' }),
+    )
+    if (listed.truncated === true) throw new GitHubClientError(`GitHub cut the listing of tree ${tree} short, so what it holds cannot be read whole`)
+    if (!Array.isArray(listed.tree)) throw new GitHubClientError(`GitHub returned no listing for tree ${tree}`)
+    return listed.tree.filter((entry) => entry.type === 'blob' && typeof entry.path === 'string').map((entry) => entry.path as string)
+  }
+
   async getCommitTree(sha: string): Promise<string> {
     const commit = await this.request<GithubCommit>('GET', `/repos/${this.repository}/git/commits/${sha}`)
     return commit.tree.sha

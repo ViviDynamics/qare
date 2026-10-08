@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { resolve } from 'node:path'
-import { FileLedgerStore, loadProfile, loadResult, redactionRules, RUN_VERDICTS, valueRules, VERSION } from '@qare/core'
+import { FileLedgerStore, loadProfile, loadResult, parseFleetConfig, redactionRules, RUN_VERDICTS, valueRules, VERSION } from '@qare/core'
 import { GitHubClient, GitHubClientError } from './github.js'
 import { GitHubQaAssetsPusher } from './qa-assets.js'
 import { fileRefusalStubs, GitHubStubIssuePoster } from './stub-issues.js'
@@ -15,6 +15,7 @@ import { parseSweepPayload, publishSweep } from './sweep-report.js'
 import { reportPipelineFailure } from './report-failure.js'
 import { carryOutAdvisoryReplies } from './advisory-replies.js'
 import { MAX_NEW_ISSUES, publishMainFindings, type MainFindingAction } from './main-findings.js'
+import { buildFleetReport, publishFleetReport } from './fleet-report.js'
 // The GitHub client and the stub issue poster, for `qare init --file-issues`
 // (#146): the CLI files a stub issue the way the pipeline does.
 export { GitHubClient, GitHubClientError } from './github.js'
@@ -56,13 +57,14 @@ export async function main(argv: string[], out: Writer = process.stdout, err: Wr
     if (command === 'report-failure') return await reportFailureCommand(rest, out)
     if (command === 'advisory-replies') return await advisoryRepliesCommand(rest, out)
     if (command === 'main-findings') return await mainFindingsCommand(rest, out)
+    if (command === 'fleet-report') return await fleetReportCommand(rest, out)
   } catch (error) {
     err.write(error instanceof Error ? `${error.name}: ${error.message}\n` : `${String(error)}\n`)
     return 1
   }
   entry(out)
   if (command !== undefined) {
-    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence", "ingest-deliver", "post-questions", "sweep-report", "report-failure", "advisory-replies" and "main-findings"\n`)
+    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence", "ingest-deliver", "post-questions", "sweep-report", "report-failure", "advisory-replies", "main-findings" and "fleet-report"\n`)
     return 1
   }
   return 0
@@ -440,6 +442,40 @@ interface Flags {
   string(name: string): string | undefined
   number(name: string): number | undefined
   list(name: string): string[] | undefined
+}
+
+/**
+ * `fleet-report`: every repository qare runs in, on one page (#151). It reads
+ * the repositories the config lists, each through the identity this step
+ * holds, and publishes the page and the summary issue in the repository it
+ * runs in. It writes nothing to the repositories it reads. `--dry-run true`
+ * reads, publishes nothing, and prints what it would.
+ */
+async function fleetReportCommand(argv: string[], out: Writer): Promise<number> {
+  const flags = parseFlags(argv)
+  const configPath = flags.string('config')
+  if (configPath === undefined || configPath === '') throw new GitHubClientError('qare-action fleet-report needs --config <path to the fleet config, a JSON file listing the repositories>')
+  const config = parseFleetConfig(JSON.parse(await readFile(configPath, 'utf8')))
+  const branch = flags.string('branch') ?? 'qa-assets'
+  const path = flags.string('path') ?? 'fleet/report.md'
+  for (const [name, value] of [['branch', branch], ['path', path]] as const)
+    if (!/^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)*$/.test(value) || value.split('/').includes('..'))
+      throw new GitHubClientError(`qare-action fleet-report --${name} must be a plain path of letters, digits, dots, dashes and slashes (got ${JSON.stringify(value)})`)
+  const dryRun = flags.string('dry-run') === 'true'
+  const connect = (repository: string | undefined): GitHubClient => new GitHubClient({ repository, apiRoot: flags.string('api-root'), tokenEnv: flags.string('token-env') })
+  const home = connect(flags.string('repository'))
+  const report = await buildFleetReport(config, connect, { now: new Date(), where: `\`${path}\` on the \`${branch}\` branch of this repository` })
+  const outPath = flags.string('out')
+  if (outPath !== undefined && outPath !== '') await writeFile(outPath, report.page, 'utf8')
+  out.write(`read ${report.states.length} ${report.states.length === 1 ? 'repository' : 'repositories'}; ${report.attention} ${report.attention === 1 ? 'thing needs' : 'things need'} attention\n`)
+  if (dryRun) {
+    out.write(`dry run: nothing published. The page would go to ${path} on ${branch} of ${home.repository}, and the summary issue would carry attention key ${report.summary.key}\n`)
+    return 0
+  }
+  const published = await publishFleetReport(home, report, { branch, path })
+  out.write(`page committed to ${published.page.path} on ${published.page.branch}\n`)
+  out.write(`summary issue #${published.summary.issue} ${published.summary.action}\n`)
+  return 0
 }
 
 function sweepReportCommand(argv: string[], out: Writer): Promise<number> {

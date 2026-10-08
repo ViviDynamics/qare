@@ -511,6 +511,25 @@ export {
 export type { SweepAreaConfig, SweepBucket, SweepClassification, SweepConfig, SweepFinding, SweepPayload, SweepReport } from './sweep.js'
 export { SweepConfigValidationError, SweepLedgerError } from './sweep.js'
 export {
+  DEFAULT_FLEET_BRANCH,
+  DEFAULT_FLEET_LEDGER,
+  DEFAULT_FLEET_RUNS,
+  FLEET_SUMMARY_MARKER,
+  FleetConfigError,
+  coverageOf,
+  fleetAttention,
+  fleetAttentionKey,
+  fleetAttentionKeyOf,
+  fleetAttentionMarker,
+  fleetLedger,
+  fleetRunOf,
+  fleetSummaryDraft,
+  isUnread,
+  parseFleetConfig,
+  renderFleetReport,
+} from './fleet.js'
+export type { FleetAttention, FleetConfig, FleetIssue, FleetIssues, FleetLedger, FleetRepositoryConfig, FleetRepositoryState, FleetRun, Unread } from './fleet.js'
+export {
   appendMetricsNote,
   appendRunMetrics,
   metricsSummaryLines,
