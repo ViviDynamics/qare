@@ -25,11 +25,15 @@ export function bootedAppOrigin(appHealth: string, values: RunValues): string | 
  * health check as the profile authors it, with the run's port by name. A
  * local health check that names a fixed port is pinned to the run's port when
  * the run boots, so the number in the profile is not where the app will be,
- * and the planner is told `{{run.app_port}}` instead.
+ * and the planner is told `{{run.app_port}}` instead. It is an origin, like
+ * `bootedAppOrigin`: credentials the health URL carries are left out.
  */
 export function plannedAppAddress(appHealth: string): string | undefined {
-  const authored = /^(https?:\/\/[^/?#\s]+)/i.exec(appHealth.trim())?.[1]
-  if (authored === undefined) return undefined
+  // Scheme and host, without userinfo: a credential in the health URL is the
+  // profile's own, and the address is written into the model's prompt.
+  const parts = /^(https?:\/\/)(?:[^/?#\s@]*@)?([^/?#\s@]+)/i.exec(appHealth.trim())
+  if (parts === null) return undefined
+  const authored = `${parts[1]}${parts[2]}`
   if (authored.includes('{{')) return authored
   if (!pinsToRunPort(appHealth)) return authored
   return authored.replace(/:\d+$/, ':{{run.app_port}}')

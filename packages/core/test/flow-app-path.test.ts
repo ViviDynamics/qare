@@ -179,6 +179,10 @@ test('the address the planner is told is the one that works in a plan: the run p
   expect(plannedAppAddress(local('//127.0.0.1:8080/healthz'))).toBe(local('//127.0.0.1:{{run.app_port}}'))
   expect(plannedAppAddress(secure('//staging.example/up'))).toBe(secure('//staging.example'))
   expect(plannedAppAddress('not a url')).toBeUndefined()
+  // Credentials in a health URL are the profile's, not the planner's: the address is the origin, with no userinfo.
+  expect(plannedAppAddress(local('//qa:hunter2-live@localhost:3000/up'))).toBe(local('//localhost:{{run.app_port}}'))
+  expect(plannedAppAddress(local('//qa:hunter2-live@localhost:{{run.app_port}}/up'))).toBe(local('//localhost:{{run.app_port}}'))
+  expect(plannedAppAddress(secure('//qa:hunter2-live@staging.example/up'))).toBe(secure('//staging.example'))
 })
 
 function completed(output: string): AgentRunResult {
@@ -207,6 +211,17 @@ test('the planner is told how a booted app is addressed: by path, or by the addr
   const bare = new FakeAgentRunner([completed(ANSWER)])
   await planRun(bare, { criteria: CRITERIA, diff: 'diff --git a/a b/a' })
   expect(bare.requests[0]?.prompt).not.toContain('The run boots the app itself')
+})
+
+test('a health URL that carries credentials reaches neither the planner nor the page a path opens on', async () => {
+  const health = local('//qa:hunter2-live@localhost:{{run.app_port}}/up')
+  const runner = new FakeAgentRunner([completed(ANSWER)])
+  await planRun(runner, { criteria: CRITERIA, diff: 'diff --git a/a b/a', app: { address: plannedAppAddress(health) ?? '' } })
+  expect(runner.requests[0]?.prompt).not.toContain('hunter2-live')
+  expect(runner.requests[0]?.prompt).toContain(`its address is ${local('//localhost:{{run.app_port}}')}.`)
+
+  const values = { id: 'r1', mail_address: 'qare-r1@localhost', app_port: '41234' }
+  expect(flowOpenUrl('/auth/sign_in', { appHealth: health }, values)).toEqual({ ok: true, url: local('//localhost:41234/auth/sign_in') })
 })
 
 test('without a browser the planner still hears where a command reaches the booted app, and nothing about flows opening pages', async () => {
