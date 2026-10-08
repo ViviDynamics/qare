@@ -336,6 +336,56 @@ function commandOf(check: JobCommandCheck, commands: Record<string, ProfileComma
   })
 }
 
+/** The program a command runs: its first word, by name, whatever path it was written with. */
+function programOf(run: string): string {
+  const first = run.split(/\s+/).find((token) => token !== '') ?? ''
+  return first.slice(first.lastIndexOf('/') + 1)
+}
+
+/** Where a command check runs, and for an uncontained one, why. */
+type CommandContainment =
+  | { where: 'cell'; scratch?: string[] }
+  | { where: 'step'; reason: string }
+
+const NOT_RECORDED = 'the command ran with the network its step has and what it reached was not recorded'
+
+/**
+ * Where a command check runs (#286). It is decided by what the check runs,
+ * its program, and not by how the check is written: the plan is a model's
+ * output, made with the pull request's diff in front of it, and a form of a
+ * command must not be a way out of the cell.
+ *
+ * - A check that fills a declared command is held to that declaration: its
+ *   scratch paths, or its opt-out, which is the profile's own word for that
+ *   form and for no other.
+ * - Any other check of a program the profile declares is as contained as the
+ *   most contained declaration of that program: in the cell unless every one
+ *   of them opts out, and with no scratch path, since none was declared for
+ *   it.
+ * - A program the profile declares nothing for runs in the cell whenever the
+ *   run has one.
+ * - Only a run with no cell at all (a profile that declares no command that
+ *   runs contained) leaves a command check with the network its step has,
+ *   and the check's evidence says so.
+ */
+function containmentOf(
+  check: JobCommandCheck,
+  declared: ProfileCommand | undefined,
+  commands: Record<string, ProfileCommand> | undefined,
+  hasCell: boolean,
+): CommandContainment {
+  const noCell = `the profile declares no command that runs contained, so this run has no cell: ${NOT_RECORDED}`
+  if (declared !== undefined) {
+    if (declared.egress === 'uncontained') return { where: 'step', reason: `the profile opts out with egress: uncontained, so ${NOT_RECORDED}` }
+    return hasCell ? { where: 'cell', ...(declared.scratch === undefined ? {} : { scratch: declared.scratch }) } : { where: 'step', reason: noCell }
+  }
+  const program = programOf(check.run)
+  const ofProgram = Object.values(commands ?? {}).filter((command) => programOf(command.run) === program)
+  if (ofProgram.length > 0 && ofProgram.every((command) => command.egress === 'uncontained'))
+    return { where: 'step', reason: `every command the profile declares for ${program} opts out with egress: uncontained, so ${NOT_RECORDED}` }
+  return hasCell ? { where: 'cell' } : { where: 'step', reason: noCell }
+}
+
 /**
  * Execute a job's checks against the head revision and write result.json into the
  * job's evidence directory.
@@ -2783,19 +2833,20 @@ async function runCriterion(
           reason: `refused: the profile declares overlapping commands (${declared.map((command) => command.run).join(' and ')}); a check is contained by the one command its run names`,
         }
       }
-      // A named command is contained by default (#224); the opt-out is
-      // explicit, and the evidence of a command that opted out says so. A
-      // check whose run names no command the profile declares runs as it
-      // always did, with the network its step has.
-      const contained = declared[0] !== undefined && declared[0].egress !== 'uncontained' && flow.commands !== undefined
-      const optedOut = declared[0]?.egress === 'uncontained'
+      // A command is contained by what it runs, not by how it is written
+      // (#224, #286): the declared form, another form of the same program
+      // and a program the profile declares nothing for all run in the run's
+      // cell. The opt-out is explicit, and a check that runs outside a cell
+      // for any reason says which in its evidence.
+      const containment = containmentOf(resolved.check, declared[0], commands, flow.commands !== undefined)
+      const contained = containment.where === 'cell'
       // The cell holds a copy of the repository root, whatever subdirectory
       // the check runs from: a cell made of the subtree alone would leave the
       // command without the repository's own files, and mount its
       // repository-relative scratch below the subdirectory (#224).
       const cwdRel = cwd === job.repoPath ? undefined : relative(job.repoPath, cwd)
       const outcome = contained
-        ? await runContainedCommandCheck(resolved.check, cwd, job.repoPath, cwdRel, timeoutMs, execution, selection, flow.commands!, declared[0]?.scratch, join(job.evidenceDir, checkDir), sweepRules)
+        ? await runContainedCommandCheck(resolved.check, cwd, job.repoPath, cwdRel, timeoutMs, execution, selection, flow.commands!, containment.scratch, join(job.evidenceDir, checkDir), sweepRules)
         : await runCommandCheck(resolved.check, cwd, timeoutMs, execution, selection)
       await mkdir(join(job.evidenceDir, checkDir), { recursive: true })
       await writeFile(join(job.evidenceDir, checkDir, 'stdout.txt'), redactText(truncationNote(outcome, 'stdout'), sweepRules))
@@ -2808,13 +2859,9 @@ async function runCriterion(
         evidence.push(`${checkDir}/selected.txt`)
       }
       evidence.push(`${checkDir}/stdout.txt`, `${checkDir}/stderr.txt`)
-      if (contained || optedOut) evidence.push(`${checkDir}/outbound.json`)
-      if (optedOut)
-        await writeOutbound(join(job.evidenceDir, checkDir), {
-          command: resolved.check.run,
-          containment: 'none',
-          reason: 'the profile opts out with egress: uncontained, so the command ran with the network its step has and what it reached was not recorded',
-        }, sweepRules)
+      evidence.push(`${checkDir}/outbound.json`)
+      if (containment.where === 'step')
+        await writeOutbound(join(job.evidenceDir, checkDir), { command: resolved.check.run, containment: 'none', reason: containment.reason }, sweepRules)
       // The command, its outcome and the exit code it closed with are evidence
       // like the streams are (#152): a check that passes silently (test -f,
       // grep -q) writes no output, and a verifier reading only empty streams

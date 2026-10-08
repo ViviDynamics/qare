@@ -75,17 +75,22 @@ const CLIENT_CONTAINMENT = 'client-egress-cell-v1'
  * evidence, and a suite's evidence carries the containment record in as many
  * words. It is part of the fingerprint, so a result cached before the record
  * existed, which holds none, is never replayed as one that does.
+ *
+ * v2 (#286): a command is contained by the program it runs and not by the
+ * form it is written in, and every command check carries a containment
+ * record, in any profile. A result cached under v1 may be one of a check that
+ * ran outside the cell and would now run inside it, so none is replayed, and
+ * the marker is on every profile's fingerprint.
  */
-const COMMAND_CONTAINMENT = 'command-egress-cell-v1'
+const COMMAND_CONTAINMENT = 'command-egress-cell-v2'
 
 export function profileFingerprint(profile: QaProfile, digest: (text: string) => string = sha256): string {
   const text = stableStringify(profile)
   const marked = [
     ...(profile.client === undefined ? [] : [CLIENT_CONTAINMENT]),
-    ...(profile.commands === undefined || Object.keys(profile.commands).length === 0 ? [] : [COMMAND_CONTAINMENT]),
-    ...(profile.suites === undefined || profile.suites.length === 0 ? [] : [COMMAND_CONTAINMENT]),
+    COMMAND_CONTAINMENT,
   ]
-  return digest(marked.length === 0 ? text : `${marked.join(':')}:${text}`)
+  return digest(`${marked.join(':')}:${text}`)
 }
 
 /**

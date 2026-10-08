@@ -130,10 +130,13 @@ test("a criterion with an app of its own gives the cell the shard's app, not the
   // The cell the isolated criterion's command ran in was made for the app
   // that criterion booted: the shard's compose project, at the shard's
   // published port, never the run's shared app.
-  const request = asked[0] as { app?: { port?: number }; composeProject?: string }
-  expect(request.composeProject).toBe(shardIsolation.project)
-  expect(request.composeProject).not.toBe(runIsolation.project)
-  expect(request.app?.port).toBe(Number(shardIsolation.port))
+  // The other criterion's command is contained too (#286), in the cell of
+  // the run's shared app: one cell asked for each, and each for its own app.
+  const requests = asked as { app?: { port?: number }; composeProject?: string }[]
+  expect(requests.map((request) => request.composeProject).sort()).toEqual([runIsolation.project, shardIsolation.project].sort())
+  const request = requests.find((asking) => asking.composeProject === shardIsolation.project)
+  expect(request?.composeProject).not.toBe(runIsolation.project)
+  expect(request?.app?.port).toBe(Number(shardIsolation.port))
 })
 
 test('a destination the profile does not declare refuses the check: the result is unverified and said to be (#224)', async () => {
@@ -201,18 +204,152 @@ test('a command that opts out runs with the network its step has, and its eviden
   })
 })
 
-test('a check that names no command of the profile runs uncontained, and its evidence carries no record of traffic (#224)', async () => {
+// #286: a check was contained only when its run matched a declared command's
+// whole template, so `echo hi` ran in the cell and `echo bare` beside it ran
+// with the step's network, and the planner picked which. Containment is
+// decided by what the check runs, not by how it is written.
+
+async function outboundOf(job: Job, criterion: string): Promise<Record<string, unknown>> {
+  return JSON.parse(await readFile(join(job.evidenceDir, 'checks', criterion, '0', 'outbound.json'), 'utf8')) as Record<string, unknown>
+}
+
+/** What a cell was asked for, without what differs from one check to the next. */
+function cellOf(asked: unknown): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(asked as Record<string, unknown>).filter(([key]) => key !== 'scratch' && key !== 'cwd'))
+}
+
+test('the same program in two spellings lands in the same cell: the form a check is written in does not decide its containment (#286)', async () => {
+  const asked: unknown[] = []
+  const job = await makeJob({
+    // The declared form, a form no declaration matches, the bare program, and the program by its path.
+    criteria: commandCriteria('echo hi', 'echo bare', 'echo', '/bin/echo by path'),
+    profile: { inline: { ...PROFILE, commands: COMMANDS } },
+  })
+
+  const { result } = await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }, asked) } })
+
+  expect(result.criteria.map((criterion) => criterion.outcome)).toEqual(['proven', 'proven', 'proven', 'proven'])
+  // Every one of them asked for a cell, and for the same cell: the run's own.
+  expect(asked).toHaveLength(4)
+  for (const other of asked.slice(1)) expect(cellOf(other)).toEqual(cellOf(asked[0]))
+  expect(cellOf(asked[0])).toMatchObject({ hosts: ['api.billing-vendor.example'], map: { 'api.billing-vendor.example': 'billing' }, checkout: job.repoPath })
+  for (const [index, run] of ['echo hi', 'echo bare', 'echo', '/bin/echo by path'].entries()) {
+    const id = `criterion-${index + 1}`
+    expect(result.criteria[index]?.evidence, run).toContain(`checks/${id}/0/outbound.json`)
+    expect(await outboundOf(job, id), run).toEqual({ command: run, containment: 'cell', declared: ['api.billing-vendor.example'], reached: [] })
+  }
+})
+
+test('a form no declaration matches is refused the same destinations as the declared form (#286)', async () => {
+  const job = await makeJob({
+    criteria: commandCriteria('echo hi', 'echo bare'),
+    profile: { inline: { ...PROFILE, commands: COMMANDS } },
+  })
+
+  const { result } = await runJob(job, {
+    ...BOOT,
+    commandCell: { start: fakeCell({ reached: [{ host: 'telemetry.example', port: 443, protocol: 'https', declared: false, count: 1 }] }) },
+  })
+
+  for (const criterion of result.criteria) {
+    expect(criterion.outcome).toBe('unverified')
+    expect(criterion.reason).toContain('refused: undeclared host: telemetry.example:443 (https)')
+  }
+})
+
+test("the scratch paths are the declared form's own: another form of the program is given none, so it is never less contained (#286)", async () => {
+  const asked: unknown[] = []
+  const job = await makeJob({
+    criteria: commandCriteria('echo hi', 'echo bare'),
+    profile: { inline: { ...PROFILE, commands: { test: { ...COMMANDS.test, scratch: ['tmp/scratch'] } } } },
+  })
+
+  await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }, asked) } })
+
+  expect(asked).toHaveLength(2)
+  expect((asked[0] as { scratch?: string[] }).scratch).toEqual(['tmp/scratch'])
+  expect(asked[1]).not.toHaveProperty('scratch')
+})
+
+test('a program with one contained declaration and one that opts out is contained in every form but the one that opts out (#286)', async () => {
+  const asked: unknown[] = []
+  const job = await makeJob({
+    criteria: commandCriteria('echo hi', 'echo loud', 'echo anything else'),
+    profile: {
+      inline: {
+        ...PROFILE,
+        commands: { test: COMMANDS.test, loud: { run: 'echo loud', about: 'needs the network', egress: 'uncontained' } },
+      },
+    },
+  })
+
+  const { result } = await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }, asked) } })
+
+  expect(result.criteria.map((criterion) => criterion.outcome)).toEqual(['proven', 'proven', 'proven'])
+  // The form that opts out is the profile's own word for that form, and only for it.
+  expect(asked).toHaveLength(2)
+  expect((await outboundOf(job, 'criterion-1')).containment).toBe('cell')
+  expect((await outboundOf(job, 'criterion-2')).containment).toBe('none')
+  // A form neither declaration matches takes the most contained of the program's declarations.
+  expect((await outboundOf(job, 'criterion-3')).containment).toBe('cell')
+})
+
+test('a program every declaration of which opts out runs with the network its step has in any form, and its evidence says whose word that was (#286)', async () => {
   const asked: unknown[] = []
   const job = await makeJob({
     criteria: commandCriteria('echo bare'),
-    profile: { inline: { ...PROFILE, commands: COMMANDS } },
+    profile: {
+      inline: {
+        ...PROFILE,
+        commands: { test: { ...COMMANDS.test, egress: 'uncontained' }, other: { run: 'true', about: 'contained, so the run has a cell' } },
+      },
+    },
   })
 
   const { result } = await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }, asked) } })
 
   expect(result.criteria[0].outcome).toBe('proven')
   expect(asked).toEqual([])
-  await expect(readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'outbound.json'), 'utf8')).rejects.toThrow()
+  expect(result.criteria[0].evidence).toContain('checks/criterion-1/0/outbound.json')
+  expect(await outboundOf(job, 'criterion-1')).toEqual({
+    command: 'echo bare',
+    containment: 'none',
+    reason: 'every command the profile declares for echo opts out with egress: uncontained, so the command ran with the network its step has and what it reached was not recorded',
+  })
+})
+
+test('on a run that has a cell, a program the profile declares no command for runs in it too (#286)', async () => {
+  const asked: unknown[] = []
+  const job = await makeJob({
+    criteria: commandCriteria('true', 'test 1 -eq 1'),
+    profile: { inline: { ...PROFILE, commands: COMMANDS } },
+  })
+
+  const { result } = await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }, asked) } })
+
+  expect(result.criteria.map((criterion) => criterion.outcome)).toEqual(['proven', 'proven'])
+  expect(asked).toHaveLength(2)
+  for (const asking of asked) expect(asking).not.toHaveProperty('scratch')
+  expect((await outboundOf(job, 'criterion-1')).containment).toBe('cell')
+  expect((await outboundOf(job, 'criterion-2')).containment).toBe('cell')
+})
+
+test('on a run that has no cell, a command check runs with the network its step has, and its evidence says so and why (#286)', async () => {
+  const reason = 'the profile declares no command that runs contained, so this run has no cell: the command ran with the network its step has and what it reached was not recorded'
+  for (const commands of [undefined, { test: { ...COMMANDS.test, egress: 'uncontained' as const } }]) {
+    const asked: unknown[] = []
+    const job = await makeJob({
+      criteria: commandCriteria('true'),
+      profile: { inline: { ...PROFILE, ...(commands === undefined ? {} : { commands }) } },
+    })
+
+    const { result } = await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }, asked) } })
+
+    expect(result.criteria[0].outcome).toBe('proven')
+    expect(asked).toEqual([])
+    expect(result.criteria[0].evidence).toContain('checks/criterion-1/0/outbound.json')
+    expect(await outboundOf(job, 'criterion-1')).toEqual({ command: 'true', containment: 'none', reason })
+  }
 })
 
 test("the suite's evidence says in as many words that it ran uncontained (#224)", async () => {

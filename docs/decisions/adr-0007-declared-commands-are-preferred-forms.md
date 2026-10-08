@@ -6,14 +6,15 @@ that shipped issue #270, unattended. It records what the code does today and
 proposes to keep it; the owner has not accepted it, and has not accepted the
 containment gap it describes.
 
-**Read this first.** Under this decision alone, the form a planner picks for
-a command decides whether pull request code runs inside the no-network cell
-or outside it. **That gap is open as this is written**, and it is not
-accepted here, by anyone. Issue #286 is the change that is to close it, by
-containing a command check by the program it runs, whatever its form; it is
-open, and until it lands the gap stands. This ADR is only about which forms
-the plan step accepts; it is sound only once #286 has shipped, and must not
-be read as leaving containment to the planner.
+**Read this first.** Under this decision alone, the form a planner picked for
+a command decided whether pull request code ran inside the no-network cell or
+outside it. That gap was never accepted, and **#286 has closed it** (shipped
+in 2026.10.34): the run contains a command check by the program it runs,
+whatever its form, so `node -- check.mjs` and `node check.mjs` land in the
+same cell. This ADR is only about which forms the plan step accepts, and
+rests on #286. What #286 left open is said there and in SPEC ("Containing a
+command"): a profile that declares no command that runs contained has no
+cell, and its command checks run with the step's network.
 
 ## Context
 
@@ -77,7 +78,9 @@ Issue #262's second criterion is therefore delivered for grep only, by design.
   grep. The other malformed command seen (`node` on a TypeScript source, PR 268)
   would not have been caught by option 2 either: it has the declared form's
   shape, and fails for what the file is.
-## What this costs: a form outside the declared ones runs outside the cell
+## What this cost before #286: a form outside the declared ones ran outside the cell
+
+(Kept as written before #286 shipped. It is no longer how the code behaves.)
 
 This is the price of option 1, and it is a real one.
 
@@ -120,9 +123,10 @@ it, option 2 is the better choice, and "Reversing this" says how to take it.
 
 ## Consequences
 
-- Until #286 lands, a planned use of a declared program in a form no
-  declaration matches runs uncontained, as above, and a profile author who
-  needs a program contained in every use cannot get that from `commands:`.
+- Since #286, a planned use of a declared program in a form no declaration
+  matches runs in the same cell as the declared form, with no scratch path.
+  A profile author who declares one contained command for a program has that
+  program contained in every use.
 - A profile author cannot use `commands:` to forbid a use of a program. If that
   is wanted, it needs its own profile key that says so in as many words (for
   example a per-command `only: true`), so that declaring a helpful form never
@@ -131,13 +135,13 @@ it, option 2 is the better choice, and "Reversing this" says how to take it.
   run, not by the plan step. When such a failure shows up in evidence, the fix
   is a rule for that program's own contract, as for grep, not the general rule.
 
-## The change that is to close the gap
+## The change that closed the gap
 
-- Issue #286: a command check is contained by the program it runs, whatever
-  its form, so that the form a planner picks cannot decide whether pull
-  request code has the network. It is open as this is written, and is the
-  next change after this ADR, not a follow-up to leave. When it lands, this
-  ADR is updated to say so.
+- Issue #286, shipped in 2026.10.34: a command check is contained by the
+  program it runs, whatever its form, so the form a planner picks does not
+  decide whether pull request code has the network. The sections above that
+  describe the gap describe the code as it was when this ADR was first
+  written, and are kept as the record of why #286 was made.
 
 ## Reversing this
 

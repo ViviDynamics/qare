@@ -62,6 +62,29 @@ test('--version prints the core version', async () => {
   expect(lines.join('')).toBe(`${VERSION}\n`)
 })
 
+// Found by a live run for #286: a command check that runs in a cell is started
+// as `qare cell launch ... -- <the command>`, and a `--version` or `-v` among
+// the command's own arguments was taken for qare's. The check printed the
+// harness's version, exited 0 and was recorded proven, without ever running.
+test("a flag that belongs to the command a cell is asked to launch is never read as qare's own", async () => {
+  for (const command of [['python3', '--version'], ['grep', '-v', 'pattern', 'file'], ['node', '-v']]) {
+    const out = capture()
+    const err = capture()
+    // No socket directory is named, so the launch is refused, which is enough to see that the cell command was reached.
+    const code = await main(['cell', 'launch', '--', ...command], out.writer, err.writer)
+    expect(out.lines.join(''), command.join(' ')).not.toContain(VERSION)
+    expect(code, command.join(' ')).not.toBe(0)
+  }
+  // Nor is one that follows a separator anywhere else: what follows `--` is not qare's to read.
+  const after = capture()
+  await main(['nonsense', '--', '--version'], after.writer, capture().writer)
+  expect(after.lines.join('')).not.toBe(`${VERSION}\n`)
+  // qare's own flag still answers, alone or beside a command.
+  const own = capture()
+  expect(await main(['run', '--version'], own.writer)).toBe(0)
+  expect(own.lines.join('')).toBe(`${VERSION}\n`)
+})
+
 test('no arguments prints usage', async () => {
   const { lines, writer } = capture()
   const code = await main([], writer)

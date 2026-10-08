@@ -161,6 +161,48 @@ test.each([
   expect(runner.requests[0]?.prompt).toContain(declared)
 })
 
+// #286: at run time a command is contained by the program it runs, so the
+// planner is told that no form of a command reaches further than another.
+test('the planner is told that every command check runs in the cell when the profile contains a command, and is told nothing of it otherwise', async () => {
+  const cell = 'no form of a command reaches further than another'
+  const contained = new FakeAgentRunner([completed(planWith('node --version'))])
+  await planRun(contained, await inputs({ commands: { script: { run: 'node -- {{path}}', about: 'runs a script' } } }))
+  expect(contained.requests[0]?.prompt).toContain('A command check of this run runs in a cell')
+  expect(contained.requests[0]?.prompt).toContain(cell)
+  expect(contained.requests[0]?.prompt).toContain('a read-only copy of the checkout')
+
+  const optedOut = new FakeAgentRunner([completed(planWith('node --version'))])
+  await planRun(optedOut, await inputs({ commands: { script: { run: 'node -- {{path}}', about: 'runs a script', egress: 'uncontained' } } }))
+  expect(optedOut.requests[0]?.prompt).not.toContain(cell)
+
+  const none = new FakeAgentRunner([completed(planWith('node --version'))])
+  await planRun(none, await inputs())
+  expect(none.requests[0]?.prompt).not.toContain(cell)
+})
+
+// The planner is told the rule the run applies, exceptions included: a command
+// that opts out is marked as one, so a criterion its network or its writes
+// could show is not marked unplannable for a cell it would never run in.
+test('in a profile that contains one command and opts another out, the planner is shown which is which', async () => {
+  const runner = new FakeAgentRunner([completed(planWith('node --version'))])
+  await planRun(
+    runner,
+    await inputs({
+      commands: {
+        script: { run: 'node -- {{path}}', about: 'runs a script' },
+        report: { run: 'python3 -- {{path}}', about: 'downloads the report', egress: 'uncontained' },
+      },
+    }),
+  )
+  const prompt = runner.requests[0]?.prompt ?? ''
+  expect(prompt).toContain('- script: runs a script (node -- {{path}})')
+  expect(prompt).toContain('- report: downloads the report (python3 -- {{path}}) [not contained: runs with the network its step has]')
+  expect(prompt).not.toContain('(node -- {{path}}) [not contained')
+  // The guidance names the exception instead of claiming every check is in the cell.
+  expect(prompt).toContain('except a command marked not contained, in the form it is declared in')
+  expect(prompt).not.toContain('Every command check of this run runs in a cell')
+})
+
 test('a declared command that names a file the change adds is planned, not refused for a file the base lacks', async () => {
   const command = 'grep -n -- flowOpenUrl packages/core/src/app-address.ts'
   const runner = new FakeAgentRunner([completed(planWith(command))])
