@@ -803,15 +803,40 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
 export async function runSuiteCheck(
   suite: { name: string; command: string },
   opts: { cwd: string; timeoutMs?: number; execution?: ExecutionKind },
-): Promise<{ outcome: 'passed' | 'failed' | 'unverified'; reason?: string }> {
+): Promise<SuiteCheckOutcome> {
   const outcome = await runCommandCheck(
     { kind: 'command', run: suite.command },
     opts.cwd,
     opts.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
     opts.execution,
+    undefined,
+    undefined,
+    // The end of a test run is where the failure is (#272).
+    'tail',
   )
-  if (outcome.status === 'passed') return { outcome: 'passed' }
+  // What the suite wrote, and what it closed with, go back with the outcome
+  // (#272): they are the only account of why a suite failed.
+  const wrote = {
+    stdout: outcome.stdout,
+    stderr: outcome.stderr,
+    ...(outcome.stdoutTruncated === true ? { stdoutTruncated: true } : {}),
+    ...(outcome.stderrTruncated === true ? { stderrTruncated: true } : {}),
+    ...(outcome.code === undefined ? {} : { code: outcome.code }),
+  }
+  if (outcome.status === 'passed') return { outcome: 'passed', ...wrote }
   if (outcome.status === 'failed')
-    return { outcome: 'failed', reason: `suite ${suite.name} exited ${outcome.code ?? 'unknown'}` }
-  return { outcome: 'unverified', reason: outcome.reason }
+    return { outcome: 'failed', reason: `suite ${suite.name} exited ${outcome.code ?? 'unknown'}`, ...wrote }
+  return { outcome: 'unverified', ...(outcome.reason === undefined ? {} : { reason: outcome.reason }), ...wrote }
+}
+
+export interface SuiteCheckOutcome {
+  outcome: 'passed' | 'failed' | 'unverified'
+  reason?: string
+  /** What the suite wrote, the end of it when it ran past the capture limit. */
+  stdout: string
+  stderr: string
+  stdoutTruncated?: boolean
+  stderrTruncated?: boolean
+  /** The exit code the suite closed with, when it ran to an exit. */
+  code?: number
 }

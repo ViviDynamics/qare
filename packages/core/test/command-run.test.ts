@@ -224,7 +224,7 @@ test("the suite's evidence says in as many words that it ran uncontained (#224)"
   const { result } = await runJob(job, { ...BOOT, commandCell: { start: fakeCell({ reached: [] }) } })
 
   expect(result.verdict).toBe('passed')
-  expect(result.criteria[0].evidence).toEqual(['checks/criterion-1/0/suite.txt'])
+  expect(result.criteria[0].evidence).toEqual(['checks/criterion-1/0/suite.txt', 'checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt'])
   const suite = JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'suite.txt'), 'utf8')) as Record<string, unknown>
   expect(suite.containment).toBe('none')
   expect(suite.note).toBe('a suite runs uncontained, so it may reach for whatever its step can reach and its traffic is not recorded')
