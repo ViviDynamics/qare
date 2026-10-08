@@ -126,6 +126,15 @@ on:
           a model that allows less. Empty keeps qare's default.
         type: string
         default: ''
+      plan-batch-size:
+        description: >-
+          How many criteria the planner is asked to plan in one model turn.
+          Each batch is its own turn with its own output budget, and a turn
+          that is cut off, errors or is refused costs only its own criteria.
+          Raise it for a fast model, to send the diff fewer times. Empty keeps
+          qare's default of one criterion a turn.
+        type: string
+        default: ''
       model-key-env:
         description: The environment variable the provider reads its key from. The model-key secret is exported under this name.
         type: string
@@ -180,7 +189,7 @@ on:
           workflow ships in, so pin the release in `uses:` and leave this
           alone.
         type: string
-        default: '2026.10.21'
+        default: '2026.10.22'
     secrets:
       model-key:
         description: >-
@@ -445,6 +454,7 @@ jobs:
           NARE_MODEL: ${{ inputs.nare-model }}
           NARE_STREAM: ${{ inputs.nare-stream }}
           QARE_MAX_OUTPUT_TOKENS: ${{ inputs.max-output-tokens }}
+          QARE_PLAN_BATCH_SIZE: ${{ inputs.plan-batch-size }}
           PROFILE: ${{ inputs.profile }}
         run: |
           set -euo pipefail
@@ -475,6 +485,9 @@ jobs:
           fi
           if [ -n "$QARE_MAX_OUTPUT_TOKENS" ]; then
             model_env+=(-e QARE_MAX_OUTPUT_TOKENS)
+          fi
+          if [ -n "$QARE_PLAN_BATCH_SIZE" ]; then
+            model_env+=(-e QARE_PLAN_BATCH_SIZE)
           fi
           if [ -n "$NARE_BASE_URL" ]; then
             model_env+=(-e NARE_BASE_URL)

@@ -148,8 +148,18 @@ export type { IssueCriteriaProblem } from './issue-criteria.js'
 export { linkedIssues } from './linked-issues.js'
 export { jobFromPlan } from './job-from-plan.js'
 export type { RunContext } from './job-from-plan.js'
-export { EXECUTE_PATH_TOOLS, NO_DIFF, PLAN_OUTPUT_SCHEMA, PlanStepError, planOutputSchema, planRun } from './plan-step.js'
-export type { DeclaredRunInputs, PlanCriterionInput, PlanInputs, PlanSuite } from './plan-step.js'
+export {
+  DEFAULT_PLAN_BATCH_SIZE,
+  EXECUTE_PATH_TOOLS,
+  NO_DIFF,
+  PLAN_BATCH_SIZE_ENV,
+  PLAN_OUTPUT_SCHEMA,
+  PlanStepError,
+  planBatchSize,
+  planOutputSchema,
+  planRun,
+} from './plan-step.js'
+export type { DeclaredRunInputs, PlanBatchReport, PlanCriterionInput, PlanInputs, PlanSuite } from './plan-step.js'
 export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'
 export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobVisualCheck, JobA11yCheck, JobCheck, JobPostTarget, JobProfileGroup, SingleProfileJob, SeveralProfilesJob } from './job.js'
 export { httpMailbox, mailEvidence, runMailCheck, extractCode, DEFAULT_CODE_PATTERN } from './mailbox.js'

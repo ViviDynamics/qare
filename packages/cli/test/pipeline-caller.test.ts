@@ -112,6 +112,7 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
     'nare-model',
     'nare-provider',
     'nare-stream',
+    'plan-batch-size',
     'planner-diff-exclude',
     'profile',
     'qare-ref',
@@ -166,6 +167,23 @@ test('the output budget reaches the plan and judge containers, and only when set
     const step = pipeline.jobs[job]?.steps?.find((candidate) => candidate.name === name)
     expect(step?.run?.replace(/\s+/g, ' '), name).toContain('if [ -n "$QARE_MAX_OUTPUT_TOKENS" ]; then model_env+=(-e QARE_MAX_OUTPUT_TOKENS) fi')
   }
+})
+
+// #259: the plan batch size is the caller's to set, and it crosses the docker
+// boundary into the one container that plans.
+test('the plan batch size reaches the plan container, and only when set', () => {
+  expect(call.inputs['plan-batch-size']?.default).toBe('')
+  const text = readFileSync(join(repoRoot, PIPELINE), 'utf8')
+  expect([...text.matchAll(/QARE_PLAN_BATCH_SIZE: \$\{\{ inputs\.plan-batch-size \}\}/g)].length, 'the plan step alone sets it').toBe(1)
+  const plan = pipeline.jobs.plan?.steps?.find((candidate) => candidate.name === 'Plan the QA run')
+  expect(plan?.env?.QARE_PLAN_BATCH_SIZE).toBe('${{ inputs.plan-batch-size }}')
+  expect(plan?.run?.replace(/\s+/g, ' ')).toContain('if [ -n "$QARE_PLAN_BATCH_SIZE" ]; then model_env+=(-e QARE_PLAN_BATCH_SIZE) fi')
+  // The verifier judges every criterion in one turn and plans nothing: the setting is not its to read.
+  const judge = pipeline.jobs.judge?.steps?.find((candidate) => candidate.name === 'Judge the result')
+  expect(judge?.run).not.toContain('QARE_PLAN_BATCH_SIZE')
+  // And the caller's documentation names it, with the default it stands in for.
+  const docs = readFileSync(join(repoRoot, 'docs', 'pipeline.md'), 'utf8')
+  expect(docs).toMatch(/\| `plan-batch-size` \| empty \| .*default of 1.*`QARE_PLAN_BATCH_SIZE`/)
 })
 
 test('the caller chooses the runners for every job', () => {

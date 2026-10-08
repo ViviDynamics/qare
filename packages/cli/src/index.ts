@@ -799,6 +799,19 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         repoPath: process.cwd(),
         runInputs: { paths: declaredRunPaths(outPath, profilePath, diff) },
         ...(suites === undefined && declaredSuites.length === 0 ? {} : { suites: plannerSuites }),
+        // A plan of several turns says where it stands (#259): with a slow
+        // model each turn is minutes, and a lost one is named as it happens.
+        onBatch: (report) => {
+          if (report.of === 1) return
+          const batch = `batch ${report.index} of ${report.of} (${report.criteria.join(', ')})`
+          // What the batch cost is what a caller tunes the size and the budget by.
+          const cost = report.usage === undefined ? '' : ` [${report.usage.inputTokens} input tokens, ${report.usage.outputTokens} output]`
+          out.write(
+            report.outcome === 'planned'
+              ? `planned ${batch}${cost}\n`
+              : `${batch} could not be planned, so its criteria are marked unplannable: ${report.reason ?? 'no reason recorded'}${cost}\n`,
+          )
+        },
         ...(flowActions.length === 0 ? {} : { flowActions }),
         ...(profile?.client === undefined ? {} : { client: profile.client.driver }),
         ...(profile?.instructions ? { qaMd: profile.instructions } : {}),
@@ -826,7 +839,8 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       if (!(error instanceof PlanStepError)) throw error
       const named = `${error.name}: ${error.message}`
       out.write(`the planner could not produce a usable plan, so every criterion is marked unplannable: ${named}\n`)
-      plan = unplannedPlan(criteria, `planning failed (${named})`)
+      // The turns that failed were still paid for (#259), and the plan says so.
+      plan = { ...unplannedPlan(criteria, `planning failed (${named})`), ...(error.usage === undefined ? {} : { usage: error.usage }) }
     } finally {
       await mcpServer?.close().catch(() => {})
       await Promise.all(mcpSources.map((source) => source.close().catch(() => {})))

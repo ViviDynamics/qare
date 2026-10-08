@@ -41,6 +41,8 @@ const INPUTS: PlanInputs = {
   diff: 'diff --git a/app/sign_in.rb b/app/sign_in.rb',
   suites: SUITES.map((suite) => ({ name: suite.name, kind: suite.kind, command: suite.command })),
   noBrowser: { flavour: 'core' },
+  // One turn for both criteria: these tests are about what a turn is offered and refused (#259 batches by default).
+  batchSize: 2,
 }
 
 function completed(output: string): AgentRunResult {
@@ -143,7 +145,7 @@ test('a plan that still holds a browser check after its correction is refused, n
 
 test('a flavour with a browser plans as it did: action flows, visual and a11y checks are offered and accepted', async () => {
   const runner = new FakeAgentRunner([completed(answer(ACTION_FLOW, { kind: 'a11y', name: 'dashboard audit', url: '/dashboard' }))])
-  const withBrowser: PlanInputs = { criteria: INPUTS.criteria, diff: INPUTS.diff, suites: INPUTS.suites }
+  const withBrowser: PlanInputs = { criteria: INPUTS.criteria, diff: INPUTS.diff, suites: INPUTS.suites, batchSize: 2 }
 
   const plan = await planRun(runner, withBrowser)
 

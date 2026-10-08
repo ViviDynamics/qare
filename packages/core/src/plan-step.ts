@@ -1,4 +1,4 @@
-import { outputBudget, stopDetail, type AgentRunner, type AgentToolChannel } from './runner.js'
+import { NareRunnerError, outputBudget, stopDetail, type AgentBudget, type AgentRunner, type AgentToolChannel } from './runner.js'
 import { DRIVER_CHECK_KINDS, undeclaredCheckKinds, type FlowDriverCapabilities } from './flow.js'
 import { EXPLORATION_TOOLS, isExplorableUrl, type ExplorationTool } from './explore.js'
 import { channelToolName } from './mcp.js'
@@ -113,6 +113,60 @@ export interface PlanInputs {
   redact?: ProfileRedaction
   /** Named invocations the profile declares (#156), which command checks use instead of guessing. */
   commands?: Record<string, ProfileCommand>
+  /**
+   * How many criteria one model turn is asked to plan (#259). Absent, the
+   * environment names it (`QARE_PLAN_BATCH_SIZE`), and absent there it is
+   * `DEFAULT_PLAN_BATCH_SIZE`. A caller that sets it has chosen: the
+   * environment is not read.
+   */
+  batchSize?: number
+  /** Told as each batch ends (#259), so a plan of many slow turns shows where it stands. */
+  onBatch?: (report: PlanBatchReport) => void
+}
+
+/** How one batch of the plan ended (#259). */
+export interface PlanBatchReport {
+  /** The batch's place among the batches, from 1. */
+  index: number
+  /** How many batches the plan has. */
+  of: number
+  /** The ids of the criteria the batch was asked to plan. */
+  criteria: string[]
+  outcome: 'planned' | 'failed'
+  /** Why the batch has no plan, when it failed. */
+  reason?: string
+  /** What the batch's turns cost, its correction round included. */
+  usage?: ModelUsage
+}
+
+/**
+ * How many criteria one model turn plans (#259). One is the default because
+ * it is the smallest batch there is, so no other size asks a turn for less:
+ * a self-hosted reasoning model needed more than the default 16384 output
+ * tokens, and at most 48000, to plan five criteria in one turn, which is
+ * 9600 a criterion on average and so up to 19200 for an average pair, past
+ * the default budget. That average bounds no single criterion, and one
+ * criterion can still overrun a turn; what was observed is that the same
+ * model plans one criterion in two to three minutes, and that one-criterion
+ * turns ran from 799 to 4507 output tokens. One is also the size at which a
+ * cut-off, an error or a refusal costs the least: one criterion.
+ *
+ * The cost is input: every turn carries the diff again. A model that answers
+ * fast and bills for input is better served by a larger batch, which the
+ * environment names.
+ */
+export const DEFAULT_PLAN_BATCH_SIZE = 1
+export const PLAN_BATCH_SIZE_ENV = 'QARE_PLAN_BATCH_SIZE'
+
+export function planBatchSize(env: Record<string, string | undefined> = process.env): number {
+  const raw = env[PLAN_BATCH_SIZE_ENV]?.trim() ?? ''
+  if (raw === '') return DEFAULT_PLAN_BATCH_SIZE
+  const size = Number(raw)
+  // Digits alone are not enough: a number too long to hold exactly would
+  // batch by a rounded size, or by Infinity.
+  if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(size))
+    throw new Error(`${PLAN_BATCH_SIZE_ENV} is "${raw}", and the plan batch size is a whole number of criteria above zero`)
+  return size
 }
 
 /** A suite the profile declares, as the planner is told of it (#258). */
@@ -167,9 +221,13 @@ export const NO_DIFF =
   'There is no diff: this is a one-off check of the app as it runs now, not a review of a change.'
 
 export class PlanStepError extends Error {
-  constructor(message: string) {
+  /** What the model turns cost before the step gave up (#259): a plan that failed was still paid for. */
+  usage?: ModelUsage
+
+  constructor(message: string, usage?: ModelUsage) {
     super(message)
     this.name = 'PlanStepError'
+    if (usage !== undefined) this.usage = usage
   }
 }
 
@@ -623,10 +681,14 @@ function coverage(plan: Plan, inputs: PlanInputs): string | undefined {
   const planned = new Set(plan.criteria.map((criterion) => criterion.id))
   const missing = [...asked].filter((id) => !planned.has(id))
   const invented = [...planned].filter((id) => !asked.has(id))
-  if (missing.length === 0 && invented.length === 0) return undefined
+  // The sets cannot see an id answered twice, and a plan holds each once (#259).
+  const ids = plan.criteria.map((criterion) => criterion.id)
+  const repeated = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))]
+  if (missing.length === 0 && invented.length === 0 && repeated.length === 0) return undefined
   return [
     missing.length ? `it left out ${missing.join(', ')}` : '',
     invented.length ? `it invented ${invented.join(', ')}` : '',
+    repeated.length ? `it answered ${repeated.join(', ')} more than once` : '',
   ]
     .filter(Boolean)
     .join(' and ')
@@ -866,17 +928,117 @@ function undeclaredPathGap(plan: Plan, inputs: PlanInputs): string | undefined {
  * than quietly shrinking the run: a criterion nobody planned is a criterion
  * nothing will ever check.
  *
- * One correction round, carrying the reason, then it raises.
+ * One correction round a batch, carrying the reason, then the batch is lost.
+ *
+ * The criteria are planned in batches (#259), one model turn a batch, and
+ * the batches' plans are merged into one that holds every criterion exactly
+ * once, in the order asked. A batch that is cut off, errors or is refused
+ * costs only its own criteria: each is marked unplannable with the reason,
+ * and the other batches' plans are kept. Only when no batch could be planned
+ * does the step raise, as it did when the plan was one turn. The usage is the
+ * sum over every batch, the lost ones included.
  */
 export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<Plan> {
   if (inputs.criteria.length === 0)
     throw new PlanStepError('no criteria to plan: an empty plan passes nothing, so the step fails closed')
+  // Batches are told apart by their criteria's ids, so an id asked twice
+  // could be planned twice, or once and lost once: refused before any turn.
+  const seen = new Set<string>()
+  for (const criterion of inputs.criteria) {
+    if (seen.has(criterion.id))
+      throw new PlanStepError(`criterion ${criterion.id} is asked about more than once, and a plan holds every criterion exactly once`)
+    seen.add(criterion.id)
+  }
   const exploration = inputs.exploration === undefined ? undefined : exploreChannel(inputs.exploration)
   const mcp = inputs.mcp === undefined ? undefined : mcpChannel(inputs.mcp)
 
   const budget = outputBudget()
-  let correction: string | undefined
+  const size = inputs.batchSize ?? planBatchSize()
+  if (!Number.isSafeInteger(size) || size < 1)
+    throw new Error(`the plan batch size is ${String(size)}, and it is a whole number of criteria above zero`)
+  const batches: PlanCriterionInput[][] = []
+  for (let from = 0; from < inputs.criteria.length; from += size) batches.push(inputs.criteria.slice(from, from + size))
+
   let usage: ModelUsage | undefined
+  const planned = new Map<string, Plan['criteria'][number]>()
+  const failures: unknown[] = []
+  let only: Plan | undefined
+  for (const [index, batch] of batches.entries()) {
+    const ids = batch.map((criterion) => criterion.id)
+    const outcome = await planBatch(runner, { ...inputs, criteria: batch }, budget, exploration, mcp)
+    usage = sumUsage(usage, outcome.usage)
+    if (outcome.plan !== undefined) {
+      only = outcome.plan
+      for (const criterion of outcome.plan.criteria) planned.set(criterion.id, criterion)
+      inputs.onBatch?.({ index: index + 1, of: batches.length, criteria: ids, outcome: 'planned', ...(outcome.usage === undefined ? {} : { usage: outcome.usage }) })
+      continue
+    }
+    const error = outcome.error
+    failures.push(error)
+    const named = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+    for (const criterion of batch) planned.set(criterion.id, { ...criterion, unplannable: `planning failed (${named})` })
+    inputs.onBatch?.({ index: index + 1, of: batches.length, criteria: ids, outcome: 'failed', reason: named, ...(outcome.usage === undefined ? {} : { usage: outcome.usage }) })
+  }
+
+  if (failures.length === batches.length) {
+    const first = failures[0]
+    // A runner that cannot run is not a planning gap: its own error surfaces.
+    if (!(first instanceof PlanStepError)) throw first
+    // One batch is the plan step as it always was, error and all.
+    if (batches.length === 1) throw first
+    throw new PlanStepError(`none of the ${batches.length} batches could be planned, the first because ${first.message}`, usage)
+  }
+  // One batch: its plan stands as the model's answer parsed, as it always did.
+  if (batches.length === 1 && only !== undefined) return { ...only, ...(usage === undefined ? {} : { usage }) }
+  return {
+    schemaVersion: PLAN_SCHEMA_VERSION,
+    criteria: inputs.criteria.map((criterion) => planned.get(criterion.id)!),
+    ...(usage === undefined ? {} : { usage }),
+  }
+}
+
+interface PlanBatchOutcome {
+  plan?: Plan
+  /** Why the batch has no plan: the step's own refusal, or the runner's failure to run. */
+  error?: unknown
+  usage?: ModelUsage
+}
+
+/**
+ * One batch's turns: the answer, and one correction round carrying the
+ * reason. It never throws for a batch it could not plan, because the batch's
+ * cost is the caller's to count whatever became of it.
+ */
+async function planBatch(
+  runner: AgentRunner,
+  inputs: PlanInputs,
+  budget: AgentBudget,
+  exploration: AgentToolChannel | undefined,
+  mcp: AgentToolChannel | undefined,
+): Promise<PlanBatchOutcome> {
+  let usage: ModelUsage | undefined
+  try {
+    const plan = await planTurns(runner, inputs, budget, exploration, mcp, (spent) => {
+      usage = sumUsage(usage, spent)
+    })
+    return { plan, ...(usage === undefined ? {} : { usage }) }
+  } catch (error) {
+    if (error instanceof PlanStepError) {
+      if (usage !== undefined) error.usage = usage
+    } else if (!(error instanceof NareRunnerError)) throw error
+    return { error, ...(usage === undefined ? {} : { usage }) }
+  }
+}
+
+async function planTurns(
+  runner: AgentRunner,
+  inputs: PlanInputs,
+  budget: AgentBudget,
+  exploration: AgentToolChannel | undefined,
+  mcp: AgentToolChannel | undefined,
+  spend: (usage: ModelUsage | undefined) => void,
+): Promise<Plan> {
+  let correction: string | undefined
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const run = await runner.run({
       prompt: prompt(inputs, correction),
@@ -896,10 +1058,14 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
     // Every attempt's spend counts (#51): a rejected answer cost tokens the
     // same as an accepted one, and the plan's usage says what the plan really
     // cost, not what the lucky attempt did.
-    usage = sumUsage(usage, run.usage)
+    spend(run.usage)
     if (run.status !== 'completed')
       throw new PlanStepError(
         `the planning run did not complete (stop reason ${stopDetail(run.stopReason, budget)}), so there is no plan` +
+          // A turn asked for less also fits its budget (#259), when there is less to ask for.
+          (run.stopReason === 'max_tokens' && inputs.criteria.length > 1
+            ? `; the turn planned ${inputs.criteria.length} criteria, and a smaller ${PLAN_BATCH_SIZE_ENV} (plan-batch-size in the pipeline) asks each turn for less`
+            : '') +
           (run.error ? `: ${run.error}` : ''),
       )
     if (typeof run.output !== 'string')
@@ -951,7 +1117,7 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
         `(${inputs.runInputs.paths.join(', ')}); rewrite the command against them, or mark the criterion unplannable.`
       continue
     }
-    return { ...plan, ...(usage === undefined ? {} : { usage }) }
+    return plan
   }
 
   throw new PlanStepError(`the model could not produce a usable plan: ${correction}`)
