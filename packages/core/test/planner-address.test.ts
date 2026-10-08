@@ -160,8 +160,7 @@ test('the planner is told the origin of a target and no other part of its URL', 
   expect(told(['https:', '//wiki.example.test:443/base'].join(''))).toBe(TARGET_URL)
   // What is not an http(s) URL has no origin to tell: it is not written at all.
   for (const unread of ['SECRETUSER:SECRETPASS@nowhere', 'not a url SECRETPATH', ['https:', '//{{SECRETPASS}}/app'].join(''), ['https:', '//wiki.example.test:SECRETPASS/app'].join(''),['ftp:', '//SECRETUSER:SECRETPASS@files.example.test/'].join('')]) {
-    expectNoSecret(told(unread), unread)
-    expect(told(unread)).not.toContain('nowhere')
+    expect(plannerAddress({ target: { url: unread } } as Parameters<typeof plannerAddress>[0]), unread).toEqual({})
   }
 })
 

@@ -86,15 +86,16 @@ export interface PlannerAddress {
  * them can tell the planner less than the profile knows: the pipeline's plan
  * step once left out the target, and the one-off check the booted app.
  * A profile names one of target, client and app, so at most one comes back;
- * no profile, or an app whose health check names no origin, says nothing.
+ * no profile, or an address with no origin a parser can read, says nothing.
  */
 export function plannerAddress(profile: Pick<QaProfile, 'target' | 'client' | 'app'> | undefined): PlannerAddress {
   if (profile === undefined) return {}
   const app = profile.app === undefined ? undefined : plannedAppAddress(profile.app.health.http)
+  const target = profile.target === undefined ? undefined : targetOrigin(profile.target.url)
   return {
     // The origin and nothing else: this is written into the model's prompt,
     // and a credential anywhere in the target URL is the profile's own.
-    ...(profile.target === undefined ? {} : { target: targetOrigin(profile.target.url) }),
+    ...(target === undefined ? {} : { target }),
     ...(profile.client === undefined ? {} : { client: profile.client.driver }),
     ...(app === undefined ? {} : { app: { address: app } }),
   }
@@ -109,19 +110,18 @@ export function plannerAddress(profile: Pick<QaProfile, 'target' | 'client' | 'a
  * The planner needs no more: a page is opened by path, which resolves
  * against the whole target URL at run time, and a command reaches the target
  * through {{run.target_url}}, which the harness fills. What is not an
- * http(s) URL has no origin to tell, and is not written at all.
+ * http(s) URL has no origin to tell, and the planner is told nothing of it.
  */
-function targetOrigin(url: string): string {
-  const unread = 'an address the profile names'
+function targetOrigin(url: string): string | undefined {
   let parsed: URL
   try {
     parsed = new URL(url.trim())
   } catch {
-    return unread
+    return undefined
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return unread
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined
   // The parser lets braces and other marks stand in a host: only a plain host name is written.
-  if (!HOST_NAME.test(parsed.hostname)) return unread
+  if (!HOST_NAME.test(parsed.hostname)) return undefined
   return `${parsed.protocol}//${parsed.hostname}${parsed.port === '' ? '' : `:${parsed.port}`}`
 }
 
