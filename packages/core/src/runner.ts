@@ -37,10 +37,16 @@ export function outputBudget(env: Record<string, string | undefined> = process.e
   return { maxOutputTokens: tokens }
 }
 
-/** A turn cut off at its budget says what the budget was and what raises it. */
+/**
+ * A turn cut off at its budget says what the budget was and what raises it.
+ *
+ * No colon or equals sign follows a word ending in `tokens` (#260): the
+ * secret sweep reads that as a token and its value, and the message is
+ * published in a pull request comment, where the word after it was redacted.
+ */
 export function stopDetail(stopReason: AgentStopReason, budget: AgentBudget): string {
   if (stopReason !== 'max_tokens') return stopReason
-  return `max_tokens: the turn was cut off at its budget of ${budget.maxOutputTokens} output tokens, which ${MAX_OUTPUT_TOKENS_ENV} raises (max-output-tokens in the pipeline)`
+  return `max_tokens, the turn was cut off at its budget of ${budget.maxOutputTokens} output tokens, which ${MAX_OUTPUT_TOKENS_ENV} raises (max-output-tokens in the pipeline)`
 }
 
 export interface AgentRunRequest {
