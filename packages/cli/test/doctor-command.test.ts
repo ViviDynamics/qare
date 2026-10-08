@@ -7,6 +7,11 @@ function capture(): { lines: string[]; writer: Writer } {
   return { lines, writer: { write: (chunk) => lines.push(chunk) } }
 }
 
+// These two run the host's real probes, which the doctor itself gives up to
+// ten seconds each: the default five-second test timeout is shorter than
+// what the command may take on a slow runner (#277).
+const DOCTOR_PROBES_MS = 45_000
+
 test('doctor reports a ready host in json and exits clean', async () => {
   const { lines, writer } = capture()
   const code = await main(['doctor', '--json', '--nare', process.execPath], writer)
@@ -16,7 +21,7 @@ test('doctor reports a ready host in json and exits clean', async () => {
   expect(report.execution).toBeDefined()
   expect(report.findings.some((finding) => finding.name === 'nare' && finding.ok)).toBe(true)
   expect(report.findings.some((finding) => finding.name === 'node' && finding.ok)).toBe(true)
-})
+}, DOCTOR_PROBES_MS)
 
 test('doctor names a missing nare, says how to install it, and exits 1', async () => {
   const { lines, writer } = capture()
@@ -26,7 +31,7 @@ test('doctor names a missing nare, says how to install it, and exits 1', async (
   expect(text).toContain('missing nare')
   expect(text).toContain('install the pinned nare beside qare')
   expect(text).not.toContain('undefined')
-})
+}, DOCTOR_PROBES_MS)
 
 test('doctor refuses an unknown flag', async () => {
   const code = await main(['doctor', '--wat'], { write: () => {} })
