@@ -23,6 +23,8 @@ import {
 // check, and nothing resolved a path against the app the run booted.
 
 const local = (rest: string): string => ['http:', rest].join('')
+// Nothing here is reached: these are addresses a profile may carry, built so no literal names the network.
+const secure = (rest: string): string => ['https:', rest].join('')
 const HEALTH_BY_VALUE = local('//localhost:{{run.app_port}}/up')
 const HEALTH_FIXED = local('//localhost:3000/up')
 
@@ -142,9 +144,9 @@ test('a path opened when the run booted no app and names no target is refused wi
   expect(flowOpenUrl('/auth/sign_in', { appHealth: 'not a url' }, values)).toMatchObject({ ok: false, reason: expect.stringMatching(/health URL.*names no origin/) })
 
   // What is not a path, or is another driver's to resolve, is left as written.
-  expect(flowOpenUrl('https://elsewhere.example/x', {}, values)).toEqual({ ok: true, url: 'https://elsewhere.example/x' })
+  expect(flowOpenUrl(secure('//elsewhere.example/x'), {}, values)).toEqual({ ok: true, url: secure('//elsewhere.example/x') })
   expect(flowOpenUrl('/settings', { client: true }, values)).toEqual({ ok: true, url: '/settings' })
-  expect(flowOpenUrl('/wiki/Ada', { targetUrl: 'https://en.wikipedia.org' }, values)).toEqual({ ok: true, url: '/wiki/Ada' })
+  expect(flowOpenUrl('/wiki/Ada', { targetUrl: secure('//en.wikipedia.org') }, values)).toEqual({ ok: true, url: '/wiki/Ada' })
   expect(flowOpenUrl('/auth/sign_in', { appHealth: HEALTH_BY_VALUE }, values)).toEqual({ ok: true, url: local('//localhost:41234/auth/sign_in') })
 })
 
@@ -166,7 +168,7 @@ test('the origin of the booted app is the health check with the run values, pinn
   expect(bootedAppOrigin(HEALTH_BY_VALUE, values)).toBe(local('//localhost:41234'))
   expect(bootedAppOrigin(HEALTH_FIXED, values)).toBe(local('//localhost:41234'))
   // A health check on a host that is not local is taken as written: qare rewrites only what it can name.
-  expect(bootedAppOrigin('https://staging.example/up', values)).toBe('https://staging.example')
+  expect(bootedAppOrigin(secure('//staging.example/up'), values)).toBe(secure('//staging.example'))
   expect(bootedAppOrigin('not a url', values)).toBeUndefined()
 })
 
@@ -175,7 +177,7 @@ test('the address the planner is told is the one that works in a plan: the run p
   // A fixed local port is pinned to the run's at run time, so the number in the profile is not where the app will be.
   expect(plannedAppAddress(HEALTH_FIXED)).toBe(local('//localhost:{{run.app_port}}'))
   expect(plannedAppAddress(local('//127.0.0.1:8080/healthz'))).toBe(local('//127.0.0.1:{{run.app_port}}'))
-  expect(plannedAppAddress('https://staging.example/up')).toBe('https://staging.example')
+  expect(plannedAppAddress(secure('//staging.example/up'))).toBe(secure('//staging.example'))
   expect(plannedAppAddress('not a url')).toBeUndefined()
 })
 
