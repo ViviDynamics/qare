@@ -1143,6 +1143,26 @@ once for the whole run and is reused by every criterion that can reuse it.
 The rest stay sequential, in the plan order the job gave them, one after
 another.
 
+What may be in flight at the same time is exactly this (#278), and there is
+no setting that widens it:
+
+- With one worker, which is the default: nothing. The run executes one
+  criterion at a time, in plan order, whichever lane each criterion belongs
+  to. The lanes decide how a criterion runs (its own artefact ledger, the
+  run's ledger, an app of its own), never that two run at once.
+- With more than one worker: the shared criteria run beside each other
+  across the workers, which is what asking for more workers means, and a
+  profile whose criteria cannot share the app must say so (below). The
+  sequential criteria still run one at a time, in plan order between
+  themselves. A sequential criterion with an app of its own may run while
+  the workers do, because nothing it touches is theirs. A sequential
+  criterion on the shared app, which is one that hands mail on, runs only
+  once the workers have drained: it is never in flight beside a shared
+  criterion on the app they share.
+
+Either way the results come back in plan order, and a mail hand-off between
+criteria sees plan order.
+
 Two criteria are sequential whether or not the author says anything. A
 criterion that publishes, consumes or reads mail — one that carries a mail
 check, or references an artefact a mail check published as

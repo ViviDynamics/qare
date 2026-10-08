@@ -1470,6 +1470,11 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
  * one after another in plan order, booting their own app where the job or a
  * suite declares one. Results come back in plan order whatever the workers
  * did, so a sharded run's result.json reads exactly as a serial run's does.
+ *
+ * What may be in flight at once (#278). With one worker: nothing, ever. With
+ * more: the shared criteria, beside each other, and one sequential criterion
+ * with an app of its own beside them. Never two sequential criteria, and
+ * never a sequential criterion on the shared app beside a shared criterion.
  */
 async function runCriteriaAcrossLanes(criteria: JobCriterion[], lanes: LanePlan, ctx: LaneContext): Promise<CriterionResult[]> {
   const results: CriterionResult[] = new Array(criteria.length)
@@ -1482,32 +1487,64 @@ async function runCriteriaAcrossLanes(criteria: JobCriterion[], lanes: LanePlan,
     const reason = ctx.gate?.(criterion)
     return reason === undefined ? undefined : { id: criterion.id, outcome: 'unverified', reason }
   }
-  await Promise.all([
-    ...lanes.shared.map((slice) =>
-      (async () => {
-        for (const index of slice) {
-          const criterion = criterionAt(index)
-          // A criterion the workers run beside others shares nothing with
-          // them: its artefact ledger starts empty, so its flow checks
-          // cannot spend or publish what another criterion's do (#69).
-          results[index] = gated(criterion) ?? (await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands))
-        }
-      })(),
-    ),
-    (async () => {
-      for (const { index, ownBoot } of lanes.sequential) {
-        const criterion = criterionAt(index)
-        // The sequential criteria share the run's artefact ledger, in plan
-        // order: a mail message's link published by one criterion is what
-        // the next one consumes, exactly as a serial run hands it over.
-        results[index] =
-          gated(criterion) ??
-          (ownBoot
-            ? await runOwnBootCriterion(criterion, ctx)
-            : await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, ctx.artefacts, ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands))
-      }
-    })(),
-  ])
+  // A criterion the workers run beside others shares nothing with them: its
+  // artefact ledger starts empty, so its flow checks cannot spend or publish
+  // what another criterion's do (#69).
+  const runShared = async (index: number): Promise<void> => {
+    const criterion = criterionAt(index)
+    results[index] = gated(criterion) ?? (await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, new Artefacts(), ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands))
+  }
+  // The sequential criteria share the run's artefact ledger, in plan order:
+  // a mail message's link published by one criterion is what the next one
+  // consumes, exactly as a serial run hands it over.
+  const runSequential = async ({ index, ownBoot }: { index: number; ownBoot: boolean }): Promise<void> => {
+    const criterion = criterionAt(index)
+    results[index] =
+      gated(criterion) ??
+      (ownBoot
+        ? await runOwnBootCriterion(criterion, ctx)
+        : await runCriterion(criterion, ctx.job, ctx.rules, ctx.values, ctx.mail, ctx.artefacts, ctx.flow, ctx.execution, ctx.cache, ctx.policy, ctx.profile?.commands))
+  }
+
+  // One worker is the serial run (#278): one criterion at a time, in plan
+  // order, whichever lane each belongs to. The lanes decide how a criterion
+  // runs (its own ledger, the run's ledger, an app of its own), never that
+  // two of them run at once. Starting the sequential lane beside the one
+  // shared lane put two criteria on one booted app, and each one's suite
+  // undid the other's data.
+  if (lanes.shared.length <= 1) {
+    const sequential = new Map(lanes.sequential.map((entry) => [entry.index, entry]))
+    for (let index = 0; index < criteria.length; index += 1) {
+      const entry = sequential.get(index)
+      if (entry === undefined) await runShared(index)
+      else await runSequential(entry)
+    }
+    return results
+  }
+
+  // More workers: the shared criteria run side by side across the workers,
+  // which is what more workers asks for. The sequential criteria still run
+  // one at a time, in plan order. One with an app of its own may run while
+  // the workers do, because nothing it touches is theirs. One on the shared
+  // app (it hands mail on) waits until the workers have drained: it never
+  // runs beside a shared criterion on the app they share (#278).
+  const workers = Promise.all(
+    lanes.shared.map(async (slice) => {
+      for (const index of slice) await runShared(index)
+    }),
+  )
+  // A worker that throws must not be left unobserved while the sequential
+  // lane is still running: the failure is raised when the workers are awaited.
+  workers.catch(() => {})
+  let drained = false
+  for (const entry of lanes.sequential) {
+    if (!entry.ownBoot && !drained) {
+      await workers
+      drained = true
+    }
+    await runSequential(entry)
+  }
+  await workers
   return results
 }
 
