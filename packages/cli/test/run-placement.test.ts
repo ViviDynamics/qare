@@ -75,6 +75,14 @@ test('qare run on a host that has what the profile requires goes ahead, and reco
   expect(result.environment.host).toMatchObject({ os: HERE, arch: process.arch })
 })
 
+// `qare doctor` runs the host's real probes here: python3 and the docker
+// daemon are each given up to ten seconds by the doctor itself, and importing
+// the browser driver takes what the runner's disk gives it. The default test
+// timeout of five seconds is shorter than what the command is allowed to
+// take, so on a slow runner this test timed out at 5080 ms with nothing wrong
+// (#277). The bound here is sized for what the test really runs.
+const DOCTOR_PROBES_MS = 45_000
+
 test('qare doctor names the host kind and the requirement this host does not meet (#76)', async () => {
   const { dir } = await repo(`requires:\n  os: ${ELSEWHERE}\n`)
   const out = capture()
@@ -84,4 +92,4 @@ test('qare doctor names the host kind and the requirement this host does not mee
   expect(text).toMatch(new RegExp(`^ok host: a ${HERE} ${process.arch} host`, 'm'))
   expect(text).toContain(`missing os: this profile requires a ${ELSEWHERE} host (requires.os): this host is ${HERE}\n`)
   expect(text).toContain(`  run it on a ${ELSEWHERE} host: an operating system is not something to install\n`)
-})
+}, DOCTOR_PROBES_MS)
