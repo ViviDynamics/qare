@@ -6,8 +6,10 @@ import {
   MAX_OUTPUT_TOKENS_ENV,
   outputBudget,
   planRun,
+  redactText,
   runUxReview,
   runVerifier,
+  stopDetail,
   type AgentRunResult,
   type PlanInputs,
 } from '../src/index.js'
@@ -124,4 +126,30 @@ test('the UX review asks with the same budget', async () => {
   const lowered = new FakeAgentRunner([])
   await runUxReview(lowered, screens)
   expect(lowered.requests[0].budget).toEqual({ maxOutputTokens: 6000 })
+})
+
+// #260: the message read `max_tokens: the turn was cut off`, and the secret
+// sweep took `tokens: the` for a token and its value, so a pull request
+// comment said `max_tokens: [redacted] turn was cut off`.
+test('the cut-off message passes the secret sweep unchanged, alone and inside the plan and verifier reasons', async () => {
+  const detail = stopDetail('max_tokens', { maxOutputTokens: 6000 })
+  expect(detail).toMatch(/^max_tokens\b.*the turn was cut off at its budget of 6000 output tokens/)
+  expect(redactText(detail)).toBe(detail)
+
+  process.env[MAX_OUTPUT_TOKENS_ENV] = '6000'
+  const withError: AgentRunResult = { ...CUT_OFF, error: 'the provider closed the stream' }
+  for (const result of [CUT_OFF, withError]) {
+    const refusal = String(await planRun(new FakeAgentRunner([result]), INPUTS).catch((caught: unknown) => caught))
+    expect(refusal).toContain(detail)
+    expect(redactText(refusal)).toBe(refusal)
+
+    const { verdicts } = await runVerifier(new FakeAgentRunner([result]), VERIFIER_INPUTS)
+    expect(verdicts[0].reason).toContain(detail)
+    expect(redactText(verdicts[0].reason ?? '')).toBe(verdicts[0].reason)
+  }
+})
+
+test('the sweep still redacts a token assignment, so the message passes by its wording and not by a looser rule', () => {
+  expect(redactText('max_tokens: hunter2 was the value')).toBe('max_tokens: [redacted] was the value')
+  expect(redactText('AUTH_TOKEN=abc123')).toBe('AUTH_TOKEN=[redacted]')
 })
