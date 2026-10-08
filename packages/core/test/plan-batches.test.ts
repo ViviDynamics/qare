@@ -229,6 +229,62 @@ test('when no batch can be planned the step still fails closed, carrying what th
   await expect(planRun(broken, INPUTS)).rejects.toBeInstanceOf(NareRunnerError)
 })
 
+// #271: on PR 268 four batches were refused for four reasons, and every
+// criterion was told about the first batch's check, which was never theirs.
+test("when no batch can be planned the error carries each criterion with its own batch's reason, in the order asked", async () => {
+  process.env[PLAN_BATCH_SIZE_ENV] = '2'
+  const errored: AgentRunResult = { status: 'failed', stopReason: 'error', usage: { inputTokens: 5, outputTokens: 0 }, output: undefined, error: 'HTTP 502' }
+  const shell = JSON.stringify({ schemaVersion: '1', criteria: [{ id: 'c5', text: 'criterion c5 holds', checks: [{ kind: 'command', name: 'piped', command: 'cat a | grep b' }] }] })
+  const runner = new AnsweringRunner((ids) => {
+    if (ids[0] === 'c1') return CUT_OFF
+    if (ids[0] === 'c3') return errored
+    return completed(shell, { inputTokens: 7, outputTokens: 3 })
+  })
+
+  const error = (await planRun(runner, INPUTS).catch((caught: unknown) => caught)) as PlanStepError
+
+  // Still a failure of the step, named as before, for a caller that treats it as one.
+  expect(error).toBeInstanceOf(PlanStepError)
+  expect(error.message).toMatch(/^none of the 3 batches could be planned, the first because the planning run did not complete \(stop reason max_tokens/)
+  // c1, c2 cut off: 100/16384. c3, c4 errored: 5/0. c5 refused twice: 7/3 each.
+  expect(error.usage).toEqual({ inputTokens: 100 + 5 + 2 * 7, outputTokens: 16384 + 0 + 2 * 3 })
+
+  expect(error.unplanned?.map((criterion) => criterion.id)).toEqual(['c1', 'c2', 'c3', 'c4', 'c5'])
+  const reasons = Object.fromEntries((error.unplanned ?? []).map((criterion) => [criterion.id, criterion.unplannable]))
+  for (const id of ['c1', 'c2']) {
+    expect(reasons[id]).toMatch(/^planning failed \(PlanStepError: the planning run did not complete \(stop reason max_tokens/)
+    expect(reasons[id]).not.toContain('none of the')
+  }
+  for (const id of ['c3', 'c4']) {
+    expect(reasons[id]).toMatch(/^planning failed \(PlanStepError: the planning run did not complete .*HTTP 502/)
+    expect(reasons[id]).not.toContain('max_tokens')
+  }
+  expect(reasons.c5).toMatch(/^planning failed \(PlanStepError: the model could not produce a usable plan: criterion c5 command check "piped"/)
+  expect(reasons.c5).not.toContain('max_tokens')
+  // Each is the criterion as asked, with a reason and no checks: nothing a run could execute.
+  for (const criterion of error.unplanned ?? []) {
+    expect(criterion.text).toBe(`criterion ${criterion.id} holds`)
+    expect(criterion).not.toHaveProperty('checks')
+  }
+})
+
+test('a single batch that fails raises the error it always raised, with no criteria on it', async () => {
+  const single = new AnsweringRunner(() => CUT_OFF)
+  const alone = (await planRun(single, { ...INPUTS, batchSize: 5 }).catch((caught: unknown) => caught)) as PlanStepError
+  expect(alone).toBeInstanceOf(PlanStepError)
+  expect(alone.message).toMatch(/^the planning run did not complete \(stop reason max_tokens/)
+  expect(alone.unplanned).toBeUndefined()
+  expect(alone.usage).toEqual({ inputTokens: 100, outputTokens: 16384 })
+})
+
+test("a runner that cannot run for the first batch still surfaces as itself, whatever the later batches' reasons", async () => {
+  const runner = new AnsweringRunner((ids) => {
+    if (ids[0] === 'c1') throw new NareRunnerError('nare exited 127 without a result line; its output cannot be read as an outcome')
+    return CUT_OFF
+  })
+  await expect(planRun(runner, { ...INPUTS, criteria: CRITERIA.slice(0, 2) })).rejects.toBeInstanceOf(NareRunnerError)
+})
+
 test('criteria that share an id are refused before any model call: a merged plan could not hold each exactly once', async () => {
   const runner = new AnsweringRunner((ids) => completed(planFor(ids)))
   await expect(planRun(runner, { ...INPUTS, criteria: [CRITERIA[0]!, CRITERIA[1]!, CRITERIA[0]!] })).rejects.toThrow(/c1.*more than once/)

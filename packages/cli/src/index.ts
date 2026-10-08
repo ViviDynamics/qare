@@ -629,6 +629,23 @@ function unplannedPlan(criteria: { id: string; text: string }[], reason: string)
 }
 
 /**
+ * The plan of a step in which several batches were all lost (#271): every
+ * criterion asked about, unplannable for its own batch's reason. Undefined
+ * unless the step's error accounts for exactly the criteria asked, in which
+ * case the caller falls back to one reason for all of them, so no criterion
+ * is ever left out of the plan.
+ */
+function unplannedByBatch(criteria: { id: string; text: string }[], unplanned: PlanStepError['unplanned']): Plan | undefined {
+  if (unplanned === undefined || unplanned.length !== criteria.length) return undefined
+  const reasons = new Map(unplanned.map((criterion) => [criterion.id, criterion.unplannable]))
+  if (reasons.size !== criteria.length || criteria.some((criterion) => !reasons.has(criterion.id))) return undefined
+  return {
+    schemaVersion: PLAN_SCHEMA_VERSION,
+    criteria: criteria.map((criterion) => ({ ...criterion, unplannable: reasons.get(criterion.id) ?? '' })),
+  }
+}
+
+/**
  * The paths the diff adds or changes. A content change carries the new path in
  * its `+++ b/` header; a rename, a binary file and a mode-only change carry it
  * in the git header's b/ side or the rename-to line instead. Deleted files are
@@ -782,6 +799,8 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
     // The profile's registered MCP servers the plan step may look through (#93):
     // started here, served to the planner over one channel, recorded to
     // mcp-calls.jsonl beside the plan, and closed whatever the planning did.
+    // How many batches the plan had, as the plan step reported them.
+    let batchCount = 0
     const mcpRecords: McpCallRecord[] = []
     let mcpSources: McpSource[] = []
     let mcpServer: McpToolServer | undefined
@@ -804,6 +823,7 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         // A plan of several turns says where it stands (#259): with a slow
         // model each turn is minutes, and a lost one is named as it happens.
         onBatch: (report) => {
+          batchCount = report.of
           if (report.of === 1) return
           const batch = `batch ${report.index} of ${report.of} (${report.criteria.join(', ')})`
           // What the batch cost is what a caller tunes the size and the budget by.
@@ -842,9 +862,18 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       // pipeline's later jobs report the planning gap instead of going red.
       if (!(error instanceof PlanStepError)) throw error
       const named = `${error.name}: ${error.message}`
-      out.write(`the planner could not produce a usable plan, so every criterion is marked unplannable: ${named}\n`)
+      // When several batches were all lost, each criterion keeps its own
+      // batch's reason (#271): the step's message names the first batch's
+      // only, and that check was never the other criteria's. The batches
+      // were each reported as they ended, reason and all.
+      const unplanned = unplannedByBatch(criteria, error.unplanned)
+      out.write(
+        unplanned === undefined
+          ? `the planner could not produce a usable plan, so every criterion is marked unplannable: ${named}\n`
+          : `none of the ${batchCount} batches could be planned, so every criterion is marked unplannable with its own batch's reason\n`,
+      )
       // The turns that failed were still paid for (#259), and the plan says so.
-      plan = { ...unplannedPlan(criteria, `planning failed (${named})`), ...(error.usage === undefined ? {} : { usage: error.usage }) }
+      plan = { ...(unplanned ?? unplannedPlan(criteria, `planning failed (${named})`)), ...(error.usage === undefined ? {} : { usage: error.usage }) }
     } finally {
       await mcpServer?.close().catch(() => {})
       await Promise.all(mcpSources.map((source) => source.close().catch(() => {})))

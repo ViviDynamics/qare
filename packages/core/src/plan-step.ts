@@ -265,14 +265,26 @@ function effectiveDriver(inputs: PlanInputs): FlowDriverCapabilities | undefined
 export const NO_DIFF =
   'There is no diff: this is a one-off check of the app as it runs now, not a review of a change.'
 
+/** A criterion as asked, with why it has no checks. */
+export type UnplannedCriterion = PlanCriterionInput & { unplannable: string }
+
 export class PlanStepError extends Error {
   /** What the model turns cost before the step gave up (#259): a plan that failed was still paid for. */
   usage?: ModelUsage
+  /**
+   * When none of several batches could be planned (#271): every criterion
+   * asked about, in the order asked, each unplannable for its own batch's
+   * reason. The message names only the first batch's reason, which is not
+   * the reason of any criterion outside that batch. Absent when the plan was
+   * one batch: its error is the reason of every criterion it asked about.
+   */
+  unplanned?: UnplannedCriterion[]
 
-  constructor(message: string, usage?: ModelUsage) {
+  constructor(message: string, usage?: ModelUsage, unplanned?: UnplannedCriterion[]) {
     super(message)
     this.name = 'PlanStepError'
     if (usage !== undefined) this.usage = usage
+    if (unplanned !== undefined) this.unplanned = unplanned
   }
 }
 
@@ -1119,8 +1131,9 @@ function undeclaredPathGap(plan: Plan, inputs: PlanInputs): string | undefined {
  * once, in the order asked. A batch that is cut off, errors or is refused
  * costs only its own criteria: each is marked unplannable with the reason,
  * and the other batches' plans are kept. Only when no batch could be planned
- * does the step raise, as it did when the plan was one turn. The usage is the
- * sum over every batch, the lost ones included.
+ * does the step raise, as it did when the plan was one turn, and the error
+ * then carries each criterion with its own batch's reason (#271). The usage
+ * is the sum over every batch, the lost ones included.
  *
  * Up to `QARE_PLAN_CONCURRENCY` batches are with the model at the same time
  * (#265), one by default. The merge is by each batch's place and not by when
@@ -1199,6 +1212,7 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
   let usage: ModelUsage | undefined
   const planned = new Map<string, Plan['criteria'][number]>()
   const failures: unknown[] = []
+  const lost: UnplannedCriterion[] = []
   let only: Plan | undefined
   for (const [index, batch] of batches.entries()) {
     const outcome = outcomes[index]
@@ -1210,7 +1224,11 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
       continue
     }
     failures.push(outcome.error)
-    for (const criterion of batch) planned.set(criterion.id, { ...criterion, unplannable: `planning failed (${failureName(outcome.error)})` })
+    for (const criterion of batch) {
+      const unplanned = { ...criterion, unplannable: `planning failed (${failureName(outcome.error)})` }
+      planned.set(criterion.id, unplanned)
+      lost.push(unplanned)
+    }
   }
 
   if (failures.length === batches.length) {
@@ -1219,7 +1237,11 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
     if (!(first instanceof PlanStepError)) throw first
     // One batch is the plan step as it always was, error and all.
     if (batches.length === 1) throw first
-    throw new PlanStepError(`none of the ${batches.length} batches could be planned, the first because ${first.message}`, usage)
+    // The step still fails, for a caller that treats that as a failure, and
+    // the message names the first batch. Each criterion's own reason goes
+    // with it (#271), so a caller that marks them unplannable does not tell
+    // every criterion about a check that was only the first batch's.
+    throw new PlanStepError(`none of the ${batches.length} batches could be planned, the first because ${first.message}`, usage, lost)
   }
   // One batch: its plan stands as the model's answer parsed, as it always did.
   if (batches.length === 1 && only !== undefined) return { ...only, ...(usage === undefined ? {} : { usage }) }

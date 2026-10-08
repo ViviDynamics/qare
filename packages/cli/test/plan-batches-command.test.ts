@@ -19,8 +19,10 @@ const CRITERIA = ['c1', 'c2', 'c3'].map((id) => ({ id, text: `criterion ${id} ho
 /**
  * A nare stand-in that plans whatever criteria its prompt lists, logs each
  * call's ids, and is cut off at max_tokens whenever a listed id is in `cutOff`.
+ * For an id in `refused` it plans a piped command, which the plan step refuses
+ * on every round.
  */
-async function batchNare(cutOff: string[] = []): Promise<{ binary: string; calls: () => Promise<string[][]> }> {
+async function batchNare(cutOff: string[] = [], refused: string[] = []): Promise<{ binary: string; calls: () => Promise<string[][]> }> {
   const dir = await mkdtemp(join(tmpdir(), 'qare-plan-batch-'))
   const binary = join(dir, 'nare')
   const log = join(dir, 'calls.jsonl')
@@ -35,7 +37,7 @@ async function batchNare(cutOff: string[] = []): Promise<{ binary: string; calls
     `if (ids.some((id) => ${JSON.stringify(cutOff)}.includes(id))) {`,
     `  console.log(JSON.stringify({ ...base, status: 'error', stop_reason: 'max_tokens', output: null, error: null }))`,
     `} else {`,
-    `  const plan = { schemaVersion: '1', criteria: ids.map((id) => ({ id, text: 'criterion ' + id + ' holds', checks: [{ kind: 'command', name: 'check ' + id, command: 'node --version' }] })) }`,
+    `  const plan = { schemaVersion: '1', criteria: ids.map((id) => ({ id, text: 'criterion ' + id + ' holds', checks: [${JSON.stringify(refused)}.includes(id) ? { kind: 'command', name: 'piped ' + id, command: 'cat a | grep b' } : { kind: 'command', name: 'check ' + id, command: 'node --version' }] })) }`,
     `  console.log(JSON.stringify({ type: 'output', text: JSON.stringify(plan), detail: {} }))`,
     `  console.log(JSON.stringify({ ...base, status: 'done', stop_reason: 'end_turn', output: plan, error: null }))`,
     `}`,
@@ -142,6 +144,30 @@ test('a batch size that is not a number stops the plan by name, and nothing is a
   expect(existsSync(outPath)).toBe(false)
 })
 
+// #271: every criterion read "none of the N batches could be planned, the
+// first because ...", so all but the first were told of a check never theirs.
+test("when every turn fails, each criterion in the written plan keeps its own batch's reason", async () => {
+  const nare = await batchNare(['c1', 'c3'], ['c2'])
+  const { argv, outPath } = await planArgs(nare.binary)
+  const out = capture()
+
+  expect(await main(argv, out.writer, capture().writer)).toBe(0)
+
+  const plan = JSON.parse(await readFile(outPath, 'utf8')) as WrittenPlan
+  expect(plan.criteria.map((criterion) => criterion.id)).toEqual(['c1', 'c2', 'c3'])
+  for (const criterion of plan.criteria) expect(criterion.checks).toBeUndefined()
+  expect(plan.criteria[0]?.unplannable).toMatch(/^planning failed \(PlanStepError: the planning run did not complete \(stop reason max_tokens/)
+  expect(plan.criteria[2]?.unplannable).toMatch(/^planning failed \(PlanStepError: the planning run did not complete \(stop reason max_tokens/)
+  // c2's batch was refused for its own check, and that is what c2 says: not c1's cut-off.
+  expect(plan.criteria[1]?.unplannable).toMatch(/^planning failed \(PlanStepError: the model could not produce a usable plan: criterion c2 command check "piped c2"/)
+  expect(plan.criteria[1]?.unplannable).not.toContain('max_tokens')
+  for (const criterion of plan.criteria) expect(criterion.unplannable).not.toContain('none of the')
+  // c1 and c3 one turn each, c2 its turn and its correction round.
+  expect(plan.usage).toEqual({ inputTokens: 40, outputTokens: 8 })
+  expect(out.text()).toContain("none of the 3 batches could be planned, so every criterion is marked unplannable with its own batch's reason")
+  expect(out.text()).toContain('planned 3 criteria (3 unplannable)')
+})
+
 test('when every turn is cut off the plan is all unplannable, as before, and still says what it cost', async () => {
   const nare = await batchNare(['c1', 'c2', 'c3'])
   const { argv, outPath } = await planArgs(nare.binary)
@@ -151,7 +177,7 @@ test('when every turn is cut off the plan is all unplannable, as before, and sti
 
   const plan = JSON.parse(await readFile(outPath, 'utf8')) as WrittenPlan
   expect(plan.criteria.map((criterion) => criterion.id)).toEqual(['c1', 'c2', 'c3'])
-  for (const criterion of plan.criteria) expect(criterion.unplannable).toMatch(/planning failed \(PlanStepError: none of the 3 batches could be planned/)
+  for (const criterion of plan.criteria) expect(criterion.unplannable).toMatch(/^planning failed \(PlanStepError: the planning run did not complete \(stop reason max_tokens/)
   expect(plan.usage).toEqual({ inputTokens: 30, outputTokens: 6 })
   expect(out.text()).toContain('every criterion is marked unplannable')
 })
