@@ -174,7 +174,7 @@ export { isolatedHealthUrl, isolateRun, mintIsolation } from './isolation.js'
 export type { RunIsolation } from './isolation.js'
 export { reapProjects } from './reap.js'
 export type { ReapOutcome, ReapOpts } from './reap.js'
-export { installCancelCleanup, runJob } from './run.js'
+export { SUITE_TAIL_BYTES, installCancelCleanup, runJob } from './run.js'
 export { prepareBaseCheckout } from './base-checkout.js'
 export type { BaseCheckout, BaseCheckoutInput, BaseCheckoutOutcome } from './base-checkout.js'
 export type { BaseSideRequest, FlowSessionFactory, MailSourceFactory, RunJobOpts, RunJobOutcome } from './run.js'
@@ -316,6 +316,10 @@ export {
   toBaseSideResults,
   evidenceOf,
   prepareVerifierInputs,
+  DEFAULT_VERIFY_BATCH_SIZE,
+  VERIFY_BATCH_SIZE_ENV,
+  verifierEvidence,
+  verifyBatchSize,
   runVerifier,
   toSideResults,
   verdictOf,

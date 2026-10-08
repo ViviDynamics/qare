@@ -135,6 +135,15 @@ on:
           qare's default of one criterion a turn.
         type: string
         default: ''
+      verify-batch-size:
+        description: >-
+          How many proven criteria the verifier is asked about in one model
+          turn. Each batch is its own turn with its own output budget, and a
+          turn that is cut off, errors or cannot be read leaves only its own
+          criteria unverified. Raise it for a fast model, to send the diff
+          fewer times. Empty keeps qare's default of one criterion a turn.
+        type: string
+        default: ''
       model-key-env:
         description: The environment variable the provider reads its key from. The model-key secret is exported under this name.
         type: string
@@ -189,7 +198,7 @@ on:
           workflow ships in, so pin the release in `uses:` and leave this
           alone.
         type: string
-        default: '2026.10.25'
+        default: '2026.10.26'
     secrets:
       model-key:
         description: >-
@@ -1057,6 +1066,7 @@ jobs:
           NARE_MODEL: ${{ inputs.nare-model }}
           NARE_STREAM: ${{ inputs.nare-stream }}
           QARE_MAX_OUTPUT_TOKENS: ${{ inputs.max-output-tokens }}
+          QARE_VERIFY_BATCH_SIZE: ${{ inputs.verify-batch-size }}
         run: |
           set -euo pipefail
           # Fail closed (rule 6), as the plan step does: no key, no verifier.
@@ -1079,6 +1089,9 @@ jobs:
           fi
           if [ -n "$QARE_MAX_OUTPUT_TOKENS" ]; then
             model_env+=(-e QARE_MAX_OUTPUT_TOKENS)
+          fi
+          if [ -n "$QARE_VERIFY_BATCH_SIZE" ]; then
+            model_env+=(-e QARE_VERIFY_BATCH_SIZE)
           fi
           if [ -n "$NARE_BASE_URL" ]; then
             model_env+=(-e NARE_BASE_URL)

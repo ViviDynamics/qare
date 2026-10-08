@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, test } from 'vitest'
+import { afterEach, beforeEach, expect, test } from 'vitest'
 import { RESULT_SCHEMA_VERSION, advisoryFindingId } from '@qare/core'
 import { main } from '../src/index.js'
 import type { Writer } from '../src/index.js'
@@ -16,6 +16,19 @@ function capture(): { lines: string[]; writer: Writer } {
   const lines: string[] = []
   return { lines, writer: { write: (chunk) => lines.push(chunk) } }
 }
+
+// These tests count the model calls of one judge step: the verifier's one
+// turn and the reviewer's. They pin the verifier to one turn; asking in
+// batches (#275) is the default, and has its own tests.
+let verifyBatchBefore: string | undefined
+beforeEach(() => {
+  verifyBatchBefore = process.env.QARE_VERIFY_BATCH_SIZE
+  process.env.QARE_VERIFY_BATCH_SIZE = '50'
+})
+afterEach(() => {
+  if (verifyBatchBefore === undefined) delete process.env.QARE_VERIFY_BATCH_SIZE
+  else process.env.QARE_VERIFY_BATCH_SIZE = verifyBatchBefore
+})
 
 const made: string[] = []
 afterEach(async () => {

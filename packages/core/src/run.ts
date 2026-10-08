@@ -3038,6 +3038,18 @@ async function runFlowCheckJob(
     }
     await writeFile(join(dir, 'stdout.txt'), swept.stdout)
     await writeFile(join(dir, 'stderr.txt'), swept.stderr)
+    // A long stream also gets its bounded end as a file of its own (#275):
+    // the verifier is pointed at that, since a megabyte of test output is
+    // more than a model turn can read inside its budget, and the end of a
+    // test run is where its result is. Cut from the swept text, so it holds
+    // nothing the whole file does not.
+    const tails: string[] = []
+    for (const stream of ['stdout', 'stderr'] as const) {
+      const tail = suiteTail(swept[stream], `${stream}.txt`)
+      if (tail === undefined) continue
+      await writeFile(join(dir, `${stream}.tail.txt`), tail)
+      tails.push(`${stream}.tail.txt`)
+    }
     // A failed suite's reason carries how its output ended, so the reason
     // column says what failed before any file is opened (#236, #272). The
     // lines are taken from the swept text, never the raw: a line is cut
@@ -3069,7 +3081,7 @@ async function runFlowCheckJob(
     return {
       status: outcome.outcome,
       ...(reason === undefined ? {} : { reason }),
-      evidence: inEvidence(['suite.txt', 'stdout.txt', 'stderr.txt']),
+      evidence: inEvidence(['suite.txt', 'stdout.txt', 'stderr.txt', ...tails]),
     }
   }
   // The masks are the profile's own (#119): they black out their page regions
@@ -4162,6 +4174,30 @@ function suiteStream(text: string, truncated: boolean | undefined): string {
   const lineEnd = /\r\n|\n|\r/.exec(text)
   const kept = lineEnd === null ? '[the kept part held no complete line, so nothing of it is shown]\n' : text.slice(lineEnd.index + lineEnd[0].length)
   return `[the start was dropped: only the last 1 MiB is kept]\n${kept}`
+}
+
+/**
+ * How much of a suite stream the verifier is pointed at (#275). Sixteen
+ * kibibytes is a few hundred lines of test output, which holds the summary a
+ * runner prints last and the failures it lists before it, and is a few
+ * thousand tokens to read rather than a few hundred thousand.
+ */
+export const SUITE_TAIL_BYTES = 16 * 1024
+
+/**
+ * The bounded end of a saved stream, or nothing when the stream is inside
+ * the bound and stands for itself. The cut falls anywhere, so the partial
+ * first line goes with it, and the first line says what the file is.
+ */
+function suiteTail(saved: string, name: string): string | undefined {
+  const bytes = Buffer.from(saved, 'utf8')
+  if (bytes.length <= SUITE_TAIL_BYTES) return undefined
+  let start = bytes.length - SUITE_TAIL_BYTES
+  while (start < bytes.length && ((bytes[start] as number) & 0xc0) === 0x80) start += 1
+  const end = bytes.subarray(start).toString('utf8')
+  const lineEnd = /\r\n|\n|\r/.exec(end)
+  const kept = lineEnd === null ? '' : end.slice(lineEnd.index + lineEnd[0].length)
+  return `[the last ${SUITE_TAIL_BYTES / 1024} KiB of ${name}, which is ${bytes.length} bytes: the end of a test run is where its result is]\n${kept}`
 }
 
 /** A saved stream without the notes `suiteStream` wrote into it, which are not the suite's words. */

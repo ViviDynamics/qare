@@ -2,7 +2,7 @@ import type { A11yCounts } from './a11y.js'
 import { mergeVerdicts } from './egress.js'
 import { BUILTIN_REDACTION_RULES, redactResult, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionOutcome, type CriterionResult, type RunResult, type RunVerdict } from './result.js'
-import type { ModelUsage } from './metrics.js'
+import { sumUsage, type ModelUsage } from './metrics.js'
 import { outputBudget, stopDetail, type AgentBudget, type AgentRunRequest, type AgentRunner } from './runner.js'
 
 export interface SideResult {
@@ -204,6 +204,56 @@ export interface VerifierInputs {
   criteria: CriterionVerdict[]
   claims: VerifierClaim[]
   diff: string
+  /**
+   * How many proven criteria one model turn is asked about (#275). Absent,
+   * the environment names it (`QARE_VERIFY_BATCH_SIZE`), and absent there it
+   * is `DEFAULT_VERIFY_BATCH_SIZE`. A caller that sets it has chosen.
+   */
+  batchSize?: number
+}
+
+/**
+ * How many proven criteria one verifier turn is asked about (#275). One, for
+ * the planner's reason (#259): it is the smallest batch, so no size asks a
+ * turn for less, and a turn that is cut off, errors or cannot be read then
+ * costs one criterion and not every criterion the run proved.
+ *
+ * The verifier has its own setting and does not read the planner's. What a
+ * turn costs is different work in each: the planner writes checks, the
+ * verifier reads evidence files and reasons about them, and the size that
+ * suits one says nothing about the other. A caller who raised the planner's
+ * batch because its criteria are simple has not thereby said its evidence is
+ * small. They also run in different steps, and each step is handed only its
+ * own setting.
+ */
+export const DEFAULT_VERIFY_BATCH_SIZE = 1
+export const VERIFY_BATCH_SIZE_ENV = 'QARE_VERIFY_BATCH_SIZE'
+
+export function verifyBatchSize(env: Record<string, string | undefined> = process.env): number {
+  const raw = env[VERIFY_BATCH_SIZE_ENV]?.trim() ?? ''
+  if (raw === '') return DEFAULT_VERIFY_BATCH_SIZE
+  const size = Number(raw)
+  // Digits alone are not enough: a number too long to hold exactly would
+  // batch by a rounded size, or by Infinity.
+  if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(size))
+    throw new Error(`${VERIFY_BATCH_SIZE_ENV} is "${raw}", and the verifier batch size is a whole number of criteria above zero`)
+  return size
+}
+
+/**
+ * The evidence the verifier is pointed at for a criterion (#275). Where the
+ * run saved the bounded end of a suite stream beside the stream itself
+ * (`stdout.tail.txt` beside `stdout.txt`), the verifier is given the bounded
+ * end and not the whole: a megabyte of test output is for a person to open,
+ * and by its size alone it can push a turn past its budget. Nothing is
+ * dropped without its stand-in, so a stream inside the bound is read whole.
+ */
+export function verifierEvidence(evidence: readonly string[]): string[] {
+  const saved = new Set(evidence)
+  return evidence.filter((path) => {
+    const stream = /^(.*\/)?(stdout|stderr)\.txt$/.exec(path)
+    return stream === null || !saved.has(`${stream[1] ?? ''}${stream[2]}.tail.txt`)
+  })
 }
 
 const VERIFIER_INSTRUCTIONS = [
@@ -330,10 +380,18 @@ function verifierUnavailable(criteria: CriterionVerdict[], why: string): Criteri
  * consume its findings. The verifier reads evidence with a read-only tool set,
  * and its answer is schema-constrained.
  *
- * It fails closed: a runner that throws, a run that does not complete, or an
- * answer that is not a findings list leaves every proven criterion unverified
- * with the reason named, never proven. With nothing proven there is nothing to
- * downgrade, so no model call is made.
+ * The claims are put to the model in batches (#275), one turn a batch, each
+ * with its own output budget. A batch's findings apply to that batch's
+ * criteria and no others: a finding that names a criterion the turn was not
+ * asked about is dropped, as a finding naming an unknown criterion always
+ * was. The usage is the sum over every batch.
+ *
+ * It fails closed, a batch at a time: a runner that throws, a run that does
+ * not complete, or an answer that is not a findings list leaves that batch's
+ * proven criteria unverified with the reason named, never proven, and the
+ * other batches' findings stand. A budget or a batch size that cannot be
+ * read leaves every proven criterion unverified, and nothing is asked. With
+ * nothing proven there is nothing to downgrade, so no model call is made.
  */
 export async function runVerifier(
   runner: AgentRunner,
@@ -342,36 +400,67 @@ export async function runVerifier(
 ): Promise<{ verdicts: CriterionVerdict[]; usage: ModelUsage | undefined }> {
   const criteria = inputs.criteria ?? []
   if (inputs.claims.length === 0) return { verdicts: criteria, usage: undefined }
-  const payload = JSON.stringify({ criteria: inputs.claims, diff: inputs.diff })
   let budget: AgentBudget
-  let result: Awaited<ReturnType<AgentRunner['run']>>
+  let size: number
   try {
-    // Inside the try: a budget that cannot be read is a verifier that did not
-    // answer, named, and never a crash that loses the verdicts.
+    // Inside the try: a budget or a batch size that cannot be read is a
+    // verifier that did not answer, named, and never a crash that loses the
+    // verdicts.
     budget = request.budget ?? outputBudget()
-    result = await runner.run({
-      system: request.system ?? '',
-      toolPolicy: request.toolPolicy ?? 'read-only',
-      outputSchema: request.outputSchema ?? JSON.stringify(VERIFIER_OUTPUT_SCHEMA),
-      budget,
-      prompt: `${inputs.instructions}\n\n${payload}`,
-    })
+    size = inputs.batchSize ?? verifyBatchSize()
+    if (!Number.isSafeInteger(size) || size < 1)
+      throw new Error(`the verifier batch size is ${String(size)}, and it is a whole number of criteria above zero`)
   } catch (error) {
     return { verdicts: verifierUnavailable(criteria, error instanceof Error ? error.message : String(error)), usage: undefined }
   }
-  // The verifier's spend counts whatever it decided (#51): an unavailable
-  // verifier cost tokens the same as a decisive one.
-  if (result.status !== 'completed')
-    return {
-      verdicts: verifierUnavailable(
-        criteria,
-        `the run stopped (${stopDetail(result.stopReason, budget)})${result.error === undefined ? '' : `: ${result.error}`}`,
-      ),
-      usage: result.usage,
+
+  let verdicts = criteria
+  let usage: ModelUsage | undefined
+  for (let from = 0; from < inputs.claims.length; from += size) {
+    const claims = inputs.claims.slice(from, from + size)
+    const asked = new Set(claims.map((claim) => claim.criterionId))
+    // Only this batch's criteria are this batch's to change.
+    const unavailable = (why: string): CriterionVerdict[] =>
+      verdicts.map((criterion) => (asked.has(criterion.criterionId) ? (verifierUnavailable([criterion], why)[0] as CriterionVerdict) : criterion))
+    let result: Awaited<ReturnType<AgentRunner['run']>>
+    try {
+      result = await runner.run({
+        system: request.system ?? '',
+        toolPolicy: request.toolPolicy ?? 'read-only',
+        outputSchema: request.outputSchema ?? JSON.stringify(VERIFIER_OUTPUT_SCHEMA),
+        budget,
+        prompt: `${inputs.instructions}\n\n${JSON.stringify({ criteria: claims, diff: inputs.diff })}`,
+      })
+    } catch (error) {
+      verdicts = unavailable(error instanceof Error ? error.message : String(error))
+      continue
     }
-  const findings = parseVerifierFindings(result.output)
-  if (findings === undefined) return { verdicts: verifierUnavailable(criteria, 'its answer was not a findings list'), usage: result.usage }
-  return { verdicts: consumeVerifierFindings(criteria, findings, { claims: inputs.claims, diff: inputs.diff }), usage: result.usage }
+    // The verifier's spend counts whatever it decided (#51): an unavailable
+    // verifier cost tokens the same as a decisive one, in every batch (#275).
+    usage = sumUsage(usage, result.usage)
+    if (result.status !== 'completed') {
+      verdicts = unavailable(
+        `the run stopped (${stopDetail(result.stopReason, budget)})` +
+          // A turn asked about less also fits its budget, when there is less to ask about.
+          (result.stopReason === 'max_tokens' && claims.length > 1
+            ? `; the turn was asked about ${claims.length} criteria, and a smaller ${VERIFY_BATCH_SIZE_ENV} (verify-batch-size in the pipeline) asks each turn about fewer`
+            : '') +
+          (result.error === undefined ? '' : `: ${result.error}`),
+      )
+      continue
+    }
+    const findings = parseVerifierFindings(result.output)
+    if (findings === undefined) {
+      verdicts = unavailable('its answer was not a findings list')
+      continue
+    }
+    verdicts = consumeVerifierFindings(
+      verdicts,
+      findings.filter((finding) => asked.has(finding.criterionId)),
+      { claims, diff: inputs.diff },
+    )
+  }
+  return { verdicts, usage }
 }
 
 function parseVerifierFindings(output: unknown): VerifierFinding[] | undefined {
@@ -552,7 +641,13 @@ export async function judgeExecuted(
   if (opts.verifier !== undefined && executed.verdict !== 'refused') {
     const verified = await runVerifier(
       opts.verifier,
-      prepareVerifierInputs({ criteria: judged.criteria, texts: opts.texts, evidence: Object.fromEntries(evidenceById), diff: opts.diff }),
+      prepareVerifierInputs({
+        criteria: judged.criteria,
+        texts: opts.texts,
+        // The bounded end of a long suite stream stands in for the stream (#275).
+        evidence: Object.fromEntries([...evidenceById].map(([id, evidence]) => [id, verifierEvidence(evidence)])),
+        diff: opts.diff,
+      }),
     )
     criteria = verified.verdicts
     judgeUsage = verified.usage
