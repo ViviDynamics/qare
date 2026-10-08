@@ -1857,7 +1857,13 @@ names the flavour its checks need, and the run refuses a name the family does
 not ship before anything boots: the family is the pipeline's, and a name
 outside it can only be a misspelling or a wish the family has not grown yet.
 Absent means the base is enough, which a profile of command and mail checks
-is.
+is. The plan step holds the plan to the same fact (#258): for a profile whose
+flows would run on the browser driver in a flavour that ships no browser, the
+planner is offered suites, commands and mail only, and a plan holding an
+action flow, a visual check or an a11y check is corrected once and then
+refused, naming the flavour and `flavour: web` as the setting that changes
+it. A profile that names a client or maps an MCP driver plans against that
+driver, whatever its flavour.
 
 Every image pins the versions it ships and stamps them where a run reads them
 into its evidence, so a containerised run names the image ref and digest that

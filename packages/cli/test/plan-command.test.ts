@@ -772,3 +772,138 @@ test('qare plan hands its working directory to the plan step, so an invented scr
   expect(JSON.stringify(plan)).toContain('check.js')
   expect(JSON.stringify(plan)).not.toContain('check-invented.js')
 })
+
+// #258: the plan step assumed a browser whatever image execute would run in,
+// and never told the planner which suites the profile declares.
+async function flavourProfile(flavour: string | undefined): Promise<{ dir: string; profile: string; criteriaPath: string; diffPath: string }> {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-plan-flavour-'))
+  const profile = join(dir, '.qa')
+  await mkdir(profile, { recursive: true })
+  await writeFile(join(profile, 'QA.md'), '# QA\n', 'utf8')
+  const targetUrl = ['http:', '//127.0.0.1:3000'].join('')
+  await writeFile(
+    join(profile, 'config.yml'),
+    [
+      'target:',
+      `  url: ${targetUrl}`,
+      '  health: { http: /, timeout: 5s }',
+      ...(flavour === undefined ? [] : [`flavour: ${flavour}`]),
+      'suites:',
+      '  - { name: sign-in, command: "bundle exec cucumber features/sign_in.feature", kind: flow }',
+      '',
+    ].join('\n'),
+    'utf8',
+  )
+  const criteriaPath = join(dir, 'criteria.json')
+  const diffPath = join(dir, 'change.diff')
+  await writeFile(criteriaPath, JSON.stringify(CRITERIA), 'utf8')
+  await writeFile(diffPath, 'diff --git a/login.ts b/login.ts', 'utf8')
+  return { dir, profile, criteriaPath, diffPath }
+}
+
+/** A nare stand-in that keeps the prompt it was handed, then answers. */
+async function recordingNare(dir: string, answer: unknown): Promise<{ binary: string; prompt: () => Promise<string> }> {
+  const argvPath = join(dir, 'argv.json')
+  const binary = join(dir, 'nare')
+  const script = [
+    '#!/usr/bin/env node',
+    `import { writeFileSync } from 'node:fs'`,
+    `writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)))`,
+    `const answer = ${JSON.stringify(JSON.stringify(answer))}`,
+    `console.log(JSON.stringify({ type: 'output', text: answer, detail: {} }))`,
+    `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
+    `  stop_reason: 'end_turn', turns: 1, contract: 1, output: JSON.parse(answer), error: null }))`,
+  ].join('\n')
+  await writeFile(`${binary}.mjs`, script, 'utf8')
+  await writeFile(binary, `#!/bin/sh\nexec node ${binary}.mjs "$@"\n`, 'utf8')
+  const { chmod } = await import('node:fs/promises')
+  await chmod(binary, 0o755)
+  return { binary, prompt: async () => (JSON.parse(await readFile(argvPath, 'utf8')) as string[])[1] ?? '' }
+}
+
+const SUITE_PLAN = {
+  schemaVersion: '1',
+  criteria: [
+    { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'flow', name: 'sign in', suite: 'sign-in' }] },
+    { id: 'c2', text: CRITERIA[1].text, unplannable: 'the core flavour ships no browser; flavour: web in the profile changes it' },
+  ],
+}
+
+const BROWSER_PLAN = {
+  schemaVersion: '1',
+  criteria: [
+    { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'flow', name: 'sign in', actions: [{ action: 'open', url: '/sign-in' }] }] },
+    { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'dashboard phone', screenshot: 'dashboard', url: '/dashboard', widths: [390] }] },
+  ],
+}
+
+test('a profile whose flavour ships no browser is planned with its suites and commands, and the planner is told why (#258)', async () => {
+  const { dir, profile, criteriaPath, diffPath } = await flavourProfile(undefined)
+  const nare = await recordingNare(dir, SUITE_PLAN)
+  const out = capture()
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', join(dir, 'plan.json'), '--nare', nare.binary, '--profile', profile],
+    out.writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  const prompt = await nare.prompt()
+  expect(prompt).toContain("The checks run in the qare-core image (the profile's flavour is core), which ships no browser")
+  expect(prompt).toContain('- sign-in (a flow suite: bundle exec cucumber features/sign_in.feature)')
+  expect(prompt).not.toContain('"kind":"visual"')
+  expect(prompt).not.toContain('"actions"')
+  expect(out.lines.join('')).toMatch(/flavour is core.*no browser.*flavour: web/)
+  const plan = JSON.parse(await readFile(join(dir, 'plan.json'), 'utf8')) as { criteria: Array<{ checks?: Array<{ suite?: string }> }> }
+  expect(plan.criteria[0]?.checks?.[0]?.suite).toBe('sign-in')
+})
+
+test('a plan of browser checks for a flavour without a browser is refused at the plan step, naming the flavour and the setting (#258)', async () => {
+  const { dir, profile, criteriaPath, diffPath } = await flavourProfile('core')
+  const binary = await fakeNare(BROWSER_PLAN)
+  const out = capture()
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', join(dir, 'plan.json'), '--nare', binary, '--profile', profile],
+    out.writer,
+    capture().writer,
+  )
+
+  // Refused the way every unusable plan is (#159): nothing planned runs, and
+  // each criterion says why.
+  expect(code).toBe(0)
+  const plan = JSON.parse(await readFile(join(dir, 'plan.json'), 'utf8')) as { criteria: Array<{ unplannable?: string; checks?: unknown }> }
+  expect(plan.criteria).toHaveLength(2)
+  for (const criterion of plan.criteria) {
+    expect(criterion.checks).toBeUndefined()
+    expect(criterion.unplannable).toContain('flow check "sign in" drives a browser')
+    expect(criterion.unplannable).toContain("the profile's flavour is core")
+    expect(criterion.unplannable).toContain('"flavour: web" in the profile\'s config.yml')
+  }
+  expect(out.lines.join('')).toContain('every criterion is marked unplannable')
+})
+
+test('a profile whose flavour ships a browser plans browser checks as before, and still hears of its suites (#258)', async () => {
+  const { dir, profile, criteriaPath, diffPath } = await flavourProfile('web')
+  const nare = await recordingNare(dir, BROWSER_PLAN)
+  const out = capture()
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', join(dir, 'plan.json'), '--nare', nare.binary, '--profile', profile, '--suites', 'smoke,sign-in'],
+    out.writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  const prompt = await nare.prompt()
+  expect(prompt).not.toContain('ships no browser')
+  expect(prompt).toContain('"kind":"visual"')
+  // The profile's suites, and the ones the caller named that it does not declare.
+  expect(prompt).toContain('- sign-in (a flow suite: bundle exec cucumber features/sign_in.feature)')
+  expect(prompt).toContain('- smoke\n')
+  expect(prompt.match(/^- sign-in/gm)).toHaveLength(1)
+  const plan = JSON.parse(await readFile(join(dir, 'plan.json'), 'utf8')) as { criteria: Array<{ checks?: Array<{ kind: string }> }> }
+  expect(plan.criteria.map((criterion) => criterion.checks?.[0]?.kind)).toEqual(['flow', 'visual'])
+  expect(out.lines.join('')).not.toContain('no browser')
+})
