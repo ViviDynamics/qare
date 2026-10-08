@@ -433,20 +433,29 @@ test('a code generated against a closing window is retried once in the next wind
   // The clock reads 29900ms into window 0 for the first calls and 30100ms by
   // the straddle check, so the boundary crossed while the flow was typing.
   const times = [29_900, 29_900, 29_900, 30_100, 30_100]
+  const dir = await outDir()
   const result = await runFlowCheck({
-    outDir: await outDir(),
+    outDir: dir,
     page,
     actions: [{ action: 'totp', element: { role: 'textbox', name: 'Verification code' } }],
     totp: { ...TOTP_CONFIG },
     generatedCodes,
+    // The sweep the run applies: every generated code leaves the log.
+    redactLog: (text) => generatedCodes.reduce((swept, code) => swept.replaceAll(code, '[redacted]'), text),
     now: () => times.shift() ?? 30_100,
   })
   expect(result.outcome).toBe('passed')
-  expect(generatedCodes).toEqual([
-    totpCode(TOTP_SECRET, TOTP_CONFIG, 29_900),
-    totpCode(TOTP_SECRET, TOTP_CONFIG, 30_100),
-  ])
+  const first = totpCode(TOTP_SECRET, TOTP_CONFIG, 29_900)
+  const second = totpCode(TOTP_SECRET, TOTP_CONFIG, 30_100)
+  expect(generatedCodes).toEqual([first, second])
   expect(calls.filter((call) => call.startsWith('type '))).toHaveLength(2)
+  // The boundary case writes its own line, not the usual one (#274), and
+  // neither window's code is in the log.
+  const log = await actionsLog(dir)
+  expect(log).toContain("action 0: the code straddled a window boundary; the next window's code is typed in its place into")
+  expect(log).not.toContain('totp code generated for window')
+  expect(log).not.toContain(first)
+  expect(log).not.toContain(second)
 })
 
 test('the intent actions run in order through the seam (#70)', async () => {

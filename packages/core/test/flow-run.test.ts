@@ -370,11 +370,17 @@ test('a flow through the totp action types the seeded code and sweeps it from th
   const { result } = await runJob(job, { ...HEALTHY_BOOT, flowSession: totpSessionFactory(events) })
 
   expect(result.verdict).toBe('passed')
-  const typed = events.find((event) => event.startsWith('type '))
-  expect(typed).toMatch(/^type \d{6}$/)
+  // This test runs on the wall clock, through the whole run, so it can meet a
+  // window boundary: the flow then types the next window's code as well and
+  // says so in the log, which is the flow doing its job (#274). Either line is
+  // right. What must hold in both is that every code typed is swept from the
+  // log. The boundary itself is forced, on a fixed clock, in flow.test.ts.
+  const typed = events.filter((event) => event.startsWith('type '))
+  expect(typed.length === 1 || typed.length === 2, `one code, or two across a boundary: ${typed.length} were typed`).toBe(true)
+  for (const event of typed) expect(event).toMatch(/^type \d{6}$/)
   const log = await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'actions.log'), 'utf8')
-  expect(log).toContain('totp code generated for window')
-  expect(log).not.toMatch(new RegExp(typed?.slice(5) ?? '', ''))
+  expect(log).toMatch(typed.length === 1 ? /totp code generated for window \d+/ : /the code straddled a window boundary; the next window's code is typed in its place/)
+  for (const event of typed) expect(log).not.toContain(event.slice('type '.length))
 })
 
 test('a mail-borne one-time code is extracted, typed by a flow, and swept from the evidence (#64)', async () => {
