@@ -14,11 +14,13 @@ self-hosted endpoint, and what several turns at once do to it is not known.
 Ledger ingest, which is asked once by its own contract and stays one turn.
 
 ## Assumptions
-- The default is 1. The evidence: five criteria in one turn overran 16384
-  output tokens and fit in 48000, so one criterion costs that model at most
-  9600 tokens and two can cost 19200. One a turn is inside the default budget
-  of 16384; two may not be. Time is unchanged: one criterion takes two to
-  three minutes, five took fifteen in one turn.
+- The default is 1, the smallest batch there is, so no size asks a turn for
+  less. The evidence: five criteria in one turn overran 16384 output tokens
+  and fit in 48000, which is 9600 a criterion on average, and up to 19200
+  for an average pair, past the default budget of 16384. The average bounds
+  no single criterion: one could still overrun a turn, and then it alone is
+  lost. What was observed is one criterion planned in two to three minutes,
+  and live one-criterion turns of 799 to 4507 output tokens.
 - The price of a small batch is input: each turn carries the diff again. A
   caller with a fast, input-billed model raises the size.
 - The single correction round applies to each batch on its own.

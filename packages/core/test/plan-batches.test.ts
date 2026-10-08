@@ -234,3 +234,28 @@ test('criteria that share an id are refused before any model call: a merged plan
   await expect(planRun(runner, { ...INPUTS, criteria: [CRITERIA[0]!, CRITERIA[1]!, CRITERIA[0]!] })).rejects.toThrow(/c1.*more than once/)
   expect(runner.requests).toHaveLength(0)
 })
+
+test('an answer that plans one criterion twice is corrected, in one batch or several, so the plan holds each exactly once', async () => {
+  const twice = (id: string): string => {
+    const once = JSON.parse(planFor([id])) as { schemaVersion: string; criteria: unknown[] }
+    return JSON.stringify({ ...once, criteria: [...once.criteria, ...once.criteria] })
+  }
+  // One batch for everything: the model repeats c1 beside the rest.
+  let calls = 0
+  const single = new AnsweringRunner((ids) => {
+    calls += 1
+    if (calls > 1) return completed(planFor(ids))
+    const all = JSON.parse(planFor(ids)) as { schemaVersion: string; criteria: unknown[] }
+    return completed(JSON.stringify({ ...all, criteria: [...all.criteria, all.criteria[0]] }))
+  })
+  const plan = await planRun(single, { ...INPUTS, batchSize: 5 })
+  expect(single.requests).toHaveLength(2)
+  expect(single.requests[1]?.prompt).toContain('it answered c1 more than once')
+  expect(plan.criteria.map((criterion) => criterion.id)).toEqual(['c1', 'c2', 'c3', 'c4', 'c5'])
+
+  // A batch of one that never stops repeating itself is lost, alone.
+  const stubborn = new AnsweringRunner((ids) => completed(ids[0] === 'c2' ? twice('c2') : planFor(ids)))
+  const merged = await planRun(stubborn, { ...INPUTS, criteria: CRITERIA.slice(0, 3) })
+  expect(merged.criteria.map((criterion) => criterion.id)).toEqual(['c1', 'c2', 'c3'])
+  expect((merged.criteria[1] as { unplannable?: string }).unplannable).toContain('it answered c2 more than once')
+})

@@ -141,12 +141,15 @@ export interface PlanBatchReport {
 
 /**
  * How many criteria one model turn plans (#259). One is the default because
- * it is the only size the evidence vouches for: a self-hosted reasoning model
- * needed more than the default 16384 output tokens, and at most 48000, to
- * plan five criteria in one turn, so one criterion costs it at most 9600 and
- * two can cost 19200. One a turn stays inside the default budget; two may
- * not. It is also the size at which a cut-off, an error or a refusal costs
- * the least: one criterion.
+ * it is the smallest batch there is, so no other size asks a turn for less:
+ * a self-hosted reasoning model needed more than the default 16384 output
+ * tokens, and at most 48000, to plan five criteria in one turn, which is
+ * 9600 a criterion on average and so up to 19200 for an average pair, past
+ * the default budget. That average bounds no single criterion, and one
+ * criterion can still overrun a turn; what was observed is that the same
+ * model plans one criterion in two to three minutes, and that one-criterion
+ * turns ran from 799 to 4507 output tokens. One is also the size at which a
+ * cut-off, an error or a refusal costs the least: one criterion.
  *
  * The cost is input: every turn carries the diff again. A model that answers
  * fast and bills for input is better served by a larger batch, which the
@@ -678,10 +681,14 @@ function coverage(plan: Plan, inputs: PlanInputs): string | undefined {
   const planned = new Set(plan.criteria.map((criterion) => criterion.id))
   const missing = [...asked].filter((id) => !planned.has(id))
   const invented = [...planned].filter((id) => !asked.has(id))
-  if (missing.length === 0 && invented.length === 0) return undefined
+  // The sets cannot see an id answered twice, and a plan holds each once (#259).
+  const ids = plan.criteria.map((criterion) => criterion.id)
+  const repeated = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))]
+  if (missing.length === 0 && invented.length === 0 && repeated.length === 0) return undefined
   return [
     missing.length ? `it left out ${missing.join(', ')}` : '',
     invented.length ? `it invented ${invented.join(', ')}` : '',
+    repeated.length ? `it answered ${repeated.join(', ')} more than once` : '',
   ]
     .filter(Boolean)
     .join(' and ')
