@@ -573,6 +573,13 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     'becomes one argument. Write one executable followed by its arguments, and never cd, &&, ||,',
     'pipes, semicolons, redirection, quotes, $, backticks, parentheses or backslashes; command',
     'checks already run in the repository root, and an argument containing spaces cannot be expressed.',
+    // What a split command means for the tools a plan reaches for most (#262).
+    'grep takes its pattern as one token: every argument after it is a file to search, so a pattern of several',
+    'words searches for the first word in files named by the rest, and shows nothing. Write one word that is',
+    'enough to tell, or a regular expression with . where a space would be.',
+    'A command check runs the checkout as it is: nothing is built or installed first. Do not run a TypeScript source,',
+    'or any program that needs a build step or its dependencies installed, as a check; it fails to load, which shows',
+    'nothing about the change either.',
     '',
     ...(inputs.runInputs === undefined
       ? []
@@ -778,6 +785,121 @@ function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
   return undefined
 }
 
+/** grep's short options that take a value: attached to the letter, or the next token. */
+const GREP_SHORT_VALUE_OPTIONS = 'mABCdD'
+/** The short options whose value is the pattern (or a file of patterns), so every operand is a file. */
+const GREP_SHORT_PATTERN_OPTIONS = 'ef'
+/** The long options that take a value, as `--name=value` or as the next token. */
+const GREP_LONG_VALUE_OPTIONS = new Set([
+  'max-count', 'after-context', 'before-context', 'context', 'include', 'exclude', 'exclude-dir', 'exclude-from', 'label', 'directories', 'devices', 'binary-files',
+])
+const GREP_LONG_PATTERN_OPTIONS = new Set(['regexp', 'file'])
+
+/**
+ * What grep would open as files: its operands after the pattern, read by
+ * grep's own option grammar. Short options cluster (`-ni`), and one that
+ * takes a value takes the rest of its cluster (`-m1`, `-eA`) or, when it
+ * ends the cluster, the next token (`-m 1`, `-e A`). A pattern given by an
+ * option leaves every operand a file.
+ */
+function grepFileOperands(tokens: string[]): string[] {
+  const operands: string[] = []
+  let patternGiven = false
+  let optionsEnded = false
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!
+    if (optionsEnded || token === '-' || !token.startsWith('-')) {
+      operands.push(token)
+      continue
+    }
+    if (token === '--') {
+      optionsEnded = true
+      continue
+    }
+    if (token.startsWith('--')) {
+      const [name = '', value] = token.slice(2).split(/=(.*)/s, 2)
+      const isPattern = GREP_LONG_PATTERN_OPTIONS.has(name)
+      if (isPattern) patternGiven = true
+      if ((isPattern || GREP_LONG_VALUE_OPTIONS.has(name)) && value === undefined) index += 1
+      continue
+    }
+    for (let at = 1; at < token.length; at += 1) {
+      const letter = token[at]!
+      const isPattern = GREP_SHORT_PATTERN_OPTIONS.includes(letter)
+      if (!isPattern && !GREP_SHORT_VALUE_OPTIONS.includes(letter)) continue
+      if (isPattern) patternGiven = true
+      // The value is the rest of the cluster, or the next token when the letter ends it.
+      if (at === token.length - 1) index += 1
+      break
+    }
+  }
+  return patternGiven ? operands : operands.slice(1)
+}
+
+/**
+ * A grep whose pattern is several words (#262). The command is split on
+ * whitespace, so grep takes the first word for the pattern and opens every
+ * other word as a file: it exits 2 without having looked, which shows nothing
+ * about the change. Caught here, where the planner can still say it another
+ * way.
+ *
+ * Where the profile declares a grep command, a planned grep is held to that
+ * command's form, whose placeholders take one token each. Otherwise each
+ * operand after the pattern must be a file the run will have: one the
+ * checkout carries, or a declared run input, since the plan step reads the
+ * base revision and the change may add the file.
+ */
+function grepGap(plan: Plan, inputs: PlanInputs): string | undefined {
+  const declared = Object.entries(inputs.commands ?? {}).filter(([, command]) => command.run.split(/\s+/).find((token) => token !== '') === 'grep')
+  for (const criterion of plan.criteria) {
+    if (!('checks' in criterion)) continue
+    for (const check of criterion.checks) {
+      if (check.kind !== 'command') continue
+      const tokens = check.command.split(/\s+/).filter((token) => token !== '')
+      if (tokens[0] !== 'grep') continue
+      const where = `criterion ${criterion.id} command check "${check.name}"`
+      if (declared.length > 0) {
+        const fits = declared.some(([, command]) => {
+          const template = command.run.split(/\s+/).filter((token) => token !== '')
+          return template.length === tokens.length && template.every((token, index) => tokenFillsTemplate(token, tokens[index]))
+        })
+        if (fits) continue
+        const forms = declared.map(([name, command]) => `${name} (${command.run})`).join(' or ')
+        return (
+          `${where}: the profile declares grep as the command ${forms}, and the planned command does not have that form. ` +
+          'It is split on whitespace and each placeholder takes exactly one token, so a pattern of several words cannot be passed: ' +
+          'write the pattern as one token (one word, or a regular expression with . where a space would be) in the declared form, or mark the criterion unplannable'
+        )
+      }
+      if (inputs.repoPath === undefined) continue
+      for (const operand of grepFileOperands(tokens)) {
+        if (operand === '-') continue
+        // A run value is never a file of the checkout: grep would open what it names as a local path.
+        const runValue = operand.includes('{{')
+        if (!runValue && (existsSync(resolve(inputs.repoPath, operand)) || willExist(operand, inputs))) continue
+        return (
+          `${where}: grep would read ${JSON.stringify(operand)} as a file, and ${runValue ? 'a value the run fills in is not a file of the checkout' : 'the checkout carries no such file'}. ` +
+          'The command is split on whitespace, so a pattern is one token and every argument after it is a file to search: ' +
+          'write the pattern as one token (one word, or a regular expression with . where a space would be), or mark the criterion unplannable'
+        )
+      }
+    }
+  }
+  return undefined
+}
+
+/**
+ * Whether a path is one the head will carry though the plan step's checkout
+ * does not (#262): the plan step reads the base revision, and a path the
+ * diff touches is declared as a run input.
+ */
+function willExist(path: string, inputs: PlanInputs): boolean {
+  const { segments, escapes } = normalizedSegments(path)
+  if (escapes) return false
+  const normalized = segments.join('/')
+  return (inputs.runInputs?.paths ?? []).some((declared) => normalizedSegments(declared).segments.join('/') === normalized)
+}
+
 /**
  * A placeholder whose name says path or file must be filled with a file the
  * checkout carries (#201): the declared command passes the program gate, but
@@ -808,7 +930,8 @@ function missingPathGap(plan: Plan, inputs: PlanInputs): string | undefined {
               `criterion ${criterion.id} command check "${check.name}": the path ${filled} escapes the checkout, ` +
               'so the check cannot run: fill the placeholder with a file the checkout carries, or mark the criterion unplannable'
             )
-          if (!existsSync(resolved))
+          // A file the change adds is not in the base checkout the plan step reads (#262).
+          if (!existsSync(resolved) && !willExist(filled, inputs))
             return (
               `criterion ${criterion.id} command check "${check.name}": the path ${filled} does not exist in the checkout, ` +
               'so the check cannot run: fill the placeholder with a file the checkout carries, or mark the criterion unplannable'
@@ -1115,6 +1238,13 @@ async function planTurns(
       correction =
         `${undeclared}. A command check may read only the declared run inputs ` +
         `(${inputs.runInputs.paths.join(', ')}); rewrite the command against them, or mark the criterion unplannable.`
+      continue
+    }
+    // Last, so a path the run contract refuses is named for what it is
+    // (a run output, an undeclared input) before it is named as a missing file.
+    const grep = grepGap(plan, inputs)
+    if (grep !== undefined) {
+      correction = `${grep}.`
       continue
     }
     return plan

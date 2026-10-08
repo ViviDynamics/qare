@@ -3821,6 +3821,22 @@ function selectionVerdict(
   return { status: 'passed', selected }
 }
 
+/**
+ * Whether a command's exit says the program could not do its job, as
+ * distinct from doing it and answering no (#262). Only where the program's
+ * own contract draws that line: grep exits 0 for a match, 1 for none, and 2
+ * or more when it could not read its pattern or its files. A check that
+ * could not look has disproven nothing.
+ *
+ * Deliberately no wider. An interpreter that fails to load a script (node's
+ * ERR_MODULE_NOT_FOUND, exit 1) cannot be told from a check that failed for
+ * the reason it exists: a script that imports what the change was meant to
+ * add fails the same way when the change did not add it.
+ */
+function couldNotLook(tokens: string[], code: number | null): boolean {
+  return tokens[0] === 'grep' && code !== null && code >= 2
+}
+
 export function runCommandCheck(
   check: JobCommandCheck,
   cwd: string,
@@ -3914,6 +3930,22 @@ export function runCommandCheck(
             ...verdict,
           })
         }
+      } else if (couldNotLook(tokens, code)) {
+        // The program did not do its job at all, which is not the same as
+        // running and answering no (#262): nothing was disproven, so the
+        // criterion is unverified, with the program's own words.
+        const said = stderr.split('\n').map((line) => line.trim()).find((line) => line !== '')
+        settle({
+          status: 'unverified',
+          code: code === null ? undefined : code,
+          reason:
+            `grep exited ${String(code)}, which is grep failing to read what it was given and not "no match" (that is exit 1), so the check did not look` +
+            (said === undefined ? '' : `: ${said.slice(0, 300)}`),
+          stdout,
+          stderr,
+          stdoutTruncated,
+          stderrTruncated,
+        })
       } else
         settle({
           status: 'failed',
