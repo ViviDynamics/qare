@@ -139,6 +139,26 @@ test('where the profile declares a grep command, a planned grep is held to its f
   expect(node.requests).toHaveLength(1)
 })
 
+// #270, docs/decisions/adr-0007: a declared command is a form the planner
+// should prefer, not the only form its program may be planned in. grep alone
+// is held to its declared form, for a reason that is grep's own. To reverse
+// the decision, this is the test that changes.
+test.each([
+  ['node', 'node -- {{path}}', 'node --version'],
+  ['python3', 'python3 -- {{path}}', 'python3 --version'],
+  ['test', 'test -f {{path}}', 'test 1 -eq 1'],
+])('a standard tool the profile also declares may be planned in another form: %s', async (_program, declared, planned) => {
+  const runner = new FakeAgentRunner([completed(planWith(planned))])
+
+  const plan = await planRun(runner, await inputs({ commands: { declared: { run: declared, about: 'the form the profile knows to work' } } }))
+
+  // Accepted as written, with no correction round.
+  expect(runner.requests).toHaveLength(1)
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ command: planned }] })
+  // The planner is still shown the declared form, so it can prefer it.
+  expect(runner.requests[0]?.prompt).toContain(declared)
+})
+
 test('a declared command that names a file the change adds is planned, not refused for a file the base lacks', async () => {
   const command = 'grep -n -- flowOpenUrl packages/core/src/app-address.ts'
   const runner = new FakeAgentRunner([completed(planWith(command))])
