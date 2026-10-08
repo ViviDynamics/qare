@@ -166,6 +166,8 @@ export type { DeclaredRunInputs, PlanBatchReport, PlanCriterionInput, PlanInputs
 export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'
 export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobVisualCheck, JobA11yCheck, JobCheck, JobPostTarget, JobProfileGroup, SingleProfileJob, SeveralProfilesJob } from './job.js'
 export { httpMailbox, mailEvidence, runMailCheck, extractCode, DEFAULT_CODE_PATTERN } from './mailbox.js'
+export { AUTH_MECHANISMS, assessDelivery, fromDomain, parseAuthenticationResults } from './mail-auth.js'
+export type { AuthMechanism, AuthResult, AuthenticationResults, DeliveryOutcome, MailAuthenticationAssertion, MailAuthenticationEvidence, MailDeliveryEvidence } from './mail-auth.js'
 export type { MailMessage, MailEvidenceMessage, MailOutcome, MailProof, ReadMail } from './mailbox.js'
 export { inboxSource, mailpitSource, mailReader, mailSourceOf, MAIL_SOURCE_KINDS } from './mail-source.js'
 export type { MailSource, MailFilter, MailRef, DeclaredMailSource, MailSourceKind } from './mail-source.js'

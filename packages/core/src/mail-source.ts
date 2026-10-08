@@ -160,6 +160,22 @@ export function mailpitSource(url: string, fetchImpl: typeof fetch = fetch): Mai
     return [...found.values()]
   }
 
+  const readHeaders = async (id: string, signal: AbortSignal | undefined): Promise<Record<string, string[]> | undefined> => {
+    let parsed: unknown
+    try {
+      parsed = await (await request(`message/${encodeURIComponent(id)}/headers`, { signal })).json()
+    } catch {
+      return undefined
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+    const headers: Record<string, string[]> = {}
+    for (const [name, values] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!Array.isArray(values)) continue
+      headers[name.toLowerCase()] = values.filter((value): value is string => typeof value === 'string')
+    }
+    return headers
+  }
+
   return {
     kind: 'mailpit',
     describe: `mailpit at ${url}`,
@@ -178,7 +194,12 @@ export function mailpitSource(url: string, fetchImpl: typeof fetch = fetch): Mai
       const arrival = received.get(id) ?? (typeof record.Date === 'string' ? record.Date : '')
       const moment = Date.parse(arrival)
       if (!Number.isFinite(moment)) throw new Error(`mailpit message ${id} carries no parsable arrival time`)
+      // The headers are their own read (#218). A catcher that cannot answer
+      // it leaves the message without headers, which a check that asserts
+      // on them reports as the source not saying; the message is still read.
+      const headers = await readHeaders(id, signal)
       return {
+        ...(headers === undefined ? {} : { headers }),
         from: typeof from.Name === 'string' && from.Name !== '' ? `${from.Name} <${from.Address}>` : from.Address,
         subject: record.Subject,
         // A message with no text part is read as its HTML: the matchers and

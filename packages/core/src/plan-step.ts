@@ -516,6 +516,15 @@ function planSchemaOver(checkKinds: string[], kinds: string[]) {
                 body: { type: 'string' },
                 timeoutMs: { type: 'integer' },
                 code: { type: 'object', properties: { pattern: { type: 'string' } } },
+                authentication: {
+                  type: 'object',
+                  properties: {
+                    require: { type: 'array', items: { type: 'string', enum: ['spf', 'dkim', 'dmarc'] } },
+                    domain: { type: 'string' },
+                    authserv: { type: 'string' },
+                  },
+                },
+                placement: { type: 'string' },
                 inferred: { type: 'boolean' },
               },
               required: ['kind', 'name'],
@@ -714,6 +723,10 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     'the app is asked to send and as the address the mail check waits at, never the address of a person or a shared inbox.',
     'Put the check that makes the app send before the mail check, in the same criterion: only a message that arrives after',
     'the criterion started is read.',
+    'When a criterion is about how the message was delivered, a mail check may assert it: "authentication":{"require":["spf","dkim","dmarc"],',
+    '"domain":"the sending domain expected"} holds the message to the receiving provider\'s own results, and "placement":"inbox" to where',
+    'the mailbox says it landed. Assert only what the criterion asks for: a catcher in the stack reports neither, and the assertion is then',
+    'unverified, never passed.',
     ...(noBrowser !== undefined
       ? []
       : [

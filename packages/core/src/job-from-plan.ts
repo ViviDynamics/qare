@@ -42,6 +42,8 @@ function runnable(check: PlanCheck): JobCheck | undefined {
         ...(check.timeoutMs === undefined ? {} : { timeoutMs: check.timeoutMs }),
         ...(check.singleUse === undefined ? {} : { singleUse: check.singleUse }),
         ...(check.code === undefined ? {} : { code: check.code }),
+        ...(check.authentication === undefined ? {} : { authentication: check.authentication }),
+        ...(check.placement === undefined ? {} : { placement: check.placement }),
       }
     case 'tool':
       return {

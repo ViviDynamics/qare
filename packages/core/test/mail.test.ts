@@ -566,3 +566,157 @@ test('two concurrent runs on one source each read their own message and delete o
   expect(read.sort()).toEqual(['Message 1', 'Message 2'])
   expect(sink.caught).toEqual([])
 })
+
+// #218: a mail check asserts how a message was delivered. The receiving
+// provider's verdict is the evidence, and a shortfall is the environment's.
+
+const PASSING_RESULTS = 'mx.receiver.example; spf=pass smtp.mailfrom=bounce.example.test; dkim=pass header.d=example.test header.s=s1; dmarc=pass header.from=example.test'
+const DKIM_FAILING = 'mx.receiver.example; spf=pass smtp.mailfrom=bounce.example.test; dkim=fail header.d=example.test header.s=s1; dmarc=fail header.from=example.test'
+
+test('a mail check parses the delivery it asserts, with all three mechanisms when it names none (#218)', () => {
+  const parse = (extra: Record<string, unknown>) =>
+    parsePlan({ schemaVersion: '1', criteria: [{ id: 'c1', text: 'the welcome mail is authenticated', checks: [{ kind: 'mail', name: 'welcome mail', address: 'qa@localhost', ...extra }] }] }).criteria[0]?.checks[0]
+
+  expect(parse({ authentication: {}, placement: ' inbox ' })).toEqual({
+    kind: 'mail',
+    name: 'welcome mail',
+    address: 'qa@localhost',
+    authentication: { require: ['spf', 'dkim', 'dmarc'] },
+    placement: 'inbox',
+  })
+  // Named mechanisms are kept in one order, and the domains are read in lower case.
+  expect(parse({ authentication: { require: ['dmarc', 'dkim'], domain: 'Example.Test', authserv: 'MX.Receiver.Example' } })).toMatchObject({
+    authentication: { require: ['dkim', 'dmarc'], domain: 'example.test', authserv: 'mx.receiver.example' },
+  })
+  expect(parse({})).not.toHaveProperty('authentication')
+})
+
+test.each([
+  [{ authentication: 'all' }, /authentication.*must be an object/],
+  [{ authentication: { require: [] } }, /authentication\.require.*non-empty list of spf, dkim, dmarc/],
+  [{ authentication: { require: ['dkim', 'arc'] } }, /authentication\.require/],
+  [{ authentication: { domain: 'not a domain' } }, /authentication\.domain.*host name/],
+  [{ authentication: { authserv: 7 } }, /authentication\.authserv.*host name/],
+  [{ authentication: { requires: ['dkim'] } }, /authentication\.requires.*takes require, domain and authserv/],
+  [{ placement: '' }, /placement.*non-empty string/],
+  [{ placement: 3 }, /placement.*non-empty string/],
+])('a delivery assertion that is not what it should be is refused at plan time, naming the field: %j (#218)', (extra, message) => {
+  const plan = { schemaVersion: '1', criteria: [{ id: 'c1', text: 'criterion', checks: [{ kind: 'mail', name: 'welcome mail', address: 'qa@localhost', ...extra }] }] }
+  expect(() => parsePlan(plan)).toThrow(PlanValidationError)
+  expect(() => parsePlan(plan)).toThrow(message)
+})
+
+test('a plan mail check carries its delivery assertions into the job the runner sees (#218)', () => {
+  const job = loadJobFromText(
+    JSON.stringify({
+      id: 'job-1',
+      repoPath: '/tmp/repo',
+      baseRef: 'main',
+      headRef: 'HEAD',
+      profile: { inline: INLINE_PROFILE },
+      evidenceDir: '/tmp/evidence',
+      post: 'none',
+      criteria: [{ id: 'c1', text: 'criterion', checks: [{ kind: 'mail', name: 'welcome mail', address: 'qa@localhost', authentication: { require: ['dkim'], domain: 'example.test' }, placement: 'inbox' }] }],
+    }),
+  )
+  expect(job.criteria[0]?.checks[0]).toMatchObject({ kind: 'mail', authentication: { require: ['dkim'], domain: 'example.test' }, placement: 'inbox' })
+  expect(() =>
+    loadJobFromText(
+      JSON.stringify({
+        id: 'job-1',
+        repoPath: '/tmp/repo',
+        baseRef: 'main',
+        headRef: 'HEAD',
+        profile: { inline: INLINE_PROFILE },
+        evidenceDir: '/tmp/evidence',
+        post: 'none',
+        criteria: [{ id: 'c1', text: 'criterion', checks: [{ kind: 'mail', address: 'qa@localhost', authentication: { require: ['arc'] } }] }],
+      }),
+    ),
+  ).toThrow(/authentication\.require/)
+})
+
+test('a message that passes all three is proven, with the results in the evidence and beside the message (#218)', async () => {
+  const job = await makeJob(mailCriteria({ address: 'qa@localhost', subject: 'Sign in', authentication: { require: ['spf', 'dkim', 'dmarc'], domain: 'example.test' }, placement: 'inbox' }))
+  const { result } = await runJob(job, {
+    ...HEALTHY_BOOT,
+    readMail: reader(() => message({ headers: { 'authentication-results': [PASSING_RESULTS] }, placement: 'inbox' })),
+  })
+
+  expect(result.verdict).toBe('passed')
+  expect(result.criteria[0]).toMatchObject({ outcome: 'proven', evidence: ['checks/criterion-1/0/message.json'] })
+  expect(result.criteria[0]?.mail?.[0]?.delivery).toBe(
+    'spf=pass (bounce.example.test), dkim=pass (example.test), dmarc=pass (example.test), judged by mx.receiver.example; landed in inbox',
+  )
+  const recorded = JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'message.json'), 'utf8'))
+  expect(recorded.authentication).toEqual({
+    authserv: 'mx.receiver.example',
+    from_domain: 'example.test',
+    results: [
+      { method: 'spf', result: 'pass', domain: 'bounce.example.test', aligned: true },
+      { method: 'dkim', result: 'pass', domain: 'example.test', selector: 's1', aligned: true },
+      { method: 'dmarc', result: 'pass', domain: 'example.test', aligned: true },
+    ],
+  })
+  expect(recorded.placement).toBe('inbox')
+  expect(recorded.subject).toBe('Sign in')
+})
+
+test('a message that arrives failing authentication is unverified with the record at fault named, never failed, and its results are still evidence (#218)', async () => {
+  const job = await makeJob(mailCriteria({ address: 'qa@localhost', authentication: { require: ['spf', 'dkim', 'dmarc'] } }))
+  const { result } = await runJob(job, {
+    ...HEALTHY_BOOT,
+    readMail: reader(() => message({ headers: { 'authentication-results': [DKIM_FAILING] } })),
+  })
+
+  expect(result.verdict).not.toBe('failed')
+  expect(result.criteria[0]?.outcome).toBe('unverified')
+  const reason = result.criteria[0]?.reason ?? ''
+  expect(reason).toContain('dkim=fail for header.d=example.test; look at the DKIM key s1._domainkey.example.test')
+  expect(reason).toContain('dmarc=fail for header.from=example.test; look at the DMARC record _dmarc.example.test')
+  expect(reason).toContain("mx.receiver.example's verdict")
+  // The message and what the provider said of it are written all the same,
+  // and shown beside the message: an unverified criterion lists no evidence
+  // of its own, like every other, but the record is in the run's evidence.
+  const recorded = JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'message.json'), 'utf8'))
+  expect(recorded.authentication.results.map((entry: { method: string; result: string }) => `${entry.method}=${entry.result}`)).toEqual(['spf=pass', 'dkim=fail', 'dmarc=fail'])
+  expect(result.criteria[0]?.mail?.[0]?.delivery).toContain('dkim=fail (example.test)')
+})
+
+test('a sink that reports no authentication results leaves the assertion unverified, naming the source, never passed (#218)', async () => {
+  // The catcher in the stack: it receives the message and judges nothing.
+  const sink = catcher()
+  const job = await makeJob(mailCriteria({ address: '{{run.mail_address}}', authentication: {} }), CATCHER)
+  const { result } = await runJob(job, sink.opts)
+
+  expect(result.verdict).not.toBe('passed')
+  expect(result.criteria[0]?.outcome).toBe('unverified')
+  expect(result.criteria[0]?.reason).toMatch(/mailpit at \S+ reports no authentication results for the message/)
+  expect(result.criteria[0]?.reason).toContain('only a receiving provider adds them')
+})
+
+test('a failing message publishes nothing to later checks: its link is not an artefact (#218)', async () => {
+  const job = await makeJob([
+    {
+      id: 'criterion-1',
+      text: 'criterion 1',
+      checks: [
+        { kind: 'mail', name: 'welcome', address: 'qa@localhost', authentication: { require: ['dkim'] } },
+        { kind: 'command', run: 'echo {{mail.welcome.link}}' },
+      ],
+    },
+  ])
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, readMail: reader(() => message({ headers: { 'authentication-results': [DKIM_FAILING] } })) })
+  expect(result.criteria[0]?.outcome).toBe('unverified')
+  expect(result.criteria[0]?.reason).toContain('dkim=fail')
+})
+
+test('a mail check that asserts nothing about delivery is unchanged: no delivery in its evidence or its proof (#218)', async () => {
+  const job = await makeJob(mailCriteria({ address: 'qa@localhost' }))
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, readMail: reader(() => message({ headers: { 'authentication-results': [DKIM_FAILING] }, placement: 'spam' })) })
+  expect(result.criteria[0]?.outcome).toBe('proven')
+  expect(result.criteria[0]?.mail?.[0]).not.toHaveProperty('delivery')
+  const recorded = JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'message.json'), 'utf8'))
+  expect(recorded).not.toHaveProperty('authentication')
+  expect(recorded).not.toHaveProperty('placement')
+})

@@ -416,6 +416,7 @@ export function redactResult(result: RunResult, rules: readonly RedactionRule[] 
               subject: redactText(message.subject, rules),
               excerpt: redactText(message.excerpt, rules),
               links: message.links.map((link) => redactText(link, rules)),
+              ...(message.delivery === undefined ? {} : { delivery: redactText(message.delivery, rules) }),
             })),
           }),
       // A repair record quotes element references: free text the snapshot

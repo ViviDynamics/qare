@@ -1,8 +1,17 @@
+import type { MailAuthenticationEvidence } from './mail-auth.js'
+
 export interface MailMessage {
   from: string
   subject: string
   body: string
   received_at: string
+  /**
+   * The message's headers, where the source can report them (#218): names in
+   * lower case, each with its values top first, as the message carries them.
+   */
+  headers?: Record<string, string[]>
+  /** Where the mailbox says the message landed (inbox, spam, a folder), where it says (#218). */
+  placement?: string
 }
 
 export interface MailEvidenceMessage {
@@ -13,6 +22,10 @@ export interface MailEvidenceMessage {
   received_at: string
   wait_ms: number
   polls: number
+  /** What the receiving provider said of the message's authentication, when the check asserts it (#218). */
+  authentication?: MailAuthenticationEvidence
+  /** Where the mailbox says the message landed, when the check asserts it (#218). */
+  placement?: string
 }
 
 /**
@@ -27,6 +40,8 @@ export interface MailProof {
   subject: string
   excerpt: string
   links: string[]
+  /** How the message was delivered, in one line, when the check asserts it (#218): the provider's results and the placement. */
+  delivery?: string
 }
 
 export type ReadMail = (address: string, after: string, signal?: AbortSignal) => Promise<MailMessage[]>
@@ -69,12 +84,36 @@ function parseMessage(value: unknown, index: number): MailMessage {
   }
   const received = Date.parse(String(record.received_at))
   if (!Number.isFinite(received)) throw new Error(`inbox message ${index} has no parsable received_at`)
+  const headers = parseHeaders(record.headers, index)
+  if (record.placement !== undefined && (typeof record.placement !== 'string' || record.placement.trim() === ''))
+    throw new Error(`inbox message ${index} has a placement that is not a non-empty string`)
   return {
     from: record.from as string,
     subject: record.subject as string,
     body: record.body as string,
     received_at: new Date(received).toISOString(),
+    ...(headers === undefined ? {} : { headers }),
+    ...(record.placement === undefined ? {} : { placement: (record.placement as string).trim() }),
   }
+}
+
+/**
+ * The headers an inbox may list with a message (#218): an object of header
+ * name to its value or values. Names are read in lower case. A value that is
+ * neither a string nor a list of strings is refused, not skipped: a header
+ * read wrong is evidence read wrong.
+ */
+function parseHeaders(value: unknown, index: number): Record<string, string[]> | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`inbox message ${index} has headers that are not an object`)
+  const headers: Record<string, string[]> = {}
+  for (const [name, held] of Object.entries(value as Record<string, unknown>)) {
+    const values = typeof held === 'string' ? [held] : held
+    if (!Array.isArray(values) || !values.every((entry): entry is string => typeof entry === 'string'))
+      throw new Error(`inbox message ${index} has a ${name} header that is neither a string nor a list of strings`)
+    headers[name.toLowerCase()] = [...(headers[name.toLowerCase()] ?? []), ...values]
+  }
+  return headers
 }
 
 /**

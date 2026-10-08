@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Plan, PlanCheck, PlanCriterion } from './plan.js'
 
-const CHECK_FIELDS = ['kind', 'name', 'command', 'suite', 'actions', 'screenshot', 'url', 'widths', 'themes', 'address', 'from', 'subject', 'body', 'code', 'timeoutMs', 'singleUse', 'tool', 'args', 'assert', 'inferred']
+const CHECK_FIELDS = ['kind', 'name', 'command', 'suite', 'actions', 'screenshot', 'url', 'widths', 'themes', 'address', 'from', 'subject', 'body', 'code', 'timeoutMs', 'singleUse', 'authentication', 'placement', 'tool', 'args', 'assert', 'inferred']
 
 export interface PlanComparison {
   matches: boolean
@@ -34,6 +34,8 @@ function canonicalCheck(check: PlanCheck): PlanCheck {
     if (check.code !== undefined) canonical.code = { ...check.code }
     if (check.timeoutMs !== undefined) canonical.timeoutMs = check.timeoutMs
     if (check.singleUse !== undefined) canonical.singleUse = check.singleUse
+    if (check.authentication !== undefined) canonical.authentication = { ...check.authentication, require: [...check.authentication.require] }
+    if (check.placement !== undefined) canonical.placement = check.placement
   } else if (check.kind === 'tool') {
     canonical.tool = check.tool
     if (check.args !== undefined) canonical.args = { ...check.args }

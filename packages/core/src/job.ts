@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { parse as parseYaml } from 'yaml'
+import { parseMailDelivery, type MailAuthenticationAssertion } from './mail-delivery.js'
 import { isUnsafeProfileName, type QaProfile } from './profile.js'
 import { MAX_VISUAL_WIDTH, PlanValidationError, parseFlowActions, parseToolAssertions, parseToolArgs, type FlowActionStep, type ToolAssertion } from './plan.js'
 import { DEFAULT_PROFILE_NAME } from './monorepo.js'
@@ -26,6 +27,10 @@ export interface JobMailCheck {
   singleUse?: boolean
   /** One-time code extraction from the message body (#64). */
   code?: { pattern?: string }
+  /** What the check asserts about the message's authentication (#218). */
+  authentication?: MailAuthenticationAssertion
+  /** Where the mailbox must say the message landed (#218). */
+  placement?: string
 }
 
 export interface JobFlowCheck {
@@ -531,8 +536,10 @@ function parseMailCheck(value: Record<string, unknown>, base: string): JobMailCh
     fail(`${base}.singleUse`, 'singleUse must be a boolean')
   const singleUse = value.singleUse as boolean | undefined
   const code = parseJobCode(value.code, `${base}.code`)
+  const delivery = parseMailDelivery(value, base, (field, message) => fail(field, message))
   return {
     kind: 'mail',
+    ...delivery,
     ...(name !== undefined ? { name } : {}),
     address,
     ...(from !== undefined ? { from } : {}),

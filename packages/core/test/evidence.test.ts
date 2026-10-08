@@ -459,6 +459,32 @@ test('the comment shows the message that proved a criterion: sender, subject, an
   expect(body).not.toContain('| `no-mail` | `')
 })
 
+test('how a message was delivered sits beside it in the comment, in a column only a run that asserted it carries (#218)', () => {
+  const run = result('passed', [
+    {
+      id: 'signup-mail',
+      outcome: 'proven',
+      evidence: ['checks/signup-mail/0/message.json'],
+      mail: [
+        {
+          check: 'confirmation',
+          from: 'App <no-reply@app.example.test>',
+          subject: 'Confirm your account',
+          excerpt: 'Hello.',
+          links: [],
+          delivery: 'spf=pass (app.example.test), dkim=pass (app.example.test), dmarc=pass (app.example.test), judged by mx.receiver.example; landed in inbox',
+        },
+        { check: 'receipt', from: 'App <no-reply@app.example.test>', subject: 'Your receipt', excerpt: 'Thanks.', links: [] },
+      ],
+    },
+  ])
+  const body = renderComment(run, { kind: 'artifact' })
+  expect(body).toContain('| criterion | check | sender | subject | excerpt | links | delivery |')
+  expect(body).toContain('| `Hello.` |  | `spf=pass (app.example.test), dkim=pass (app.example.test), dmarc=pass (app.example.test), judged by mx.receiver.example; landed in inbox` |')
+  // A message whose check asserted nothing has an empty cell, not a claim.
+  expect(body).toContain('| `signup-mail` | `receipt` | `App <no-reply@app.example.test>` | `Your receipt` | `Thanks.` |  |  |')
+})
+
 test('a run that read no mail renders no mail section (#65)', () => {
   expect(renderComment(allProven)).not.toContain('## Mail')
 })

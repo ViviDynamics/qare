@@ -2,6 +2,7 @@
 // verbatim and rejects anything else. Type-only import: the loader adds no
 // runtime dependency on the runner.
 import { undeclaredCheckKinds, type FlowAction, type FlowDriverCapabilities, type FlowElement } from './flow.js'
+import { parseMailDelivery, type MailAuthenticationAssertion } from './mail-delivery.js'
 import { identityOfPath, isSnapshotPath } from './locator.js'
 import type { ModelUsage } from './metrics.js'
 import { isUnsafeProfileName } from './profile.js'
@@ -55,6 +56,14 @@ export interface MailCheck {
    * from the evidence like any other secret.
    */
   code?: { pattern?: string }
+  /**
+   * What the check asserts about how the message was delivered (#218): which
+   * of SPF, DKIM and DMARC must pass by the receiving provider's verdict, and
+   * the sending domain expected. Never a reason to fail a criterion.
+   */
+  authentication?: MailAuthenticationAssertion
+  /** Where the mailbox must say the message landed (#218), such as `inbox`. */
+  placement?: string
   inferred?: boolean
 }
 
@@ -437,9 +446,11 @@ function parseCheck(value: unknown, base: string, extraFlowActions: readonly str
       const timeoutMs = value.timeoutMs === undefined ? undefined : parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
       const singleUse = value.singleUse === undefined ? undefined : parseSingleUse(value.singleUse, `${base}.singleUse`)
       const code = parseCode(value.code, `${base}.code`)
+      const delivery = parseMailDelivery(value, base, (field, message) => fail(field, message))
       return finish(
         {
           kind: 'mail',
+          ...delivery,
           name,
           address,
           ...(from !== undefined ? { from } : {}),
