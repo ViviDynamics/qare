@@ -159,7 +159,7 @@ test('the planner is told the origin of a target and no other part of its URL', 
   expect(told(TARGET_URL)).toBe(TARGET_URL)
   expect(told(['https:', '//wiki.example.test:443/base'].join(''))).toBe(TARGET_URL)
   // What is not an http(s) URL has no origin to tell: it is not written at all.
-  for (const unread of ['SECRETUSER:SECRETPASS@nowhere', 'not a url SECRETPATH', ['ftp:', '//SECRETUSER:SECRETPASS@files.example.test/'].join('')]) {
+  for (const unread of ['SECRETUSER:SECRETPASS@nowhere', 'not a url SECRETPATH', ['https:', '//{{SECRETPASS}}/app'].join(''), ['https:', '//wiki.example.test:SECRETPASS/app'].join(''),['ftp:', '//SECRETUSER:SECRETPASS@files.example.test/'].join('')]) {
     expectNoSecret(told(unread), unread)
     expect(told(unread)).not.toContain('nowhere')
   }
@@ -174,6 +174,27 @@ test("a booted app's address leaves out its health check's credentials, a passwo
     expect(address(health), health).toBe(APP_ADDRESS)
     expectNoSecret(address(health), health)
   }
+  // A health check is any non-empty string to the profile loader, so the
+  // address is rebuilt from what a URL parser reads as scheme, host and port.
+  // Whatever does not read as such a URL tells the planner nothing at all.
+  const malformed = [
+    ['http:', '//SECRETUSER:SECRETPASS\\@localhost:3000/up'].join(''),
+    ['http:', '//SECRETUSER:SECRETPASS\\\\@localhost:3000/up'].join(''),
+    ['http:', '//localhost:SECRETPASS/up'].join(''),
+    ['http:', '//SECRETUSER:SECRETPASS'].join(''),
+    ['http:', '//localhost:{{run.app_port}}SECRETPASS/up'].join(''),
+    ['http:', '//SECRETPASS{{run.app_port}}:3000/up'].join(''),
+    ['http:', '//{{run.SECRETPASS}}:3000/up'].join(''),
+    ['http:', '//localhost:3000:SECRETPASS/up'].join(''),
+    'SECRETUSER:SECRETPASS@localhost:3000',
+  ]
+  for (const health of malformed) expectNoSecret(address(health), health)
+  // A run value is taken as the port and nowhere else, and a port a parser drops as the default is still the run's.
+  expect(address(['http:', '//127.0.0.1:{{ run.app_port }}/up'].join(''))).toBe(['http:', '//127.0.0.1:{{run.app_port}}'].join(''))
+  expect(address(['http:', '//localhost:{{run.other_port}}/up'].join(''))).toBe('')
+  expect(address(['http:', '//localhost:80/up'].join(''))).toBe(APP_ADDRESS)
+  expect(address(['https:', '//staging.example.test:8443/up'].join(''))).toBe(['https:', '//staging.example.test:8443'].join(''))
+  expect(address(['https:', '//staging.example.test/up'].join(''))).toBe(['https:', '//staging.example.test'].join(''))
 })
 
 test('no part of a target URL but its origin reaches the prompt of qare check or of ledger ingest', async () => {

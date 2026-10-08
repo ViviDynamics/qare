@@ -20,30 +20,51 @@ export function bootedAppOrigin(appHealth: string, values: RunValues): string | 
   }
 }
 
+/** A host as an address may name it: letters, digits, dots and hyphens, or a bracketed IPv6 address. */
+const HOST_NAME = /^(?:[a-z0-9._-]+|\[[0-9a-f:.]+\])$/i
+
+/** The run's port by name, as a profile writes it in a health URL and as a plan writes it in an address. */
+const RUN_PORT = '{{run.app_port}}'
+const RUN_PORT_WRITTEN = /\{\{\s*run\.app_port\s*\}\}/g
+
 /**
  * The booted app's address as a plan may write it (#264): the origin of the
  * health check as the profile authors it, with the run's port by name. A
  * local health check that names a fixed port is pinned to the run's port when
  * the run boots, so the number in the profile is not where the app will be,
- * and the planner is told `{{run.app_port}}` instead. It is an origin, like
- * `bootedAppOrigin`: credentials the health URL carries are left out.
+ * and the planner is told `{{run.app_port}}` instead.
+ *
+ * The address is written into the model's prompt, and a health check is any
+ * non-empty string to the profile loader, so it is rebuilt from what a URL
+ * parser reads as the scheme, the host and the port, and from nothing else
+ * (#267): never the userinfo, the path, the query or the fragment, and never
+ * text a parser does not read as one of the three. The run's port is the one
+ * run value an address may name, and only as the port: the URL is parsed
+ * twice with two different numbers standing in for it, and what does not
+ * parse, or whose host moves with the stand-in, tells the planner nothing.
  */
 export function plannedAppAddress(appHealth: string): string | undefined {
-  // Scheme and host, and nothing else: a credential in the health URL is the
-  // profile's own, and the address is written into the model's prompt. The
-  // URL cannot go through a parser, since it may name the port by a run
-  // value, so the host is what follows the last @ of the authority (a
-  // password may itself hold an @), and it is written only when it is made
-  // of the characters a host, a port and a run value are made of.
-  const parts = /^(https?):\/\/([^/?#\s\\]*)/i.exec(appHealth.trim())
-  if (parts === null) return undefined
-  const authority = parts[2] ?? ''
-  const host = authority.slice(authority.lastIndexOf('@') + 1)
-  if (!/^(?:[A-Za-z0-9.\-_[\]:]|\{\{\s*[\w.]+\s*\}\})+$/.test(host)) return undefined
-  const authored = `${(parts[1] ?? '').toLowerCase()}://${host}`
-  if (authored.includes('{{')) return authored
-  if (!pinsToRunPort(appHealth)) return authored
-  return authored.replace(/:\d+$/, ':{{run.app_port}}')
+  const written = appHealth.trim()
+  const read = (port: string): URL | undefined => {
+    try {
+      const parsed = new URL(written.replace(RUN_PORT_WRITTEN, port))
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed : undefined
+    } catch {
+      return undefined
+    }
+  }
+  const [one, other] = [read('65001'), read('65002')]
+  if (one === undefined || other === undefined) return undefined
+  if (one.hostname === '' || one.hostname !== other.hostname) return undefined
+  // The parser lets braces and other marks stand in a host. A host is a name
+  // of letters, digits, dots and hyphens, or a bracketed IPv6 address.
+  if (!HOST_NAME.test(one.hostname)) return undefined
+  const origin = `${one.protocol}//${one.hostname}`
+  // The two readings differ in the port exactly when the profile named the run's port there.
+  if (one.port !== other.port) return one.port === '65001' && other.port === '65002' ? `${origin}:${RUN_PORT}` : undefined
+  // A fixed local port is not where this run's app will be: the run pins it to its own.
+  if (pinsToRunPort(written) && isolatedHealthUrl(written, 65003) !== written) return `${origin}:${RUN_PORT}`
+  return one.port === '' ? origin : `${origin}:${one.port}`
 }
 
 /**
@@ -99,7 +120,9 @@ function targetOrigin(url: string): string {
     return unread
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return unread
-  return `${parsed.protocol}//${parsed.host}`
+  // The parser lets braces and other marks stand in a host: only a plain host name is written.
+  if (!HOST_NAME.test(parsed.hostname)) return unread
+  return `${parsed.protocol}//${parsed.hostname}${parsed.port === '' ? '' : `:${parsed.port}`}`
 }
 
 export interface FlowAddressContext {
