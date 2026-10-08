@@ -321,6 +321,9 @@ async function ingestCommand(argv: string[], out: Writer, err: Writer): Promise<
       planner: nareRunners(nare).planner,
       ...(profile === undefined ? {} : { suites: profile.suites.map((suite) => suite.name) }),
       address: plannerAddress(profile),
+      // The driver goes with the address (#267): the planner is told how the
+      // app is addressed and held to what that app's driver can do.
+      ...(profile === undefined ? {} : { driver: flowDriverFor(profile) }),
       ...(profile === undefined || profile.instructions === undefined ? {} : { qaMd: profile.instructions }),
       ...(profile === undefined || profile.redact === undefined ? {} : { redact: profile.redact }),
       ...(profile === undefined || profile.commands === undefined ? {} : { commands: profile.commands }),

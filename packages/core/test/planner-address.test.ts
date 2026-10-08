@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { expect, test } from 'vitest'
 import {
   checkCriteria,
+  flowDriverFor,
   ingestCriteria,
   loadProfile,
   plannerAddress,
@@ -120,6 +121,35 @@ test('qare check still tells the planner where a running target is', async () =>
 
   expect(planner.prompts[0]).toContain(`The app is already running at ${TARGET_URL}.`)
   expect(planner.prompts[0]).not.toContain('The run boots the app itself')
+})
+
+test('ledger ingest holds a plan to the driver the profile names, so a client build is not told one thing and offered another', async () => {
+  const body = '## Acceptance criteria\n\n- [ ] the settings window looks right\n'
+  const source = { kind: 'issue' as const, number: 7, author: 'someone', link: ['https:', '//example.test/issues/7'].join(''), body }
+  const profile = { client: { driver: 'electron' } } as Parameters<typeof flowDriverFor>[0]
+  const prompts: string[] = []
+  // A planner that answers a client build with a visual check, which the electron driver does not capture.
+  const planner: AgentRunner = {
+    run: async (request: AgentRunRequest): Promise<AgentRunResult> => {
+      prompts.push(request.prompt)
+      const list = request.prompt.split('Criteria:\n')[1]?.split('\n\n')[0] ?? ''
+      const criteria = [...list.matchAll(/^- ([^:\s]+): (.*)$/gm)].map((match) => ({ id: match[1], text: match[2], checks: [{ kind: 'visual', name: 'settings', screenshot: 'settings' }] }))
+      return { status: 'completed', stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 }, output: JSON.stringify({ schemaVersion: '1', criteria }) }
+    },
+  }
+
+  const refused = ingestCriteria([source], { ledger: [], planner, address: plannerAddress(profile), driver: flowDriverFor(profile) })
+
+  // The plan step corrects it once and then refuses it: no proposal is made for proof the profile cannot run.
+  await expect(refused).rejects.toThrow(/visual/)
+  expect(prompts).toHaveLength(2)
+  expect(prompts[0]).toContain('The app is a desktop build launched by the run through the electron driver.')
+  expect(prompts[1]).toContain('Your previous answer was rejected')
+
+  // With no driver named, ingest plans against the browser, as it always did, and the same answer stands.
+  const browser: string[] = []
+  await ingestCriteria([source], { ledger: [], planner: { run: async (request) => (browser.push(request.prompt), planner.run(request)) } })
+  expect(browser).toHaveLength(1)
 })
 
 test('ledger ingest hands the planner whatever address the helper read from the profile', async () => {
