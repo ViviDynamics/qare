@@ -1350,6 +1350,20 @@ duplicating it, mentioning the person whose change last touched the ledger.
 The ledger, not the report, is the store: the standing report is written for
 someone with no QARE installed, exactly as the published view is.
 
+### The fleet report
+
+`qare-action fleet-report` shows every repository qare runs in on one page
+(#151). It is built from what each repository already publishes, read through
+GitHub's API: the ledger on its branch, the run records on `qa-assets`, and
+the open issues qare filed. A run reads, renders and publishes; there is no
+server and nothing is kept between runs. The repositories are listed
+explicitly in a config file. It writes only to the repository it runs in: a
+page committed to a branch, and one summary issue that is rewritten only
+when what needs attention changes. A part of a repository that could not be
+read is reported as unread and as needing attention, never as healthy, and
+text quoted from another repository is written as code so it neither
+mentions nor links. See "Fleet report" in [pipeline.md](./pipeline.md).
+
 ### Findings on main
 
 A run against `main` (a sweep, or a check of a deployment) has no pull

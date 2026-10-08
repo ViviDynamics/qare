@@ -91,6 +91,9 @@ export interface GitHubClientOptions {
   fetchImpl?: typeof fetch
 }
 
+/** The most pages of a label's issues one read takes, a hundred issues a page. */
+const MAX_ISSUE_PAGES = 200
+
 export class GitHubClient {
   readonly repository: string
   /** Who this client posts as. The posting code asks it nothing but its login. */
@@ -312,6 +315,63 @@ export class GitHubClient {
       tree: entries,
     })
     return tree.sha
+  }
+
+  /**
+   * Whether this identity can see the repository at all (#151). GitHub
+   * answers 404 for a private repository a token cannot see, exactly as it
+   * does for a file that is not there, so a reader that must tell "absent"
+   * from "unreadable" asks this first.
+   */
+  async canSeeRepository(): Promise<boolean> {
+    try {
+      await this.request('GET', `/repos/${this.repository}`)
+      return true
+    } catch (error) {
+      if (error instanceof GitHubApiError && (error.status === 404 || error.status === 403)) return false
+      throw error
+    }
+  }
+
+  /**
+   * The open issues that carry a label, read from the issues themselves and
+   * not from the search (#151): the search index lags an issue's creation by
+   * minutes, and a listing sees it at once. Pull requests, which the listing
+   * mixes in, are left out.
+   */
+  async listOpenIssuesByLabel(label: string): Promise<GitHubIssue[]> {
+    const issues: GitHubIssue[] = []
+    // Read to the last page: a listing that stopped early would leave issues
+    // out without a word. The bound is only against a listing that never
+    // ends, and reaching it is an error, never a short answer.
+    for (let page = 1; ; page += 1) {
+      if (page > MAX_ISSUE_PAGES)
+        throw new GitHubClientError(`${this.repository} lists more than ${MAX_ISSUE_PAGES * 100} open issues labelled ${label}, which is more than can be read`)
+      const listed = await this.request<Array<GitHubIssue & { pull_request?: unknown }>>(
+        'GET',
+        `/repos/${this.repository}/issues`,
+        new URLSearchParams({ state: 'open', labels: label, per_page: '100', page: String(page) }),
+      )
+      issues.push(...listed.filter((issue) => issue.pull_request === undefined))
+      if (listed.length < 100) break
+    }
+    return issues
+  }
+
+  /**
+   * Every file path of a tree, read whole (#151). A tree GitHub cut short is
+   * refused: a listing that silently lacks its newest entries would be read
+   * as a repository that recorded no run.
+   */
+  async listTreePaths(tree: string): Promise<string[]> {
+    const listed = await this.request<{ tree?: Array<{ path?: unknown; type?: unknown }>; truncated?: unknown }>(
+      'GET',
+      `/repos/${this.repository}/git/trees/${tree}`,
+      new URLSearchParams({ recursive: '1' }),
+    )
+    if (listed.truncated === true) throw new GitHubClientError(`GitHub cut the listing of tree ${tree} short, so what it holds cannot be read whole`)
+    if (!Array.isArray(listed.tree)) throw new GitHubClientError(`GitHub returned no listing for tree ${tree}`)
+    return listed.tree.filter((entry) => entry.type === 'blob' && typeof entry.path === 'string').map((entry) => entry.path as string)
   }
 
   async getCommitTree(sha: string): Promise<string> {

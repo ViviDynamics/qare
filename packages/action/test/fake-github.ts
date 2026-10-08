@@ -119,6 +119,13 @@ export interface FakeGithub {
   blobs: Map<string, Buffer>
   /** Tree entries by sha: path, mode and blob sha. */
   trees: Map<string, FakeTreeEntry[]>
+  /** The trees whose listing GitHub would cut short, by sha. */
+  truncatedTrees: Set<string>
+  /**
+   * True: the repository answers 404 to everything under /repos, as GitHub
+   * answers for a private repository the token cannot see.
+   */
+  hidden: boolean
   status: number | undefined
   /**
    * How many of the next git ref updates fail with 422, one per attempt: the
@@ -180,6 +187,8 @@ export function startFakeGithub(): Promise<FakeGithub> {
   const pulls: FakePull[] = []
   const blobs = new Map<string, Buffer>()
   const trees = new Map<string, FakeTreeEntry[]>()
+  const truncatedTrees = new Set<string>()
+  let hidden = false
   const tokens = new Map<string, FakeToken>([[TOKEN, { login: TOKEN_LOGIN, kind: 'actions' }]])
   const minted: Array<{ token: string; body: unknown }> = []
   const state = {
@@ -271,9 +280,12 @@ export function startFakeGithub(): Promise<FakeGithub> {
       const phrase = /"([^"]+)"/.exec(q)?.[1] ?? ''
       // is:open and is:closed narrow by state; an issue the fake holds no state for is open.
       const wanted = /\bis:(open|closed)\b/.exec(q)?.[1]
+      // label:<name> narrows to the issues that carry it, as the search does.
+      const label = /\blabel:([^\s"]+)/.exec(q)?.[1]
       const matched = [...issues.values()]
         .filter((issue) => issue.body.includes(phrase) || issue.title.includes(phrase))
         .filter((issue) => wanted === undefined || (issueMeta.get(issue.number)?.state ?? 'open') === wanted)
+        .filter((issue) => label === undefined || (issueMeta.get(issue.number)?.labels ?? []).includes(label))
       const perPage = Number(url.searchParams.get('per_page') ?? '30')
       const page = Number(url.searchParams.get('page') ?? '1')
       const items =
@@ -281,6 +293,24 @@ export function startFakeGithub(): Promise<FakeGithub> {
           ? matched.slice((page - 1) * perPage, page * perPage)
           : matched
       respond(response, 200, { total_count: matched.length, items: items.map(served) })
+      return
+    }
+    if (parts[0] === 'repos' && hidden) return respond(response, 404, { message: 'Not Found' })
+    if (parts[0] === 'repos' && parts.length === 3 && request.method === 'GET') {
+      respond(response, 200, { full_name: `${parts[1]}/${parts[2]}`, default_branch: 'main' })
+      return
+    }
+    // The issue listing, which is not the search: it reads the issues themselves, so it sees one the moment it is created.
+    if (parts[0] === 'repos' && parts[3] === 'issues' && parts.length === 4 && request.method === 'GET') {
+      const state = url.searchParams.get('state') ?? 'open'
+      const labels = (url.searchParams.get('labels') ?? '').split(',').filter((label) => label !== '')
+      const listed = [...issues.values()]
+        .filter((issue) => state === 'all' || (issueMeta.get(issue.number)?.state ?? 'open') === state)
+        .filter((issue) => labels.every((label) => (issueMeta.get(issue.number)?.labels ?? []).includes(label)))
+        .sort((a, b) => a.number - b.number)
+      const perPage = Number(url.searchParams.get('per_page') ?? '30')
+      const page = Number(url.searchParams.get('page') ?? '1')
+      respond(response, 200, listed.slice((page - 1) * perPage, page * perPage).map(served))
       return
     }
     if (parts[0] === 'repos' && parts[3] === 'issues' && parts.length === 4 && request.method === 'POST') {
@@ -437,6 +467,13 @@ export function startFakeGithub(): Promise<FakeGithub> {
       respond(response, 201, { sha })
       return
     }
+    if (parts[0] === 'repos' && parts[3] === 'git' && parts[4] === 'trees' && parts.length === 6 && request.method === 'GET') {
+      const tree = trees.get(parts[5] ?? '')
+      if (tree === undefined) return respond(response, 404, { message: 'tree not found' })
+      // As the trees API lists one: every entry with its type, and whether the listing was cut short.
+      respond(response, 200, { sha: parts[5], tree: tree.map((entry) => ({ path: entry.path, mode: entry.mode, type: 'blob', sha: entry.sha })), truncated: truncatedTrees.has(parts[5] ?? '') })
+      return
+    }
     if (parts[0] === 'repos' && parts[3] === 'git' && parts[4] === 'trees' && parts.length === 5) {
       if (request.method !== 'POST') return respond(response, 404, { message: 'no such tree route' })
       const sha = objectSha('tree')
@@ -583,6 +620,13 @@ export function startFakeGithub(): Promise<FakeGithub> {
         pulls,
         blobs,
         trees,
+        truncatedTrees,
+        get hidden() {
+          return hidden
+        },
+        set hidden(value: boolean) {
+          hidden = value
+        },
         get status(): number | undefined {
           return state.status
         },

@@ -30,7 +30,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.35
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.36
     with:
       nare-model: gpt-4.1-mini
     secrets:
@@ -67,7 +67,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.35
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.36
     with:
       runs-on: '["self-hosted", "linux", "x64"]'
       profile: services/web/qa
@@ -380,7 +380,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.35
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.36
     with:
       nare-model: gpt-4.1-mini
       artefacts: qare-artefacts
@@ -728,6 +728,138 @@ findings:
 
 The labels `qa-regression`, `qa-environment` and `qa-failure` are created by
 GitHub the first time an issue carries one.
+
+## Fleet report
+
+With qare in several repositories, `qare-action fleet-report` puts them on one
+page (#151). It reads what each repository already publishes, through
+GitHub's API, and publishes in the repository it runs in. There is no server
+and no state of its own.
+
+What it reads from each listed repository, and writes nothing there:
+
+| Read | From | Becomes |
+| --- | --- | --- |
+| The ledger | `<ledger>/ledger.json` on the branch the config names, with `<ledger>/sweep.json` for the repository's own stale thresholds | ledger size, how many criteria the ledger records as verified and current (coverage), which are stale, how many were never verified |
+| Run records | `metrics/**.json` on the `qa-assets` branch (#51) | the latest runs, newest first: verdict, pull request, how the criteria came out |
+| Issues qare filed | open issues labelled `qa-regression`, `qa-environment`, `qa-failure` (#154), read from the issue listing so one filed a moment ago is there | open regressions and the rest, by number and title |
+
+The repositories are listed in a JSON file:
+
+```json
+{
+  "repositories": ["acme/web", { "repository": "acme/api", "branch": "trunk", "ledger": "qa" }],
+  "runs": 5
+}
+```
+
+`branch` defaults to `main`, `ledger` to `.qa`, and `runs` (how many of each
+repository's latest runs the page shows) to 5. Unknown keys are refused: a
+misspelt key would leave a repository out without a word.
+
+Nothing in the pipeline calls it. It is a workflow you add, on a schedule, in
+the one repository where the team should look:
+
+```yaml
+name: QARE fleet
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 5 * * *'
+permissions:
+  contents: write   # the page, committed to the qa-assets branch
+  issues: write     # the summary issue
+# One report at a time: two at the same instant could each open a summary issue.
+concurrency:
+  group: qare-fleet
+  cancel-in-progress: false
+jobs:
+  fleet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # qare at a release, beside the checkout whose .qa/fleet.json it reads.
+      - uses: actions/checkout@v4
+        with:
+          repository: ViviDynamics/qare
+          ref: 2026.10.36
+          path: qare
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: qare/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: qare/.nvmrc
+          cache: pnpm
+          cache-dependency-path: qare/pnpm-lock.yaml
+      - run: pnpm --dir qare install --frozen-lockfile
+      - run: pnpm --dir qare build
+      - name: Report on the fleet
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QARE_APP_ID: ${{ secrets.QARE_APP_ID }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.QARE_APP_PRIVATE_KEY }}
+          QARE_GITHUB_TOKEN: ${{ secrets.QARE_GITHUB_TOKEN }}
+        run: |
+          node qare/packages/action/dist/index.js fleet-report \
+            --config .qa/fleet.json --repository "${{ github.repository }}"
+```
+
+| Flag | What it is |
+| --- | --- |
+| `--config` | The JSON file that lists the repositories. Required. |
+| `--repository` | The repository the report is published in. Defaults to `GITHUB_REPOSITORY`. |
+| `--branch`, `--path` | Where the page is committed: `qa-assets` and `fleet/report.md` unless named. |
+| `--out` | Also write the page to this file. |
+| `--dry-run true` | Reads, publishes nothing, and prints what a real run would. Run it first. |
+
+**The identity decides what can be read.** The Actions token of a workflow
+reads its own repository and no other private one, so a fleet of private
+repositories needs the qare GitHub App installed on each (#61, #155) or a
+personal access token in `QARE_GITHUB_TOKEN` that can read them: `contents:
+read` and `issues: read` on every listed repository, and `contents: write`
+and `issues: write` on the one it publishes in.
+
+**What it cannot see, it says.** A part of a repository that could not be
+read is reported as unread, with the reason, and counts as needing
+attention. It is never shown as healthy. That covers a repository the
+identity cannot see (GitHub answers "not found" for one, exactly as for a
+file that is not there, so the report asks whether it can see the repository
+before it reads anything), a ledger branch that does not exist, a ledger that
+does not parse, a run record among the newest that is not one (it may be the
+latest run, so no older run stands in for it), a listing GitHub cut short,
+and a day with more run records than the report reads.
+
+**Coverage is the ledger's record, not the last run's word.** The report
+reads the ledger and nothing of a repository's last held result, so it does
+not know which criteria are quarantined or refused right now and reports
+neither. A criterion the ledger records as verified counts as such even when
+its last run refused it; the repository's own standing report (#49) shows
+those.
+
+Two things are published:
+
+- The page, `fleet/report.md` on the `qa-assets` branch: one table of every
+  repository, then each one's ledger, latest runs and open issues. It is
+  rewritten on every run.
+- One summary issue, labelled `qa-fleet` and found again by that label and a
+  hidden marker (in the issue listing, not the search, whose index lags a new
+  issue by minutes; an identity that may not apply labels has the label
+  dropped by GitHub, and the issue is then found by its marker through the
+  search instead), listing only what needs attention: a part that could not be read, an open regression, environment
+  or failure issue, a stale criterion, a latest run that did not pass. It is
+  rewritten only when that list changes, so whoever watches it hears from it
+  only then.
+
+Everything the report quotes from another repository (a title, a reason, a
+criterion id, an issue number) is written as code, so it renders no link,
+mentions nobody, and leaves no reference on the other repository's issues.
+
+Not in the report yet: why a run was blocked or refused (the run record
+carries the verdict and the counts, not the reasons), advisory findings
+awaiting a look (#150), and finding the repositories by where the App is
+installed instead of listing them.
 
 ## Triggers
 
