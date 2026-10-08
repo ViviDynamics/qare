@@ -167,7 +167,7 @@ test('the planner is told that every command check runs in the cell when the pro
   const cell = 'no form of a command reaches further than another'
   const contained = new FakeAgentRunner([completed(planWith('node --version'))])
   await planRun(contained, await inputs({ commands: { script: { run: 'node -- {{path}}', about: 'runs a script' } } }))
-  expect(contained.requests[0]?.prompt).toContain('Every command check of this run runs in a cell')
+  expect(contained.requests[0]?.prompt).toContain('A command check of this run runs in a cell')
   expect(contained.requests[0]?.prompt).toContain(cell)
   expect(contained.requests[0]?.prompt).toContain('a read-only copy of the checkout')
 
@@ -178,6 +178,29 @@ test('the planner is told that every command check runs in the cell when the pro
   const none = new FakeAgentRunner([completed(planWith('node --version'))])
   await planRun(none, await inputs())
   expect(none.requests[0]?.prompt).not.toContain(cell)
+})
+
+// The planner is told the rule the run applies, exceptions included: a command
+// that opts out is marked as one, so a criterion its network or its writes
+// could show is not marked unplannable for a cell it would never run in.
+test('in a profile that contains one command and opts another out, the planner is shown which is which', async () => {
+  const runner = new FakeAgentRunner([completed(planWith('node --version'))])
+  await planRun(
+    runner,
+    await inputs({
+      commands: {
+        script: { run: 'node -- {{path}}', about: 'runs a script' },
+        report: { run: 'python3 -- {{path}}', about: 'downloads the report', egress: 'uncontained' },
+      },
+    }),
+  )
+  const prompt = runner.requests[0]?.prompt ?? ''
+  expect(prompt).toContain('- script: runs a script (node -- {{path}})')
+  expect(prompt).toContain('- report: downloads the report (python3 -- {{path}}) [not contained: runs with the network its step has]')
+  expect(prompt).not.toContain('(node -- {{path}}) [not contained')
+  // The guidance names the exception instead of claiming every check is in the cell.
+  expect(prompt).toContain('except a command marked not contained, in the form it is declared in')
+  expect(prompt).not.toContain('Every command check of this run runs in a cell')
 })
 
 test('a declared command that names a file the change adds is planned, not refused for a file the base lacks', async () => {

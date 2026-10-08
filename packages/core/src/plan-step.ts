@@ -575,16 +575,24 @@ function prompt(inputs: PlanInputs, correction?: string): string {
       ? []
       : [
           'The profile declares these commands, known to work in this repository. Use one, with its {{placeholders}} filled from the criterion, instead of guessing an invocation:',
-          ...Object.entries(inputs.commands).map(([name, command]) => `- ${name}: ${command.about} (${command.run})`),
-          // What the run does with a command (#286), so a plan is not written
-          // against a network or a writable checkout its check will not have.
+          // A command that opts out is marked as one (#286): the planner is told
+          // the rule the run applies, exceptions included, so it neither plans
+          // against a network a check will not have nor gives up on a criterion
+          // a declared command can show.
+          ...Object.entries(inputs.commands).map(
+            ([name, command]) =>
+              `- ${name}: ${command.about} (${command.run})${command.egress === 'uncontained' ? ' [not contained: runs with the network its step has]' : ''}`,
+          ),
           ...(Object.values(inputs.commands).some((command) => command.egress !== 'uncontained')
             ? [
-                'Every command check of this run runs in a cell: it has no network but the app under test and the hosts the profile',
+                'A command check of this run runs in a cell: it has no network but the app under test and the hosts the profile',
                 'declares, and a read-only copy of the checkout. That holds for a declared command, for the same program written',
-                'another way, and for a standard tool alike: no form of a command reaches further than another. Only a declared',
-                'command, in its declared form, may write, and only where the profile lets it. A check that must write anywhere',
-                'else, or reach any other host, cannot pass; mark such a criterion unplannable.',
+                'another way, and for a standard tool alike: no form of a command reaches further than another' +
+                  (Object.values(inputs.commands).some((command) => command.egress === 'uncontained')
+                    ? ', except a command marked not contained, in the form it is declared in, and any form of a program whose declared commands are all marked so.'
+                    : '.'),
+                'Only a declared command, in its declared form, may write, and only where the profile lets it. A check that runs',
+                'in the cell and must write anywhere else, or reach any other host, cannot pass; mark such a criterion unplannable.',
               ]
             : []),
           '',
