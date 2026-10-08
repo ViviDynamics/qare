@@ -664,7 +664,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker_access=(--network host -v "$(readlink -f "$(command -v docker)"):/usr/bin/docker:ro")
+          # The client and its plugins are copied under RUNNER_TEMP and
+          # mounted from there (#256). A mount is resolved by the daemon, and
+          # a runner in a pod has a daemon that does not see the runner's
+          # /usr/bin: mounted by its installed path the client arrives as an
+          # empty directory. RUNNER_TEMP is somewhere the daemon must already
+          # see, or no workspace would mount either.
+          stage="$RUNNER_TEMP/qare-docker-client"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          cp -L "$(command -v docker)" "$stage/docker"
+          docker_access=(--network host -v "$stage/docker:/usr/bin/docker:ro")
           # The plugins are named by the CLI that will run them, so they are
           # found wherever this runner keeps them. buildx travels with
           # compose because a compose file that builds its image builds
@@ -673,7 +683,8 @@ jobs:
           while read -r plugin path; do
             case "$plugin" in compose | buildx) ;; *) continue ;; esac
             [ -f "$path" ] || continue
-            docker_access+=(-v "$(readlink -f "$path"):/usr/local/lib/docker/cli-plugins/docker-$plugin:ro")
+            cp -L "$path" "$stage/docker-$plugin"
+            docker_access+=(-v "$stage/docker-$plugin:/usr/local/lib/docker/cli-plugins/docker-$plugin:ro")
             plugins="$plugins $plugin"
           done < <(docker info --format '{{range .ClientInfo.Plugins}}{{println .Name .Path}}{{end}}' 2>/dev/null || true)
           case "$plugins" in

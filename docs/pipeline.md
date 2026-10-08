@@ -233,6 +233,14 @@ compose file builds an image. The runner's user must be able to run
 `docker compose` itself: execute hands the run exactly the docker that user
 has. A runner with no compose plugin says so in the job summary.
 
+The runner and its docker daemon must share the workspace and the runner's
+temporary directory (`RUNNER_TEMP`), at the same paths. On a runner that is a
+machine they do. On a runner that is a pod with the daemon in a sidecar, mount
+the work directory into both containers. Nothing else has to be shared:
+execute copies the docker client and its plugins under `RUNNER_TEMP` and
+mounts them into the run's container from there, because a daemon that does
+not see the runner's `/usr/bin` cannot mount the client from it.
+
 ## Profiles that boot an application
 
 execute runs `qare run` inside the image, and the run boots the profile's

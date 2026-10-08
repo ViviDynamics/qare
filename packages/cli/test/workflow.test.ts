@@ -779,10 +779,18 @@ test("execute hands the run the runner's docker, so a profile can boot its compo
   // The CLI and its plugins are the runner's own, found where this runner
   // keeps them: a path written here would hold on GitHub's runners and
   // nowhere else. buildx travels with compose, for a stack that builds.
-  expect(find).toContain('-v "$(readlink -f "$(command -v docker)"):/usr/bin/docker:ro"')
+  // They are copied under RUNNER_TEMP and mounted from there (#256): the
+  // daemon resolves a mount, and a runner in a pod has a daemon that does not
+  // see the runner's /usr/bin, so a client mounted by its installed path
+  // arrives as an empty directory.
+  expect(find).toContain('stage="$RUNNER_TEMP/qare-docker-client"')
+  expect(find).toContain('cp -L "$(command -v docker)" "$stage/docker"')
+  expect(find).toContain('-v "$stage/docker:/usr/bin/docker:ro"')
+  expect(find).toContain('cp -L "$path" "$stage/docker-$plugin"')
+  expect(find).not.toMatch(/-v "\$\(readlink/)
   expect(find).toContain("docker info --format '{{range .ClientInfo.Plugins}}{{println .Name .Path}}{{end}}'")
   expect(find).toContain('case "$plugin" in compose | buildx) ;; *) continue ;; esac')
-  expect(find).toContain('/usr/local/lib/docker/cli-plugins/docker-$plugin:ro')
+  expect(find).toContain('-v "$stage/docker-$plugin:/usr/local/lib/docker/cli-plugins/docker-$plugin:ro"')
   expect(execute).not.toContain('-v /usr/bin/docker:/usr/bin/docker:ro')
   // A runner without compose says so by name rather than leaving a blocked
   // boot to explain itself.
