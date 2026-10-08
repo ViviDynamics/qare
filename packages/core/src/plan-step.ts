@@ -127,7 +127,18 @@ export interface PlanInputs {
    * environment is not read.
    */
   batchSize?: number
-  /** Told as each batch ends (#259), so a plan of many slow turns shows where it stands. */
+  /**
+   * How many batches may be with the model at the same time (#265). Absent,
+   * the environment names it (`QARE_PLAN_CONCURRENCY`), and absent there it is
+   * `DEFAULT_PLAN_CONCURRENCY`. A caller that sets it has chosen: the
+   * environment is not read.
+   */
+  concurrency?: number
+  /**
+   * Told as each batch ends (#259), so a plan of many slow turns shows where
+   * it stands. Batches that run at the same time (#265) are reported in the
+   * order they end, each under its own place among the batches.
+   */
   onBatch?: (report: PlanBatchReport) => void
 }
 
@@ -174,6 +185,33 @@ export function planBatchSize(env: Record<string, string | undefined> = process.
   if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(size))
     throw new Error(`${PLAN_BATCH_SIZE_ENV} is "${raw}", and the plan batch size is a whole number of criteria above zero`)
   return size
+}
+
+/**
+ * How many batches are with the model at the same time (#265). The batches
+ * are independent (a prompt, a budget and a correction round each, merged by
+ * criterion id), so nothing in the step needs them in order, and with a slow
+ * model the order is what the wall clock pays for: five one-criterion turns
+ * took 944 seconds one after another.
+ *
+ * One is the default because whether an endpoint can take several turns at
+ * once is the caller's to know, and qare cannot tell from here: one
+ * self-hosted GPU may serve two turns at half the speed each, or refuse the
+ * second, where a hosted model serves them side by side. A caller who knows
+ * names the number in the environment.
+ */
+export const DEFAULT_PLAN_CONCURRENCY = 1
+export const PLAN_CONCURRENCY_ENV = 'QARE_PLAN_CONCURRENCY'
+
+export function planConcurrency(env: Record<string, string | undefined> = process.env): number {
+  const raw = env[PLAN_CONCURRENCY_ENV]?.trim() ?? ''
+  if (raw === '') return DEFAULT_PLAN_CONCURRENCY
+  const concurrency = Number(raw)
+  // Digits alone are not enough, as for the batch size: a number too long to
+  // hold exactly would be read as another number, or as Infinity.
+  if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(concurrency))
+    throw new Error(`${PLAN_CONCURRENCY_ENV} is "${raw}", and the plan concurrency is a whole number of batches above zero`)
+  return concurrency
 }
 
 /** A suite the profile declares, as the planner is told of it (#258). */
@@ -1083,6 +1121,11 @@ function undeclaredPathGap(plan: Plan, inputs: PlanInputs): string | undefined {
  * and the other batches' plans are kept. Only when no batch could be planned
  * does the step raise, as it did when the plan was one turn. The usage is the
  * sum over every batch, the lost ones included.
+ *
+ * Up to `QARE_PLAN_CONCURRENCY` batches are with the model at the same time
+ * (#265), one by default. The merge is by each batch's place and not by when
+ * it ended, so the plan, its usage and the failure named when every batch is
+ * lost are the same at any concurrency.
  */
 export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<Plan> {
   if (inputs.criteria.length === 0)
@@ -1105,25 +1148,59 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
   const batches: PlanCriterionInput[][] = []
   for (let from = 0; from < inputs.criteria.length; from += size) batches.push(inputs.criteria.slice(from, from + size))
 
+  const concurrency = inputs.concurrency ?? planConcurrency()
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1)
+    throw new Error(`the plan concurrency is ${String(concurrency)}, and it is a whole number of batches above zero`)
+
+  // Up to `concurrency` batches are with the model at once (#265), each
+  // worker taking the next batch not yet started. What a batch came to is
+  // kept under the batch's own place, so nothing below depends on which
+  // batch ended first.
+  const outcomes: (PlanBatchOutcome | undefined)[] = batches.map(() => undefined)
+  let next = 0
+  // An error that is no planning gap (a bug, not a lost turn) ends the step.
+  // It is raised only once the turns already with the model have ended, so
+  // the step never returns under a turn still running, and no new batch is
+  // started behind it.
+  let fatal: { error: unknown } | undefined
+  const worker = async (): Promise<void> => {
+    while (fatal === undefined && next < batches.length) {
+      const index = next
+      next += 1
+      const batch = batches[index] ?? []
+      let outcome: PlanBatchOutcome
+      try {
+        outcome = await planBatch(runner, { ...inputs, criteria: batch }, budget, exploration, mcp)
+      } catch (error) {
+        fatal ??= { error }
+        return
+      }
+      outcomes[index] = outcome
+      const report = { index: index + 1, of: batches.length, criteria: batch.map((criterion) => criterion.id) }
+      const cost = outcome.usage === undefined ? {} : { usage: outcome.usage }
+      if (outcome.plan !== undefined) inputs.onBatch?.({ ...report, outcome: 'planned', ...cost })
+      else inputs.onBatch?.({ ...report, outcome: 'failed', reason: failureName(outcome.error), ...cost })
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, () => worker()))
+  if (fatal !== undefined) throw fatal.error
+
+  // Merged in the order asked, whatever order the batches ended in.
   let usage: ModelUsage | undefined
   const planned = new Map<string, Plan['criteria'][number]>()
   const failures: unknown[] = []
   let only: Plan | undefined
   for (const [index, batch] of batches.entries()) {
-    const ids = batch.map((criterion) => criterion.id)
-    const outcome = await planBatch(runner, { ...inputs, criteria: batch }, budget, exploration, mcp)
+    const outcome = outcomes[index]
+    if (outcome === undefined) throw new Error(`batch ${index + 1} of ${batches.length} never ran, so there is no plan to merge`)
     usage = sumUsage(usage, outcome.usage)
     if (outcome.plan !== undefined) {
       only = outcome.plan
       for (const criterion of outcome.plan.criteria) planned.set(criterion.id, criterion)
-      inputs.onBatch?.({ index: index + 1, of: batches.length, criteria: ids, outcome: 'planned', ...(outcome.usage === undefined ? {} : { usage: outcome.usage }) })
       continue
     }
-    const error = outcome.error
-    failures.push(error)
-    const named = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
-    for (const criterion of batch) planned.set(criterion.id, { ...criterion, unplannable: `planning failed (${named})` })
-    inputs.onBatch?.({ index: index + 1, of: batches.length, criteria: ids, outcome: 'failed', reason: named, ...(outcome.usage === undefined ? {} : { usage: outcome.usage }) })
+    failures.push(outcome.error)
+    for (const criterion of batch) planned.set(criterion.id, { ...criterion, unplannable: `planning failed (${failureName(outcome.error)})` })
   }
 
   if (failures.length === batches.length) {
@@ -1141,6 +1218,10 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
     criteria: inputs.criteria.map((criterion) => planned.get(criterion.id)!),
     ...(usage === undefined ? {} : { usage }),
   }
+}
+
+function failureName(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
 }
 
 interface PlanBatchOutcome {

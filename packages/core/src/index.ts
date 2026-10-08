@@ -150,12 +150,15 @@ export { jobFromPlan } from './job-from-plan.js'
 export type { RunContext } from './job-from-plan.js'
 export {
   DEFAULT_PLAN_BATCH_SIZE,
+  DEFAULT_PLAN_CONCURRENCY,
   EXECUTE_PATH_TOOLS,
   NO_DIFF,
   PLAN_BATCH_SIZE_ENV,
+  PLAN_CONCURRENCY_ENV,
   PLAN_OUTPUT_SCHEMA,
   PlanStepError,
   planBatchSize,
+  planConcurrency,
   planOutputSchema,
   planRun,
 } from './plan-step.js'
