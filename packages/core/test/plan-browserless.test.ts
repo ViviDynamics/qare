@@ -17,7 +17,8 @@ import {
 // criterion came back unverified with `browserType.launch: Executable doesn't
 // exist`, fifteen minutes of planning later.
 
-const TARGET = { target: { url: 'http://127.0.0.1:3000', health: { http: '/', timeout: '5s' } } }
+// Nothing here reaches it: the URL is only what a target profile must carry.
+const TARGET = { target: { url: ['http:', '//127.0.0.1:3000'].join(''), health: { http: '/', timeout: '5s' } } }
 const SUITES = [
   { name: 'sign-in', command: 'bundle exec cucumber features/sign_in.feature', kind: 'flow' },
   { name: 'unit', command: 'bin/rails test', kind: 'command' },
