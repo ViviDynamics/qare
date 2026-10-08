@@ -48,6 +48,11 @@ test.each([
   [{ repositories: [] }, /repositories.*non-empty list/],
   [{ repositories: ['acme'] }, /repositories\[0\]\.repository.*owner\/name/],
   [{ repositories: ['acme/web', 'Acme/Web'] }, /repositories\[1\]\.repository.*listed twice/],
+  // A name is put into a URL: a dot component would walk the request out of the repository's own endpoint.
+  [{ repositories: ['../issues'] }, /repositories\[0\]\.repository.*owner\/name/],
+  [{ repositories: ['acme/..'] }, /repositories\[0\]\.repository.*owner\/name/],
+  [{ repositories: ['./web'] }, /repositories\[0\]\.repository.*owner\/name/],
+  [{ repositories: ['acme/.'] }, /repositories\[0\]\.repository.*owner\/name/],
   [{ repositories: [{ repository: 'acme/web', branch: '../main' }] }, /repositories\[0\]\.branch.*plain path/],
   [{ repositories: [{ repository: 'acme/web', ledger: 'a/../b' }] }, /repositories\[0\]\.ledger.*plain path/],
   [{ repositories: [{ repository: 'acme/web', brnach: 'main' }] }, /repositories\[0\]\.brnach.*not brnach/],
@@ -57,6 +62,10 @@ test.each([
 ])('a fleet config that is not what it should be is refused, naming the field: %j', (input, message) => {
   expect(() => parseFleetConfig(input)).toThrow(FleetConfigError)
   expect(() => parseFleetConfig(input)).toThrow(message)
+})
+
+test('a repository name with dots in it is still a name: only a component that is nothing but dots is refused', () => {
+  expect(parseFleetConfig({ repositories: ['acme.co/web.site', 'a-b/.github'] }).repositories.map((entry) => entry.repository)).toEqual(['acme.co/web.site', 'a-b/.github'])
 })
 
 test('a ledger is counted from its standing picture, and its coverage is the share proven and current', () => {

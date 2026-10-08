@@ -81,7 +81,10 @@ export function parseFleetConfig(input: unknown): FleetConfig {
     const extra = Object.keys(fields).filter((key) => key !== 'repository' && key !== 'branch' && key !== 'ledger')
     if (extra.length > 0) fail(`${at}.${extra[0] ?? ''}`, `a repository takes repository, branch and ledger, not ${extra.join(', ')}`)
     const repository = fields.repository
-    if (typeof repository !== 'string' || !REPOSITORY.test(repository)) fail(`${at}.repository`, 'repository must be "owner/name"')
+    // The name is put into a URL: a component that is nothing but dots would
+    // walk the request out of the repository's own endpoint.
+    if (typeof repository !== 'string' || !REPOSITORY.test(repository) || repository.split('/').some((part) => /^\.+$/.test(part)))
+      fail(`${at}.repository`, 'repository must be "owner/name"')
     const key = (repository as string).toLowerCase()
     if (seen.has(key)) fail(`${at}.repository`, `${repository as string} is listed twice`)
     seen.add(key)

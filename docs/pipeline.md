@@ -742,7 +742,7 @@ What it reads from each listed repository, and writes nothing there:
 | --- | --- | --- |
 | The ledger | `<ledger>/ledger.json` on the branch the config names, with `<ledger>/sweep.json` for the repository's own stale thresholds | ledger size, how many criteria the ledger records as verified and current (coverage), which are stale, how many were never verified |
 | Run records | `metrics/**.json` on the `qa-assets` branch (#51) | the latest runs, newest first: verdict, pull request, how the criteria came out |
-| Issues qare filed | open issues labelled `qa-regression`, `qa-environment`, `qa-failure` (#154) | open regressions and the rest, by number and title |
+| Issues qare filed | open issues labelled `qa-regression`, `qa-environment`, `qa-failure` (#154), read from the issue listing so one filed a moment ago is there | open regressions and the rest, by number and title |
 
 The repositories are listed in a JSON file:
 
@@ -778,9 +778,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # qare at a release, beside the checkout whose .qa/fleet.json it reads.
       - uses: actions/checkout@v4
-        with: { repository: ViviDynamics/qare, ref: <a release>, path: qare }
-      # build qare as the other jobs do, then:
+        with:
+          repository: ViviDynamics/qare
+          ref: 2026.10.36
+          path: qare
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: qare/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: qare/.nvmrc
+          cache: pnpm
+          cache-dependency-path: qare/pnpm-lock.yaml
+      - run: pnpm --dir qare install --frozen-lockfile
+      - run: pnpm --dir qare build
       - name: Report on the fleet
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -831,7 +845,9 @@ Two things are published:
   rewritten on every run.
 - One summary issue, labelled `qa-fleet` and found again by that label and a
   hidden marker (in the issue listing, not the search, whose index lags a new
-  issue by minutes), listing only what needs attention: a part that could not be read, an open regression, environment
+  issue by minutes; an identity that may not apply labels has the label
+  dropped by GitHub, and the issue is then found by its marker through the
+  search instead), listing only what needs attention: a part that could not be read, an open regression, environment
   or failure issue, a stale criterion, a latest run that did not pass. It is
   rewritten only when that list changes, so whoever watches it hears from it
   only then.

@@ -161,6 +161,17 @@ test('a day with more run records than can be read is said to be unread, not gue
   expect(flood.calls.filter((call) => call.path.includes('/contents/metrics/'))).toEqual([])
 })
 
+// The search index lags a new issue by minutes, and the search has a rate
+// limit of its own. A regression filed a moment ago must be on the page.
+test("the issues qare filed are read from the issue listing, not the search, so one filed a moment ago is there", async () => {
+  const { repos, web, api } = await fleet()
+  await buildFleetReport(CONFIG, clients(repos), { now: NOW })
+  for (const fake of [web, api]) {
+    expect(fake.calls.filter((call) => call.path === '/search/issues')).toEqual([])
+    expect(fake.calls.filter((call) => call.path.endsWith('/issues') && call.method === 'GET').map((call) => new URLSearchParams(call.query).get('labels')).sort()).toEqual(['qa-environment', 'qa-failure', 'qa-regression'])
+  }
+})
+
 test('reading the fleet writes nothing to the repositories it reads', async () => {
   const { repos, web, api } = await fleet()
   await buildFleetReport(CONFIG, clients(repos), { now: NOW })
@@ -234,10 +245,18 @@ test('the summary issue is found by its label in the issue listing, not by the s
   const homeClient = clients(repos)(HOME)
   const report = await buildFleetReport(CONFIG, clients(repos), { now: NOW })
   const first = await publishFleetReport(homeClient, report, { branch: 'qa-assets', path: 'fleet/report.md' })
+  const searchesBefore = home.calls.filter((call) => call.path === '/search/issues').length
   const second = await publishFleetReport(homeClient, report, { branch: 'qa-assets', path: 'fleet/report.md' })
   expect(second.summary).toEqual({ issue: first.summary.issue, action: 'unchanged' })
   expect(home.issues.size).toBe(1)
-  expect(home.calls.filter((call) => call.path === '/search/issues')).toEqual([])
+  // The second run found it in the listing and asked the search nothing.
+  expect(home.calls.filter((call) => call.path === '/search/issues').length).toBe(searchesBefore)
+  // An identity that may not label an issue has its label dropped by GitHub without a word. The
+  // issue is then found by its marker through the search, so a later run still opens no second.
+  home.issueMeta.set(first.summary.issue, { state: 'open', labels: [], author: 'github-actions[bot]' })
+  expect((await publishFleetReport(homeClient, report, { branch: 'qa-assets', path: 'fleet/report.md' })).summary).toEqual({ issue: first.summary.issue, action: 'unchanged' })
+  expect(home.issues.size).toBe(1)
+  home.issueMeta.set(first.summary.issue, { state: 'open', labels: [FLEET_LABEL], author: 'github-actions[bot]' })
   // An issue somebody else labelled the same way, without the marker, is not taken for it.
   home.issues.set(7, { number: 7, title: 'a question about the fleet', body: 'no marker', comments: [] })
   home.issueMeta.set(7, { state: 'open', labels: [FLEET_LABEL], author: 'someone' })

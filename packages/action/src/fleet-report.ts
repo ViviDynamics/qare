@@ -105,8 +105,12 @@ async function readRuns(client: GitHubClient, limit: number): Promise<FleetRun[]
 
 async function readIssues(client: GitHubClient): Promise<FleetIssues | Unread> {
   try {
+    // Read from the issue listing, not the search: the search index lags a
+    // new issue by minutes, so a regression filed a moment ago would be
+    // missing and its repository shown healthy, and the search has a rate
+    // limit of its own that a fleet would reach.
     const open = async (label: string): Promise<FleetIssue[]> =>
-      (await client.searchIssues(`repo:${client.repository} is:issue is:open label:${label}`)).map((issue) => ({ number: issue.number, title: issue.title })).sort((a, b) => a.number - b.number)
+      (await client.listOpenIssuesByLabel(label)).map((issue) => ({ number: issue.number, title: issue.title })).sort((a, b) => a.number - b.number)
     return { regression: await open('qa-regression'), environment: await open('qa-environment'), failure: await open('qa-failure') }
   } catch (error) {
     return { unread: reason(error) }
@@ -203,7 +207,14 @@ export async function publishFleetReport(home: GitHubClient, report: FleetReport
   // issues themselves. Should two ever exist (two runs at the same instant;
   // the guide's workflow takes a concurrency group against that), the oldest
   // is the one kept current, every time.
-  const existing = (await home.listOpenIssuesByLabel(FLEET_LABEL)).filter((issue) => (issue.body ?? '').includes(FLEET_SUMMARY_MARKER)).sort((a, b) => a.number - b.number)[0]
+  const marked = (issues: Array<{ number: number; body?: string }>): Array<{ number: number; body?: string }> => issues.filter((issue) => (issue.body ?? '').includes(FLEET_SUMMARY_MARKER)).sort((a, b) => a.number - b.number)
+  let existing = marked(await home.listOpenIssuesByLabel(FLEET_LABEL))[0]
+  // GitHub drops a label without a word when the identity may not apply one,
+  // and an issue without its label is not in that listing. So when the
+  // listing holds none, the marker is looked for through the search as well:
+  // late for an issue opened minutes ago, but it keeps an unlabelled one
+  // from being opened again on every run.
+  if (existing === undefined) existing = marked(await home.searchIssues(`repo:${home.repository} in:body is:issue is:open "${FLEET_SUMMARY_MARKER}"`))[0]
   if (existing === undefined) {
     const created = await home.createIssue(report.summary.title, report.summary.body, [FLEET_LABEL])
     return { page: opts, summary: { issue: created.number, action: 'created' } }
