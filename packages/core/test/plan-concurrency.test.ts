@@ -324,6 +324,19 @@ test('with an exploration channel the batches run one at a time whatever the con
   expect(plan.criteria.map((criterion) => criterion.id)).toEqual(['c1', 'c2', 'c3'])
 })
 
+test("with the host's MCP servers the batches run one at a time too: a registered server may hold state that one turn would move under another", async () => {
+  const runner = new GatedRunner((ids) => completed(planFor(ids)))
+  const mcp = { endpoint: ['http:', '//127.0.0.1:1'].join(''), servers: [{ name: 'browser', tools: [{ name: 'navigate' }, { name: 'page_text' }] }] }
+  const planning = planRun(runner, { ...INPUTS, criteria: CRITERIA.slice(0, 3), concurrency: 3, mcp })
+  for (const id of ['c1', 'c2', 'c3']) {
+    await settle()
+    expect(runner.waiting).toEqual([id])
+    runner.release(id)
+  }
+  await planning
+  expect(runner.most).toBe(1)
+})
+
 test('a caller whose batch report throws ends the step the same way: after the turn in flight, with no batch started behind it', async () => {
   const runner = new GatedRunner((ids) => completed(planFor(ids)))
   let settled = false

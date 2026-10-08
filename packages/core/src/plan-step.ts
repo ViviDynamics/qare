@@ -1187,7 +1187,11 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
   // exploring at once would navigate it under each other, and a turn would
   // plan from a screen another turn opened. Until a turn has a page of its
   // own, a plan that explores runs one batch at a time whatever was asked.
-  const workers = exploration === undefined ? Math.min(concurrency, batches.length) : 1
+  // The host's MCP servers (#93) are held to the same rule: they are started
+  // once for the whole plan, and a registered server may hold state (a
+  // browser, a rig) that one turn would move under another. qare cannot tell
+  // which do, so it assumes they all might.
+  const workers = exploration === undefined && mcp === undefined ? Math.min(concurrency, batches.length) : 1
   await Promise.all(Array.from({ length: workers }, () => worker()))
   if (fatal !== undefined) throw fatal.error
 

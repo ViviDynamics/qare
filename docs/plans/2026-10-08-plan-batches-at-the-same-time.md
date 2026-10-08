@@ -34,10 +34,11 @@ about providers and retries, which is nare's ground (CONSTITUTION.md, rule 1).
   `NareRunnerError`) still ends the step as itself, but only after the turns
   already with the model have ended, and no new batch is started behind it.
 - The nare runner is safe to run side by side: every run has its own working
-  directory and its own process. The MCP tool server answers more than one
-  request and holds no state between them.
-- The exploration channel serves one page to every turn, so a plan that is
-  given it runs one batch at a time whatever the concurrency (found in review).
+  directory and its own process.
+- The exploration channel serves one page to every turn, and the host's
+  registered MCP servers are started once for the plan and may hold state, so
+  a plan that is given either runs one batch at a time whatever the
+  concurrency (both found in review).
 
 ## Tasks
 
