@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { isRunMetricsRecord } from './metrics.js'
 import type { SweepClassification } from './sweep.js'
 
 /**
@@ -126,14 +127,21 @@ export function isUnread(value: unknown): value is Unread {
   return typeof value === 'object' && value !== null && typeof (value as Unread).unread === 'string'
 }
 
+/**
+ * What the ledger's own record says. The fleet report reads the ledger and
+ * nothing of a repository's last held result, so it cannot know which
+ * criteria are quarantined or refused right now: it reports neither, and a
+ * criterion the ledger records as verified is counted as such even when its
+ * last run refused it. The repository's own standing report (#49) is where
+ * those are shown.
+ */
 export interface FleetLedger {
   /** Active and proposed criteria: the ledger's current size. */
   size: number
+  /** Verified by a run, and neither changed since nor older than the stale threshold. */
   proven: number
   stale: string[]
   unverified: number
-  quarantined: number
-  refused: number
 }
 
 export interface FleetIssues {
@@ -154,18 +162,15 @@ export interface FleetRepositoryState {
 }
 
 export function fleetLedger(classification: SweepClassification): FleetLedger {
-  const size = classification.proven.length + classification.stale.length + classification.unverified.length + classification.quarantined.length + classification.refused.length
-  return {
-    size,
-    proven: classification.proven.length,
-    stale: [...classification.stale],
-    unverified: classification.unverified.length,
-    quarantined: classification.quarantined.length,
-    refused: classification.refused.length,
-  }
+  const size = classification.proven.length + classification.stale.length + classification.unverified.length
+  return { size, proven: classification.proven.length, stale: [...classification.stale], unverified: classification.unverified.length }
 }
 
-/** The share of the ledger a run has proven and that is still current, as a whole percentage; undefined for an empty ledger. */
+/**
+ * The share of the ledger its own record shows verified and current, as a
+ * whole percentage; undefined for an empty ledger. It is the ledger's record,
+ * not a claim about the last run: see `FleetLedger`.
+ */
 export function coverageOf(ledger: FleetLedger): number | undefined {
   return ledger.size === 0 ? undefined : Math.round((ledger.proven / ledger.size) * 100)
 }
@@ -175,10 +180,11 @@ export function coverageOf(ledger: FleetLedger): number | undefined {
  * a record: the caller counts it as one it could not read, never as a pass.
  */
 export function fleetRunOf(input: unknown): FleetRun | undefined {
-  if (typeof input !== 'object' || input === null || Array.isArray(input)) return undefined
-  const record = input as Record<string, unknown>
-  if (typeof record.runId !== 'string' || typeof record.recordedAt !== 'string' || typeof record.verdict !== 'string') return undefined
-  const recorded = Date.parse(record.recordedAt)
+  // Held to the shape the metrics store holds a record to (#51), schema
+  // version included: a file that merely carries a verdict is not a run.
+  if (!isRunMetricsRecord(input)) return undefined
+  const record = input as unknown as Record<string, unknown>
+  const recorded = Date.parse(input.recordedAt)
   if (!Number.isFinite(recorded)) return undefined
   const criteria = record.criteria as { counts?: unknown } | undefined
   const counts: Record<string, number> = {}
@@ -186,7 +192,7 @@ export function fleetRunOf(input: unknown): FleetRun | undefined {
     for (const [outcome, count] of Object.entries(criteria.counts as Record<string, unknown>)) if (typeof count === 'number' && Number.isInteger(count) && count >= 0) counts[outcome] = count
   const pr = (record.context as { pr?: unknown } | undefined)?.pr
   // The moment is written back as the harness writes one, so nothing of the record's own text rides in on it.
-  return { runId: record.runId, recordedAt: new Date(recorded).toISOString(), verdict: record.verdict, ...(typeof pr === 'number' && Number.isInteger(pr) && pr > 0 ? { pr } : {}), counts }
+  return { runId: input.runId, recordedAt: new Date(recorded).toISOString(), verdict: input.verdict, ...(typeof pr === 'number' && Number.isInteger(pr) && pr > 0 ? { pr } : {}), counts }
 }
 
 /** One thing in the fleet a person should look at. */
@@ -275,7 +281,7 @@ export function renderFleetReport(states: FleetRepositoryState[], at: string): s
     '',
     `As of ${at}. ${sorted.length} ${sorted.length === 1 ? 'repository' : 'repositories'}; ${attention.length === 0 ? 'nothing needs attention' : `${attention.length} ${attention.length === 1 ? 'thing needs' : 'things need'} attention`}.`,
     '',
-    'Built from what each repository publishes: its ledger, the run records on its `qa-assets` branch, and the open issues qare filed. A part that could not be read is said to be unread, and is never counted as healthy.',
+    'Built from what each repository publishes: its ledger, the run records on its `qa-assets` branch, and the open issues qare filed. A part that could not be read is said to be unread, and is never counted as healthy. Coverage is what the ledger records as verified and current; a criterion a repository is holding in quarantine, or refused in its last run, is shown in that repository\'s own standing report, not here.',
     '',
     '| repository | latest run | open regressions | ledger | coverage | stale | needs attention |',
     '| --- | --- | --- | --- | --- | --- | --- |',
@@ -297,7 +303,7 @@ export function renderFleetReport(states: FleetRepositoryState[], at: string): s
       const ledger = state.ledger
       const coverage = coverageOf(ledger)
       lines.push(
-        `- Ledger: ${ledger.size} criteria; ${ledger.proven} proven and current${coverage === undefined ? '' : ` (${coverage}%)`}, ${ledger.stale.length} stale, ${ledger.unverified} never verified, ${ledger.quarantined} quarantined, ${ledger.refused} refused.`,
+        `- Ledger: ${ledger.size} criteria; by the ledger's record, ${ledger.proven} verified and current${coverage === undefined ? '' : ` (${coverage}%)`}, ${ledger.stale.length} stale, ${ledger.unverified} never verified.`,
       )
       if (ledger.stale.length > 0) lines.push(`- Stale criteria: ${ledger.stale.map(code).join(', ')}`)
     }
@@ -321,6 +327,8 @@ export function renderFleetReport(states: FleetRepositoryState[], at: string): s
 }
 
 export const FLEET_SUMMARY_MARKER = '<!-- qare:fleet-summary -->'
+/** The label the summary issue carries, which it is found again by. */
+export const FLEET_LABEL = 'qa-fleet'
 
 export function fleetAttentionMarker(key: string): string {
   return `<!-- qare:fleet-attention:${key} -->`

@@ -315,6 +315,42 @@ export class GitHubClient {
   }
 
   /**
+   * Whether this identity can see the repository at all (#151). GitHub
+   * answers 404 for a private repository a token cannot see, exactly as it
+   * does for a file that is not there, so a reader that must tell "absent"
+   * from "unreadable" asks this first.
+   */
+  async canSeeRepository(): Promise<boolean> {
+    try {
+      await this.request('GET', `/repos/${this.repository}`)
+      return true
+    } catch (error) {
+      if (error instanceof GitHubApiError && (error.status === 404 || error.status === 403)) return false
+      throw error
+    }
+  }
+
+  /**
+   * The open issues that carry a label, read from the issues themselves and
+   * not from the search (#151): the search index lags an issue's creation by
+   * minutes, and a listing sees it at once. Pull requests, which the listing
+   * mixes in, are left out.
+   */
+  async listOpenIssuesByLabel(label: string): Promise<GitHubIssue[]> {
+    const issues: GitHubIssue[] = []
+    for (let page = 1; page <= 10; page += 1) {
+      const listed = await this.request<Array<GitHubIssue & { pull_request?: unknown }>>(
+        'GET',
+        `/repos/${this.repository}/issues`,
+        new URLSearchParams({ state: 'open', labels: label, per_page: '100', page: String(page) }),
+      )
+      issues.push(...listed.filter((issue) => issue.pull_request === undefined))
+      if (listed.length < 100) break
+    }
+    return issues
+  }
+
+  /**
    * Every file path of a tree, read whole (#151). A tree GitHub cut short is
    * refused: a listing that silently lacks its newest entries would be read
    * as a repository that recorded no run.

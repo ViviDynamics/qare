@@ -43,6 +43,12 @@ Out, each named on the issue as what remains:
   default: the same classification the sweep (#49) makes.
 - Only a repository's latest run counts towards attention. An older failed
   run is history.
+- Found in review, and now how it works: a repository the identity cannot
+  see is asked for first, since GitHub's 404 for it is the 404 of a missing
+  file; any unreadable record among the newest hides the latest run; a run
+  is held to the metrics record's whole shape; quarantined and refused are
+  not reported, since the last held result is not read; and the summary
+  issue is found by its label in the issue listing, not by the search.
 - The summary's key is the repositories, kinds and subjects of the attention
   set, not its wording or the time, so a daily run that finds the same
   things edits nothing and notifies nobody.

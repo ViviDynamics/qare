@@ -2,6 +2,7 @@ import { expect, test } from 'vitest'
 import {
   FLEET_SUMMARY_MARKER,
   FleetConfigError,
+  METRICS_SCHEMA_VERSION,
   coverageOf,
   fleetAttention,
   fleetAttentionKey,
@@ -23,7 +24,7 @@ const AT = '2026-10-08T12:00:00.000Z'
 function healthy(repository: string, extra: Partial<FleetRepositoryState> = {}): FleetRepositoryState {
   return {
     repository,
-    ledger: { size: 4, proven: 4, stale: [], unverified: 0, quarantined: 0, refused: 0 },
+    ledger: { size: 4, proven: 4, stale: [], unverified: 0 },
     runs: [{ runId: 'pr-12', recordedAt: '2026-10-08T09:00:00.000Z', verdict: 'passed', pr: 12, counts: { proven: 4 } }],
     issues: { regression: [], environment: [], failure: [] },
     ...extra,
@@ -59,18 +60,24 @@ test.each([
 })
 
 test('a ledger is counted from its standing picture, and its coverage is the share proven and current', () => {
-  const ledger = fleetLedger({ proven: ['a', 'b', 'c'], stale: ['d'], unverified: ['e', 'f'], quarantined: ['g'], refused: [] })
-  expect(ledger).toEqual({ size: 7, proven: 3, stale: ['d'], unverified: 2, quarantined: 1, refused: 0 })
-  expect(coverageOf(ledger)).toBe(43)
+  const ledger = fleetLedger({ proven: ['a', 'b', 'c'], stale: ['d'], unverified: ['e', 'f'], quarantined: [], refused: [] })
+  // What the ledger's own record says. Quarantined and refused are a repository's last held result, which the fleet does not read, so it reports neither.
+  expect(ledger).toEqual({ size: 6, proven: 3, stale: ['d'], unverified: 2 })
+  expect(ledger).not.toHaveProperty('quarantined')
+  expect(ledger).not.toHaveProperty('refused')
+  expect(coverageOf(ledger)).toBe(50)
   expect(coverageOf(fleetLedger({ proven: [], stale: [], unverified: [], quarantined: [], refused: [] }))).toBeUndefined()
 })
 
 test('a run is read from its metrics record, and what is not a record is not a run', () => {
-  expect(
-    fleetRunOf({ schemaVersion: '1', runId: 'pr-12', recordedAt: '2026-10-08T09:00:00Z', verdict: 'blocked', criteria: { selected: [], counts: { proven: 2, unverified: 1, odd: -1, text: 'x' } }, context: { pr: 12 } }),
-  ).toEqual({ runId: 'pr-12', recordedAt: '2026-10-08T09:00:00.000Z', verdict: 'blocked', pr: 12, counts: { proven: 2, unverified: 1 } })
-  expect(fleetRunOf({ runId: 'pr-12', recordedAt: 'yesterday', verdict: 'passed' })).toBeUndefined()
-  expect(fleetRunOf({ runId: 'pr-12', recordedAt: '2026-10-08T09:00:00Z' })).toBeUndefined()
+  const whole = { schemaVersion: METRICS_SCHEMA_VERSION, runId: 'pr-12', recordedAt: '2026-10-08T09:00:00Z', startedAt: '2026-10-08T08:50:00Z', finishedAt: '2026-10-08T09:00:00Z', wallMs: 600000, verdict: 'blocked', criteria: { selected: [], counts: { proven: 2, unverified: 1, odd: -1, text: 'x' } }, context: { pr: 12 } }
+  expect(fleetRunOf(whole)).toEqual({ runId: 'pr-12', recordedAt: '2026-10-08T09:00:00.000Z', verdict: 'blocked', pr: 12, counts: { proven: 2, unverified: 1 } })
+  expect(fleetRunOf({ ...whole, recordedAt: 'yesterday' })).toBeUndefined()
+  // A file that merely carries a verdict is not a run: it is held to the metrics record's whole shape, schema version included.
+  expect(fleetRunOf({ runId: 'pr-12', recordedAt: '2026-10-08T09:00:00Z', verdict: 'passed' })).toBeUndefined()
+  expect(fleetRunOf({ ...whole, schemaVersion: '0', verdict: 'passed' })).toBeUndefined()
+  expect(fleetRunOf({ ...whole, criteria: undefined, verdict: 'passed' })).toBeUndefined()
+  expect(fleetRunOf({ ...whole, wallMs: 'long', verdict: 'passed' })).toBeUndefined()
   expect(fleetRunOf(['not', 'a', 'record'])).toBeUndefined()
   expect(fleetRunOf(null)).toBeUndefined()
 })
@@ -89,7 +96,7 @@ test('a regression, a stale criterion, a latest run that did not pass and an ope
     healthy('acme/web', {
       issues: { regression: [{ number: 31, title: 'checkout total is wrong' }], environment: [{ number: 32, title: 'nothing booted' }], failure: [{ number: 33, title: 'never passed' }] },
     }),
-    healthy('acme/api', { ledger: { size: 4, proven: 3, stale: ['API-7'], unverified: 0, quarantined: 0, refused: 0 } }),
+    healthy('acme/api', { ledger: { size: 4, proven: 3, stale: ['API-7'], unverified: 0 } }),
     healthy('acme/jobs', { runs: [{ runId: 'pr-4', recordedAt: '2026-10-08T10:00:00.000Z', verdict: 'refused', pr: 4, counts: { unverified: 2 } }, { runId: 'pr-3', recordedAt: '2026-10-07T10:00:00.000Z', verdict: 'passed', counts: {} }] }),
     healthy('acme/quiet'),
   ]
@@ -137,7 +144,7 @@ test('text that came from a repository never renders, links or mentions, and no 
   const hostile = healthy('acme/web', {
     issues: { regression: [{ number: 7, title: '@everyone see [this](javascript:alert(1)) | `x` acme/api#3\nnext line' }], environment: [], failure: [] },
     runs: [{ runId: '@team/run', recordedAt: '2026-10-08T10:00:00.000Z', verdict: '@owner failed', pr: 9, counts: { '@all': 1 } }],
-    ledger: { size: 1, proven: 0, stale: ['@someone'], unverified: 0, quarantined: 0, refused: 0 },
+    ledger: { size: 1, proven: 0, stale: ['@someone'], unverified: 0 },
   })
   for (const text of [renderFleetReport([hostile], AT), fleetSummaryDraft([hostile], AT).body]) {
     // Every occurrence of the hostile text sits inside a code span.
@@ -159,7 +166,7 @@ test('the summary changes only when what needs attention changes: its key ignore
   expect(first.body).toContain('- open qa-regression issue `#31`: `checkout total is wrong`')
   expect(first.body).toContain('The whole report: the report page')
 
-  const second = fleetSummaryDraft([regression, healthy('acme/api', { ledger: { size: 4, proven: 3, stale: ['API-7'], unverified: 0, quarantined: 0, refused: 0 } })], AT)
+  const second = fleetSummaryDraft([regression, healthy('acme/api', { ledger: { size: 4, proven: 3, stale: ['API-7'], unverified: 0 } })], AT)
   expect(second.key).not.toBe(first.key)
   expect(fleetAttentionKey([])).not.toBe(first.key)
   expect(fleetAttentionKeyOf('no marker here')).toBeUndefined()

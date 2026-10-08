@@ -121,6 +121,11 @@ export interface FakeGithub {
   trees: Map<string, FakeTreeEntry[]>
   /** The trees whose listing GitHub would cut short, by sha. */
   truncatedTrees: Set<string>
+  /**
+   * True: the repository answers 404 to everything under /repos, as GitHub
+   * answers for a private repository the token cannot see.
+   */
+  hidden: boolean
   status: number | undefined
   /**
    * How many of the next git ref updates fail with 422, one per attempt: the
@@ -183,6 +188,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
   const blobs = new Map<string, Buffer>()
   const trees = new Map<string, FakeTreeEntry[]>()
   const truncatedTrees = new Set<string>()
+  let hidden = false
   const tokens = new Map<string, FakeToken>([[TOKEN, { login: TOKEN_LOGIN, kind: 'actions' }]])
   const minted: Array<{ token: string; body: unknown }> = []
   const state = {
@@ -287,6 +293,24 @@ export function startFakeGithub(): Promise<FakeGithub> {
           ? matched.slice((page - 1) * perPage, page * perPage)
           : matched
       respond(response, 200, { total_count: matched.length, items: items.map(served) })
+      return
+    }
+    if (parts[0] === 'repos' && hidden) return respond(response, 404, { message: 'Not Found' })
+    if (parts[0] === 'repos' && parts.length === 3 && request.method === 'GET') {
+      respond(response, 200, { full_name: `${parts[1]}/${parts[2]}`, default_branch: 'main' })
+      return
+    }
+    // The issue listing, which is not the search: it reads the issues themselves, so it sees one the moment it is created.
+    if (parts[0] === 'repos' && parts[3] === 'issues' && parts.length === 4 && request.method === 'GET') {
+      const state = url.searchParams.get('state') ?? 'open'
+      const labels = (url.searchParams.get('labels') ?? '').split(',').filter((label) => label !== '')
+      const listed = [...issues.values()]
+        .filter((issue) => state === 'all' || (issueMeta.get(issue.number)?.state ?? 'open') === state)
+        .filter((issue) => labels.every((label) => (issueMeta.get(issue.number)?.labels ?? []).includes(label)))
+        .sort((a, b) => a.number - b.number)
+      const perPage = Number(url.searchParams.get('per_page') ?? '30')
+      const page = Number(url.searchParams.get('page') ?? '1')
+      respond(response, 200, listed.slice((page - 1) * perPage, page * perPage).map(served))
       return
     }
     if (parts[0] === 'repos' && parts[3] === 'issues' && parts.length === 4 && request.method === 'POST') {
@@ -597,6 +621,12 @@ export function startFakeGithub(): Promise<FakeGithub> {
         blobs,
         trees,
         truncatedTrees,
+        get hidden() {
+          return hidden
+        },
+        set hidden(value: boolean) {
+          hidden = value
+        },
         get status(): number | undefined {
           return state.status
         },

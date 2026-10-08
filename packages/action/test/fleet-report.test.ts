@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, test } from 'vitest'
-import { FLEET_SUMMARY_MARKER, LEDGER_FILE, appendChange, fleetAttentionKeyOf, parseFleetConfig, serializeLedgerDocument } from '@qare/core'
+import { FLEET_LABEL, FLEET_SUMMARY_MARKER, LEDGER_FILE, METRICS_SCHEMA_VERSION, appendChange, fleetAttentionKeyOf, parseFleetConfig, serializeLedgerDocument } from '@qare/core'
 import type { LedgerChange, LedgerEntry } from '@qare/core'
 import { GitHubClient } from '../src/github.js'
 import { buildFleetReport, publishFleetReport } from '../src/fleet-report.js'
@@ -55,7 +55,7 @@ function ledgerText(proven: Array<[string, string]>, all: string[]): string {
 }
 
 function record(runId: string, recordedAt: string, verdict: string, pr: number, counts: Record<string, number>): string {
-  return JSON.stringify({ schemaVersion: '1', runId, recordedAt, startedAt: recordedAt, finishedAt: recordedAt, wallMs: 1, verdict, criteria: { selected: [], counts }, context: { pr } })
+  return JSON.stringify({ schemaVersion: METRICS_SCHEMA_VERSION, runId, recordedAt, startedAt: recordedAt, finishedAt: recordedAt, wallMs: 1, verdict, criteria: { selected: [], counts }, context: { pr } })
 }
 
 function openIssue(fake: FakeGithub, number: number, title: string, labels: string[], state: 'open' | 'closed' = 'open'): void {
@@ -105,7 +105,7 @@ test("one page shows every listed repository's state, read from its ledger, its 
 
   expect(report.states.map((state) => state.repository)).toEqual(['acme/web', 'acme/api', 'acme/private'])
   const [web, api, dark] = report.states
-  expect(web?.ledger).toEqual({ size: 3, proven: 2, stale: [], unverified: 1, quarantined: 0, refused: 0 })
+  expect(web?.ledger).toEqual({ size: 3, proven: 2, stale: [], unverified: 1 })
   // Newest first, and only the run records: a screenshot on the same branch is not one.
   expect(web?.runs).toEqual([
     { runId: 'pr-12', recordedAt: '2026-10-08T09:00:00.000Z', verdict: 'failed', pr: 12, counts: { proven: 2, failed: 1 } },
@@ -114,7 +114,7 @@ test("one page shows every listed repository's state, read from its ledger, its 
   // Open issues carrying qare's labels: not a closed one, not somebody else's.
   expect(web?.issues).toEqual({ regression: [{ number: 31, title: 'WEB-3 regressed on main' }], environment: [], failure: [] })
   // The other repository's own branch, directory and stale threshold are honoured.
-  expect(api?.ledger).toEqual({ size: 2, proven: 1, stale: ['API-2'], unverified: 0, quarantined: 0, refused: 0 })
+  expect(api?.ledger).toEqual({ size: 2, proven: 1, stale: ['API-2'], unverified: 0 })
   // A repository the identity cannot see is unread in every part, with the reason.
   expect(dark).toEqual({
     repository: 'acme/private',
@@ -172,18 +172,77 @@ test('a repository whose ledger does not parse, whose records are not records, o
   commitFiles(broken, 'main', { [`.qa/${LEDGER_FILE}`]: '{ this is not json' })
   commitFiles(broken, 'qa-assets', { 'metrics/2026-10-08/ddd/pr-1.json': '["not", "a", "record"]' })
   const cut = await fakeRepo()
+  commitFiles(cut, 'main', { 'README.md': 'a repository with no ledger' })
   commitFiles(cut, 'qa-assets', { 'metrics/2026-10-08/eee/pr-2.json': record('pr-2', '2026-10-08T08:00:00.000Z', 'passed', 2, {}) })
   cut.truncatedTrees.add(cut.commits.get(cut.refs.get('refs/heads/qa-assets') ?? '')?.tree ?? '')
 
   const report = await buildFleetReport(parseFleetConfig({ repositories: ['acme/broken', 'acme/cut'] }), clients({ 'acme/broken': broken, 'acme/cut': cut }), { now: NOW })
   const [first, second] = report.states
   expect(first?.ledger).toMatchObject({ unread: expect.stringMatching(/JSON/) })
-  expect(first?.runs).toEqual({ unread: '1 run record on qa-assets could not be read as one' })
+  expect(first?.runs).toEqual({ unread: '1 of the 1 newest run records on qa-assets could not be read as one, so the latest run is not known' })
   expect(first?.issues).toEqual({ regression: [], environment: [], failure: [] })
   // No ledger at the path is absent, which is not unread.
   expect(second?.ledger).toBe('absent')
   expect(second?.runs).toMatchObject({ unread: expect.stringContaining('cut the listing') })
   expect(report.page).not.toContain('`passed`')
+})
+
+// GitHub answers 404 for a private repository a token cannot see, exactly as
+// it does for a file or a branch that is not there. Read as "absent", that
+// would show an unreadable repository as one with no ledger, no runs and no
+// issues: healthy, and wrong.
+test('a repository the token cannot see is unread in every part, never one with no ledger and no runs', async () => {
+  const hidden = await fakeRepo()
+  commitFiles(hidden, 'main', { [`.qa/${LEDGER_FILE}`]: ledgerText([['H-1', '2026-10-07T00:00:00.000Z']], ['H-1']) })
+  hidden.hidden = true
+  const report = await buildFleetReport(parseFleetConfig({ repositories: ['acme/hidden'] }), clients({ 'acme/hidden': hidden }), { now: NOW })
+  const [state] = report.states
+  for (const part of [state?.ledger, state?.runs, state?.issues]) expect(part).toEqual({ unread: expect.stringContaining('cannot see acme/hidden') })
+  expect(report.page).toContain('| `acme/hidden` | unread | unread | unread |  |  | yes (3) |')
+  expect(report.attention).toBe(3)
+})
+
+test('a ledger branch that is not there is unread, not a repository with no ledger; a repository with no qa-assets branch has recorded no run', async () => {
+  const repo = await fakeRepo()
+  commitFiles(repo, 'main', { 'README.md': 'no ledger here' })
+  const [wrongBranch, noLedger] = (
+    await buildFleetReport(parseFleetConfig({ repositories: [{ repository: 'acme/a', branch: 'trunk' }, 'acme/b'] }), clients({ 'acme/a': repo, 'acme/b': repo }), { now: NOW })
+  ).states
+  expect(wrongBranch?.ledger).toEqual({ unread: 'the branch trunk was not found, so its ledger cannot be read' })
+  expect(noLedger?.ledger).toBe('absent')
+  expect(noLedger?.runs).toEqual([])
+})
+
+test('one run record that cannot be read hides what the latest run was, even beside older ones that passed', async () => {
+  const repo = await fakeRepo()
+  commitFiles(repo, 'main', { 'README.md': 'x' })
+  commitFiles(repo, 'qa-assets', {
+    'metrics/2026-10-08/aaa/pr-1.json': record('pr-1', '2026-10-08T08:00:00.000Z', 'passed', 1, {}),
+    // The newest file is not a record, and neither is one that only looks like a pass.
+    'metrics/2026-10-08/bbb/pr-2.json': '{ cut off',
+    'metrics/2026-10-08/ccc/pr-3.json': JSON.stringify({ runId: 'pr-3', recordedAt: '2026-10-08T10:00:00.000Z', verdict: 'passed' }),
+  })
+  const report = await buildFleetReport(parseFleetConfig({ repositories: ['acme/a'] }), clients({ 'acme/a': repo }), { now: NOW })
+  expect(report.states[0]?.runs).toEqual({ unread: '2 of the 3 newest run records on qa-assets could not be read as one, so the latest run is not known' })
+  expect(report.page).not.toContain('`passed`')
+})
+
+// The search index lags an issue's creation by minutes. A second run soon
+// after the first must still find the issue the first one opened.
+test('the summary issue is found by its label in the issue listing, not by the search, so a run straight after the first opens no second issue', async () => {
+  const { repos, home } = await fleet()
+  const homeClient = clients(repos)(HOME)
+  const report = await buildFleetReport(CONFIG, clients(repos), { now: NOW })
+  const first = await publishFleetReport(homeClient, report, { branch: 'qa-assets', path: 'fleet/report.md' })
+  const second = await publishFleetReport(homeClient, report, { branch: 'qa-assets', path: 'fleet/report.md' })
+  expect(second.summary).toEqual({ issue: first.summary.issue, action: 'unchanged' })
+  expect(home.issues.size).toBe(1)
+  expect(home.calls.filter((call) => call.path === '/search/issues')).toEqual([])
+  // An issue somebody else labelled the same way, without the marker, is not taken for it.
+  home.issues.set(7, { number: 7, title: 'a question about the fleet', body: 'no marker', comments: [] })
+  home.issueMeta.set(7, { state: 'open', labels: [FLEET_LABEL], author: 'someone' })
+  expect((await publishFleetReport(homeClient, report, { branch: 'qa-assets', path: 'fleet/report.md' })).summary.issue).toBe(first.summary.issue)
+  expect(home.issues.get(7)?.body).toBe('no marker')
 })
 
 test('publishing commits the page to a branch of the home repository and opens one summary issue', async () => {
@@ -199,6 +258,8 @@ test('publishing commits the page to a branch of the home repository and opens o
   expect(page).toBe(report.page)
   const issue = home.issues.get(published.summary.issue)
   expect(issue?.title).toBe('QARE fleet: what needs attention')
+  // It carries the label it is found again by.
+  expect(home.issueMeta.get(published.summary.issue)?.labels).toEqual([FLEET_LABEL])
   expect(issue?.body).toContain(FLEET_SUMMARY_MARKER)
   expect(issue?.body).toContain('- open qa-regression issue `#31`: `WEB-3 regressed on main`')
   expect(issue?.body).toContain('- criterion `API-2` is stale')

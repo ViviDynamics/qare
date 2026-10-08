@@ -740,7 +740,7 @@ What it reads from each listed repository, and writes nothing there:
 
 | Read | From | Becomes |
 | --- | --- | --- |
-| The ledger | `<ledger>/ledger.json` on the branch the config names, with `<ledger>/sweep.json` for the repository's own stale thresholds | ledger size, how many criteria are proven and current (coverage), which are stale, how many were never verified |
+| The ledger | `<ledger>/ledger.json` on the branch the config names, with `<ledger>/sweep.json` for the repository's own stale thresholds | ledger size, how many criteria the ledger records as verified and current (coverage), which are stale, how many were never verified |
 | Run records | `metrics/**.json` on the `qa-assets` branch (#51) | the latest runs, newest first: verdict, pull request, how the criteria came out |
 | Issues qare filed | open issues labelled `qa-regression`, `qa-environment`, `qa-failure` (#154) | open regressions and the rest, by number and title |
 
@@ -769,6 +769,10 @@ on:
 permissions:
   contents: write   # the page, committed to the qa-assets branch
   issues: write     # the summary issue
+# One report at a time: two at the same instant could each open a summary issue.
+concurrency:
+  group: qare-fleet
+  cancel-in-progress: false
 jobs:
   fleet:
     runs-on: ubuntu-latest
@@ -804,18 +808,30 @@ read` and `issues: read` on every listed repository, and `contents: write`
 and `issues: write` on the one it publishes in.
 
 **What it cannot see, it says.** A part of a repository that could not be
-read (the identity cannot see the repository, a ledger that does not parse, a
-run record that is not one, a listing GitHub cut short) is reported as
-unread, with the reason, and counts as needing attention. It is never shown
-as healthy.
+read is reported as unread, with the reason, and counts as needing
+attention. It is never shown as healthy. That covers a repository the
+identity cannot see (GitHub answers "not found" for one, exactly as for a
+file that is not there, so the report asks whether it can see the repository
+before it reads anything), a ledger branch that does not exist, a ledger that
+does not parse, a run record among the newest that is not one (it may be the
+latest run, so no older run stands in for it), a listing GitHub cut short,
+and a day with more run records than the report reads.
+
+**Coverage is the ledger's record, not the last run's word.** The report
+reads the ledger and nothing of a repository's last held result, so it does
+not know which criteria are quarantined or refused right now and reports
+neither. A criterion the ledger records as verified counts as such even when
+its last run refused it; the repository's own standing report (#49) shows
+those.
 
 Two things are published:
 
 - The page, `fleet/report.md` on the `qa-assets` branch: one table of every
   repository, then each one's ledger, latest runs and open issues. It is
   rewritten on every run.
-- One summary issue, found by a hidden marker, listing only what needs
-  attention: a part that could not be read, an open regression, environment
+- One summary issue, labelled `qa-fleet` and found again by that label and a
+  hidden marker (in the issue listing, not the search, whose index lags a new
+  issue by minutes), listing only what needs attention: a part that could not be read, an open regression, environment
   or failure issue, a stale criterion, a latest run that did not pass. It is
   rewritten only when that list changes, so whoever watches it hears from it
   only then.

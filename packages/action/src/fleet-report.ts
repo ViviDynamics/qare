@@ -1,5 +1,6 @@
 import {
   DEFAULT_STALE_AFTER,
+  FLEET_LABEL,
   FLEET_SUMMARY_MARKER,
   LEDGER_FILE,
   classifySweep,
@@ -41,6 +42,9 @@ function reason(error: unknown): string {
 
 async function readLedger(client: GitHubClient, config: FleetRepositoryConfig, now: Date): Promise<FleetLedger | 'absent' | Unread> {
   try {
+    // A file that is not there and a branch that is not there both answer
+    // 404. Only the first is a repository with no ledger.
+    if ((await client.getBranchHead(config.branch)) === undefined) return { unread: `the branch ${config.branch} was not found, so its ledger cannot be read` }
     const text = await client.getContents(`${config.ledger}/${LEDGER_FILE}`, config.branch)
     if (text === undefined) return 'absent'
     const document = parseLedgerDocument(JSON.parse(text.toString('utf8')))
@@ -90,8 +94,9 @@ async function readRuns(client: GitHubClient, limit: number): Promise<FleetRun[]
       if (run === undefined) unreadable += 1
       else runs.push(run)
     }
-    // Records that cannot be read hide what the latest run was: said, not skipped.
-    if (unreadable > 0 && runs.length === 0) return { unread: `${unreadable} run ${unreadable === 1 ? 'record' : 'records'} on ${ASSETS_BRANCH} could not be read as one` }
+    // Any record that cannot be read may be the latest run: said, never
+    // skipped, since an older run that passed would otherwise stand in for it.
+    if (unreadable > 0) return { unread: `${unreadable} of the ${paths.length} newest run records on ${ASSETS_BRANCH} could not be read as one, so the latest run is not known` }
     return runs.sort((a, b) => Date.parse(b.recordedAt) - Date.parse(a.recordedAt)).slice(0, limit)
   } catch (error) {
     return { unread: reason(error) }
@@ -109,6 +114,19 @@ async function readIssues(client: GitHubClient): Promise<FleetIssues | Unread> {
 }
 
 export async function readFleetRepository(client: GitHubClient, config: FleetRepositoryConfig, opts: { now: Date; runs: number }): Promise<FleetRepositoryState> {
+  // GitHub answers 404 for a repository the identity cannot see, exactly as
+  // for a file or a branch that is not there. Asked first, so a repository
+  // that cannot be seen is unread in every part, and never one with no
+  // ledger, no runs and no issues.
+  let visible: boolean
+  let why = `this identity (${client.identity.kind}) cannot see ${config.repository}: GitHub answers that it is not found`
+  try {
+    visible = await client.canSeeRepository()
+  } catch (error) {
+    visible = false
+    why = reason(error)
+  }
+  if (!visible) return { repository: config.repository, ledger: { unread: why }, runs: { unread: why }, issues: { unread: why } }
   return {
     repository: config.repository,
     ledger: await readLedger(client, config, opts.now),
@@ -179,10 +197,15 @@ export async function publishFleetReport(home: GitHubClient, report: FleetReport
   }
   if (!pushed) throw last
 
-  const hits = await home.searchIssues(`repo:${home.repository} in:body is:issue is:open "${FLEET_SUMMARY_MARKER}"`)
-  const existing = hits[0]
+  // Found by its label in the issue listing, not by the search: the search
+  // index lags an issue's creation by minutes, so a run soon after the first
+  // would not find the issue and would open a second. The listing reads the
+  // issues themselves. Should two ever exist (two runs at the same instant;
+  // the guide's workflow takes a concurrency group against that), the oldest
+  // is the one kept current, every time.
+  const existing = (await home.listOpenIssuesByLabel(FLEET_LABEL)).filter((issue) => (issue.body ?? '').includes(FLEET_SUMMARY_MARKER)).sort((a, b) => a.number - b.number)[0]
   if (existing === undefined) {
-    const created = await home.createIssue(report.summary.title, report.summary.body)
+    const created = await home.createIssue(report.summary.title, report.summary.body, [FLEET_LABEL])
     return { page: opts, summary: { issue: created.number, action: 'created' } }
   }
   if (fleetAttentionKeyOf(existing.body ?? '') === report.summary.key) return { page: opts, summary: { issue: existing.number, action: 'unchanged' } }

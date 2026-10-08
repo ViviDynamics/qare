@@ -114,6 +114,11 @@ async function readLines<T>(file: string, isShape: (value: unknown) => boolean):
   return { values, malformed }
 }
 
+/** Whether a value is a run's metrics record, as the store and every reader of one hold it to. */
+export function isRunMetricsRecord(value: unknown): value is RunMetricsRecord {
+  return isRunRecord(value)
+}
+
 function isRunRecord(value: unknown): value is RunMetricsRecord {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
