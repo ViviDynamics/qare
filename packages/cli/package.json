@@ -1,6 +1,6 @@
 {
   "name": "@qare/cli",
-  "version": "2026.10.27",
+  "version": "2026.10.30",
   "description": "QARE command-line interface",
   "license": "Elastic-2.0",
   "type": "module",

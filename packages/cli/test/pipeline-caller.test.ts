@@ -113,6 +113,7 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
     'nare-provider',
     'nare-stream',
     'plan-batch-size',
+    'plan-concurrency',
     'planner-diff-exclude',
     'profile',
     'qare-ref',
@@ -185,6 +186,27 @@ test('the plan batch size reaches the plan container, and only when set', () => 
   // And the caller's documentation names it, with the default it stands in for.
   const docs = readFileSync(join(repoRoot, 'docs', 'pipeline.md'), 'utf8')
   expect(docs).toMatch(/\| `plan-batch-size` \| empty \| .*default of 1.*`QARE_PLAN_BATCH_SIZE`/)
+})
+
+// #265: how many plan batches run at once is the caller's to set, because only
+// the caller knows what its endpoint can take, and it crosses the docker
+// boundary into the one container that plans.
+test('the plan concurrency reaches the plan container, and only when set', () => {
+  expect(call.inputs['plan-concurrency']?.default).toBe('')
+  const text = readFileSync(join(repoRoot, PIPELINE), 'utf8')
+  expect([...text.matchAll(/QARE_PLAN_CONCURRENCY: \$\{\{ inputs\.plan-concurrency \}\}/g)].length, 'the plan step alone sets it').toBe(1)
+  const plan = pipeline.jobs.plan?.steps?.find((candidate) => candidate.name === 'Plan the QA run')
+  expect(plan?.env?.QARE_PLAN_CONCURRENCY).toBe('${{ inputs.plan-concurrency }}')
+  expect(plan?.run?.replace(/\s+/g, ' ')).toContain('if [ -n "$QARE_PLAN_CONCURRENCY" ]; then model_env+=(-e QARE_PLAN_CONCURRENCY) fi')
+  // The verifier plans nothing: the setting is not its to read.
+  const judge = pipeline.jobs.judge?.steps?.find((candidate) => candidate.name === 'Judge the result')
+  expect(judge?.run).not.toContain('QARE_PLAN_CONCURRENCY')
+  // The caller's documentation names it, with the default, when it helps and when it does not.
+  const docs = readFileSync(join(repoRoot, 'docs', 'pipeline.md'), 'utf8')
+  const row = docs.split('\n').find((line) => line.startsWith('| `plan-concurrency` |')) ?? ''
+  expect(row).toMatch(/\| `plan-concurrency` \| empty \| .*default of 1.*`QARE_PLAN_CONCURRENCY`/)
+  expect(row).toMatch(/It helps when/)
+  expect(row).toMatch(/It does not help when/)
 })
 
 // #275: the verifier's batch size is the caller's to set, and it crosses the
