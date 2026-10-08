@@ -135,6 +135,15 @@ on:
           qare's default of one criterion a turn.
         type: string
         default: ''
+      plan-concurrency:
+        description: >-
+          How many plan batches may be with the model at the same time. The
+          batches are independent, so an endpoint that serves several
+          requests side by side plans in less wall clock; one that serves
+          them one at a time gains nothing. Empty keeps qare's default of one
+          batch at a time.
+        type: string
+        default: ''
       verify-batch-size:
         description: >-
           How many proven criteria the verifier is asked about in one model
@@ -198,7 +207,7 @@ on:
           workflow ships in, so pin the release in `uses:` and leave this
           alone.
         type: string
-        default: '2026.10.27'
+        default: '2026.10.30'
     secrets:
       model-key:
         description: >-
@@ -464,6 +473,7 @@ jobs:
           NARE_STREAM: ${{ inputs.nare-stream }}
           QARE_MAX_OUTPUT_TOKENS: ${{ inputs.max-output-tokens }}
           QARE_PLAN_BATCH_SIZE: ${{ inputs.plan-batch-size }}
+          QARE_PLAN_CONCURRENCY: ${{ inputs.plan-concurrency }}
           PROFILE: ${{ inputs.profile }}
         run: |
           set -euo pipefail
@@ -497,6 +507,9 @@ jobs:
           fi
           if [ -n "$QARE_PLAN_BATCH_SIZE" ]; then
             model_env+=(-e QARE_PLAN_BATCH_SIZE)
+          fi
+          if [ -n "$QARE_PLAN_CONCURRENCY" ]; then
+            model_env+=(-e QARE_PLAN_CONCURRENCY)
           fi
           if [ -n "$NARE_BASE_URL" ]; then
             model_env+=(-e NARE_BASE_URL)
