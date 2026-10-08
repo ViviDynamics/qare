@@ -23,6 +23,9 @@ const INPUTS: PlanInputs = {
   criteria: CRITERIA,
   diff: 'diff --git a/login.ts b/login.ts',
   suites: ['unit', 'e2e-login'],
+  // These tests script one turn's answer for both criteria: what a single
+  // turn accepts, corrects and refuses. Batching has its own file (#259).
+  batchSize: 2,
 }
 
 function planned(overrides: Record<string, unknown> = {}): string {

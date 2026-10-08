@@ -120,6 +120,11 @@ export async function ingestCriteria(
           ...(opts.commands === undefined ? {} : { commands: opts.commands }),
           driver: BROWSER_FLOW_DRIVER,
           diff: NO_DIFF,
+          // Asked once, as the note above says, whatever the environment's
+          // batch size (#259): a batch lost to an outage would come back as
+          // criteria marked unplannable, which is the judgement about the
+          // words that an outage must never be read as.
+          batchSize: candidates.length,
         })
   const planned = new Map<string, PlanCriterion>(plan.criteria.map((criterion) => [criterion.id, criterion]))
 
