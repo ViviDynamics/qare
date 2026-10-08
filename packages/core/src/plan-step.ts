@@ -1168,18 +1168,19 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
       const index = next
       next += 1
       const batch = batches[index] ?? []
-      let outcome: PlanBatchOutcome
       try {
-        outcome = await planBatch(runner, { ...inputs, criteria: batch }, budget, exploration, mcp)
+        const outcome = await planBatch(runner, { ...inputs, criteria: batch }, budget, exploration, mcp)
+        outcomes[index] = outcome
+        // The caller's report is inside the try: a report that throws ends
+        // the step like any other error that is no planning gap.
+        const report = { index: index + 1, of: batches.length, criteria: batch.map((criterion) => criterion.id) }
+        const cost = outcome.usage === undefined ? {} : { usage: outcome.usage }
+        if (outcome.plan !== undefined) inputs.onBatch?.({ ...report, outcome: 'planned', ...cost })
+        else inputs.onBatch?.({ ...report, outcome: 'failed', reason: failureName(outcome.error), ...cost })
       } catch (error) {
         fatal ??= { error }
         return
       }
-      outcomes[index] = outcome
-      const report = { index: index + 1, of: batches.length, criteria: batch.map((criterion) => criterion.id) }
-      const cost = outcome.usage === undefined ? {} : { usage: outcome.usage }
-      if (outcome.plan !== undefined) inputs.onBatch?.({ ...report, outcome: 'planned', ...cost })
-      else inputs.onBatch?.({ ...report, outcome: 'failed', reason: failureName(outcome.error), ...cost })
     }
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, () => worker()))

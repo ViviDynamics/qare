@@ -309,3 +309,28 @@ test('an error that is not a planning gap stops new batches, waits for the ones 
   expect(error).toBeInstanceOf(TypeError)
   expect(runner.requests).toHaveLength(2)
 })
+
+test('a caller whose batch report throws ends the step the same way: after the turn in flight, with no batch started behind it', async () => {
+  const runner = new GatedRunner((ids) => completed(planFor(ids)))
+  let settled = false
+  const caught = planRun(runner, {
+    ...INPUTS,
+    concurrency: 2,
+    onBatch: () => {
+      throw new RangeError('the report could not be written')
+    },
+  })
+    .catch((error: unknown) => error)
+    .finally(() => {
+      settled = true
+    })
+
+  await settle()
+  runner.release('c1')
+  await settle()
+  expect(runner.waiting).toEqual(['c2'])
+  expect(settled).toBe(false)
+  runner.release('c2')
+  expect(await caught).toBeInstanceOf(RangeError)
+  expect(runner.requests).toHaveLength(2)
+})
