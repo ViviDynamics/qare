@@ -91,6 +91,9 @@ export interface GitHubClientOptions {
   fetchImpl?: typeof fetch
 }
 
+/** The most pages of a label's issues one read takes, a hundred issues a page. */
+const MAX_ISSUE_PAGES = 200
+
 export class GitHubClient {
   readonly repository: string
   /** Who this client posts as. The posting code asks it nothing but its login. */
@@ -338,7 +341,12 @@ export class GitHubClient {
    */
   async listOpenIssuesByLabel(label: string): Promise<GitHubIssue[]> {
     const issues: GitHubIssue[] = []
-    for (let page = 1; page <= 10; page += 1) {
+    // Read to the last page: a listing that stopped early would leave issues
+    // out without a word. The bound is only against a listing that never
+    // ends, and reaching it is an error, never a short answer.
+    for (let page = 1; ; page += 1) {
+      if (page > MAX_ISSUE_PAGES)
+        throw new GitHubClientError(`${this.repository} lists more than ${MAX_ISSUE_PAGES * 100} open issues labelled ${label}, which is more than can be read`)
       const listed = await this.request<Array<GitHubIssue & { pull_request?: unknown }>>(
         'GET',
         `/repos/${this.repository}/issues`,

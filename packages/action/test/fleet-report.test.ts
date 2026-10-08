@@ -285,6 +285,39 @@ test('publishing commits the page to a branch of the home repository and opens o
   expect(issue?.body).toContain('- its ledger could not be read: `the identity cannot see acme/private`')
 })
 
+// The marker is public: anyone can open an issue that carries it. The report
+// keeps its own issue current and never writes to somebody else's.
+test("an issue somebody else opened with the summary's marker is never taken for the summary, labelled or not", async () => {
+  const { repos, home } = await fleet()
+  const homeClient = clients(repos)(HOME)
+  const report = await buildFleetReport(CONFIG, clients(repos), { now: NOW })
+  const planted = `${FLEET_SUMMARY_MARKER}\n<!-- qare:fleet-attention:0000000000000000 -->\nplanted`
+  home.issues.set(5, { number: 5, title: 'planted, unlabelled', body: planted, comments: [] })
+  home.issueMeta.set(5, { state: 'open', labels: [], author: 'mallory' })
+  home.issues.set(6, { number: 6, title: 'planted, labelled', body: planted, comments: [] })
+  home.issueMeta.set(6, { state: 'open', labels: [FLEET_LABEL], author: 'mallory' })
+
+  const first = await publishFleetReport(homeClient, report, { branch: 'qa-assets', path: 'fleet/report.md' })
+  expect(first.summary.action).toBe('created')
+  expect([5, 6]).not.toContain(first.summary.issue)
+  const second = await publishFleetReport(homeClient, report, { branch: 'qa-assets', path: 'fleet/report.md' })
+  expect(second.summary).toEqual({ issue: first.summary.issue, action: 'unchanged' })
+  // Neither planted issue was written to.
+  expect(home.issues.get(5)?.body).toBe(planted)
+  expect(home.issues.get(6)?.body).toBe(planted)
+  expect(home.calls.filter((call) => call.method === 'PATCH' && /\/issues\/[56]$/.test(call.path))).toEqual([])
+})
+
+// A listing that stopped early would leave issues out without a word.
+test('every page of a label is read, and a repository with more issues than can be read is unread, not short', async () => {
+  const many = await fakeRepo()
+  commitFiles(many, 'main', { 'README.md': 'x' })
+  for (let number = 1; number <= 1205; number += 1) openIssue(many, number, `regression ${number}`, ['qa-regression'])
+  const report = await buildFleetReport(parseFleetConfig({ repositories: ['acme/many'] }), clients({ 'acme/many': many }), { now: NOW })
+  const issues = report.states[0]?.issues
+  expect(issues !== undefined && !('unread' in issues) ? issues.regression.length : issues).toBe(1205)
+})
+
 test('the summary issue is left alone while what needs attention is the same, and rewritten when it changes; the page is committed every time', async () => {
   const { repos, home, web } = await fleet()
   const homeClient = clients(repos)(HOME)

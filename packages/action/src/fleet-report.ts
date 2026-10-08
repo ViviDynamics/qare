@@ -14,7 +14,7 @@ import {
   renderFleetReport,
 } from '@qare/core'
 import type { FleetConfig, FleetIssue, FleetIssues, FleetLedger, FleetRepositoryConfig, FleetRepositoryState, FleetRun, SweepConfig, Unread } from '@qare/core'
-import type { GitHubClient } from './github.js'
+import type { GitHubClient, GitHubIssue } from './github.js'
 
 /**
  * The fleet report's reading and publishing half (#151). It reads each listed
@@ -207,7 +207,12 @@ export async function publishFleetReport(home: GitHubClient, report: FleetReport
   // issues themselves. Should two ever exist (two runs at the same instant;
   // the guide's workflow takes a concurrency group against that), the oldest
   // is the one kept current, every time.
-  const marked = (issues: Array<{ number: number; body?: string }>): Array<{ number: number; body?: string }> => issues.filter((issue) => (issue.body ?? '').includes(FLEET_SUMMARY_MARKER)).sort((a, b) => a.number - b.number)
+  // The marker is public, and anyone can open an issue that carries it. Only
+  // an issue this identity opened is the summary: the report keeps its own
+  // issue current and never writes to somebody else's.
+  const author = await home.identity.login()
+  const marked = (issues: GitHubIssue[]): GitHubIssue[] =>
+    issues.filter((issue) => issue.user?.login === author && (issue.body ?? '').includes(FLEET_SUMMARY_MARKER)).sort((a, b) => a.number - b.number)
   let existing = marked(await home.listOpenIssuesByLabel(FLEET_LABEL))[0]
   // GitHub drops a label without a word when the identity may not apply one,
   // and an issue without its label is not in that listing. So when the
