@@ -1,5 +1,5 @@
 import { isolatedHealthUrl, pinsToRunPort } from './isolation.js'
-import { pathOnTarget } from './profile.js'
+import { pathOnTarget, type QaProfile } from './profile.js'
 import { substituteValues, type RunValues } from './values.js'
 
 /**
@@ -37,6 +37,37 @@ export function plannedAppAddress(appHealth: string): string | undefined {
   if (authored.includes('{{')) return authored
   if (!pinsToRunPort(appHealth)) return authored
   return authored.replace(/:\d+$/, ':{{run.app_port}}')
+}
+
+/**
+ * How the app under test is addressed, as the planner is told it: the three
+ * inputs of the plan step that say so (`PlanInputs.target`, `client`, `app`).
+ */
+export interface PlannerAddress {
+  /** The URL of a running target the profile names (#122). */
+  target?: string
+  /** The client driver of a profile that names a build to launch (#72). */
+  client?: string
+  /** The app the run boots (#264), by the address a plan may write. */
+  app?: { address: string }
+}
+
+/**
+ * What a profile says about how its app is addressed, as the plan step takes
+ * it (#267). Every caller that plans builds these inputs here, so none of
+ * them can tell the planner less than the profile knows: the pipeline's plan
+ * step once left out the target, and the one-off check the booted app.
+ * A profile names one of target, client and app, so at most one comes back;
+ * no profile, or an app whose health check names no origin, says nothing.
+ */
+export function plannerAddress(profile: Pick<QaProfile, 'target' | 'client' | 'app'> | undefined): PlannerAddress {
+  if (profile === undefined) return {}
+  const app = profile.app === undefined ? undefined : plannedAppAddress(profile.app.health.http)
+  return {
+    ...(profile.target === undefined ? {} : { target: profile.target.url }),
+    ...(profile.client === undefined ? {} : { client: profile.client.driver }),
+    ...(app === undefined ? {} : { app: { address: app } }),
+  }
 }
 
 export interface FlowAddressContext {

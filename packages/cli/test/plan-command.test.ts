@@ -982,3 +982,18 @@ test('a profile that boots nothing is told nothing about a booted app (#264)', a
 
   expect(await nare.prompt()).not.toContain('The run boots the app itself')
 })
+
+// #267: the pipeline's plan step passed the client and the booted app, but not
+// the target, so a target profile planned in the pipeline had only QA.md to
+// go by for where the app is.
+test('qare plan tells the planner the URL of a target the profile names (#267)', async () => {
+  const { dir, profile, criteriaPath, diffPath } = await flavourProfile('web')
+  const nare = await recordingNare(dir, PLAN)
+
+  expect(await main(['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', join(dir, 'plan.json'), '--nare', nare.binary, '--profile', profile], capture().writer, capture().writer)).toBe(0)
+
+  const prompt = await nare.prompt()
+  const targetUrl = ['http:', '//127.0.0.1:3000'].join('')
+  expect(prompt).toContain(`The app is already running at ${targetUrl}. A flow opens its pages by path, such as {"action":"open","url":"/some/page"},`)
+  expect(prompt).toContain('a command check reaches it through {{run.target_url}}')
+})

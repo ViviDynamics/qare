@@ -399,7 +399,11 @@ never a protocol-relative URL. The full address,
 its run value. A visual check and an a11y check name their page by path the
 same way. The plan step tells the planner this address, with the run's port
 by name even when the profile's health URL writes a number, so neither form
-is a guess and no port number reaches a plan. A path on a target resolves
+is a guess and no port number reaches a plan. Every caller that plans (the
+pipeline's `qare plan`, a one-off `qare check`, and ledger ingest) reads how
+the app is addressed from the profile through one helper, `plannerAddress`
+(#267): the target's URL, the client build's driver, or this address of the
+app the run boots, whichever the profile names. A path on a target resolves
 below the target URL, and a path in a client build resolves inside the
 application, as they did. A path with no app to be a page of (the run booted
 none and the profile names no target, or the health URL names no http origin)

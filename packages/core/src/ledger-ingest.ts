@@ -1,3 +1,4 @@
+import type { PlannerAddress } from './app-address.js'
 import { BROWSER_FLOW_DRIVER } from './flow-playwright.js'
 import { normalizeWording } from './criterion-identity.js'
 import { IssueCriteriaError, criteriaFromIssue } from './issue-criteria.js'
@@ -70,7 +71,8 @@ export async function ingestCriteria(
     ledger: LedgerEntry[]
     planner: AgentRunner
     suites?: string[]
-    target?: string
+    /** How the profile's app is addressed (#267), from `plannerAddress`: the planner is told what the profile knows. */
+    address?: PlannerAddress
     /** The profile's QA.md instructions (#156), redacted and size capped before they reach the prompt. */
     qaMd?: string
     /** The profile's redaction rules (#52), which the QA.md text is redacted with. */
@@ -114,7 +116,7 @@ export async function ingestCriteria(
       : await planRun(opts.planner, {
           criteria: candidates,
           ...(opts.suites === undefined ? {} : { suites: opts.suites }),
-          ...(opts.target === undefined ? {} : { target: opts.target }),
+          ...(opts.address ?? {}),
           ...(opts.qaMd === undefined ? {} : { qaMd: opts.qaMd }),
           ...(opts.redact === undefined ? {} : { redact: opts.redact }),
           ...(opts.commands === undefined ? {} : { commands: opts.commands }),
