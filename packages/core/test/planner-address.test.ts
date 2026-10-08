@@ -127,6 +127,15 @@ test("a target URL's credentials stay out of what the planner is told, like a bo
   const withCredentials = ['https:', '//qa:hunter2secret@wiki.example.test/base'].join('')
   const told = plannerAddress({ target: { url: withCredentials } } as Parameters<typeof plannerAddress>[0])
   expect(told).toEqual({ target: `${TARGET_URL}/base` })
+  // Read as a URL, the way the profile loader reads it, so no accepted spelling carries a credential through.
+  const spellings = [`  ${withCredentials}  `, ['HTTPS:', '//qa:hunter2secret@wiki.example.test/base'].join(''), ['https:', '//qa@wiki.example.test/base'].join('')]
+  for (const spelling of spellings) {
+    const address = plannerAddress({ target: { url: spelling } } as Parameters<typeof plannerAddress>[0]).target ?? ''
+    expect(address, spelling).toBe(`${TARGET_URL}/base`)
+  }
+  // A URL that names no path is told as written, with no slash added; one that cannot be read is not written at all.
+  expect(plannerAddress({ target: { url: ['https:', '//qa:hunter2secret@wiki.example.test'].join('') } } as Parameters<typeof plannerAddress>[0])).toEqual({ target: TARGET_URL })
+  expect(plannerAddress({ target: { url: 'qa:hunter2secret@nowhere' } } as Parameters<typeof plannerAddress>[0]).target).not.toContain('hunter2secret')
 
   // And so out of the prompt: the run reaches the target through {{run.target_url}}, which the harness fills.
   const { dir, profile } = await profileDir(['target:', `  url: ${withCredentials}`, '  health: { http: /health, timeout: 1s }'])

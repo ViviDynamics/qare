@@ -68,10 +68,36 @@ export function plannerAddress(profile: Pick<QaProfile, 'target' | 'client' | 'a
     // target URL is the profile's own, this is written into the model's
     // prompt, and a check reaches the target through {{run.target_url}},
     // which the harness fills at run time.
-    ...(profile.target === undefined ? {} : { target: profile.target.url.replace(/^(https?:\/\/)[^/?#\s@]*@/i, '$1') }),
+    ...(profile.target === undefined ? {} : { target: withoutUserinfo(profile.target.url) }),
     ...(profile.client === undefined ? {} : { client: profile.client.driver }),
     ...(app === undefined ? {} : { app: { address: app } }),
   }
+}
+
+/**
+ * A URL as it is written into a prompt: parsed the way the profile loader
+ * parses it, with the username and password cleared. The URL is read as a
+ * URL and not as text, so a form the loader accepts (surrounding whitespace,
+ * an upper-case scheme) cannot carry a credential past a pattern. A slash
+ * the parser adds to a URL that named no path is taken off again, so the
+ * address reads as the profile wrote it. What cannot be parsed has no
+ * userinfo that can be told from the rest, and is not written at all.
+ */
+function withoutUserinfo(url: string): string {
+  const written = url.trim()
+  const unread = 'an address the profile names'
+  let parsed: URL
+  try {
+    parsed = new URL(written)
+  } catch {
+    return unread
+  }
+  // Only an http(s) URL has userinfo where the parser looks for it.
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return unread
+  parsed.username = ''
+  parsed.password = ''
+  const clean = parsed.toString()
+  return clean.endsWith('/') && !written.endsWith('/') && parsed.pathname === '/' && parsed.search === '' && parsed.hash === '' ? clean.slice(0, -1) : clean
 }
 
 export interface FlowAddressContext {
