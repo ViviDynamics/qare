@@ -141,12 +141,14 @@ test('where the profile declares a grep command, a planned grep is held to its f
 
 // #270, docs/decisions/adr-0007: a declared command is a form the planner
 // should prefer, not the only form its program may be planned in. grep alone
-// is held to its declared form, for a reason that is grep's own. To reverse
-// the decision, this is the test that changes.
+// is held to its declared form, for a reason that is grep's own. Every other
+// standard tool the runner carries is here. To reverse the decision, this is
+// the test that changes.
 test.each([
   ['node', 'node -- {{path}}', 'node --version'],
   ['python3', 'python3 -- {{path}}', 'python3 --version'],
   ['test', 'test -f {{path}}', 'test 1 -eq 1'],
+  ['nare', 'nare validate {{path}}', 'nare --version'],
 ])('a standard tool the profile also declares may be planned in another form: %s', async (_program, declared, planned) => {
   const runner = new FakeAgentRunner([completed(planWith(planned))])
 

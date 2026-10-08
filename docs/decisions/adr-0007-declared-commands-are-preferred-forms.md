@@ -30,8 +30,8 @@ tools, and its tests, read like the first: a profile that declares
 
 | Option | What it gives | What it costs |
 | --- | --- | --- |
-| 1. Preferred forms (today) | No plan that is accepted today is refused tomorrow. A profile author adds a command to help the planner and loses nothing by it. | A planner may still write a declared program in a form that cannot work, and the run finds out. |
-| 2. Only forms | A declared program can be planned only as the profile wrote it, so a malformed use is caught at the plan step for every program, not only grep. | Declaring a command silently forbids every other use of its program. A profile that declares `node -- {{path}}` can no longer plan `node --version`, `node --check`, or `node --test`; one that declares a `pnpm` test command can no longer plan `pnpm --version`. Existing consumers' profiles would lose plans they get today, with no change on their side, and the criteria behind them would come back unplannable. |
+| 1. Preferred forms (today) | No plan that is accepted today is refused tomorrow. A profile author adds a command to help the planner and loses nothing by it. | A planner may still write a declared program in a form that cannot work, and the run finds out. A form no declaration matches also runs outside the command cell (see "What this costs"). |
+| 2. Only forms | A declared program can be planned only as the profile wrote it, so a malformed use is caught at the plan step for every program, not only grep, and every planned use of a declared program is one the run contains. | Declaring a command silently forbids every other use of its program. A profile that declares `node -- {{path}}` can no longer plan `node --version`, `node --check`, or `node --test`; one that declares a `pnpm` test command can no longer plan `pnpm --version`. Existing consumers' profiles would lose plans they get today, with no change on their side, and the criteria behind them would come back unplannable. |
 
 ## Decision
 
@@ -54,24 +54,63 @@ Issue #262's second criterion is therefore delivered for grep only, by design.
 - **It is the conservative choice.** It refuses no plan that is accepted today,
   so no consumer's run changes. Option 2 would turn working checks into
   unplannable criteria in profiles qare cannot see.
-- **It keeps every guarantee in CONSTITUTION.md, and so does the other.** The
+- **It leaves every guarantee in CONSTITUTION.md where it stands today.** The
   model plans and code decides (rule 3) either way: a plan is still only a
   plan, and the verdict still comes from what was executed. Nothing here lets
   a model output raise a verdict. Fail closed (rule 6) is untouched: an
   unknown program, a shell construct, an undeclared path and a missing file
   are still refused at the plan step, and a command that cannot do its job
-  still does not pass.
+  still does not pass. Rule 7 is the one the two options differ on, and the
+  next section is about it.
 - **The evidence does not ask for more.** Every failure that led to #262 was a
   grep. The other malformed command seen (`node` on a TypeScript source, PR 268)
   would not have been caught by option 2 either: it has the declared form's
   shape, and fails for what the file is.
-- **Containment is not at stake.** What a command check can reach is set by the
-  command cell and the declared run inputs (#224, #162), not by the list of
-  forms. Option 2 would narrow what the planner may write, not what a command
-  can touch.
+## What this costs: a form outside the declared ones runs outside the cell
+
+This is the price of option 1, and it is a real one.
+
+A named command is contained (#224): at run time a command check whose run
+matches a declared command's whole template runs in a cell with no network
+and a read-only copy of the checkout. A check whose run matches no declared
+command "runs as it always did, with the network its step has" (SPEC,
+"Containing a command"). The match is on the form, not on the program. So
+under option 1, a profile that declares `script: node -- {{path}}` gets
+`node -- check.mjs` in the cell and `node check.mjs` outside it, and which
+of the two is planned is the planner's choice, a model's output written with
+the pull request's diff in front of it.
+
+What that is and is not:
+
+- It is not new. It is how #224 shipped and what SPEC already says, for every
+  profile today, and it is the same for a standard tool the profile declares
+  no command for at all. This decision changes no behaviour, so it opens
+  nothing; it declines to close this by the route #270 offered.
+- It does not reach a secret. The step that runs a command check holds no
+  model key and no GitHub token (CONSTITUTION.md, rule 7), contained or not.
+- It does bear on the other half of rule 7, that the step "reaches nothing
+  outside the declared stubs". An uncontained command check is pull request
+  code with the runner's network. Option 2 would close that for programs a
+  profile declares, by refusing the uncontained forms at the plan step. It
+  would not close it for a standard tool the profile declares no command for.
+
+So option 2 is the stricter of the two on containment, and option 1 is the
+one that breaks no accepted plan. Neither closes the gap whole. The decision
+stays with option 1 because the gap is better closed where containment is
+decided, at run time and by program (a check whose program a contained
+declared command names runs in the cell whatever its form), than by making
+the plan step refuse forms: that keeps `node --version` plannable and
+contains it too. That is its own change to security-sensitive code, with
+questions of its own (which declaration's scratch paths and egress apply when
+two name the same program), and it is filed as its own issue (see
+"Follow-up"). An owner who would rather have the plan step refuse the forms
+now should take option 2; "Reversing this" says how.
 
 ## Consequences
 
+- A planned use of a declared program in a form no declaration matches runs
+  uncontained, as above. Until the follow-up lands, a profile author who
+  needs a program contained in every use cannot get that from `commands:`.
 - A profile author cannot use `commands:` to forbid a use of a program. If that
   is wanted, it needs its own profile key that says so in as many words (for
   example a per-command `only: true`), so that declaring a helpful form never
@@ -79,6 +118,12 @@ Issue #262's second criterion is therefore delivered for grep only, by design.
 - A malformed use of a declared program other than grep is still found by the
   run, not by the plan step. When such a failure shows up in evidence, the fix
   is a rule for that program's own contract, as for grep, not the general rule.
+
+## Follow-up
+
+- Issue #286: a command check whose program a contained declared
+  command names should run in the cell whatever its form, so that the form a
+  planner picks cannot decide whether pull request code has the network.
 
 ## Reversing this
 
