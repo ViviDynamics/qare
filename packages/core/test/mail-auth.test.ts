@@ -168,6 +168,21 @@ test("only the declared receiver's own header counts, wherever it sits, and neve
   expect(absent.reason).toContain('it carries results under relay.internal, which the profile does not name as its receiver')
 })
 
+test('a receiver that writes its results over several headers is read whole', () => {
+  const split = message({
+    headers: {
+      'authentication-results': [
+        'mx.receiver.example; dmarc=pass header.from=sender.example',
+        'relay.internal; dkim=fail header.d=sender.example',
+        'mx.receiver.example; spf=pass smtp.mailfrom=sender.example; dkim=pass header.d=sender.example',
+      ],
+    },
+  })
+  const outcome = assessDelivery(split, { authentication: { require: ['spf', 'dkim', 'dmarc'] } }, SOURCE)
+  expect(outcome.status).toBe('passed')
+  expect(outcome.evidence?.authentication?.results.map((result) => `${result.method}=${result.result}`)).toEqual(['dmarc=pass', 'spf=pass', 'dkim=pass'])
+})
+
 test('a diagnostic names the property the receiver evaluated: SPF for the HELO name is not called the envelope sender', () => {
   const helo = 'mx.receiver.example; spf=fail smtp.helo=mta.sender.example'
   const outcome = assessDelivery(message({ headers: { 'authentication-results': [helo] } }), { authentication: { require: ['spf'] } }, SOURCE)

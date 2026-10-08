@@ -255,7 +255,10 @@ export function assessDelivery(
     // declares counts; with none declared, no header in the message does,
     // whatever it says and wherever it sits.
     const wanted = trust.authserv?.toLowerCase()
-    const judged = wanted === undefined ? undefined : headers.find((parsed) => parsed.authserv === wanted)
+    // A receiver may write its results over several headers: every header
+    // under its id is its own, and they are read as one.
+    const own = wanted === undefined ? [] : headers.filter((parsed) => parsed.authserv === wanted)
+    const judged = wanted === undefined || own.length === 0 ? undefined : { authserv: wanted, results: own.flatMap((parsed) => parsed.results) }
     if (wanted === undefined) {
       reasons.push(
         `${source} is not declared as a receiver that judges mail, so the message's authentication cannot be shown: ` +
