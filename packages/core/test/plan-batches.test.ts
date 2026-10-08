@@ -66,7 +66,7 @@ afterEach(() => {
   }
 })
 
-test('the default is one criterion a turn, the size the slow model is known to fit in the default budget', () => {
+test('the default is one criterion a turn, the size that keeps the slow model inside the default budget', () => {
   expect(PLAN_BATCH_SIZE_ENV).toBe('QARE_PLAN_BATCH_SIZE')
   expect(DEFAULT_PLAN_BATCH_SIZE).toBe(1)
   expect(planBatchSize({})).toBe(1)
