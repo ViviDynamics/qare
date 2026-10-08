@@ -14,6 +14,11 @@ import type { JobCriterion } from './job.js'
  *   those hand-offs could return different verdicts than a serial run does.
  *   A criterion whose checks mutate shared state is sequential too, and runs
  *   against an app instance of its own instead of the shared one.
+ *
+ * The lanes say how a criterion runs. When each runs is the run's to decide
+ * (#278): with one worker, one criterion at a time in plan order; with more,
+ * a sequential criterion on the shared app only once the workers have
+ * drained.
  */
 
 /**
