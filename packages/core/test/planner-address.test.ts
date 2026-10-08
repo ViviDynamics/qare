@@ -123,6 +123,28 @@ test('qare check still tells the planner where a running target is', async () =>
   expect(planner.prompts[0]).not.toContain('The run boots the app itself')
 })
 
+test("a target URL's credentials stay out of what the planner is told, like a booted app's", async () => {
+  const withCredentials = ['https:', '//qa:hunter2secret@wiki.example.test/base'].join('')
+  const told = plannerAddress({ target: { url: withCredentials } } as Parameters<typeof plannerAddress>[0])
+  expect(told).toEqual({ target: `${TARGET_URL}/base` })
+
+  // And so out of the prompt: the run reaches the target through {{run.target_url}}, which the harness fills.
+  const { dir, profile } = await profileDir(['target:', `  url: ${withCredentials}`, '  health: { http: /health, timeout: 1s }'])
+  const planner = recordingPlanner()
+  await checkCriteria({
+    criteria: ['the home page loads'],
+    profileDir: profile,
+    repoPath: dir,
+    evidenceDir: join(dir, 'evidence'),
+    planner: planner.runner,
+    verifier: 'none',
+    run: { probe: async () => ({ ok: true }), pollIntervalMs: 1 },
+  })
+  expect(planner.prompts[0]).toContain(`The app is already running at ${TARGET_URL}/base.`)
+  expect(planner.prompts[0]).not.toContain('hunter2secret')
+  expect(planner.prompts[0]).not.toContain('qa:')
+})
+
 test('ledger ingest holds a plan to the driver the profile names, so a client build is not told one thing and offered another', async () => {
   const body = '## Acceptance criteria\n\n- [ ] the settings window looks right\n'
   const source = { kind: 'issue' as const, number: 7, author: 'someone', link: ['https:', '//example.test/issues/7'].join(''), body }

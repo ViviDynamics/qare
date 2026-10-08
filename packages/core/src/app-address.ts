@@ -64,7 +64,11 @@ export function plannerAddress(profile: Pick<QaProfile, 'target' | 'client' | 'a
   if (profile === undefined) return {}
   const app = profile.app === undefined ? undefined : plannedAppAddress(profile.app.health.http)
   return {
-    ...(profile.target === undefined ? {} : { target: profile.target.url }),
+    // Without userinfo, like the booted app's address: a credential in the
+    // target URL is the profile's own, this is written into the model's
+    // prompt, and a check reaches the target through {{run.target_url}},
+    // which the harness fills at run time.
+    ...(profile.target === undefined ? {} : { target: profile.target.url.replace(/^(https?:\/\/)[^/?#\s@]*@/i, '$1') }),
     ...(profile.client === undefined ? {} : { client: profile.client.driver }),
     ...(app === undefined ? {} : { app: { address: app } }),
   }
