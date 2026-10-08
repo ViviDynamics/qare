@@ -1,8 +1,9 @@
+import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
-import { evidenceOf, prepareVerifierInputs, runJob, runSuiteCheck, type Job, type QaProfile } from '../src/index.js'
+import { FakeAgentRunner, SUITE_TAIL_BYTES, evidenceOf, judgeExecuted, prepareVerifierInputs, runJob, runSuiteCheck, type Job, type QaProfile } from '../src/index.js'
 
 // #272: two Cucumber suites exited 1 on a consumer's run and nothing they
 // printed was kept. The only evidence was suite.txt (the command, the
@@ -233,4 +234,60 @@ test('runSuiteCheck hands back what the suite wrote and what it closed with', as
   const outcome = await runSuiteCheck({ name: 'cucumber', command: 'node suite.js' }, { cwd: repoPath })
 
   expect(outcome).toMatchObject({ outcome: 'failed', reason: 'suite cucumber exited 3', code: 3, stdout: 'out\n', stderr: 'err\n' })
+})
+
+// #275: a megabyte of suite output is evidence for people, and far more than a
+// verifier turn can read inside its budget.
+test('a long stream also gets a bounded end for the verifier, which is pointed at that and not at the whole', async () => {
+  const script = [
+    "process.stdout.write('FIRST LINE OF THE RUN\\n')",
+    "for (let i = 1; i <= 2000; i += 1) process.stdout.write('  step ' + i + ' passed ' + 'x'.repeat(80) + '\\n')",
+    "process.stdout.write('4 scenarios (4 passed)\\n')",
+    "console.error('one short warning')",
+  ].join('\n')
+  const job = await suiteJob(script)
+
+  const { result } = await runJob(job, BOOT)
+
+  expect(result.criteria[0]).toMatchObject({ outcome: 'proven' })
+  // The whole output is still saved and still listed: it is what a person opens.
+  expect(result.criteria[0]?.evidence).toEqual([
+    'checks/criterion-1/0/suite.txt',
+    'checks/criterion-1/0/stdout.txt',
+    'checks/criterion-1/0/stderr.txt',
+    'checks/criterion-1/0/stdout.tail.txt',
+  ])
+  const whole = await readFile(checkFile(job, 'stdout.txt'), 'utf8')
+  expect(whole).toContain('FIRST LINE OF THE RUN')
+  const tail = await readFile(checkFile(job, 'stdout.tail.txt'), 'utf8')
+  expect(SUITE_TAIL_BYTES).toBe(16 * 1024)
+  expect(Buffer.byteLength(tail)).toBeLessThan(SUITE_TAIL_BYTES + 300)
+  expect(tail).toMatch(/^\[the last 16 KiB of stdout\.txt, which is \d+ bytes: the end of a test run is where its result is\]\n/)
+  expect(tail.endsWith('4 scenarios (4 passed)\n')).toBe(true)
+  expect(tail).not.toContain('FIRST LINE OF THE RUN')
+  // Whole lines only after the note.
+  expect(tail.split('\n')[1]).toMatch(/^ {2}step \d+ passed x+$/)
+  // A stream inside the bound has no stand-in.
+  expect(existsSync(checkFile(job, 'stderr.tail.txt'))).toBe(false)
+
+  // The verifier is handed the bounded end in place of the whole stream.
+  const verifier = new FakeAgentRunner([{ status: 'completed', stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 }, output: '{"findings":[]}' }])
+  await judgeExecuted(result, { texts: { 'criterion-1': 'a member signs in' }, diff: '', verifier })
+  const payload = JSON.parse(verifier.requests[0]!.prompt.slice(verifier.requests[0]!.prompt.indexOf('\n\n') + 2)) as { criteria: Array<{ evidence: string[] }> }
+  expect(payload.criteria[0]?.evidence).toEqual(['checks/criterion-1/0/suite.txt', 'checks/criterion-1/0/stderr.txt', 'checks/criterion-1/0/stdout.tail.txt'])
+})
+
+test('the bounded end is cut from the swept stream, so it holds nothing the whole file does not', async () => {
+  const script = [
+    "for (let i = 1; i <= 2000; i += 1) process.stdout.write('  step ' + i + ' passed ' + 'x'.repeat(80) + '\\n')",
+    "process.stdout.write('signed in as fixture-member-7781 with API_TOKEN=hunter2-live-value\\n')",
+  ].join('\n')
+  const job = await suiteJob(script, { values: ['fixture-member-7781'] })
+
+  await runJob(job, BOOT)
+
+  const tail = await readFile(checkFile(job, 'stdout.tail.txt'), 'utf8')
+  expect(tail).not.toContain('fixture-member-7781')
+  expect(tail).not.toContain('hunter2-live-value')
+  expect(tail).toContain('signed in as [redacted] with API_TOKEN=[redacted]')
 })
