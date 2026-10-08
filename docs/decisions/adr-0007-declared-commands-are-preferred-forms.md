@@ -1,8 +1,18 @@
 # ADR-0007: a declared command is a form the planner should prefer, not the only form its program may be planned in
 
 Date: 2026-10-08
-Status: accepted (decided by the agent that shipped issue #270, on the owner's
-behalf; reversible, see "Reversing this")
+Status: provisional, pending the owner's confirmation. Written by the agent
+that shipped issue #270, unattended. It records what the code does today and
+proposes to keep it; the owner has not accepted it, and has not accepted the
+containment gap it describes.
+
+**Read this first.** Under this decision alone, the form a planner picks for
+a command decides whether pull request code runs inside the no-network cell
+or outside it. That gap is not accepted here, by anyone. It is closed by
+issue #286, which contains a command check by the program it runs, whatever
+its form. This ADR is only about which forms the plan step accepts; it is
+sound only together with #286, and must not be read as leaving containment
+to the planner.
 
 ## Context
 
@@ -33,7 +43,7 @@ tools, and its tests, read like the first: a profile that declares
 | 1. Preferred forms (today) | No plan that is accepted today is refused tomorrow. A profile author adds a command to help the planner and loses nothing by it. | A planner may still write a declared program in a form that cannot work, and the run finds out. A form no declaration matches also runs outside the command cell (see "What this costs"). |
 | 2. Only forms | A declared program can be planned only as the profile wrote it, so a malformed use is caught at the plan step for every program, not only grep, and every planned use of a declared program is one the run contains. | Declaring a command silently forbids every other use of its program. A profile that declares `node -- {{path}}` can no longer plan `node --version`, `node --check`, or `node --test`; one that declares a `pnpm` test command can no longer plan `pnpm --version`. Existing consumers' profiles would lose plans they get today, with no change on their side, and the criteria behind them would come back unplannable. |
 
-## Decision
+## Decision (provisional)
 
 Option 1. **A declared command is a form the planner should prefer. A standard
 tool the profile also declares as a command may be planned in any other form
@@ -95,21 +105,22 @@ What that is and is not:
   would not close it for a standard tool the profile declares no command for.
 
 So option 2 is the stricter of the two on containment, and option 1 is the
-one that breaks no accepted plan. Neither closes the gap whole. The decision
-stays with option 1 because the gap is better closed where containment is
-decided, at run time and by program (a check whose program a contained
-declared command names runs in the cell whatever its form), than by making
-the plan step refuse forms: that keeps `node --version` plannable and
-contains it too. That is its own change to security-sensitive code, with
-questions of its own (which declaration's scratch paths and egress apply when
-two name the same program), and it is filed as its own issue (see
-"Follow-up"). An owner who would rather have the plan step refuse the forms
-now should take option 2; "Reversing this" says how.
+one that breaks no accepted plan. Neither closes the gap whole, and the gap
+is not something to leave open: it is a matter of a constitution rule.
+
+It is closed by #286, where containment is decided: at run time and by what
+the check runs, not by how it is written. A check whose program a declared
+command contains runs in the cell whatever its arguments or form. That keeps
+`node --version` plannable and contains it too, which refusing forms at the
+plan step would not. #286 also says what becomes of a standard tool no
+declared command covers, since "uncontained by default" is the thing rule 7
+is about. This ADR proposes option 1 on the footing that #286 ships; without
+it, option 2 is the better choice, and "Reversing this" says how to take it.
 
 ## Consequences
 
-- A planned use of a declared program in a form no declaration matches runs
-  uncontained, as above. Until the follow-up lands, a profile author who
+- Until #286 lands, a planned use of a declared program in a form no
+  declaration matches runs uncontained, as above, and a profile author who
   needs a program contained in every use cannot get that from `commands:`.
 - A profile author cannot use `commands:` to forbid a use of a program. If that
   is wanted, it needs its own profile key that says so in as many words (for
@@ -119,11 +130,12 @@ now should take option 2; "Reversing this" says how.
   run, not by the plan step. When such a failure shows up in evidence, the fix
   is a rule for that program's own contract, as for grep, not the general rule.
 
-## Follow-up
+## The change that closes the gap
 
-- Issue #286: a command check whose program a contained declared
-  command names should run in the cell whatever its form, so that the form a
-  planner picks cannot decide whether pull request code has the network.
+- Issue #286: a command check is contained by the program it runs, whatever
+  its form, so that the form a planner picks cannot decide whether pull
+  request code has the network. It is shipped straight after this ADR, not
+  left as a follow-up. When it lands, this ADR is updated to say so.
 
 ## Reversing this
 
