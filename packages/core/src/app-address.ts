@@ -96,8 +96,14 @@ function withoutUserinfo(url: string): string {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return unread
   parsed.username = ''
   parsed.password = ''
+  // A query or a fragment can carry a credential too (a signed URL), and the
+  // planner needs neither: a page is opened by path, and a command reaches
+  // the target through {{run.target_url}}, which the harness fills whole.
+  const bare = parsed.search === '' && parsed.hash === '' ? written : (written.split(/[?#]/)[0] ?? '')
+  parsed.search = ''
+  parsed.hash = ''
   const clean = parsed.toString()
-  return clean.endsWith('/') && !written.endsWith('/') && parsed.pathname === '/' && parsed.search === '' && parsed.hash === '' ? clean.slice(0, -1) : clean
+  return clean.endsWith('/') && !bare.endsWith('/') && parsed.pathname === '/' ? clean.slice(0, -1) : clean
 }
 
 export interface FlowAddressContext {

@@ -133,6 +133,10 @@ test("a target URL's credentials stay out of what the planner is told, like a bo
     const address = plannerAddress({ target: { url: spelling } } as Parameters<typeof plannerAddress>[0]).target ?? ''
     expect(address, spelling).toBe(`${TARGET_URL}/base`)
   }
+  // A signed URL keeps its signature to itself: the query and the fragment are not the planner's to see.
+  const signed = plannerAddress({ target: { url: `${TARGET_URL}/base?sig=hunter2secret&expires=9#token=hunter2secret` } } as Parameters<typeof plannerAddress>[0])
+  expect(signed).toEqual({ target: `${TARGET_URL}/base` })
+  expect(plannerAddress({ target: { url: `${TARGET_URL}?sig=hunter2secret` } } as Parameters<typeof plannerAddress>[0])).toEqual({ target: TARGET_URL })
   // A URL that names no path is told as written, with no slash added; one that cannot be read is not written at all.
   expect(plannerAddress({ target: { url: ['https:', '//qa:hunter2secret@wiki.example.test'].join('') } } as Parameters<typeof plannerAddress>[0])).toEqual({ target: TARGET_URL })
   expect(plannerAddress({ target: { url: 'qa:hunter2secret@nowhere' } } as Parameters<typeof plannerAddress>[0]).target).not.toContain('hunter2secret')
