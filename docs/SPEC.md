@@ -402,8 +402,14 @@ by name even when the profile's health URL writes a number, so neither form
 is a guess and no port number reaches a plan. Every caller that plans (the
 pipeline's `qare plan`, a one-off `qare check`, and ledger ingest) reads how
 the app is addressed from the profile through one helper, `plannerAddress`
-(#267): the target's URL, the client build's driver, or this address of the
-app the run boots, whichever the profile names. A path on a target resolves
+(#267): the target's origin, the client build's driver, or this address of
+the app the run boots, whichever the profile names. An address written into
+a prompt is built from the parts of a URL that cannot carry a secret, the
+scheme, the host and the port, and from nothing else: never the userinfo,
+the path, the query or the fragment, however the URL is spelt. The planner
+needs no more, since a path resolves against the whole target URL at run
+time and a command reaches the target through `{{run.target_url}}`, which
+the harness fills. A path on a target resolves
 below the target URL, and a path in a client build resolves inside the
 application, as they did. A path with no app to be a page of (the run booted
 none and the profile names no target, or the health URL names no http origin)

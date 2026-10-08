@@ -123,39 +123,84 @@ test('qare check still tells the planner where a running target is', async () =>
   expect(planner.prompts[0]).not.toContain('The run boots the app itself')
 })
 
-test("a target URL's credentials stay out of what the planner is told, like a booted app's", async () => {
-  const withCredentials = ['https:', '//qa:hunter2secret@wiki.example.test/base'].join('')
-  const told = plannerAddress({ target: { url: withCredentials } } as Parameters<typeof plannerAddress>[0])
-  expect(told).toEqual({ target: `${TARGET_URL}/base` })
-  // Read as a URL, the way the profile loader reads it, so no accepted spelling carries a credential through.
-  const spellings = [`  ${withCredentials}  `, ['HTTPS:', '//qa:hunter2secret@wiki.example.test/base'].join(''), ['https:', '//qa@wiki.example.test/base'].join('')]
-  for (const spelling of spellings) {
-    const address = plannerAddress({ target: { url: spelling } } as Parameters<typeof plannerAddress>[0]).target ?? ''
-    expect(address, spelling).toBe(`${TARGET_URL}/base`)
-  }
-  // A signed URL keeps its signature to itself: the query and the fragment are not the planner's to see.
-  const signed = plannerAddress({ target: { url: `${TARGET_URL}/base?sig=hunter2secret&expires=9#token=hunter2secret` } } as Parameters<typeof plannerAddress>[0])
-  expect(signed).toEqual({ target: `${TARGET_URL}/base` })
-  expect(plannerAddress({ target: { url: `${TARGET_URL}?sig=hunter2secret` } } as Parameters<typeof plannerAddress>[0])).toEqual({ target: TARGET_URL })
-  // A URL that names no path is told as written, with no slash added; one that cannot be read is not written at all.
-  expect(plannerAddress({ target: { url: ['https:', '//qa:hunter2secret@wiki.example.test'].join('') } } as Parameters<typeof plannerAddress>[0])).toEqual({ target: TARGET_URL })
-  expect(plannerAddress({ target: { url: 'qa:hunter2secret@nowhere' } } as Parameters<typeof plannerAddress>[0]).target).not.toContain('hunter2secret')
+// The address is built from the parts that cannot carry a secret (scheme,
+// host and port) and from nothing else, so there is no spelling of a
+// credential that a removal rule could have failed to think of.
+const SECRETS = ['SECRETUSER', 'SECRETPASS', 'SECRETPATH', 'SECRETPARAM', 'SECRETQUERY', 'SECRETFRAG']
+const TARGET_HOST = 'wiki.example.test:8443'
+const TARGET_ORIGIN = ['https:', `//${TARGET_HOST}`].join('')
+/** A target URL with a secret in every part a URL has besides its origin. */
+const LOADED_URL = ['https:', `//SECRETUSER:SECRETPASS@${TARGET_HOST}/t/SECRETPATH;sid=SECRETPARAM/app?sig=SECRETQUERY&expires=9#token=SECRETFRAG`].join('')
 
-  // And so out of the prompt: the run reaches the target through {{run.target_url}}, which the harness fills.
-  const { dir, profile } = await profileDir(['target:', `  url: ${withCredentials}`, '  health: { http: /health, timeout: 1s }'])
-  const planner = recordingPlanner()
+function expectNoSecret(text: string, label: string): void {
+  for (const secret of SECRETS) expect(text.toLowerCase(), `${label} must not carry ${secret}`).not.toContain(secret.toLowerCase())
+}
+
+test('the planner is told the origin of a target and no other part of its URL', () => {
+  const told = (url: string): string => plannerAddress({ target: { url } } as Parameters<typeof plannerAddress>[0]).target ?? ''
+
+  expect(told(LOADED_URL)).toBe(TARGET_ORIGIN)
+  // However the URL is spelt: every one of these is the same origin to the parser the profile loader uses.
+  const spellings = [
+    `  ${LOADED_URL}  `,
+    LOADED_URL.replace('https:', 'HTTPS:'),
+    // A password that itself holds an @, a userinfo with no password, and a backslash where a slash would be.
+    ['https:', `//SECRETUSER:SECRET@PASS@${TARGET_HOST}/SECRETPATH`].join(''),
+    ['https:', `//SECRETUSER@${TARGET_HOST}?SECRETQUERY`].join(''),
+    ['https:', `\\\\SECRETUSER:SECRETPASS@${TARGET_HOST}\\SECRETPATH`].join(''),
+    ['https:', `//${TARGET_HOST}/#SECRETFRAG`].join(''),
+    ['https:', `//${TARGET_HOST}//SECRETPATH@elsewhere.test/`].join(''),
+  ]
+  for (const spelling of spellings) {
+    expect(told(spelling), spelling).toBe(TARGET_ORIGIN)
+    expectNoSecret(told(spelling), spelling)
+  }
+  // The default port is no part of an origin, and a URL with no path is its own origin.
+  expect(told(TARGET_URL)).toBe(TARGET_URL)
+  expect(told(['https:', '//wiki.example.test:443/base'].join(''))).toBe(TARGET_URL)
+  // What is not an http(s) URL has no origin to tell: it is not written at all.
+  for (const unread of ['SECRETUSER:SECRETPASS@nowhere', 'not a url SECRETPATH', ['ftp:', '//SECRETUSER:SECRETPASS@files.example.test/'].join('')]) {
+    expectNoSecret(told(unread), unread)
+    expect(told(unread)).not.toContain('nowhere')
+  }
+})
+
+test("a booted app's address leaves out its health check's credentials, a password with an @ in it included", () => {
+  const address = (health: string): string => plannerAddress({ app: { health: { http: health } } } as Parameters<typeof plannerAddress>[0]).app?.address ?? ''
+  for (const health of [
+    ['http:', '//SECRETUSER:SECRETPASS@localhost:3000/up?SECRETQUERY#SECRETFRAG'].join(''),
+    ['http:', '//SECRETUSER:SECRET@PASS@localhost:{{run.app_port}}/SECRETPATH'].join(''),
+  ]) {
+    expect(address(health), health).toBe(APP_ADDRESS)
+    expectNoSecret(address(health), health)
+  }
+})
+
+test('no part of a target URL but its origin reaches the prompt of qare check or of ledger ingest', async () => {
+  const { dir, profile } = await profileDir(['target:', `  url: "${LOADED_URL}"`, '  health: { http: /health, timeout: 1s }'])
+  const loaded = await loadProfile(profile)
+  // The profile holds the URL whole: the run needs every part of it.
+  expect(loaded.target?.url).toBe(LOADED_URL)
+
+  const checking = recordingPlanner()
   await checkCriteria({
     criteria: ['the home page loads'],
     profileDir: profile,
     repoPath: dir,
     evidenceDir: join(dir, 'evidence'),
-    planner: planner.runner,
+    planner: checking.runner,
     verifier: 'none',
     run: { probe: async () => ({ ok: true }), pollIntervalMs: 1 },
   })
-  expect(planner.prompts[0]).toContain(`The app is already running at ${TARGET_URL}/base.`)
-  expect(planner.prompts[0]).not.toContain('hunter2secret')
-  expect(planner.prompts[0]).not.toContain('qa:')
+  expect(checking.prompts).toHaveLength(1)
+  expect(checking.prompts[0]).toContain(`The app is already running at ${TARGET_ORIGIN}.`)
+  expectNoSecret(checking.prompts[0] ?? '', 'the prompt of qare check')
+
+  const ingesting = recordingPlanner()
+  const source = { kind: 'issue' as const, number: 7, author: 'someone', link: ['https:', '//example.test/issues/7'].join(''), body: '## Acceptance criteria\n\n- [ ] the payouts page shows the notice\n' }
+  await ingestCriteria([source], { ledger: [], planner: ingesting.runner, address: plannerAddress(loaded) })
+  expect(ingesting.prompts[0]).toContain(`The app is already running at ${TARGET_ORIGIN}.`)
+  expectNoSecret(ingesting.prompts[0] ?? '', 'the prompt of ledger ingest')
 })
 
 test('ledger ingest holds a plan to the driver the profile names, so a client build is not told one thing and offered another', async () => {

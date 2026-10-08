@@ -29,11 +29,18 @@ export function bootedAppOrigin(appHealth: string, values: RunValues): string | 
  * `bootedAppOrigin`: credentials the health URL carries are left out.
  */
 export function plannedAppAddress(appHealth: string): string | undefined {
-  // Scheme and host, without userinfo: a credential in the health URL is the
-  // profile's own, and the address is written into the model's prompt.
-  const parts = /^(https?:\/\/)(?:[^/?#\s@]*@)?([^/?#\s@]+)/i.exec(appHealth.trim())
+  // Scheme and host, and nothing else: a credential in the health URL is the
+  // profile's own, and the address is written into the model's prompt. The
+  // URL cannot go through a parser, since it may name the port by a run
+  // value, so the host is what follows the last @ of the authority (a
+  // password may itself hold an @), and it is written only when it is made
+  // of the characters a host, a port and a run value are made of.
+  const parts = /^(https?):\/\/([^/?#\s\\]*)/i.exec(appHealth.trim())
   if (parts === null) return undefined
-  const authored = `${parts[1]}${parts[2]}`
+  const authority = parts[2] ?? ''
+  const host = authority.slice(authority.lastIndexOf('@') + 1)
+  if (!/^(?:[A-Za-z0-9.\-_[\]:]|\{\{\s*[\w.]+\s*\}\})+$/.test(host)) return undefined
+  const authored = `${(parts[1] ?? '').toLowerCase()}://${host}`
   if (authored.includes('{{')) return authored
   if (!pinsToRunPort(appHealth)) return authored
   return authored.replace(/:\d+$/, ':{{run.app_port}}')
@@ -64,46 +71,35 @@ export function plannerAddress(profile: Pick<QaProfile, 'target' | 'client' | 'a
   if (profile === undefined) return {}
   const app = profile.app === undefined ? undefined : plannedAppAddress(profile.app.health.http)
   return {
-    // Without userinfo, like the booted app's address: a credential in the
-    // target URL is the profile's own, this is written into the model's
-    // prompt, and a check reaches the target through {{run.target_url}},
-    // which the harness fills at run time.
-    ...(profile.target === undefined ? {} : { target: withoutUserinfo(profile.target.url) }),
+    // The origin and nothing else: this is written into the model's prompt,
+    // and a credential anywhere in the target URL is the profile's own.
+    ...(profile.target === undefined ? {} : { target: targetOrigin(profile.target.url) }),
     ...(profile.client === undefined ? {} : { client: profile.client.driver }),
     ...(app === undefined ? {} : { app: { address: app } }),
   }
 }
 
 /**
- * A URL as it is written into a prompt: parsed the way the profile loader
- * parses it, with the username and password cleared. The URL is read as a
- * URL and not as text, so a form the loader accepts (surrounding whitespace,
- * an upper-case scheme) cannot carry a credential past a pattern. A slash
- * the parser adds to a URL that named no path is taken off again, so the
- * address reads as the profile wrote it. What cannot be parsed has no
- * userinfo that can be told from the rest, and is not written at all.
+ * The origin of a target, as it is written into a prompt: scheme, host and
+ * port, read by the parser the profile loader uses, and nothing else. The
+ * address is built from the parts that cannot carry a secret, not by taking
+ * the dangerous parts off, so no spelling of a credential (in the userinfo,
+ * the path, the query or the fragment) is one a rule failed to think of.
+ * The planner needs no more: a page is opened by path, which resolves
+ * against the whole target URL at run time, and a command reaches the target
+ * through {{run.target_url}}, which the harness fills. What is not an
+ * http(s) URL has no origin to tell, and is not written at all.
  */
-function withoutUserinfo(url: string): string {
-  const written = url.trim()
+function targetOrigin(url: string): string {
   const unread = 'an address the profile names'
   let parsed: URL
   try {
-    parsed = new URL(written)
+    parsed = new URL(url.trim())
   } catch {
     return unread
   }
-  // Only an http(s) URL has userinfo where the parser looks for it.
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return unread
-  parsed.username = ''
-  parsed.password = ''
-  // A query or a fragment can carry a credential too (a signed URL), and the
-  // planner needs neither: a page is opened by path, and a command reaches
-  // the target through {{run.target_url}}, which the harness fills whole.
-  const bare = parsed.search === '' && parsed.hash === '' ? written : (written.split(/[?#]/)[0] ?? '')
-  parsed.search = ''
-  parsed.hash = ''
-  const clean = parsed.toString()
-  return clean.endsWith('/') && !bare.endsWith('/') && parsed.pathname === '/' ? clean.slice(0, -1) : clean
+  return `${parsed.protocol}//${parsed.host}`
 }
 
 export interface FlowAddressContext {
