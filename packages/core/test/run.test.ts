@@ -116,12 +116,12 @@ test('a passing job proves both command criteria and writes loadable evidence', 
     {
       id: 'criterion-1',
       outcome: 'proven',
-      evidence: ['checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt', 'checks/criterion-1/0/command.json'],
+      evidence: ['checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt', 'checks/criterion-1/0/outbound.json', 'checks/criterion-1/0/command.json'],
     },
     {
       id: 'criterion-2',
       outcome: 'proven',
-      evidence: ['checks/criterion-2/0/stdout.txt', 'checks/criterion-2/0/stderr.txt', 'checks/criterion-2/0/command.json'],
+      evidence: ['checks/criterion-2/0/stdout.txt', 'checks/criterion-2/0/stderr.txt', 'checks/criterion-2/0/outbound.json', 'checks/criterion-2/0/command.json'],
     },
   ])
   for (const criterion of result.criteria) {
@@ -158,7 +158,7 @@ test('a failing command fails its criterion and the run', async () => {
     {
       id: 'criterion-1',
       outcome: 'failed',
-      evidence: ['checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt', 'checks/criterion-1/0/command.json'],
+      evidence: ['checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt', 'checks/criterion-1/0/outbound.json', 'checks/criterion-1/0/command.json'],
     },
   ])
   expect(JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'command.json'), 'utf8'))).toEqual({
@@ -181,7 +181,7 @@ test('a command that passes silently records the exit code it closed with', asyn
     {
       id: 'criterion-1',
       outcome: 'proven',
-      evidence: ['checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt', 'checks/criterion-1/0/command.json'],
+      evidence: ['checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt', 'checks/criterion-1/0/outbound.json', 'checks/criterion-1/0/command.json'],
     },
   ])
   expect(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'stdout.txt'), 'utf8')).toBe('')
@@ -209,7 +209,7 @@ test('a job with a profile path boots through the injected compose and proves it
     {
       id: 'criterion-1',
       outcome: 'proven',
-      evidence: ['checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt', 'checks/criterion-1/0/command.json'],
+      evidence: ['checks/criterion-1/0/stdout.txt', 'checks/criterion-1/0/stderr.txt', 'checks/criterion-1/0/outbound.json', 'checks/criterion-1/0/command.json'],
     },
   ])
 })

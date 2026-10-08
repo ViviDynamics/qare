@@ -161,6 +161,25 @@ test.each([
   expect(runner.requests[0]?.prompt).toContain(declared)
 })
 
+// #286: at run time a command is contained by the program it runs, so the
+// planner is told that no form of a command reaches further than another.
+test('the planner is told that every command check runs in the cell when the profile contains a command, and is told nothing of it otherwise', async () => {
+  const cell = 'no form of a command reaches further than another'
+  const contained = new FakeAgentRunner([completed(planWith('node --version'))])
+  await planRun(contained, await inputs({ commands: { script: { run: 'node -- {{path}}', about: 'runs a script' } } }))
+  expect(contained.requests[0]?.prompt).toContain('Every command check of this run runs in a cell')
+  expect(contained.requests[0]?.prompt).toContain(cell)
+  expect(contained.requests[0]?.prompt).toContain('a read-only copy of the checkout')
+
+  const optedOut = new FakeAgentRunner([completed(planWith('node --version'))])
+  await planRun(optedOut, await inputs({ commands: { script: { run: 'node -- {{path}}', about: 'runs a script', egress: 'uncontained' } } }))
+  expect(optedOut.requests[0]?.prompt).not.toContain(cell)
+
+  const none = new FakeAgentRunner([completed(planWith('node --version'))])
+  await planRun(none, await inputs())
+  expect(none.requests[0]?.prompt).not.toContain(cell)
+})
+
 test('a declared command that names a file the change adds is planned, not refused for a file the base lacks', async () => {
   const command = 'grep -n -- flowOpenUrl packages/core/src/app-address.ts'
   const runner = new FakeAgentRunner([completed(planWith(command))])

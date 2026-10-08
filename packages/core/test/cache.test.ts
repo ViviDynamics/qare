@@ -335,9 +335,14 @@ test('a profile with named commands hashes under what commands were proven under
   // What a command was proven under is part of the fingerprint: the marker
   // prefixes the hashed input, so a result cached before commands were
   // contained, which holds no gate record, is never replayed as one that does.
-  expect(marked(withCommands)).toMatch(/^command-egress-cell-v1:/)
-  expect(marked(optedOut)).toMatch(/^command-egress-cell-v1:/)
-  expect(marked(profile)).not.toMatch(/^command-egress-cell-v1:/)
+  expect(marked(withCommands)).toMatch(/^command-egress-cell-v2:/)
+  expect(marked(optedOut)).toMatch(/^command-egress-cell-v2:/)
+  // Every command check carries a containment record since #286, whatever the
+  // profile declares, and which checks run in the cell changed with it: a
+  // result cached under the form rule is never replayed as one proven under
+  // the program rule, so the marker moved and no profile is without it.
+  expect(marked(profile)).toMatch(/^command-egress-cell-v2:/)
+  expect(marked(withCommands)).not.toContain('command-egress-cell-v1')
 })
 
 test('a profile with suites hashes under what suites were proven under (#224)', () => {
@@ -346,5 +351,5 @@ test('a profile with suites hashes under what suites were proven under (#224)', 
   // The suite's evidence carries the containment record now, so a suite
   // criterion cached before the record existed is not replayed as one that
   // carries it.
-  expect(marked(withSuites)).toMatch(/^command-egress-cell-v1:/)
+  expect(marked(withSuites)).toMatch(/^command-egress-cell-v2:/)
 })

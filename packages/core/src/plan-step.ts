@@ -576,6 +576,17 @@ function prompt(inputs: PlanInputs, correction?: string): string {
       : [
           'The profile declares these commands, known to work in this repository. Use one, with its {{placeholders}} filled from the criterion, instead of guessing an invocation:',
           ...Object.entries(inputs.commands).map(([name, command]) => `- ${name}: ${command.about} (${command.run})`),
+          // What the run does with a command (#286), so a plan is not written
+          // against a network or a writable checkout its check will not have.
+          ...(Object.values(inputs.commands).some((command) => command.egress !== 'uncontained')
+            ? [
+                'Every command check of this run runs in a cell: it has no network but the app under test and the hosts the profile',
+                'declares, and a read-only copy of the checkout. That holds for a declared command, for the same program written',
+                'another way, and for a standard tool alike: no form of a command reaches further than another. Only a declared',
+                'command, in its declared form, may write, and only where the profile lets it. A check that must write anywhere',
+                'else, or reach any other host, cannot pass; mark such a criterion unplannable.',
+              ]
+            : []),
           '',
         ]),
     'A check is one of:',

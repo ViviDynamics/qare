@@ -120,7 +120,13 @@ export async function main(
   boot: BootOpts = {},
   stdin: Readable = process.stdin,
 ): Promise<number> {
-  if (argv.includes('--version') || argv.includes('-v')) {
+  // qare's own flag, and only qare's own: what follows `--` belongs to the
+  // command a cell is asked to launch (`qare cell launch ... -- node
+  // --version`), and read as qare's it made a contained check print the
+  // harness's version and exit 0 without ever running (#286).
+  const separator = argv.indexOf('--')
+  const own = separator === -1 ? argv : argv.slice(0, separator)
+  if (own.includes('--version') || own.includes('-v')) {
     out.write(`${VERSION}\n`)
     return 0
   }

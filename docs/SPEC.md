@@ -147,7 +147,7 @@ Judge:
 - Plan batches can run at the same time (#265): up to `QARE_PLAN_CONCURRENCY` batches are with the model at once, one by default, because whether an endpoint can take several turns at once is the caller's to know. The merge is by each batch's place and not by when it ended, so the plan, its usage and the failure named when every batch is lost are the same at any concurrency, and a batch that fails while others are in flight still costs only its own criteria. A plan that is given a tool channel runs one batch at a time whatever the setting: the exploration channel serves one page, and two turns exploring at once would navigate it under each other, and the host's registered MCP servers are started once for the plan and may hold state of the same kind, which qare cannot tell from here.
 - The verifier asks in batches (#275): `QARE_VERIFY_BATCH_SIZE` proven criteria a model turn, one by default, each turn with its own output budget, and the findings are merged. A batch's findings apply to that batch's criteria only: a finding naming a criterion the turn was not asked about is dropped, like one naming a criterion that does not exist, so no finding can upgrade a verdict or create a criterion. A batch that is cut off, errors, or answers with something that is not a findings list leaves its own proven criteria `unverified` with the reason, and the other batches' findings stand. The verifier's recorded usage is the sum over every batch. The setting is the verifier's own and not the planner's, because writing checks and reading evidence cost different turns.
 - A command check may read only the declared run inputs: the profile directory and the paths the diff touches. The plan file itself is off limits — it is what this planning step writes, so a check that reads it shows what the planner wrote, never that the change under test holds (#156). The run's own outputs — `result.json`, `judged-result.json`, `comment.md`, the evidence directory — do not exist while a check runs, because the run writes them when it ends. A check may run only the standard tools the runner carries, plus the program of a command the profile declares; the harness's own CLI sits on the image's PATH and still runs no check, because the harness is the thing under test, not its witness. The planner is told this up front; a plan that still reads an undeclared path after its correction round marks the criterion unplannable and the run stays neutral (#162).
-- A check that could not look has disproven nothing (#262). `failed` means the check ran and answered no; a program that could not do its job at all leaves its criterion `unverified`, with the program's own words as the reason. The rule is applied only where the program's contract draws that line: `grep` exits 1 for no match, which fails the criterion, and 2 or more when it could not read its pattern or its files, which leaves it unverified. It is deliberately no wider: an interpreter that fails to load a script exits the way a script does that failed for the reason it exists, so the two cannot be told apart from outside, and that case is the planner's to avoid. The plan step refuses the commonest cause before it runs: a `grep` whose pattern is several words is split on whitespace into a one-word pattern and files that do not exist, so it is corrected, naming the word grep would read as a file, and refused if the correction still holds it. Where the profile declares a grep command, a planned grep is held to that command's form, whose placeholders take one token each. That is grep's rule and no other program's (#270, [ADR-0007](decisions/adr-0007-declared-commands-are-preferred-forms.md), provisional on the owner's confirmation): a declared command is a form the planner should prefer, not the only form its program may be planned in, so a standard tool the profile also declares (`node -- {{path}}`, say) may still be planned in any other form the plan step accepts (`node --version`). Declaring a command never takes another use of its program away. This is a rule about which forms are planned, not about containment: today a form no declared command matches runs outside the command cell, and #286, open as this is written, is the change that is to close that, by containing a check by the program it runs. A file the change adds counts as there, though the plan step reads the base revision: the declared run inputs name it.
+- A check that could not look has disproven nothing (#262). `failed` means the check ran and answered no; a program that could not do its job at all leaves its criterion `unverified`, with the program's own words as the reason. The rule is applied only where the program's contract draws that line: `grep` exits 1 for no match, which fails the criterion, and 2 or more when it could not read its pattern or its files, which leaves it unverified. It is deliberately no wider: an interpreter that fails to load a script exits the way a script does that failed for the reason it exists, so the two cannot be told apart from outside, and that case is the planner's to avoid. The plan step refuses the commonest cause before it runs: a `grep` whose pattern is several words is split on whitespace into a one-word pattern and files that do not exist, so it is corrected, naming the word grep would read as a file, and refused if the correction still holds it. Where the profile declares a grep command, a planned grep is held to that command's form, whose placeholders take one token each. That is grep's rule and no other program's (#270, [ADR-0007](decisions/adr-0007-declared-commands-are-preferred-forms.md), provisional on the owner's confirmation): a declared command is a form the planner should prefer, not the only form its program may be planned in, so a standard tool the profile also declares (`node -- {{path}}`, say) may still be planned in any other form the plan step accepts (`node --version`). Declaring a command never takes another use of its program away. This is a rule about which forms are planned, not about containment: the run contains a command check by the program it runs, whatever its form (#286), so another form of a declared program lands in the same cell as the declared one. A file the change adds counts as there, though the plan step reads the base revision: the declared run inputs name it.
 - A plan whose command check fills a path placeholder with a file the checkout does not carry is corrected, then refused, like any other contract violation (#201): an invented script is a model-step guess, and the correction round catches it before the runner turns it into a red verdict.
 - A command check whose profile command declares a filter and a report format is proven only if its report shows the filter selecting tests: none or all selected leaves the check unverified naming the filter and the counts, and the selected names are saved to evidence, because a whole-suite run does not prove a filtered criterion (#157). A command with no declared filter is proven by exit 0 as before.
 - A criterion whose evidence can only come into existence through a model-driven session is unplannable: the executing job runs no model, so no check can produce that evidence, and the run publishes evidence only when it ends. Evidence under a declared profile directory is not an exception — a command check reading it is corrected, then refused like any other undeclared input (#168).
@@ -875,6 +875,44 @@ evidence carries `"containment": "none"` and the reason nothing is listed. A
 command cannot both opt out and declare scratch: the scratch promise is kept
 by the cell, so one without the other is a contradiction, refused when the
 profile loads.
+
+**A command is contained by what it runs, not by how it is written (#286).**
+A plan is a model's output, written with the pull request's diff in front of
+it, so the form a check is written in must not be a way out of the cell.
+The run decides where a command check runs from its program, the first word
+of the command by name, whatever path it was written with:
+
+| The check | Where it runs | Its `outbound.json` |
+| --- | --- | --- |
+| fills a declared command (its whole form) | in the cell, with that command's scratch paths; or, if that command opts out, with the step's network | `"containment": "cell"` and what it reached; or `"none"` and that the profile opts out |
+| runs a program the profile declares a command for, in any other form or with any other arguments | in the cell, with no scratch path, unless every command the profile declares for that program opts out | `"cell"`; or `"none"`, saying every declaration of the program opts out |
+| runs a program the profile declares nothing for (a standard tool), on a run that has a cell | in the cell, with no scratch path | `"cell"` |
+| runs on a run that has no cell: the profile declares no command that runs contained | with the step's network | `"none"`, saying the profile declares no command that runs contained |
+
+So `node -- check.mjs` and `node check.mjs` land in the same cell, as does
+`/usr/bin/node check.mjs`, and a check of another form is never less
+contained than the most contained declaration of its program. An opt-out is
+the profile's own word for the form it is written on and for no other: beside
+a contained declaration of the same program, every other form is contained.
+A form no declaration matches gets no scratch path, since none was declared
+for it, so a write it makes fails against the read-only copy and says so.
+
+Every command check writes `outbound.json`, in every profile: a check that
+ran outside a cell says so and why, where it used to say nothing.
+
+**What is still uncontained, in as many words.** A run has a cell only when
+its profile declares at least one command that runs contained. On a run
+without one, a command check (a standard tool: `node`, `python3`, `grep`,
+`test`, `nare`) runs with the network its step has, as it did before #224,
+and its evidence now records that. That is pull request code with the
+runner's network, and it is the part of constitution rule 7 ("reaches
+nothing outside the declared stubs") that command checks do not yet meet for
+such a profile. It is not closed here because a cell needs a docker daemon,
+a Linux host and the image, which a one-off `qare check` on a laptop and a
+profile that never asked for containment do not have, and refusing every
+command check there is a change in what qare requires of a host, not in how
+a check is contained. Whether it should be is #287. Declaring one contained command is
+what gives a profile's command checks a cell today. Suites are the other case, below.
 
 **Suites are not contained.** A suite may need the docker daemon (`docker
 compose exec` inside a booted service), which a cell withholds, and a suite
@@ -1815,7 +1853,7 @@ not in the cell: a build that reads files outside its own directory does not
 find them. Both sides of a comparison are contained alike, and each side's
 flow checks carry their own `outbound.json`. A build command (`client.artefact.*.build`) is a
 command, not the build: it runs with the step's network, as a command check
-that names no command of the profile does.
+does on a run that has no command cell (#286).
 
 | The build reaches for | Inside the cell | In the evidence |
 | --- | --- | --- |

@@ -383,10 +383,11 @@ test('a result cached before builds were contained is not one a contained run re
   const plain = (profile: QaProfile): string => profileFingerprint({ ...profile, client: undefined } as QaProfile)
   expect(profileFingerprint(CLIENT_PROFILE)).not.toBe(profileFingerprint({ stubs: [], visual: { widths: [], themes: [] }, suites: [] }))
   expect(stableStringify(CLIENT_PROFILE)).not.toContain('client-egress-cell')
-  expect(profileFingerprint(CLIENT_PROFILE, (text) => text)).toBe(`client-egress-cell-v1:${stableStringify(CLIENT_PROFILE)}`)
-  // A profile with no client is fingerprinted as it always was.
+  // Beside the marker every profile carries for how its command checks are contained (#286).
+  expect(profileFingerprint(CLIENT_PROFILE, (text) => text)).toBe(`client-egress-cell-v1:command-egress-cell-v2:${stableStringify(CLIENT_PROFILE)}`)
+  // A profile with no client carries no client marker.
   const booted: QaProfile = { stubs: [], visual: { widths: [], themes: [] }, suites: [] }
-  expect(profileFingerprint(booted, (text) => text)).toBe(stableStringify(booted))
+  expect(profileFingerprint(booted, (text) => text)).toBe(`command-egress-cell-v2:${stableStringify(booted)}`)
   void plain
 })
 
