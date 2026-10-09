@@ -616,6 +616,7 @@ jobs:
     env:
       QARE_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
       QARE_SELF_HOSTED: ${{ inputs.self-hosted }}
+      QARE_EPHEMERAL_RUNNERS: ${{ inputs.ephemeral-runners }}
     outputs:
       # Where the evidence was uploaded, the one place the posted comment may
       # link to (CONSTITUTION rule 4). Empty when nothing was uploaded.
@@ -870,6 +871,7 @@ jobs:
             -e QARE_RUNNER_ENVIRONMENT="${RUNNER_ENVIRONMENT:-}" \
             -e QARE_REPOSITORY_VISIBILITY="${QARE_REPOSITORY_VISIBILITY:-}" \
             -e QARE_SELF_HOSTED="${QARE_SELF_HOSTED:-}" \
+            -e QARE_EPHEMERAL_RUNNERS="${QARE_EPHEMERAL_RUNNERS:-}" \
             -v "$PWD:$PWD" -w "$PWD" \
             "${base_mount[@]}" \
             "${docker_access[@]}" \
@@ -1642,6 +1644,7 @@ jobs:
     env:
       QARE_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
       QARE_SELF_HOSTED: ${{ inputs.self-hosted }}
+      QARE_EPHEMERAL_RUNNERS: ${{ inputs.ephemeral-runners }}
     outputs:
       # Where the evidence was uploaded, the one place an issue may link to
       # (rule 4). Empty when nothing was uploaded.
@@ -1811,6 +1814,7 @@ jobs:
             -e QARE_RUNNER_ENVIRONMENT="${RUNNER_ENVIRONMENT:-}" \
             -e QARE_REPOSITORY_VISIBILITY="${QARE_REPOSITORY_VISIBILITY:-}" \
             -e QARE_SELF_HOSTED="${QARE_SELF_HOSTED:-}" \
+            -e QARE_EPHEMERAL_RUNNERS="${QARE_EPHEMERAL_RUNNERS:-}" \
             -v "$PWD:$PWD" -w "$PWD" \
             "${docker_access[@]}" \
             "$IMAGE_REF" qare run --plan plan.json \

@@ -277,6 +277,7 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
     ? []
     : [
         `Executed ${where} with qare ${result.environment.versions.qare}, node ${result.environment.versions.node}, nare contract ${result.environment.versions.nareContract}.`,
+        ...(host?.ephemeralRunners === true ? ["The caller declared ephemeral-runners: 'true': each job gets a fresh machine and docker daemon destroyed afterwards, with no volume or cache shared between jobs. qare has not verified that declaration."] : []),
         ...(result.environment.image === undefined ? [] : imageLines(result.environment.image)),
         // What the profile required of that host (#76), met or not.
         ...(result.requirements === undefined ? [] : requirementLines(result.requirements, 'The profile', host)),
