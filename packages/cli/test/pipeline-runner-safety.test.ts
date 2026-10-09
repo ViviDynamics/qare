@@ -50,19 +50,21 @@ test('GitHub-hosted jobs need no safety snapshot or extra setup', () => {
 test('the cluster reachability probe neither sends nor logs credentials from a runner curl configuration', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'qare-runner-curl-'))
   writeFileSync(join(dir, '.curlrc'), 'header = "Authorization: Bearer private-curl-credential"\ntrace-ascii = "/dev/stderr"\n')
-  const server = await fakeCluster(dir)
   try {
     for (const job of ['execute', 'main_execute']) {
+      const host = job === 'execute' ? '127.0.0.1' : '::1'
+      const server = await fakeCluster(dir, host)
+      try {
       const step = workflow.jobs[job]!.steps.find(step => step.name === 'Inspect self-hosted runner checklist')!
       const result = await promisify(execFile)('bash', ['-e', '-c', step.run!], { cwd: dir, env: {
-        PATH: process.env.PATH, HOME: dir, CURL_HOME: dir, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: join(dir, 'summary.md'), RUNNER_ENVIRONMENT: 'self-hosted', KUBERNETES_SERVICE_HOST: job === 'execute' ? '127.0.0.1' : '::1', KUBERNETES_SERVICE_PORT: String(server.port),
+        PATH: process.env.PATH, HOME: dir, CURL_HOME: dir, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: join(dir, 'summary.md'), RUNNER_ENVIRONMENT: 'self-hosted', KUBERNETES_SERVICE_HOST: host, KUBERNETES_SERVICE_PORT: String(server.port),
       } })
       expect(result.stdout + result.stderr).not.toContain('private-curl-credential')
       expect(JSON.parse(readFileSync(join(dir, 'qare-runner-safety.json'), 'utf8')).clusterReachable).toBe(true)
+      expect(server.headers).toEqual([undefined])
+      } finally { await server.close() }
     }
-    expect(server.headers).toEqual([undefined, undefined])
   } finally {
-    await server.close()
     rmSync(dir, { recursive: true, force: true })
   }
 })

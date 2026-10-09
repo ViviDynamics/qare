@@ -4,7 +4,7 @@ import { createServer } from 'node:https'
 import { join } from 'node:path'
 
 /** Loopback-only fake, like action/test/fake-github.ts; no external service is contacted. */
-export async function fakeCluster(dir: string): Promise<{ port: number; headers: Array<string | undefined>; close: () => Promise<void> }> {
+export async function fakeCluster(dir: string, host: '127.0.0.1' | '::1'): Promise<{ port: number; headers: Array<string | undefined>; close: () => Promise<void> }> {
   const key = join(dir, 'key.pem')
   const cert = join(dir, 'cert.pem')
   const generated = spawnSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=localhost'], { encoding: 'utf8' })
@@ -15,7 +15,7 @@ export async function fakeCluster(dir: string): Promise<{ port: number; headers:
     response.writeHead(403)
     response.end()
   })
-  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '::', resolve) })
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, host, resolve) })
   const address = server.address()
   if (address === null || typeof address === 'string') throw new Error('missing fake cluster address')
   return { port: address.port, headers, close: () => new Promise(resolve => server.close(() => resolve())) }
