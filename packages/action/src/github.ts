@@ -1,5 +1,5 @@
 import { GitHubApiError, GitHubClientError } from './errors.js'
-import { DEFAULT_API_ROOT, resolveIdentity, type GitHubIdentity } from './identity.js'
+import { ACTIONS_TOKEN_ENV, DEFAULT_API_ROOT, resolveIdentity, type GitHubIdentity } from './identity.js'
 
 export { GitHubApiError, GitHubClientError } from './errors.js'
 
@@ -88,6 +88,12 @@ export interface GitHubClientOptions {
    * (#61): the App, then a personal access token, then the Actions token.
    */
   identity?: GitHubIdentity
+  /**
+   * The Actions token of the workflow run this client works in, when there
+   * is one: what the run's own jobs are read with. Left out, it is read
+   * from the environment, as the identity is.
+   */
+  runToken?: string
   fetchImpl?: typeof fetch
 }
 
@@ -100,6 +106,7 @@ export class GitHubClient {
   readonly identity: GitHubIdentity
   private readonly root: string
   private readonly doFetch: typeof fetch
+  private readonly runToken: string | undefined
 
   constructor(options: GitHubClientOptions = {}) {
     const repository = options.repository ?? process.env[DEFAULT_REPOSITORY_ENV] ?? ''
@@ -120,6 +127,8 @@ export class GitHubClient {
         token: options.token,
         tokenEnv: options.tokenEnv,
       })
+    const runToken = options.runToken ?? process.env[ACTIONS_TOKEN_ENV]
+    this.runToken = runToken === undefined || runToken.trim() === '' ? undefined : runToken
   }
 
   async searchIssues(query: string): Promise<GitHubIssue[]> {
@@ -349,15 +358,32 @@ export class GitHubClient {
     await this.request('POST', `/repos/${this.repository}/check-runs`, undefined, run, await this.identity.checksToken())
   }
 
-  /** Every job of one attempt of a workflow run, in the order the API lists them. */
+  /**
+   * Every job of one attempt of a workflow run, in the order the API lists
+   * them. A run's jobs are the run's own business, so they are read with the
+   * Actions token of the run when there is one (#305): the calling job
+   * grants it `actions: read` for exactly this, and the identity qare posts
+   * as is then never asked to hold a permission it writes nothing with.
+   * Outside a workflow run the identity's own token is all there is.
+   */
   async listRunJobs(runId: number, attempt: number): Promise<GitHubRunJob[]> {
     const jobs: GitHubRunJob[] = []
+    // The run's own token first. One that is refused (a calling job that
+    // did not grant it actions: read, or a token in the environment that is
+    // not this run's) is set aside and the identity is asked, as it always
+    // was before: it may hold the permission itself.
+    let token = this.runToken
     for (let page = 1; ; page += 1) {
-      const batch = await this.request<{ jobs?: GitHubRunJob[] }>(
-        'GET',
-        `/repos/${this.repository}/actions/runs/${runId}/attempts/${attempt}/jobs`,
-        new URLSearchParams({ per_page: '100', page: String(page) }),
-      )
+      const path = `/repos/${this.repository}/actions/runs/${runId}/attempts/${attempt}/jobs`
+      const query = new URLSearchParams({ per_page: '100', page: String(page) })
+      let batch: { jobs?: GitHubRunJob[] }
+      try {
+        batch = await this.request<{ jobs?: GitHubRunJob[] }>('GET', path, query, undefined, token)
+      } catch (error) {
+        if (token === undefined || !(error instanceof GitHubApiError) || ![401, 403, 404].includes(error.status)) throw error
+        token = undefined
+        batch = await this.request<{ jobs?: GitHubRunJob[] }>('GET', path, query)
+      }
       const listed = Array.isArray(batch.jobs) ? batch.jobs : []
       jobs.push(...listed)
       if (listed.length < 100) break

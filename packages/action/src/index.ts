@@ -26,9 +26,13 @@ export {
   ACTIONS_TOKEN_ENV,
   APP_ID_ENV,
   APP_PRIVATE_KEY_ENV,
+  APP_SLUG_ENV,
+  APP_TOKEN_EXPIRES_AT_ENV,
+  APP_TOKEN_ENV,
   PERSONAL_TOKEN_ENV,
   ActionsTokenIdentity,
   AppInstallationIdentity,
+  MintedAppIdentity,
   TokenIdentity,
   resolveIdentity,
 } from './identity.js'

@@ -53,6 +53,8 @@ export interface FakeToken {
   rateLimited?: boolean
   /** A check run is refused: the token's job was not granted checks: write. */
   noChecks?: boolean
+  /** A run's jobs are refused: the token's job was not granted actions: read. */
+  noActions?: boolean
 }
 
 /** The App the fake knows: its id, the public half of its key, and where it is installed. */
@@ -64,6 +66,16 @@ export interface FakeApp {
   installationId: number
   /** False: the App exists and is not installed on the repository. */
   installed: boolean
+  /**
+   * The repository permissions the App holds. A token asked for with one it
+   * does not hold, or at a higher level, is refused with 422, as GitHub
+   * refuses it. Left out, the App holds whatever is asked for.
+   */
+  holds?: Record<string, string>
+  /** Fields laid over the answer to a token request, for a GitHub that answers what it should not. */
+  answer?: Record<string, unknown>
+  /** How many of the App's next requests are answered 503, for a GitHub that is briefly away. */
+  outages?: number
 }
 
 export interface FakeComment {
@@ -196,6 +208,8 @@ export function startFakeGithub(): Promise<FakeGithub> {
   let hidden = false
   const tokens = new Map<string, FakeToken>([[TOKEN, { login: TOKEN_LOGIN, kind: 'actions' }]])
   const minted: Array<{ token: string; body: unknown }> = []
+  /** The repository the App's installation was last looked up on, "owner/name". */
+  let installedOn = ''
   const state = {
     status: undefined as number | undefined,
     failRefPatches: 0,
@@ -247,24 +261,55 @@ export function startFakeGithub(): Promise<FakeGithub> {
         respond(response, 401, { message: 'A JSON web token could not be decoded' })
         return
       }
+      if ((app.outages ?? 0) > 0) {
+        app.outages = (app.outages ?? 0) - 1
+        respond(response, 503, { message: 'Service Unavailable' })
+        return
+      }
       if (url.pathname === '/app' && request.method === 'GET') {
         respond(response, 200, { id: 1, slug: app.slug, name: app.slug })
         return
       }
       if (parts[0] === 'repos' && request.method === 'GET') {
         if (!app.installed) return respond(response, 404, { message: 'Not Found' })
+        installedOn = `${parts[1] ?? ''}/${parts[2] ?? ''}`
         respond(response, 200, { id: app.installationId, app_slug: app.slug })
         return
       }
       if (parts[3] === 'access_tokens' && parts.length === 4 && request.method === 'POST') {
         if (!app.installed || Number(parts[2]) !== app.installationId) return respond(response, 404, { message: 'Not Found' })
+        const asked = (body ?? {}) as { repositories?: unknown; permissions?: Record<string, string> }
+        const rank: Record<string, number> = { read: 1, write: 2 }
+        for (const [name, level] of Object.entries(asked.permissions ?? {})) {
+          if (app.holds !== undefined && (rank[app.holds[name] ?? ''] ?? 0) < (rank[level] ?? 3))
+            return respond(response, 422, { message: 'The permissions requested are not granted to this installation.' })
+        }
         const token = `ghs_fake_installation_${minted.length + 1}`
         minted.push({ token, body })
         tokens.set(token, { login: `${app.slug}[bot]`, kind: 'installation' })
-        respond(response, 201, { token, expires_at: new Date(clock() + 60 * 60 * 1000).toISOString() })
+        respond(response, 201, {
+          token,
+          expires_at: new Date(clock() + 60 * 60 * 1000).toISOString(),
+          // As GitHub answers: what the token holds, and whether it is for chosen repositories or all of them.
+          permissions: asked.permissions ?? app.holds ?? { metadata: 'read' },
+          repository_selection: Array.isArray(asked.repositories) ? 'selected' : 'all',
+          // The repositories a token for chosen ones may reach, as GitHub lists them.
+          ...(Array.isArray(asked.repositories)
+            ? { repositories: (asked.repositories as string[]).map((name) => ({ name, full_name: `${installedOn.split('/')[0] ?? ''}/${name}` })) }
+            : {}),
+          ...(app.answer ?? {}),
+        })
         return
       }
       respond(response, 404, { message: `fake github has no App route for ${request.method} ${url.pathname}` })
+      return
+    }
+
+    // A token gives itself back: after this GitHub no longer knows it.
+    if (url.pathname === '/installation/token' && request.method === 'DELETE') {
+      if (tokens.get(bearer)?.kind !== 'installation') return respond(response, 401, { message: 'Bad credentials' })
+      tokens.delete(bearer)
+      response.writeHead(204).end()
       return
     }
 
@@ -413,6 +458,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
       parts[0] === 'repos' && parts[3] === 'actions' && parts[4] === 'runs' && parts[6] === 'attempts' &&
       parts[8] === 'jobs' && parts.length === 9 && request.method === 'GET'
     ) {
+      if (caller.noActions === true) return respond(response, 403, { message: 'Resource not accessible by integration' })
       const jobs = runJobs.get(`${parts[5]}/${parts[7]}`)
       if (jobs === undefined) return respond(response, 404, { message: 'run attempt not found' })
       const perPage = Number(url.searchParams.get('per_page') ?? '30')
