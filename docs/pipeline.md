@@ -804,12 +804,14 @@ What is recorded, where, and by what:
   that was proven. A criterion that failed keeps the pass it had, which is
   the revision the changes are counted from: the commits your default
   branch has that the passing revision does not, as the history has them,
-  whatever their dates. A run of an earlier revision that finishes late
-  does not replace the pass of a later one (of the same wording), and a
-  failure on a revision is a regression only against a pass of an earlier
-  revision: a pass recorded for a later one, or for a revision no longer in
-  the history, is no last pass for that run. A pass of a criterion the
-  ledger no longer carries is dropped the next time the record is written. If a criterion's text, proof or
+  whatever their dates. Runs do not always finish in the order their
+  revisions landed, so both sides ask the history: a run leaves untouched
+  every recorded pass whose revision is not behind its own (it neither
+  replaces nor drops it), and a failure is a regression only against a pass
+  of an earlier revision. A pass recorded for a later revision, or for one
+  rewritten out of the branch, is no last pass for that run. A pass of a
+  criterion the ledger no longer carries is dropped by the next run that is
+  ahead of it. The issue also says when the pass was recorded. If a criterion's text, proof or
   checks change in the ledger, its pass no longer stands until a run proves
   the new wording.
 - **By what.** main_judge's filing step, after everything is filed. It holds

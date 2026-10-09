@@ -133,6 +133,8 @@ export interface FakeGithub {
    * make exactly one push attempt fail, more to exhaust a retry budget.
    */
   failRefPatches: number
+  /** Commits rewritten out of the branch: compared with anything else, GitHub calls the two diverged. */
+  diverged: Set<string>
   /** Refuse every ref update with 403, as GitHub does for an identity that may not write contents. */
   forbidRefWrites: boolean
   close(): Promise<void>
@@ -166,6 +168,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
   const issues = new Map<number, FakeIssue>()
   const issueMeta = new Map<number, FakeIssueMeta>()
   const commitLog: Array<{ sha: string; message: string; date: string }> = []
+  const diverged = new Set<string>()
   const commitPulls = new Map<string, number[]>()
   const pullRecords = new Map<number, FakePullRecord>()
   /** An issue as the API answers with it: its text, and what GitHub keeps beside it when the fake knows it. */
@@ -437,6 +440,9 @@ export function startFakeGithub(): Promise<FakeGithub> {
       const from = commitLog.findIndex((commit) => commit.sha === base)
       const to = commitLog.findIndex((commit) => commit.sha === head)
       if (from === -1 || to === -1) return respond(response, 404, { message: 'no common ancestor' })
+      // A commit rewritten out of the branch still compares: each side has what the other has not.
+      if (base !== head && (diverged.has(base ?? '') || diverged.has(head ?? '')))
+        return respond(response, 200, { status: 'diverged', ahead_by: 1, behind_by: 1, total_commits: 1, commits: [{ sha: head, commit: { message: 'diverged' } }] })
       // On one line of history the head is ahead of the base, behind it, or the same commit.
       const between = commitLog.slice(from + 1, to + 1)
       const perPage = Number(url.searchParams.get('per_page') ?? '30')
@@ -628,6 +634,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
         issues,
         issueMeta,
         commitLog,
+        diverged,
         commitPulls,
         pullRecords,
         commentRecords,

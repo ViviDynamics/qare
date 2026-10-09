@@ -35,6 +35,8 @@ export interface LastProven {
   at: string
   /** The revision the passing run checked, when the record of passes names it. */
   sha?: string
+  /** When the pass was recorded, which is when the run that proved it finished, when the record of passes says. */
+  recordedAt?: string
 }
 
 /** A criterion a run on `main` failed. */
@@ -134,7 +136,7 @@ function lastProvenOf(ledger: LedgerDocument, passes: MainPasses | undefined): M
   for (const [criterion, pass] of standingMainPasses(passes, ledger)) {
     const recorded = last.get(criterion)
     const later = recorded === undefined || !(Date.parse(recorded.at) > Date.parse(pass.at))
-    if (later) last.set(criterion, { run: pass.run, at: pass.at, sha: pass.sha })
+    if (later) last.set(criterion, { run: pass.run, at: pass.at, sha: pass.sha, recordedAt: pass.recordedAt })
   }
   return last
 }

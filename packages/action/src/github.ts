@@ -182,7 +182,8 @@ export class GitHubClient {
   /**
    * The commits `head` has that `base` does not, newest first (#295): what
    * landed after a revision, as the history has it and whatever the commits'
-   * dates. Undefined when GitHub cannot relate the two (a base that is no
+   * dates. `ahead` says whether `base` is an earlier revision of `head`.
+   * Undefined when GitHub cannot relate the two (a base that is no
    * longer in the history), so the caller can say so rather than guess.
    */
   async listCommitsBetween(
@@ -193,6 +194,7 @@ export class GitHubClient {
     interface Compared {
       status?: string
       ahead_by?: number
+      behind_by?: number
       total_commits?: number
       commits?: Array<{ sha: string; commit?: { message?: string } }>
     }
@@ -204,9 +206,14 @@ export class GitHubClient {
     try {
       const first = await page(1)
       const total = typeof first.total_commits === 'number' ? first.total_commits : subjects(first).length
-      // Whether the head has anything the base has not: a base that is the
-      // head, or is ahead of it, is no earlier revision.
-      const ahead = (typeof first.ahead_by === 'number' ? first.ahead_by : total) > 0
+      // Whether the base is an earlier revision of the head: the head has
+      // commits the base has not, and the base has none the head has not. A
+      // base that is the head, is ahead of it, or has diverged from it (a
+      // commit rewritten out of the branch) is not.
+      const ahead =
+        typeof first.status === 'string'
+          ? first.status === 'ahead'
+          : (typeof first.ahead_by === 'number' ? first.ahead_by : total) > 0 && (first.behind_by ?? 0) === 0
       // GitHub lists them oldest first, a page at a time. The newest are the
       // ones kept, so a long range is read from its last pages and never
       // whole: the reads are bounded however long the range is.
@@ -219,7 +226,7 @@ export class GitHubClient {
         oldestFirst = [...before, ...tail]
       }
       const newest = oldestFirst.reverse().slice(0, limit)
-      return { commits: newest, truncated: total > newest.length, ahead }
+      return { commits: newest, truncated: limit > 0 && total > newest.length, ahead }
     } catch (error) {
       if (error instanceof GitHubApiError && error.status === 404) return undefined
       throw error

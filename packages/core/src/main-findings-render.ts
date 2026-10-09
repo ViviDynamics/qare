@@ -236,7 +236,9 @@ export function renderMainFindingIssue(
       : finding.lastProven.sha === undefined
         ? `It last passed in run ${span(finding.lastProven.run)} at ${span(finding.lastProven.at)}.`
         : // A pass from the record of runs on the default branch (#295) names the revision too.
-          `It last passed in run ${span(finding.lastProven.run)}, on revision ${span(finding.lastProven.sha)}, committed at ${span(finding.lastProven.at)}.`
+          `It last passed in run ${span(finding.lastProven.run)}, on revision ${span(finding.lastProven.sha)}, committed at ${span(finding.lastProven.at)}${
+            finding.lastProven.recordedAt === undefined ? '' : `; that pass was recorded at ${span(finding.lastProven.recordedAt)}`
+          }.`
   const lines = [
     mainFindingMarker(finding.fingerprint),
     criterionMarker(finding.criterionId),

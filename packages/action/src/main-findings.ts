@@ -165,9 +165,15 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
     // Built on the record as it stands where it is written, not as it was
     // read when the step started: another run may have recorded since. One
     // that cannot be read there is refused, and nothing is written over it.
-    await record.write(async (current) =>
-      serializeMainPasses(recordMainPasses(current === undefined ? { passes: {} } : parseMainPasses(current), run, criteria, input.ledger)),
-    )
+    await record.write(async (current) => {
+      const store = current === undefined ? { passes: {} } : parseMainPasses(current)
+      // Which recorded revisions this run's is ahead of, asked of the history
+      // and not of the clock. A pass of any other revision is left as it is.
+      const behind = new Set<string>()
+      for (const sha of new Set(Object.values(store.passes).map((pass) => pass.sha)))
+        if (sha !== input.headSha && (await client.listCommitsBetween(sha, input.headSha, 0))?.ahead === true) behind.add(sha)
+      return serializeMainPasses(recordMainPasses(store, run, criteria, input.ledger, (sha) => behind.has(sha)))
+    })
     return { passes: { criteria, recorded: true } }
   }
 

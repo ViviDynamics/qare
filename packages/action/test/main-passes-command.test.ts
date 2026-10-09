@@ -106,6 +106,7 @@ test('a run that proves criteria records a pass for each, on qa-assets, naming t
 
 test('a later failure is filed as a regression against the recorded pass, and blames the change since, not the one that passed', async () => {
   expect(await run(await result('passed', { 'BIL-014': 'proven', 'BIL-021': 'proven' }), PASSED_AT, ['--record-passes', 'true', '--run-url', runUrl(77)])).toBe(0)
+  const store0 = await recorded()
   // A day later a pull request by alice lands, and the next run fails one criterion.
   fake.commitLog.push({ sha: FAILED_AT, message: 'Rework payouts (#12)', date: '2026-10-09T09:00:00Z' })
   fake.commitPulls.set(FAILED_AT, [12])
@@ -122,6 +123,8 @@ test('a later failure is filed as a regression against the recorded pass, and bl
   expect(body).toContain(`\`${runUrl(77)}\``)
   expect(body).toContain(`\`${PASSED_DATE}\``)
   expect(body).toContain(`\`${PASSED_AT}\``)
+  // When the pass was recorded, which is when the run that proved it finished.
+  expect(body).toContain(`recorded at \`${store0?.passes['BIL-014']?.recordedAt ?? 'missing'}\``)
   // Alice's change came after the pass. Bob's is the revision that passed: it is not in the range.
   expect(mentionsIn(body)).toEqual(['alice'])
   expect(body).toContain('#12')
@@ -267,6 +270,64 @@ test('two runs that record one after the other keep each other\'s passes, and th
   expect(fake.issueMeta.get(100)).toMatchObject({ labels: ['qa-failure'] })
   expect(fake.issues.get(100)?.body).toContain('Nothing shows it ever passed')
   expect(fake.issues.get(100)?.body).not.toContain(FAILED_AT)
+})
+
+// A later revision rewords one criterion and adds another, and its run
+// records both. Then the run of the revision before it finishes, or is run
+// again. It reads its own, older ledger. It must not erase what the later
+// run recorded.
+test('a late run of an older revision, with the older ledger, erases nothing the later run recorded', async () => {
+  fake.commitLog.push({ sha: FAILED_AT, message: 'Reword and add (#12)', date: '2026-10-09T09:00:00Z' })
+  const newer: LedgerEntry[] = [
+    { ...ENTRIES[0]!, text: 'A host sees the 1099 notice in January.' },
+    ENTRIES[1]!,
+    { criterion: 'NEW-001', status: 'active', source: ['suite:billing'], proof: 'flow', text: 'New.', checks: ['suite:new'] },
+  ]
+  await writeFile(join(dir, 'ledger.json'), serializeLedgerDocument(newer, []))
+  expect(await run(await result('passed', { 'BIL-014': 'proven', 'BIL-021': 'proven', 'NEW-001': 'proven' }), FAILED_AT, ['--record-passes', 'true'])).toBe(0)
+  const before = await recorded()
+  // The older revision's run, with the ledger as that revision had it.
+  await writeFile(join(dir, 'ledger.json'), serializeLedgerDocument(ENTRIES, []))
+  expect(await run(await result('passed', { 'BIL-014': 'proven', 'BIL-021': 'proven' }), PASSED_AT, ['--record-passes', 'true'])).toBe(0)
+  expect(await recorded()).toEqual(before)
+})
+
+// A pass recorded for a revision that was rewritten out of the branch: GitHub
+// still relates the two, as diverged. It is no earlier revision of this one.
+test('a pass on a revision that diverged from the checked one is no last pass', async () => {
+  const rewritten = 'ab'.repeat(20)
+  fake.commitLog.push({ sha: rewritten, message: 'Rewritten away', date: '2026-10-07T00:00:00Z' })
+  expect(await run(await result('passed', { 'BIL-014': 'proven' }), rewritten, ['--record-passes', 'true'])).toBe(0)
+  fake.diverged.add(rewritten)
+  fake.commitLog.push({ sha: FAILED_AT, message: 'After the rewrite (#12)', date: '2026-10-09T09:00:00Z' })
+  out = []
+  expect(await run(await result('failed', { 'BIL-014': 'failed' }), FAILED_AT, ['--record-passes', 'true'])).toBe(0)
+  expect(out.join('')).toContain('opened #100 for BIL-014 (qa-failure), mentioning nobody\n')
+  // And a run that is not ahead of it leaves the recorded pass alone.
+  expect((await recorded())?.passes['BIL-014']).toMatchObject({ sha: rewritten })
+})
+
+test('the comparison is read newest first, whole when it is short and from its last pages when it is long, in at most three requests', async () => {
+  const base = '00'.repeat(20)
+  for (const total of [0, 1, 100, 101, 199, 200, 201, 250]) {
+    fake.commitLog.length = 0
+    fake.commitLog.push({ sha: base, message: 'base', date: '2026-10-01T00:00:00Z' })
+    const shas = Array.from({ length: total }, (_unused, index) => (index + 1).toString(16).padStart(40, '7'))
+    shas.forEach((sha, index) => fake.commitLog.push({ sha, message: `c${index + 1}`, date: '2026-10-02T00:00:00Z' }))
+    const head = shas.at(-1) ?? base
+    const before = fake.calls.length
+    const listed = await client().listCommitsBetween(base, head, 100)
+    expect(fake.calls.length - before, `${total} commits`).toBeLessThanOrEqual(3)
+    expect(listed?.commits.map((commit) => commit.sha), `${total} commits`).toEqual([...shas].reverse().slice(0, 100))
+    expect(listed?.truncated, `${total} commits`).toBe(total > 100)
+    expect(listed?.ahead, `${total} commits`).toBe(total > 0)
+    // Asked only which is ahead: one request, no commits, nothing called cut.
+    const asked = fake.calls.length
+    expect(await client().listCommitsBetween(base, head, 0), `${total} commits`).toEqual({ commits: [], truncated: false, ahead: total > 0 })
+    expect(fake.calls.length - asked).toBe(1)
+  }
+  // The other way round the head is behind: nothing is ahead.
+  expect((await client().listCommitsBetween((250).toString(16).padStart(40, '7'), base, 0))?.ahead).toBe(false)
 })
 
 test('a pass on a revision GitHub cannot relate to the checked one is no last pass either', async () => {

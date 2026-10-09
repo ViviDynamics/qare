@@ -146,31 +146,38 @@ export function mainPassesToRecord(result: RunResult, ledger: LedgerDocument): s
  * The record with a run's passes written over the ones it had. A criterion
  * the run did not prove keeps the pass it had: that is the revision a later
  * issue counts the changes from. So does a criterion whose recorded pass is
- * of a later revision than this run's.
+ * of a revision that is not behind this run's.
  */
 export function recordMainPasses(
   store: MainPasses,
   run: { sha: string; at: string; run: string; recordedAt: string },
   criteria: readonly string[],
   ledger: LedgerDocument,
+  /**
+   * Whether a recorded revision is behind this run's in the history. Runs do
+   * not always finish in the order their revisions landed, and a run can be
+   * started again days later: such a run reads its own revision's ledger,
+   * which may word a criterion differently and may lack criteria added
+   * since. A pass whose revision is not behind this run's is therefore left
+   * exactly as it is, neither replaced nor dropped. Left out, every recorded
+   * revision is taken to be behind: the caller vouches for the order.
+   */
+  behind: (sha: string) => boolean = () => true,
 ): MainPasses {
   const entries = new Map(ledger.entries.map((entry) => [entry.criterion, entry]))
-  // A pass of a criterion the ledger no longer carries can never stand
-  // again (it has no entry to be a pass of), so it is not carried forward:
-  // the record holds what the ledger holds, and does not only grow.
-  const passes = Object.fromEntries(Object.entries(store.passes).filter(([id]) => entries.has(id)))
+  const mine = (pass: MainPass): boolean => pass.sha === run.sha || behind(pass.sha)
+  // A pass of a criterion this run's ledger no longer carries can never
+  // stand again (it has no entry to be a pass of), so it is not carried
+  // forward: the record holds what the ledger holds, and does not only
+  // grow. Only where this run's ledger is the later word.
+  const passes = Object.fromEntries(Object.entries(store.passes).filter(([id, pass]) => entries.has(id) || !mine(pass)))
   for (const id of criteria) {
     const entry = entries.get(id)
     if (entry === undefined || entry.status !== 'active') continue
     criterionId(id, 'criteria')
-    const digest = mainPassEntryDigest(entry)
     const had = passes[id]
-    // A run of an earlier revision can finish after a run of a later one. Its
-    // pass is true, but it is not the last: counting the changes from it
-    // would blame what landed between the two. The pass of the same wording
-    // on the later revision stands.
-    if (had !== undefined && had.entry === digest && Date.parse(had.at) > Date.parse(run.at)) continue
-    passes[id] = { sha: run.sha, at: run.at, run: run.run, recordedAt: run.recordedAt, entry: digest }
+    if (had !== undefined && !mine(had)) continue
+    passes[id] = { sha: run.sha, at: run.at, run: run.run, recordedAt: run.recordedAt, entry: mainPassEntryDigest(entry) }
   }
   return parseMainPasses(serializeMainPasses({ passes }))
 }

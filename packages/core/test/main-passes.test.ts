@@ -67,20 +67,28 @@ describe('the record', () => {
     expect(Object.keys(third.passes)).toEqual(['BIL-014', 'BIL-021'])
   })
 
-  test('a run of an earlier revision never replaces the pass of a later one', () => {
-    // A run that was started first and finished last, or was run again: its
-    // revision is older, and counting the changes from it would blame the
-    // innocent changes between the two.
-    const book = ledger([entry('BIL-014')])
-    const later = recordMainPasses(EMPTY, RUN_B, ['BIL-014'], book)
-    const afterOlder = recordMainPasses(later, RUN_A, ['BIL-014'], book)
-    expect(afterOlder.passes['BIL-014']).toMatchObject({ sha: SHA_B, run: 'main-2-1' })
+  test('a run whose revision is not ahead of a recorded pass leaves that pass exactly as it is', () => {
+    // A run that was started first and finished last, or was run again days
+    // later. It reads its own revision's ledger, which may word a criterion
+    // differently and may not carry criteria added since. Whatever it
+    // proved, it is not the last word on a pass of a later revision: it
+    // neither replaces it nor drops it.
+    const newer = ledger([entry('BIL-014', { text: 'New words.' }), entry('NEW-001')])
+    const later = recordMainPasses(EMPTY, RUN_B, ['BIL-014', 'NEW-001'], newer)
+    const older = ledger([entry('BIL-014'), entry('BIL-021')])
+    const notBehind = (): boolean => false
+    const afterOlder = recordMainPasses(later, RUN_A, ['BIL-014', 'BIL-021'], older, notBehind)
+    expect(afterOlder.passes['BIL-014']).toEqual(later.passes['BIL-014'])
+    expect(afterOlder.passes['NEW-001']).toEqual(later.passes['NEW-001'])
+    // What the late run proved that has no pass yet is recorded: it is a true pass and the only one.
+    expect(afterOlder.passes['BIL-021']).toMatchObject({ sha: SHA_A })
     // The same revision proven again is the same pass, by the run that proved it last.
-    const again = recordMainPasses(later, { ...RUN_B, run: 'main-3-1' }, ['BIL-014'], book)
+    const again = recordMainPasses(later, { ...RUN_B, run: 'main-3-1' }, ['BIL-014'], newer, notBehind)
     expect(again.passes['BIL-014']).toMatchObject({ sha: SHA_B, run: 'main-3-1' })
-    // A pass of other wording is no pass of this entry: whatever its date, it is replaced.
-    const reworded = ledger([entry('BIL-014', { text: 'New words.' })])
-    expect(recordMainPasses(later, RUN_A, ['BIL-014'], reworded).passes['BIL-014']).toMatchObject({ sha: SHA_A })
+    // And a run that is ahead of the recorded revision writes over it and prunes, as ever.
+    const ahead = recordMainPasses(later, { ...RUN_B, sha: 'c'.repeat(40) }, ['BIL-014'], ledger([entry('BIL-014', { text: 'New words.' })]), (sha) => sha === SHA_B)
+    expect(Object.keys(ahead.passes)).toEqual(['BIL-014'])
+    expect(ahead.passes['BIL-014']).toMatchObject({ sha: 'c'.repeat(40) })
   })
 
   test('a pass of a criterion the ledger no longer carries is dropped when the record is next written, so the record does not only grow', () => {
@@ -163,7 +171,7 @@ describe('classifying a run on main against the record', () => {
       ['BIL-014', 'regression'],
       ['BIL-021', 'failure'],
     ])
-    expect(classified.findings[0]?.lastProven).toEqual({ run: 'main-1-1', at: RUN_A.at, sha: SHA_A })
+    expect(classified.findings[0]?.lastProven).toEqual({ run: 'main-1-1', at: RUN_A.at, sha: SHA_A, recordedAt: RUN_A.recordedAt })
     expect(classified.findings[1]?.lastProven).toBeUndefined()
   })
 
@@ -180,7 +188,7 @@ describe('classifying a run on main against the record', () => {
       ...book,
       changes: [{ seq: 1, kind: 'verify', actor: 'run-9', timestamp: '2026-09-28T04:17:00.000Z', reason: 'run run-9: pass', criteria: ['BIL-014'], digest: 'unchecked-here' }],
     }
-    expect(classifyMainRun(failed, older, store).findings[0]?.lastProven).toEqual({ run: 'main-2-1', at: RUN_B.at, sha: SHA_B })
+    expect(classifyMainRun(failed, older, store).findings[0]?.lastProven).toEqual({ run: 'main-2-1', at: RUN_B.at, sha: SHA_B, recordedAt: RUN_B.recordedAt })
     const newer: LedgerDocument = {
       ...book,
       changes: [{ seq: 1, kind: 'verify', actor: 'run-99', timestamp: '2026-10-20T04:17:00.000Z', reason: 'run run-99: pass', criteria: ['BIL-014'], digest: 'unchecked-here' }],

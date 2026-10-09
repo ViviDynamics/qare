@@ -62,12 +62,13 @@ lane, and never in the ledger.**
   was committed, the run, when it was recorded. A criterion that fails keeps
   the pass it had; that revision is where the changes are counted from, in
   the history (the commits the checked revision has that the passing one
-  does not), not by date. A run of an earlier revision does not replace the
-  pass of a later one of the same wording (told by commit date), and when a
-  failure is classified, a pass counts as the last pass only if its revision
-  is behind the checked one in the history: runs do not always finish in the
-  order their revisions landed. A pass of a criterion the ledger no longer
-  carries is dropped at the next write. Each write is one commit carrying the whole record,
+  does not), not by date. Runs do not always finish in the order their
+  revisions landed, and a late run reads its own revision's older ledger, so
+  order is asked of the history on both sides: when it writes, a run leaves
+  every recorded pass whose revision is not behind its own exactly as it is,
+  and when a failure is classified, a pass counts as the last pass only if
+  its revision is behind the checked one. A pass of a criterion the ledger
+  no longer carries is dropped by the next run that is ahead of it. Each write is one commit carrying the whole record,
   so the branch's history is the record's history, and the record is read
   again where it is written: when another run's push lands first, this
   run's passes are applied to what that run wrote, never over it.
