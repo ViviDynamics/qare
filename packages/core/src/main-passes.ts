@@ -74,7 +74,8 @@ function instant(value: unknown, field: string): string {
 }
 
 function criterionId(id: string, field: string): string {
-  if (id === '' || id.includes(':') || /[/\\]|\.\./.test(id) || /[\x00-\x1f\x7f]/.test(id))
+  // `__proto__` is no key a plain object can hold as its own.
+  if (id === '' || id === '__proto__' || id.includes(':') || /[/\\]|\.\./.test(id) || /[\x00-\x1f\x7f]/.test(id))
     fail(field, `${JSON.stringify(id)} is not a ledger criterion id`)
   return id
 }
@@ -154,10 +155,14 @@ export function recordMainPasses(
   ledger: LedgerDocument,
 ): MainPasses {
   const entries = new Map(ledger.entries.map((entry) => [entry.criterion, entry]))
-  const passes = { ...store.passes }
+  // A pass of a criterion the ledger no longer carries can never stand
+  // again (it has no entry to be a pass of), so it is not carried forward:
+  // the record holds what the ledger holds, and does not only grow.
+  const passes = Object.fromEntries(Object.entries(store.passes).filter(([id]) => entries.has(id)))
   for (const id of criteria) {
     const entry = entries.get(id)
     if (entry === undefined || entry.status !== 'active') continue
+    criterionId(id, 'criteria')
     const digest = mainPassEntryDigest(entry)
     const had = passes[id]
     // A run of an earlier revision can finish after a run of a later one. Its

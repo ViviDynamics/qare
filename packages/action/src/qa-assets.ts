@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { MAIN_PASSES_PATH, type RunResult } from '@qare/core'
-import { GitHubClientError, type GitHubClient, type GithubTreeEntry } from './github.js'
+import { GitHubApiError, GitHubClientError, type GitHubClient, type GithubTreeEntry } from './github.js'
 
 /**
  * The screenshot push of ADR-0002: the run's screenshots land on an orphan
@@ -128,7 +128,12 @@ export class GitHubQaAssetsPusher implements ScreenshotPusher {
         await this.client.pushBranch(this.branch, sha, parent)
         return MAIN_PASSES_PATH
       } catch (error) {
-        if (attempt === 3) throw error
+        // Only a race is worth another try: the branch moved (GitHub refuses
+        // an update that is not a fast forward, or a branch that now
+        // exists). Anything else, a refusal for want of access above all, is
+        // real the first time.
+        const raced = error instanceof GitHubApiError && (error.status === 409 || error.status === 422)
+        if (!raced || attempt === 3) throw error
       }
     }
     return MAIN_PASSES_PATH

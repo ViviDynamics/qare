@@ -83,6 +83,19 @@ describe('the record', () => {
     expect(recordMainPasses(later, RUN_A, ['BIL-014'], reworded).passes['BIL-014']).toMatchObject({ sha: SHA_A })
   })
 
+  test('a pass of a criterion the ledger no longer carries is dropped when the record is next written, so the record does not only grow', () => {
+    const before = ledger([entry('BIL-014'), entry('GONE')])
+    const store = recordMainPasses(EMPTY, RUN_A, ['BIL-014', 'GONE'], before)
+    const after = recordMainPasses(store, RUN_B, ['BIL-014'], ledger([entry('BIL-014')]))
+    expect(Object.keys(after.passes)).toEqual(['BIL-014'])
+  })
+
+  test('a criterion id that is no plain key is refused, in the record and from the ledger', () => {
+    const good = serializeMainPasses(recordMainPasses(EMPTY, RUN_A, ['BIL-014'], ledger([entry('BIL-014')])))
+    expect(() => parseMainPasses(good.replace('"BIL-014"', '"__proto__"'))).toThrow(MainPassesError)
+    expect(() => recordMainPasses(EMPTY, RUN_A, ['__proto__'], ledger([entry('__proto__')]))).toThrow(MainPassesError)
+  })
+
   test('is written the same for the same passes, and reads back as it was written', () => {
     const book = ledger([entry('BIL-021'), entry('BIL-014')])
     const store = recordMainPasses(EMPTY, RUN_A, ['BIL-021', 'BIL-014'], book)

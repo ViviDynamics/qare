@@ -133,6 +133,8 @@ export interface FakeGithub {
    * make exactly one push attempt fail, more to exhaust a retry budget.
    */
   failRefPatches: number
+  /** Refuse every ref update with 403, as GitHub does for an identity that may not write contents. */
+  forbidRefWrites: boolean
   close(): Promise<void>
 }
 
@@ -194,6 +196,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
   const state = {
     status: undefined as number | undefined,
     failRefPatches: 0,
+    forbidRefWrites: false,
     app: undefined as FakeApp | undefined,
     nowMs: undefined as number | undefined,
   }
@@ -434,10 +437,14 @@ export function startFakeGithub(): Promise<FakeGithub> {
       const from = commitLog.findIndex((commit) => commit.sha === base)
       const to = commitLog.findIndex((commit) => commit.sha === head)
       if (from === -1 || to === -1) return respond(response, 404, { message: 'no common ancestor' })
+      // On one line of history the head is ahead of the base, behind it, or the same commit.
       const between = commitLog.slice(from + 1, to + 1)
       const perPage = Number(url.searchParams.get('per_page') ?? '30')
       const page = Number(url.searchParams.get('page') ?? '1')
       respond(response, 200, {
+        status: to > from ? 'ahead' : to < from ? 'behind' : 'identical',
+        ahead_by: between.length,
+        behind_by: Math.max(0, from - to),
         total_commits: between.length,
         commits: between.slice((page - 1) * perPage, page * perPage).map((commit) => ({ sha: commit.sha, commit: { message: commit.message } })),
       })
@@ -538,6 +545,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
         if (request.method === 'PATCH') {
           const sha = refs.get(branch)
           if (sha === undefined) return respond(response, 404, { message: 'branch not found' })
+          if (state.forbidRefWrites) return respond(response, 403, { message: 'Resource not accessible by integration' })
           if (state.failRefPatches > 0) {
             state.failRefPatches -= 1
             return respond(response, 422, { message: 'Update is not a fast forward' })
@@ -662,6 +670,12 @@ export function startFakeGithub(): Promise<FakeGithub> {
         },
         set failRefPatches(value: number) {
           state.failRefPatches = value
+        },
+        get forbidRefWrites(): boolean {
+          return state.forbidRefWrites
+        },
+        set forbidRefWrites(value: boolean) {
+          state.forbidRefWrites = value
         },
         close: () =>
           new Promise((resolveClose) => {

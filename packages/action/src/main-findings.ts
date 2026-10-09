@@ -148,7 +148,7 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
   const rules = input.rules ?? BUILTIN_REDACTION_RULES
   const dryRun = input.dryRun === true
   const result = redactResult(input.result, rules)
-  const classified = classifyMainRun(result, input.ledger, input.passes)
+  const classified = classifyMainRun(result, input.ledger, await earlierPasses(client, input))
   const actions: MainFindingAction[] = []
 
   /**
@@ -315,6 +315,36 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
   }
 
   return { actions, flaky: classified.flaky, dryRun, ...(await recordPasses()) }
+}
+
+/**
+ * The recorded passes that are of an earlier revision than the one this run
+ * checked (#295). Runs do not always finish in the order their revisions
+ * landed, and a run can be started again days later: a pass recorded for a
+ * later revision, or for one GitHub can no longer relate to this one, says
+ * nothing about whether the criterion passed before this revision, so it is
+ * no last pass for this run and a failure is not called a regression on its
+ * word. A pass of the checked revision itself stands. Only the passes of
+ * the criteria this run failed are asked about.
+ */
+async function earlierPasses(client: GitHubClient, input: MainFindingsInput): Promise<MainPasses | undefined> {
+  const store = input.passes
+  if (store === undefined) return undefined
+  const failed = new Set(input.result.criteria.filter((criterion) => criterion.outcome === 'failed').map((criterion) => criterion.id))
+  const earlier = new Map<string, boolean>()
+  const passes: MainPasses['passes'] = {}
+  for (const [id, pass] of Object.entries(store.passes)) {
+    if (failed.has(id) && pass.sha !== input.headSha) {
+      let known = earlier.get(pass.sha)
+      if (known === undefined) {
+        known = (await client.listCommitsBetween(pass.sha, input.headSha, 0))?.ahead === true
+        earlier.set(pass.sha, known)
+      }
+      if (!known) continue
+    }
+    passes[id] = pass
+  }
+  return { passes }
 }
 
 /**

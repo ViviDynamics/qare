@@ -262,4 +262,52 @@ test('two runs that record one after the other keep each other\'s passes, and th
   const store = await recorded()
   expect(store?.passes['BIL-014']).toMatchObject({ sha: FAILED_AT })
   expect(store?.passes['BIL-021']).toMatchObject({ sha: FAILED_AT })
+  // And the failure that run filed is no regression: the only pass on record
+  // is of a later revision, so nothing shows the criterion passed before this one.
+  expect(fake.issueMeta.get(100)).toMatchObject({ labels: ['qa-failure'] })
+  expect(fake.issues.get(100)?.body).toContain('Nothing shows it ever passed')
+  expect(fake.issues.get(100)?.body).not.toContain(FAILED_AT)
+})
+
+test('a pass on a revision GitHub cannot relate to the checked one is no last pass either', async () => {
+  // A pass recorded for a revision that is no longer in the history (a force push since).
+  const lost = 'f6'.repeat(20)
+  fake.commitLog.push({ sha: lost, message: 'Lost', date: '2026-10-07T00:00:00Z' })
+  expect(await run(await result('passed', { 'BIL-014': 'proven' }), lost, ['--record-passes', 'true'])).toBe(0)
+  fake.commitLog.splice(fake.commitLog.findIndex((commit) => commit.sha === lost), 1)
+  out = []
+  expect(await run(await result('failed', { 'BIL-014': 'failed' }), PASSED_AT)).toBe(0)
+  expect(out.join('')).toBe('opened #100 for BIL-014 (qa-failure), mentioning nobody\n')
+})
+
+test('a range longer than what is read keeps its newest commits and says it was cut', async () => {
+  expect(await run(await result('passed', { 'BIL-014': 'proven' }), PASSED_AT, ['--record-passes', 'true'])).toBe(0)
+  for (let index = 0; index < 250; index += 1)
+    fake.commitLog.push({ sha: index.toString(16).padStart(40, '9'), message: `Commit ${index}`, date: '2026-10-09T00:00:00Z' })
+  fake.commitLog.push({ sha: FAILED_AT, message: 'The newest (#12)', date: '2026-10-09T09:00:00Z' })
+  fake.commitPulls.set(FAILED_AT, [12])
+  fake.pullRecords.set(12, { title: 'The newest', author: { login: 'alice', type: 'User' }, merged: true, files: [], reviews: [] })
+  const before = fake.calls.length
+  out = []
+  expect(await run(await result('failed', { 'BIL-014': 'failed' }), FAILED_AT)).toBe(0)
+  const body = fake.issues.get(100)?.body ?? ''
+  expect(mentionsIn(body)).toEqual(['alice'])
+  expect(body).toContain('The range is longer than what was read')
+  // Bounded: the comparison is read in a few requests, however long the range.
+  expect(fake.calls.slice(before).filter((call) => call.path.includes('/compare/')).length).toBeLessThanOrEqual(4)
+})
+
+test('a push that is refused for a reason that is not a race is not tried again', async () => {
+  fake.failRefPatches = 0
+  const pusher = new GitHubQaAssetsPusher(client(), PASSED_AT)
+  await pusher.pushMainPasses(async () => '{"first":true}')
+  let builds = 0
+  fake.forbidRefWrites = true
+  await expect(
+    pusher.pushMainPasses(async () => {
+      builds += 1
+      return '{"second":true}'
+    }),
+  ).rejects.toThrow(/403/)
+  expect(builds).toBe(1)
 })

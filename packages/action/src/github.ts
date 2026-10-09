@@ -185,28 +185,45 @@ export class GitHubClient {
    * dates. Undefined when GitHub cannot relate the two (a base that is no
    * longer in the history), so the caller can say so rather than guess.
    */
-  async listCommitsBetween(base: string, head: string, limit: number): Promise<{ commits: Array<{ sha: string; subject: string }>; truncated: boolean } | undefined> {
-    const commits: Array<{ sha: string; subject: string }> = []
-    let total = 0
+  async listCommitsBetween(
+    base: string,
+    head: string,
+    limit: number,
+  ): Promise<{ commits: Array<{ sha: string; subject: string }>; truncated: boolean; ahead: boolean } | undefined> {
+    interface Compared {
+      status?: string
+      ahead_by?: number
+      total_commits?: number
+      commits?: Array<{ sha: string; commit?: { message?: string } }>
+    }
+    const size = 100
+    const page = (number: number): Promise<Compared> =>
+      this.request<Compared>('GET', `/repos/${this.repository}/compare/${base}...${head}`, new URLSearchParams({ per_page: String(size), page: String(number) }))
+    const subjects = (compared: Compared): Array<{ sha: string; subject: string }> =>
+      (Array.isArray(compared.commits) ? compared.commits : []).map((entry) => ({ sha: entry.sha, subject: (entry.commit?.message ?? '').split('\n')[0] ?? '' }))
     try {
-      for (let page = 1; ; page += 1) {
-        const compared = await this.request<{ total_commits?: number; commits?: Array<{ sha: string; commit?: { message?: string } }> }>(
-          'GET',
-          `/repos/${this.repository}/compare/${base}...${head}`,
-          new URLSearchParams({ per_page: '100', page: String(page) }),
-        )
-        total = typeof compared.total_commits === 'number' ? compared.total_commits : total
-        const batch = Array.isArray(compared.commits) ? compared.commits : []
-        for (const entry of batch) commits.push({ sha: entry.sha, subject: (entry.commit?.message ?? '').split('\n')[0] ?? '' })
-        if (batch.length < 100 || commits.length >= total) break
+      const first = await page(1)
+      const total = typeof first.total_commits === 'number' ? first.total_commits : subjects(first).length
+      // Whether the head has anything the base has not: a base that is the
+      // head, or is ahead of it, is no earlier revision.
+      const ahead = (typeof first.ahead_by === 'number' ? first.ahead_by : total) > 0
+      // GitHub lists them oldest first, a page at a time. The newest are the
+      // ones kept, so a long range is read from its last pages and never
+      // whole: the reads are bounded however long the range is.
+      let oldestFirst = subjects(first)
+      // A caller that asks for no commits wants only to know which is ahead.
+      if (total > size && limit > 0) {
+        const last = Math.ceil(total / size)
+        const tail = subjects(await page(last))
+        const before = tail.length < Math.min(limit, total) && last - 1 > 1 ? subjects(await page(last - 1)) : last - 1 === 1 ? oldestFirst : []
+        oldestFirst = [...before, ...tail]
       }
+      const newest = oldestFirst.reverse().slice(0, limit)
+      return { commits: newest, truncated: total > newest.length, ahead }
     } catch (error) {
       if (error instanceof GitHubApiError && error.status === 404) return undefined
       throw error
     }
-    // GitHub lists them oldest first; the newest are the ones kept and shown.
-    const newest = commits.reverse()
-    return { commits: newest.slice(0, limit), truncated: newest.length > limit || total > commits.length }
   }
 
   /**
