@@ -179,6 +179,9 @@ test('a token GitHub answers with more than was asked for is never handed on', a
     { repositories: [{ full_name: 'octocat/qare' }, { full_name: 'octocat/other' }] },
     { repositories: [{ full_name: 'octocat/other' }] },
     { repositories: undefined },
+    // Every repository of the installation, however few it lists.
+    { repository_selection: 'all' },
+    { repository_selection: undefined },
     { permissions: undefined },
   ]) {
     fake.app = { ...fake.app!, answer }

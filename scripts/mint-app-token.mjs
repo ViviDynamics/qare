@@ -135,6 +135,9 @@ const RANK = new Map([
  * is neither read nor write counts as more than either.
  */
 function withinWhatWasAsked(answer, permissions, repository) {
+  // GitHub says twice what the token reaches: whether it is for chosen
+  // repositories or for all of them, and which. Both must say this one.
+  if (answer.repository_selection !== 'selected') return false
   const reach = answer.repositories
   if (!Array.isArray(reach) || reach.length !== 1) return false
   const only = reach[0]
