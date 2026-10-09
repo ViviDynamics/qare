@@ -23,13 +23,13 @@ or change qare's own GitHub-hosted CI. These belong to runner operators and #313
 
 ## Tasks
 
-- [ ] 1. Guard both execution jobs before checkout. Execute the real workflow
+- [x] 1. Guard both execution jobs before checkout. Execute the real workflow
   scripts with self-hosted shared, separate, malformed and ephemeral selectors,
   and GitHub-hosted inputs; prove refusal and unchanged hosted behavior.
-- [ ] 2. Preserve the declaration in detected host evidence and validated results,
+- [x] 2. Preserve the declaration in detected host evidence and validated results,
   render it as a caller assertion, and pass it through both run containers.
   Tests catch loss at detection, result parsing and posted evidence boundaries.
-- [ ] 3. Document dedicated pool labels, per-job daemon and storage isolation,
+- [x] 3. Document dedicated pool labels, per-job daemon and storage isolation,
   ephemeral lifecycle, migration inputs, and independent public opt-in.
 
 ## Validation

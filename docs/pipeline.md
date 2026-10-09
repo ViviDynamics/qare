@@ -99,7 +99,8 @@ UX review".
 | `model-key-env` | `OPENAI_API_KEY` | The environment variable the provider reads its key from. Set it to `ANTHROPIC_API_KEY` with `nare-provider: anthropic`. |
 | `profile` | `.qa` | The directory that holds the QA profile. |
 | `runs-on` | `"ubuntu-latest"` | Where every job runs, as JSON: one label, or a list of labels for your own runners. |
-| `execute-runs-on` | empty | Where execute runs, in the same JSON form, when it should not share runners with the jobs that hold secrets. Empty means `runs-on`. See "Your own runners". |
+| `execute-runs-on` | empty | Where execute and main_execute run, in the same JSON form. Self-hosted execution requires a pool different from `runs-on`, unless `ephemeral-runners` is `true`. Empty still means `runs-on` on GitHub-hosted runners. See "Your own runners". |
+| `ephemeral-runners` | empty | `true` declares that each job gets a fresh machine destroyed afterwards, with no docker daemon, volume or cache shared between jobs. This caller declaration is recorded in `result.json` and posted evidence; qare cannot verify the lifecycle. See "Your own runners". |
 | `self-hosted` | empty | `allow` lets a public repository's pipeline run on self-hosted runners. Empty, collect, plan and execute stop there by name, before any checkout. It changes nothing for a private repository or on hosted runners. See "Your own runners". |
 | `planner-diff-exclude` | empty | Space-separated git pathspecs left out of the planner's copy of the diff, for a diff too large to plan from whole. execute and judge still read the full diff. |
 | `artefacts` | empty | The name of a workflow artifact that holds the builds a client profile installs, uploaded by an earlier job of your workflow. execute downloads it into `qare-artefacts/` at the repository root before the run. See "Profiles that install a build". |
@@ -508,20 +509,52 @@ machine. Why execute is handed the daemon anyway, and what was weighed, is
 recorded in
 [ADR-0005](./decisions/adr-0005-execute-docker-access.md).
 
-So with your own runners, do one of these:
+On a self-hosted runner, execute and main_execute stop before any checkout
+unless you choose one of these two options. This applies to private
+repositories too; `self-hosted: allow` only supplies the independent public
+repository opt-in. The refusal names `execute-runs-on` and
+`ephemeral-runners`. GitHub-hosted runs are unchanged.
 
-- use runners that are created for one job and destroyed after it, or
-- give execute a pool of its own with `execute-runs-on`, one that never
-  runs plan, judge or any other job that holds a secret:
+- **A dedicated execute pool.** Set `execute-runs-on` to labels different
+  from `runs-on`. No other qare job, and no other workflow that holds
+  secrets, may schedule onto that pool. Use disjoint pool labels on both
+  sides, not a broad selector that also matches execute's runners:
 
   ```yaml
-      runs-on: '["self-hosted", "linux", "x64"]'
-      execute-runs-on: '["self-hosted", "linux", "x64", "untrusted"]'
+      runs-on: '["self-hosted", "qare-trusted"]'
+      execute-runs-on: '["self-hosted", "qare-execute"]'
   ```
 
-One pool of long-lived runners for every job works, and is what a single
-`runs-on` gives you, but it is weaker than the rule: treat it as trusting
-every pull request author in the repository with the model key.
+  On Kubernetes this is a separate runner scale set, with its own docker
+  daemon and no volume shared with the trusted pool. A docker-in-docker
+  sidecar per pod gives the daemon that lifetime; a mounted node docker
+  socket does not. qare compares selectors as case-insensitive label sets,
+  so whitespace, ordering, duplicate labels and single-label array syntax
+  cannot disguise the same pool. Different labels are a declaration of
+  isolation, not proof that infrastructure keeps the pools disjoint.
+
+- **Fresh runners for every job.** Set `ephemeral-runners: 'true'` alongside
+  `runs-on`. The declaration means one job per runner (`--ephemeral`, or
+  ARC's one-job-per-runner-pod lifecycle), the machine or pod deleted after
+  that job, and a docker daemon that lives and dies with it. No persistent
+  volume, host path, shared build cache, or node docker socket may be
+  mounted. The pod's service account must reach nothing in the cluster.
+
+  ```yaml
+      runs-on: '["self-hosted", "qare-ephemeral"]'
+      ephemeral-runners: 'true'
+  ```
+
+  qare records `environment.host.ephemeralRunners: true` in `result.json`
+  and names it as a caller declaration in posted evidence. It has not
+  inspected whether the runner was fresh or destroyed afterwards. Only
+  the exact string `true` declares this; empty or `false` still requires
+  a separate execute pool.
+
+A single pool of long-lived runners for all jobs now refuses execution.
+Consumers must supply one of these inputs before upgrading. A pod that
+mounts the node's docker socket or storage shared with trusted jobs meets
+neither option, even when the runner process itself is ephemeral.
 
 Inside each job the boundary holds either way: execute's checkout leaves no
 token on disk, plan's checkout leaves none either, and the model key is
@@ -550,11 +583,13 @@ destroyed after it, or you accept the risk, say so beside the labels:
     with:
       runs-on: '["self-hosted", "linux", "x64"]'
       self-hosted: allow
+      ephemeral-runners: 'true'
 ```
 
 The rule reads three facts: what GitHub Actions says the runner is
 (`RUNNER_ENVIRONMENT`), the repository's visibility, and this input. A
-private repository chooses its own runners and is asked nothing.
+private repository needs no public-repository opt-in, but self-hosted
+execute still requires an isolated pool or the ephemeral declaration.
 
 `qare run` holds the same rule itself, in the same words, and execute hands
 it the same three facts. So a `qare run` you start in a workflow of your own
