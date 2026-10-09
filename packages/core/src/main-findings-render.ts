@@ -8,7 +8,7 @@ import {
   type EnvironmentFinding,
   type MainFinding,
 } from './main-findings.js'
-import { MAX_MENTIONS, type Blame, type BlameRange, type BlamedPerson } from './main-findings-blame.js'
+import { MAX_MENTIONS, isMentionable, type Blame, type BlameRange, type BlamedPerson } from './main-findings-blame.js'
 import { BUILTIN_REDACTION_RULES, redactText, type RedactionRule } from './redact.js'
 import type { RunVerdict } from './result.js'
 
@@ -168,13 +168,24 @@ function rangeSection(finding: MainFinding, blame: Blame, range: BlameRange | un
   return lines
 }
 
+/**
+ * The fallback's names as mentions (#298): the one place a configured handle
+ * is written after an at sign. Each is a login or a team by the time it is
+ * here (the blame keeps nothing else), and one that somehow is not is written
+ * as code, where it mentions nobody.
+ */
+function mentionList(logins: readonly string[]): string {
+  const written = logins.map((login) => (isMentionable(login) ? `@${login}` : codeSpan(login)))
+  return written.length <= 1 ? written.join('') : `${written.slice(0, -1).join(', ')} and ${written.at(-1) ?? ''}`
+}
+
 function audienceSection(blame: Blame): string[] {
   const lines = ['### Who this is for', '']
   if (blame.fallback !== undefined) {
     lines.push(
-      blame.fallback.login === undefined
+      blame.fallback.logins.length === 0
         ? `Nobody is mentioned: ${blame.fallback.why}. Name a person or a team as \`findings.fallback\` in the profile to have an issue like this one reach someone.`
-        : `@${blame.fallback.login} is the fallback this repository's profile names (\`findings.fallback\`). No author is named because ${blame.fallback.why}.`,
+        : `${mentionList(blame.fallback.logins)} ${blame.fallback.logins.length === 1 ? 'is' : 'are'} the fallback this repository's profile names (\`findings.fallback\`). No author is named because ${blame.fallback.why}.`,
     )
   } else {
     // The mentions sit beside the pull requests above, once each: this line repeats none of them.

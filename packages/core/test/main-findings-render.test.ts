@@ -139,6 +139,18 @@ describe('the issue a finding becomes', () => {
     expect(mentionsIn(issue.body)).toEqual(['acme/qa-leads'])
   })
 
+  // #298: several names, each a real mention, and nothing else in the issue is one.
+  test('a fallback of several names mentions each of them once, and the sentence names them all', () => {
+    const never = finding({ kind: 'failure' })
+    delete never.lastProven
+    const two = renderMainFindingIssue(never, blameMainFinding(never, undefined, { fallback: ['acme/employees', 'acme/giobytes'] }), undefined, context())
+    expect(two.body).toContain("@acme/employees and @acme/giobytes are the fallback this repository's profile names (`findings.fallback`)")
+    expect(mentionsIn(two.body)).toEqual(['acme/employees', 'acme/giobytes'])
+    const three = renderMainFindingIssue(never, blameMainFinding(never, undefined, { fallback: ['acme/employees', 'octocat', 'acme/giobytes'] }), undefined, context())
+    expect(three.body).toContain("@acme/employees, @octocat and @acme/giobytes are the fallback this repository's profile names (`findings.fallback`)")
+    expect(mentionsIn(three.body)).toEqual(['acme/employees', 'octocat', 'acme/giobytes'])
+  })
+
   test('with nobody to blame and no fallback it mentions nobody and says how to name one', () => {
     const blamed = range([], { commits: [] })
     const issue = renderMainFindingIssue(finding(), blameMainFinding(finding(), blamed, undefined), blamed, context())
@@ -196,6 +208,11 @@ describe('the environment issue', () => {
     reasons: ['boot did not come up: token=abc123secretvalue'],
     criteria: ['BIL-014', 'BIL-021', 'BIL-030'],
   }
+
+  test('mentions every name of a fallback list (#298)', () => {
+    const down = renderEnvironmentIssue(environment, blameEnvironment({ fallback: ['acme/employees', 'acme/giobytes'] }), context({ verdict: 'blocked' }))
+    expect(mentionsIn(down.body)).toEqual(['acme/employees', 'acme/giobytes'])
+  })
 
   test('is one issue for the whole run, labelled qa-environment, for the fallback', () => {
     const issue = renderEnvironmentIssue(environment, blameEnvironment({ fallback: 'octocat' }), context({ verdict: 'blocked' }))

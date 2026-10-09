@@ -105,14 +105,14 @@ describe('blaming the change', () => {
   test('no record of a pass: the fallback is mentioned and the issue says why no author is named', () => {
     const never = blameMainFinding(unproven('failure'), undefined, { fallback: 'octocat' })
     expect(never.mentions).toEqual(['octocat'])
-    expect(never.fallback).toEqual({ login: 'octocat', why: 'the ledger has no record of this criterion ever passing, so there is no change to blame' })
+    expect(never.fallback).toEqual({ logins: ['octocat'], why: 'the ledger has no record of this criterion ever passing, so there is no change to blame' })
     const unrecorded = blameMainFinding(unproven('regression'), undefined, { fallback: 'octocat' })
     expect(unrecorded.fallback?.why).toBe("the ledger has no record of this criterion's last pass, so there is no range of commits to read")
   })
 
   test('a recorded pass whose range could not be read falls back, saying so', () => {
     const blame = blameMainFinding(finding(), undefined, { fallback: 'octocat' })
-    expect(blame.fallback).toEqual({ login: 'octocat', why: 'the ledger dates its last pass in a way that cannot be read, so there is no range of commits to read' })
+    expect(blame.fallback).toEqual({ logins: ['octocat'], why: 'the ledger dates its last pass in a way that cannot be read, so there is no range of commits to read' })
   })
 
   test('a range that holds no pull request falls back, and no fallback means nobody is mentioned', () => {
@@ -121,7 +121,7 @@ describe('blaming the change', () => {
     expect(direct.fallback?.why).toContain('no pull request brought the 2 commit(s)')
     const quiet = blameMainFinding(finding(), range([], 0), undefined)
     expect(quiet.mentions).toEqual([])
-    expect(quiet.fallback).toEqual({ why: 'no commit landed on the checked revision since the criterion last passed (run `run-9`, `2026-09-28T04:17:00.000Z`)' })
+    expect(quiet.fallback).toEqual({ logins: [], why: 'no commit landed on the checked revision since the criterion last passed (run `run-9`, `2026-09-28T04:17:00.000Z`)' })
   })
 
   test('at most ten people are mentioned on one issue, and the rest are counted', () => {
@@ -142,7 +142,25 @@ describe('blaming the change', () => {
       mentions: ['acme/qa-leads'],
       people: [],
       unmentioned: 0,
-      fallback: { login: 'acme/qa-leads', why: 'an environment that is down is no change of anyone, so there is no author to name' },
+      fallback: { logins: ['acme/qa-leads'], why: 'an environment that is down is no change of anyone, so there is no author to name' },
     })
+  })
+
+  // #298: the fallback is a list, and every name on it hears of a finding nobody can be blamed for.
+  test('a fallback of several people and teams mentions every one of them, in the order the profile lists them', () => {
+    const blame = blameMainFinding(unproven('failure'), undefined, { fallback: ['acme/employees', 'octocat', 'acme/qa-leads'] })
+    expect(blame.mentions).toEqual(['acme/employees', 'octocat', 'acme/qa-leads'])
+    expect(blame.fallback?.logins).toEqual(['acme/employees', 'octocat', 'acme/qa-leads'])
+    expect(blameEnvironment({ fallback: ['acme/employees', 'acme/qa-leads'] }).mentions).toEqual(['acme/employees', 'acme/qa-leads'])
+  })
+
+  test('a fallback is checked again where it is written: what is no handle is never a mention, a repeat is one mention, and the cap holds', () => {
+    // A config that did not come through the profile loader gets no trust for that.
+    const hostile = blameMainFinding(unproven('failure'), undefined, { fallback: ['octocat', 'everyone](x) @here', 'a/b/c', '', 'Octocat', 'acme/qa-leads'] })
+    expect(hostile.mentions).toEqual(['octocat', 'acme/qa-leads'])
+    expect(hostile.fallback?.logins).toEqual(['octocat', 'acme/qa-leads'])
+    const many = blameMainFinding(unproven('failure'), undefined, { fallback: Array.from({ length: 14 }, (_unused, index) => `person-${index}`) })
+    expect(many.mentions).toHaveLength(10)
+    expect(blameMainFinding(unproven('failure'), undefined, { fallback: [] }).mentions).toEqual([])
   })
 })

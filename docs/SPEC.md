@@ -217,7 +217,9 @@ ux:                              # optional: the advisory UX review (#150), whic
   rules:                         # house rules the reviewer holds screens to
     - An error message says what went wrong and what to do next.
 findings:                        # optional: who a finding on main reaches (#154)
-  fallback: acme/qa-leads        # a person or a team, mentioned when no change can be blamed
+  fallback:                      # people and teams, mentioned when no change can be blamed (#298)
+    - acme/qa-leads              # a team
+    - octocat                    # a person; one name alone (fallback: acme/qa-leads) is a list of one
   bots: [release-robot]          # logins whose pull requests are a bot's, beyond the ones GitHub marks
 requires:                        # optional: what the profile requires of the host a run lands on (#76)
   os: linux                      # linux, macos or windows
@@ -1439,8 +1441,15 @@ the executed result and the ledger. No model has a say in any of it.
   rest are left for the next run, and the step says which.
 - **Nobody to blame.** When the ledger has no record of a pass, or nothing
   but direct pushes or bots is in the range, the issue mentions the profile's
-  `findings.fallback`, a person or a team, and says why no author is named.
-  With no fallback it mentions nobody and says how to name one.
+  `findings.fallback` and says why no author is named. The fallback is a
+  list of people and teams in any mix, and every one of them is mentioned
+  (#298); one name written alone is a list of one. Each entry is a GitHub
+  login or `org/team`, and the profile is refused when it loads, naming the
+  entry, for an entry that is neither, a list that names nobody, the same
+  handle twice, or more than ten names. These handles are the only text a
+  profile contributes that is written as a mention, and each is checked
+  again where it is written. With no fallback the issue mentions nobody and
+  says how to name one.
 - **Notified once.** Mentions are written on the new issue and nowhere else.
   The comment a later run leaves mentions nobody, so a failure that recurs
   does not notify again. Notification is GitHub's own, web and email.
