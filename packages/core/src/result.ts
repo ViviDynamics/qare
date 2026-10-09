@@ -475,6 +475,8 @@ function parseHost(value: unknown): HostKind {
   if (typeof value.virtualisation !== 'boolean') fail('environment.host.virtualisation', 'environment.host.virtualisation must be true or false')
   if (value.runner !== undefined && !(RUNNER_KINDS as readonly unknown[]).includes(value.runner))
     fail('environment.host.runner', `unknown runner ${JSON.stringify(value.runner)} (expected "github-hosted" or "self-hosted")`)
+  if (value.ephemeralRunners !== undefined && value.ephemeralRunners !== true)
+    fail('environment.host.ephemeralRunners', 'environment.host.ephemeralRunners must be true when the caller declared ephemeral runners')
   // Both are named in a posted comment: a platform's own name, never markup.
   const name = (entry: unknown, field: string, label: string): string =>
     typeof entry === 'string' && HOST_NAME.test(entry) ? entry : fail(field, `${label} must be a plain name (letters, digits, "_" and "-", at most 32 characters)`)
@@ -483,6 +485,7 @@ function parseHost(value: unknown): HostKind {
     arch: name(value.arch, 'environment.host.arch', 'host architecture'),
     virtualisation: value.virtualisation,
     ...(value.runner === undefined ? {} : { runner: value.runner as RunnerKind }),
+    ...(value.ephemeralRunners === true ? { ephemeralRunners: true as const } : {}),
   }
 }
 

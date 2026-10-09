@@ -69,6 +69,8 @@ export interface HostKind {
   /** Whether hardware virtualisation is usable here. Detected on Linux only. */
   virtualisation: boolean
   runner?: RunnerKind
+  /** Caller assertion: each job gets its own disposable machine, daemon and storage. */
+  ephemeralRunners?: true
 }
 
 /**
@@ -120,12 +122,14 @@ function runnerOf(env: NodeJS.ProcessEnv): RunnerKind | undefined {
 export function detectHost(probes: HostProbes = {}): HostKind {
   const platform = probes.platform ?? process.platform
   const os = PLATFORM_NAMES[platform] ?? platform
-  const runner = runnerOf(probes.env ?? process.env)
+  const env = probes.env ?? process.env
+  const runner = runnerOf(env)
   return {
     os,
     arch: probes.arch ?? process.arch,
     virtualisation: os === 'linux' && (probes.virtualisation ?? kvmProblem)() === undefined,
     ...(runner === undefined ? {} : { runner }),
+    ...(runner === 'self-hosted' && env.QARE_EPHEMERAL_RUNNERS === 'true' ? { ephemeralRunners: true as const } : {}),
   }
 }
 

@@ -105,6 +105,7 @@ test('nare-stream reaches the planner and the verifier containers, and only when
 test('the interface a caller sees: its inputs, their defaults, and its secrets', () => {
   expect(Object.keys(call.inputs).sort()).toEqual([
     'artefacts',
+    'ephemeral-runners',
     'execute-runs-on',
     // #294: the main lane, off by default, and a dry run unless told otherwise.
     'main-lane',
@@ -137,6 +138,7 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
   // Streaming stays off unless the caller asks for it: the default is the
   // empty string, which nare treats as false.
   expect(call.inputs['nare-stream']?.default).toBe('')
+  expect(call.inputs['ephemeral-runners']?.default).toBe('')
   expect(call.inputs['model-key-env']?.default).toBe('OPENAI_API_KEY')
   expect(call.inputs['main-lane']?.default).toBe('')
   expect(call.inputs['main-lane-dry-run']?.default).toBe('true')
