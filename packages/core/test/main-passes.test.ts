@@ -241,6 +241,10 @@ describe('classifying a run on main against the record', () => {
     const basedFinding = classifyMainRun(based, book, store, SHA_A).findings[0]
     expect(basedFinding?.kind).toBe('regression')
     expect(basedFinding?.passedHere).toBeUndefined()
+    // And the pass of this very revision is not its last pass either: there is no change since it to count.
+    expect(basedFinding?.lastProven).toBeUndefined()
+    // With an older pass in the ledger's own history, that one is the last pass.
+    expect(classifyMainRun(based, withVerify, store, SHA_A).findings[0]?.lastProven).toEqual({ run: 'run-9', at: '2026-09-28T04:17:00.000Z' })
     // Checked at another revision, the same pass is an earlier one: a regression.
     expect(classifyMainRun(failed, book, store, SHA_B).findings[0]).toMatchObject({ kind: 'regression', lastProven: { sha: SHA_A } })
     expect(classifyMainRun(failed, book, store, SHA_B).findings[0]?.passedHere).toBeUndefined()

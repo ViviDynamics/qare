@@ -131,7 +131,7 @@ export function mainFindingFingerprint(criterionId: string, outcome: 'failed', e
   return `mf-${digest.slice(0, 16)}`
 }
 
-function lastProvenOf(ledger: LedgerDocument, passes: MainPasses | undefined): Map<string, LastProven> {
+function lastProvenOf(ledger: LedgerDocument, passes: MainPasses | undefined, headSha: string | undefined): Map<string, LastProven> {
   const last = new Map<string, LastProven>()
   for (const change of ledger.changes) {
     if (change.kind !== 'verify') continue
@@ -142,6 +142,9 @@ function lastProvenOf(ledger: LedgerDocument, passes: MainPasses | undefined): M
   // stands for the criterion as the ledger words it today. Where the ledger
   // records one too, the later of the two is the last pass.
   for (const [criterion, pass] of standingMainPasses(passes, ledger)) {
+    // A pass of the revision being checked is never a last pass to count
+    // changes from: there is none since it. `classifyMainRun` reads those.
+    if (pass.sha === headSha) continue
     const recorded = last.get(criterion)
     const later = recorded === undefined || !(Date.parse(recorded.at) > Date.parse(pass.at))
     if (later) last.set(criterion, { run: pass.run, at: pass.at, sha: pass.sha, recordedAt: pass.recordedAt })
@@ -165,7 +168,7 @@ function reasonOf(criterion: CriterionResult): string | undefined {
  * each has a place of its own.
  */
 export function classifyMainRun(result: RunResult, ledger: LedgerDocument, passes?: MainPasses, headSha?: string): MainRunClassification {
-  const lastProven = lastProvenOf(ledger, passes)
+  const lastProven = lastProvenOf(ledger, passes, headSha)
   // The passes of the revision this run checked: a criterion that fails
   // where it passed has no earlier revision to have regressed from.
   const here = new Map(
@@ -195,7 +198,8 @@ export function classifyMainRun(result: RunResult, ledger: LedgerDocument, passe
     // revision on record does not talk over it.
     const passedHere = criterion.regression === true ? undefined : here.get(criterion.id)
     // A pass of this revision stands in the way of any older one: it is the
-    // last pass there is, and it is not one to count changes from.
+    // last pass there is, and it is not one to count changes from. Where the
+    // base side decides instead, an older pass, if there is one, is the last.
     const proven = passedHere === undefined ? lastProven.get(criterion.id) : undefined
     const reason = reasonOf(criterion)
     findings.push({
