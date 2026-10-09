@@ -352,8 +352,12 @@ export interface QaProfile {
  * fallback may be a team (`org/team`).
  */
 export interface ProfileFindings {
-  /** A person (`octocat`) or a team (`acme/qa-leads`), without the at sign. */
-  fallback?: string
+  /**
+   * The people (`octocat`) and teams (`acme/qa-leads`) mentioned when no
+   * change can be blamed (#298), without the at sign, in the order written.
+   * A profile may write one name or a list; one name loads as a list of one.
+   */
+  fallback?: string[]
   /** Logins whose pull requests are a bot's: an orchestrator that opens them with a person's token. */
   bots?: string[]
 }
@@ -1133,17 +1137,50 @@ const GITHUB_TEAM = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}\/[A-Za-z
  * at sign on a public issue, so each value is held to the shape of a login
  * (or, for the fallback, a team): nothing else can ride in as a mention.
  */
+/** The most names a fallback may list: the most one issue mentions (`MAX_MENTIONS`), so none is ever dropped without a word. */
+const MAX_FALLBACK = 10
+
+/**
+ * `findings.fallback` (#298): one name, as it was always written, or a list
+ * of people and teams in any mix. Either way it loads as a list. Each entry
+ * becomes a real mention on an issue, so each is held to the shape of a
+ * login or a team before anything else reads it, and a list that could not
+ * mean what it says (nobody, the same handle twice, more names than one
+ * issue mentions) is refused by the entry rather than quietly trimmed.
+ */
+function parseFallback(value: unknown): string[] {
+  const handle = (entry: unknown, field: string): string => {
+    const named = typeof entry === 'string' ? entry.replace(/^@/, '') : ''
+    if (!GITHUB_LOGIN.test(named) && !GITHUB_TEAM.test(named))
+      fail(field, `${field} must be a GitHub login ("octocat") or a team ("org/team"), not ${JSON.stringify(entry)}`)
+    return named
+  }
+  if (!Array.isArray(value)) {
+    if (typeof value !== 'string')
+      fail('findings.fallback', `findings.fallback must be a GitHub login ("octocat"), a team ("org/team"), or a list of them, not ${JSON.stringify(value)}`)
+    return [handle(value, 'findings.fallback')]
+  }
+  if (value.length === 0)
+    fail('findings.fallback', 'findings.fallback is a list that names nobody; name a person or a team, or leave findings.fallback out to mention nobody')
+  if (value.length > MAX_FALLBACK)
+    fail('findings.fallback', `findings.fallback names ${value.length} people and teams, and one issue mentions at most ${MAX_FALLBACK}; name a team in place of its members`)
+  const names: string[] = []
+  value.forEach((entry: unknown, index) => {
+    const named = handle(entry, `findings.fallback[${index}]`)
+    // GitHub reads a handle without regard to case, so the same one twice is one mention written twice.
+    const first = names.findIndex((seen) => seen.toLowerCase() === named.toLowerCase())
+    if (first !== -1)
+      fail(`findings.fallback[${index}]`, `findings.fallback[${index}] (${JSON.stringify(entry)}) repeats findings.fallback[${first}]; name each person or team once`)
+    names.push(named)
+  })
+  return names
+}
+
 function parseFindings(value: unknown): ProfileFindings {
   if (!isRecord(value)) fail('findings', 'findings must be a YAML object with fallback and bots')
   for (const key of Object.keys(value))
     if (!['fallback', 'bots'].includes(key)) fail(`findings.${key}`, `findings takes fallback and bots, not ${JSON.stringify(key)}`)
-  let fallback: string | undefined
-  if (value.fallback !== undefined) {
-    const named = typeof value.fallback === 'string' ? value.fallback.replace(/^@/, '') : ''
-    if (!GITHUB_LOGIN.test(named) && !GITHUB_TEAM.test(named))
-      fail('findings.fallback', `findings.fallback must be a GitHub login ("octocat") or a team ("org/team"), not ${JSON.stringify(value.fallback)}`)
-    fallback = named
-  }
+  const fallback = value.fallback === undefined ? undefined : parseFallback(value.fallback)
   let bots: string[] | undefined
   if (value.bots !== undefined) {
     if (!Array.isArray(value.bots)) fail('findings.bots', 'findings.bots must be an array of GitHub logins')

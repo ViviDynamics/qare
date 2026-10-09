@@ -110,6 +110,27 @@ test('a dry run prints the title, the labels and the body of each issue it would
   expect(fake.calls.every((call) => call.method === 'GET')).toBe(true)
 })
 
+// #298: a profile that lists several fallbacks, read from its file, and a dry run that names every one.
+test('a dry run prints every name a list of fallbacks would mention, and writes nothing', async () => {
+  await writeFile(join(dir, 'ledger.json'), serializeLedgerDocument([{ criterion: 'BIL-014', status: 'active', source: ['suite:billing'], proof: 'flow' }], []))
+  writeFileSync(
+    join(dir, 'profile', 'config.yml'),
+    `${readFileSync(join(profileFixture, 'config.yml'), 'utf8')}\nfindings:\n  fallback:\n    - acme/employees\n    - acme/giobytes\n`,
+  )
+  expect(await run(['--dry-run', 'true', '--profile', join(dir, 'profile')])).toBe(0)
+  const text = out.join('')
+  expect(text).toContain('would open an issue for BIL-014 (qa-failure), mentioning acme/employees, acme/giobytes\n')
+  expect(text).toContain('@acme/employees and @acme/giobytes are the fallback')
+  expect(fake.issues.size).toBe(0)
+  expect(fake.calls.every((call) => call.method === 'GET')).toBe(true)
+
+  // And a real run writes both as mentions on the issue it opens.
+  out = []
+  expect(await run(['--profile', join(dir, 'profile')])).toBe(0)
+  expect(out.join('')).toBe('opened #100 for BIL-014 (qa-failure), mentioning acme/employees, acme/giobytes\n')
+  expect(fake.issues.get(100)?.body).toContain('@acme/employees and @acme/giobytes are the fallback')
+})
+
 test('a real run prints no issue body: the issue is where it is read', async () => {
   expect(await run(['--run-url', RUN_URL, '--profile', join(dir, 'profile')])).toBe(0)
   expect(out.join('')).toBe('opened #100 for BIL-014 (qa-regression), mentioning alice\n')

@@ -785,9 +785,17 @@ When you have read a dry run:
 
    ```yaml
    findings:
-     fallback: acme/qa-leads   # a person or a team
+     fallback:                 # people and teams, in any mix; each is mentioned
+       - acme/qa-leads
+       - acme/platform
      bots: [release-robot]     # an orchestrator that opens pull requests with a person's token
    ```
+
+   One name alone still loads, as a list of one (`fallback: acme/qa-leads`).
+   Each entry is a GitHub login or `org/team`, with or without the at sign. A
+   profile is refused, naming the entry, for an entry that is neither, an
+   empty list, the same handle twice, or more than ten names. A dry run
+   prints every name it would mention.
 
 2. Pass `main-lane-dry-run: 'false'`. Only that exact word files; anything
    else is a dry run.

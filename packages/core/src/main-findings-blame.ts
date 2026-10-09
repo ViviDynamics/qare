@@ -56,13 +56,14 @@ export interface Blame {
   pointed?: { pull: number; why: string }
   /** Why no pull request is singled out, when several are in the range. */
   unpointed?: string
-  /** Set when no change could be blamed: who is mentioned in an author's place, if the profile names one, and why. */
-  fallback?: { login?: string; why: string }
+  /** Set when no change could be blamed: who is mentioned in an author's place, if the profile names anyone (#298), and why. */
+  fallback?: { logins: string[]; why: string }
 }
 
 /** The findings section of a profile, as blame reads it. */
 export interface BlameConfig {
-  fallback?: string
+  /** The people and teams to mention when no change can be blamed: a list (#298), or one name. */
+  fallback?: string | readonly string[]
   bots?: string[]
 }
 
@@ -150,13 +151,32 @@ function pointedAt(finding: MainFinding, pulls: RangePull[]): Pick<Blame, 'point
   return { pointed: { pull: top.pull, why: `it touched ${top.files.length} file(s) the failing checks cover (${named}${more}), more than any other pull request in the range` } }
 }
 
+/**
+ * The fallback as it may be written on an issue (#298). The profile loader
+ * already refuses a name that is no handle, but this is where a name becomes
+ * a mention, so each is checked again here whoever built the config: what is
+ * not a login or a team is dropped and never written, the same handle twice
+ * is one mention, and no more than an issue's cap of names is kept.
+ */
+function fallbackLogins(config: BlameConfig | undefined): string[] {
+  const configured = config?.fallback
+  const named = configured === undefined ? [] : typeof configured === 'string' ? [configured] : [...configured]
+  const logins: string[] = []
+  for (const name of named) {
+    if (typeof name !== 'string' || !isMentionable(name)) continue
+    if (logins.some((seen) => seen.toLowerCase() === name.toLowerCase())) continue
+    logins.push(name)
+  }
+  return logins.slice(0, MAX_MENTIONS)
+}
+
 function fallbackTo(config: BlameConfig | undefined, why: string): Blame {
-  const login = config?.fallback !== undefined && isMentionable(config.fallback) ? config.fallback : undefined
+  const logins = fallbackLogins(config)
   return {
-    mentions: login === undefined ? [] : [login],
+    mentions: [...logins],
     people: [],
     unmentioned: 0,
-    fallback: { ...(login === undefined ? {} : { login }), why },
+    fallback: { logins, why },
   }
 }
 
