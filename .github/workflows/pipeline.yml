@@ -712,10 +712,12 @@ jobs:
           done
           cluster=false
           port="${KUBERNETES_SERVICE_PORT:-443}"
-          if [ -n "${KUBERNETES_SERVICE_HOST:-}" ] && [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -gt 0 ] && [ "$port" -le 65535 ]; then
+          host="${KUBERNETES_SERVICE_HOST:-}"
+          if [[ "$host" =~ ^[[:alnum:].:-]+$ ]] && [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -gt 0 ] && [ "$port" -le 65535 ]; then
+            case "$host" in *:*) host="[$host]" ;; esac
             # No authentication, redirects, proxy or response body. Even 403
             # proves the internal cluster API was reachable from this job.
-            if curl --disable --noproxy '*' --connect-timeout 1 --max-time 2 --insecure --silent --output /dev/null "https://${KUBERNETES_SERVICE_HOST}:$port/"; then cluster=true; fi
+            if curl --disable --noproxy '*' --connect-timeout 1 --max-time 2 --insecure --silent --output /dev/null "https://$host:$port/"; then cluster=true; fi
           fi
           remote=false
           endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
@@ -1792,10 +1794,12 @@ jobs:
           done
           cluster=false
           port="${KUBERNETES_SERVICE_PORT:-443}"
-          if [ -n "${KUBERNETES_SERVICE_HOST:-}" ] && [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -gt 0 ] && [ "$port" -le 65535 ]; then
+          host="${KUBERNETES_SERVICE_HOST:-}"
+          if [[ "$host" =~ ^[[:alnum:].:-]+$ ]] && [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -gt 0 ] && [ "$port" -le 65535 ]; then
+            case "$host" in *:*) host="[$host]" ;; esac
             # No authentication, redirects, proxy or response body. Even 403
             # proves the internal cluster API was reachable from this job.
-            if curl --disable --noproxy '*' --connect-timeout 1 --max-time 2 --insecure --silent --output /dev/null "https://${KUBERNETES_SERVICE_HOST}:$port/"; then cluster=true; fi
+            if curl --disable --noproxy '*' --connect-timeout 1 --max-time 2 --insecure --silent --output /dev/null "https://$host:$port/"; then cluster=true; fi
           fi
           remote=false
           endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"

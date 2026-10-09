@@ -16,7 +16,7 @@ Out: provisioning runners or proving external isolation from inside a job.
 - Findings name credential variables or paths, never values or file contents.
 - A reachable cluster endpoint is probed without credentials, with a short timeout.
 - Docker access does not prove exclusive ownership; report it as unobservable,
-  and warn on a reachable remote daemon or unrelated running containers.
+  and warn on a reachable remote daemon.
 - Diagnostics report hazards without changing criteria verdicts.
 
 ## Tasks
