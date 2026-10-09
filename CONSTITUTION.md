@@ -88,6 +88,11 @@ Two exceptions to "reaches nothing outside the declared stubs" are decided
 - A suite runs uncontained, by the decision recorded in #224, and its
   evidence says so.
 
-Neither is an exception to the rest of the rule. The step holds no model key
-and no GitHub token whether or not a check is contained, and a check that ran
-uncontained is never recorded as contained.
+These are what happens where a profile has said nothing. What a profile
+itself takes out of containment in as many words (`egress: uncontained`) is
+its own recorded choice, described in ADR-0006 and ADR-0008, and is not
+listed here.
+
+None of this is an exception to the rest of the rule. The step holds no
+model key and no GitHub token whether or not a check is contained, and a
+check that ran uncontained is never recorded as contained.
