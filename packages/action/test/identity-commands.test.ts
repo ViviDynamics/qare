@@ -42,7 +42,7 @@ beforeEach(async () => {
   out = []
   err = []
   // Whatever the machine running the tests carries is not this install's.
-  for (const name of ['QARE_APP_ID', 'QARE_APP_PRIVATE_KEY', 'QARE_APP_TOKEN', 'QARE_APP_SLUG', 'QARE_GITHUB_TOKEN', 'GITHUB_TOKEN']) vi.stubEnv(name, '')
+  for (const name of ['QARE_APP_ID', 'QARE_APP_PRIVATE_KEY', 'QARE_APP_TOKEN', 'QARE_APP_SLUG', 'QARE_APP_TOKEN_EXPIRES_AT', 'QARE_GITHUB_TOKEN', 'GITHUB_TOKEN']) vi.stubEnv(name, '')
 })
 
 afterEach(async () => {
