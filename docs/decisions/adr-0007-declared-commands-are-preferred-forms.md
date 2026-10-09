@@ -1,10 +1,11 @@
 # ADR-0007: a declared command is a form the planner should prefer, not the only form its program may be planned in
 
 Date: 2026-10-08
-Status: provisional, pending the owner's confirmation. Written by the agent
-that shipped issue #270, unattended. It records what the code does today and
-proposes to keep it; the owner has not accepted it, and has not accepted the
-containment gap it describes.
+Status: accepted. The owner confirmed it on 2026-10-09 (issue #270). It was
+written provisionally on 2026-10-08 by the agent that shipped #270,
+unattended, and recorded what the code did then. What the owner confirmed is
+the decision below, on the footing that #286 has shipped; the containment gap
+the first draft described was never accepted, and #286 closed it.
 
 **Read this first.** Under this decision alone, the form a planner picked for
 a command decided whether pull request code ran inside the no-network cell or
@@ -12,9 +13,10 @@ outside it. That gap was never accepted, and **#286 has closed it** (shipped
 in 2026.10.34): the run contains a command check by the program it runs,
 whatever its form, so `node -- check.mjs` and `node check.mjs` land in the
 same cell. This ADR is only about which forms the plan step accepts, and
-rests on #286. What #286 left open is said there and in SPEC ("Containing a
-command"): a profile that declares no command that runs contained has no
-cell, and its command checks run with the step's network.
+rests on #286. What #286 left open (a profile that declares no command that
+runs contained has no cell, and its command checks run with the step's
+network) was decided separately, in
+[ADR-0008](./adr-0008-command-checks-without-a-cell.md) (#287).
 
 ## Context
 
@@ -42,10 +44,10 @@ tools, and its tests, read like the first: a profile that declares
 
 | Option | What it gives | What it costs |
 | --- | --- | --- |
-| 1. Preferred forms (today) | No plan that is accepted today is refused tomorrow. A profile author adds a command to help the planner and loses nothing by it. | A planner may still write a declared program in a form that cannot work, and the run finds out. A form no declaration matches also runs outside the command cell (see "What this costs"). |
+| 1. Preferred forms (today) | No plan that is accepted today is refused tomorrow. A profile author adds a command to help the planner and loses nothing by it. | A planner may still write a declared program in a form that cannot work, and the run finds out. When this ADR was first written, a form no declaration matched also ran outside the command cell; #286 closed that (see "What this cost before #286"). |
 | 2. Only forms | A declared program can be planned only as the profile wrote it, so a malformed use is caught at the plan step for every program, not only grep, and every planned use of a declared program is one the run contains. | Declaring a command silently forbids every other use of its program. A profile that declares `node -- {{path}}` can no longer plan `node --version`, `node --check`, or `node --test`; one that declares a `pnpm` test command can no longer plan `pnpm --version`. Existing consumers' profiles would lose plans they get today, with no change on their side, and the criteria behind them would come back unplannable. |
 
-## Decision (provisional)
+## Decision
 
 Option 1. **A declared command is a form the planner should prefer. A standard
 tool the profile also declares as a command may be planned in any other form
@@ -118,7 +120,7 @@ declared command contains will run in the cell whatever its arguments or
 form. That keeps `node --version` plannable and contains it too, which
 refusing forms at the plan step would not. #286 is also to say what becomes
 of a standard tool no declared command covers, since "uncontained by default" is the thing rule 7
-is about. This ADR proposes option 1 on the footing that #286 ships; without
+is about. This ADR took option 1 on the footing that #286 ships; without
 it, option 2 is the better choice, and "Reversing this" says how to take it.
 
 ## Consequences
