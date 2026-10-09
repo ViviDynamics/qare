@@ -221,6 +221,24 @@ describe('classifying a run on main against the record', () => {
     expect(classifyMainRun(failed, reworded, store).findings.map((finding) => finding.kind)).toEqual(['failure', 'failure'])
   })
 
+  test('a criterion that fails on the very revision it passed on is a failure of that revision, whatever older pass the ledger records', () => {
+    const store = recordMainPasses(EMPTY, RUN_A, ['BIL-014'], book)
+    // The ledger also carries an older verify record for it: it must not be fallen back on.
+    const withVerify: LedgerDocument = {
+      ...book,
+      changes: [{ seq: 1, kind: 'verify', actor: 'run-9', timestamp: '2026-09-28T04:17:00.000Z', reason: 'run run-9: pass', criteria: ['BIL-014'], digest: 'unchecked-here' }],
+    }
+    for (const ledgerOf of [book, withVerify]) {
+      const finding = classifyMainRun(failed, ledgerOf, store, SHA_A).findings[0]
+      expect(finding?.kind).toBe('failure')
+      expect(finding?.lastProven).toBeUndefined()
+      expect(finding?.passedHere).toEqual({ run: 'main-1-1', recordedAt: RUN_A.recordedAt })
+    }
+    // Checked at another revision, the same pass is an earlier one: a regression.
+    expect(classifyMainRun(failed, book, store, SHA_B).findings[0]).toMatchObject({ kind: 'regression', lastProven: { sha: SHA_A } })
+    expect(classifyMainRun(failed, book, store, SHA_B).findings[0]?.passedHere).toBeUndefined()
+  })
+
   test('of a pass the ledger records and one the record holds, the later is the last pass', () => {
     const store = recordMainPasses(EMPTY, RUN_B, ['BIL-014'], book)
     const older: LedgerDocument = {

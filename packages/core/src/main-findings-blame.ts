@@ -191,6 +191,8 @@ export function blameMainFinding(finding: MainFinding, range: BlameRange | undef
   const proven = finding.lastProven
   if (proven !== undefined && range === undefined)
     return fallbackTo(config, 'the ledger dates its last pass in a way that cannot be read, so there is no range of commits to read')
+  if (proven === undefined && finding.passedHere !== undefined)
+    return fallbackTo(config, 'it passed on this same revision, so no change came in between to blame')
   if (proven === undefined || range === undefined)
     return fallbackTo(
       config,

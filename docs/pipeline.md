@@ -829,7 +829,8 @@ What is recorded, where, and by what:
 - **On a dry run** nothing is recorded. The dry run says which criteria it
   would record a pass for, and which it would leave because a later
   revision already holds their pass: it asks the history what a real run
-  would.
+  would, and like a real run it stops when GitHub cannot say when the
+  checked revision was committed.
 - **Permissions.** main_judge declares `contents: write` for this one push.
   The calling job already grants it in the ceiling above, so a caller adds
   nothing. A caller that had narrowed its ceiling to `contents: read` must

@@ -46,6 +46,14 @@ export interface MainFinding {
   criterionId: string
   /** The criterion in plain words, when the ledger carries them. */
   text?: string
+  /**
+   * Set when the record of passes holds a pass of the very revision this
+   * run checked (#295): the criterion passed here, in that run, and fails
+   * here now. Nothing landed in between, so it is a failure of the revision
+   * and not a regression from an earlier one, and no older pass is its
+   * last pass.
+   */
+  passedHere?: { run: string; recordedAt?: string }
   outcome: 'failed'
   /** Why, when something other than the check itself decided it failed. */
   reason?: string
@@ -155,8 +163,13 @@ function reasonOf(criterion: CriterionResult): string | undefined {
  * quarantined check, a waiver, a held question and a refusal file nothing:
  * each has a place of its own.
  */
-export function classifyMainRun(result: RunResult, ledger: LedgerDocument, passes?: MainPasses): MainRunClassification {
+export function classifyMainRun(result: RunResult, ledger: LedgerDocument, passes?: MainPasses, headSha?: string): MainRunClassification {
   const lastProven = lastProvenOf(ledger, passes)
+  // The passes of the revision this run checked: a criterion that fails
+  // where it passed has no earlier revision to have regressed from.
+  const here = new Map(
+    passes === undefined || headSha === undefined ? [] : [...standingMainPasses(passes, ledger)].filter(([, pass]) => pass.sha === headSha),
+  )
   const entries = new Map(ledger.entries.map((entry) => [entry.criterion, entry]))
   const findings: MainFinding[] = []
   const recovered: string[] = []
@@ -176,7 +189,10 @@ export function classifyMainRun(result: RunResult, ledger: LedgerDocument, passe
       continue
     }
     const entry = entries.get(criterion.id)
-    const proven = lastProven.get(criterion.id)
+    const passedHere = here.get(criterion.id)
+    // A pass of this revision stands in the way of any older one: it is the
+    // last pass there is, and it is not one to count changes from.
+    const proven = passedHere === undefined ? lastProven.get(criterion.id) : undefined
     const reason = reasonOf(criterion)
     findings.push({
       kind: proven !== undefined || criterion.regression === true ? 'regression' : 'failure',
@@ -188,6 +204,7 @@ export function classifyMainRun(result: RunResult, ledger: LedgerDocument, passe
       evidence: [...criterion.evidence],
       checks: [...(entry?.checks ?? [])],
       ...(proven === undefined ? {} : { lastProven: proven }),
+      ...(passedHere === undefined ? {} : { passedHere: { run: passedHere.run, recordedAt: passedHere.recordedAt } }),
     })
   }
   const environmentUp = recovered.length > 0 || findings.length > 0

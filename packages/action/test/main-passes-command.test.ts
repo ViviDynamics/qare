@@ -174,6 +174,8 @@ test('a dry run of an older revision says which passes it would record and which
   out = []
   expect(await run(await result('passed', { 'BIL-014': 'proven' }), PASSED_AT, ['--record-passes', 'true', '--dry-run', 'true'])).toBe(0)
   expect(out.join('')).toContain(`would record no pass at ${PASSED_AT.slice(0, 12)}: a later revision already holds the pass of BIL-014\n`)
+  expect(fake.calls.slice(calls).every((call) => call.method === 'GET')).toBe(true)
+  expect(await recorded()).toEqual(before)
 })
 
 // The same revision, run again, fails what it proved the first time. Nothing
@@ -186,6 +188,13 @@ test('a criterion that fails on the very revision it passed on is not a regressi
   expect(await run(await result('failed', { 'BIL-014': 'failed', 'BIL-021': 'proven' }), PASSED_AT, ['--record-passes', 'true'])).toBe(0)
   expect(out.join('')).toContain('opened #100 for BIL-014 (qa-failure), mentioning nobody\n')
   expect(fake.issueMeta.get(100)).toMatchObject({ labels: ['qa-failure'] })
+  // The issue says what is so: it did pass, here, and nothing came in between.
+  const body = fake.issues.get(100)?.body ?? ''
+  expect(body).toContain('It passed on this same revision')
+  expect(body).toContain('nothing landed in between')
+  expect(body).not.toContain('Nothing shows it ever passed')
+  expect(body).not.toContain('no record of this criterion ever passing')
+  expect(body).toContain('it passed on this same revision, so no change came in between to blame')
   // The history is not asked: a revision is not earlier than itself.
   expect(fake.calls.slice(calls).filter((call) => call.path.includes('/compare/'))).toEqual([])
   // The pass it had on this revision stays on record: it did pass.
@@ -193,10 +202,11 @@ test('a criterion that fails on the very revision it passed on is not a regressi
 })
 
 // An id an object would take for its own machinery is a criterion like any other, end to end.
-test('a criterion named __proto__ gets its pass recorded and its regression filed', async () => {
+test('a criterion named __proto__ has its recorded pass read, and its regression filed', async () => {
   const odd: LedgerEntry[] = [{ criterion: '__proto__', status: 'active', source: ['suite:billing'], proof: 'flow', text: 'Odd.', checks: ['suite:billing'] }]
   await writeFile(join(dir, 'ledger.json'), serializeLedgerDocument(odd, []))
   expect(await run(await result('passed', { ['__proto__']: 'proven' }), PASSED_AT, ['--record-passes', 'true'])).toBe(0)
+  expect(Object.keys((await recorded())?.passes ?? {})).toEqual(['__proto__'])
   fake.commitLog.push({ sha: FAILED_AT, message: 'Later (#12)', date: '2026-10-09T09:00:00Z' })
   out = []
   expect(await run(await result('failed', { ['__proto__']: 'failed' }), FAILED_AT)).toBe(0)

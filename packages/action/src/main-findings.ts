@@ -133,9 +133,10 @@ export interface MainFindingsOutcome {
   /**
    * Set when the run was asked to record what it proved (#295): the criteria
    * it proved that a pass can be recorded for, whether the record was written
-   * (never on a dry run, and never when the run proved none), and, when it
-   * was, the criteria whose pass was left as a later revision's run recorded
-   * it: this run's pass of those is not the last, and is not written.
+   * (never on a dry run, and never when the run proved none), and the
+   * criteria whose pass is left as a later revision's run recorded it: this
+   * run's pass of those is not the last, and is not written. A dry run sets
+   * it too, for what a real run would leave.
    */
   passes?: { criteria: string[]; recorded: boolean; kept?: string[] }
 }
@@ -151,7 +152,7 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
   const rules = input.rules ?? BUILTIN_REDACTION_RULES
   const dryRun = input.dryRun === true
   const result = redactResult(input.result, rules)
-  const classified = classifyMainRun(result, input.ledger, await earlierPasses(client, input))
+  const classified = classifyMainRun(result, input.ledger, await earlierPasses(client, input), input.headSha)
   const actions: MainFindingAction[] = []
 
   /**
@@ -360,10 +361,10 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
  * later revision, or for one GitHub can no longer relate to this one, says
  * nothing about whether the criterion passed before this revision, so it is
  * no last pass for this run and a failure is not called a regression on its
- * word. Neither is a pass of the checked revision itself: a criterion that
- * fails where it passed has no earlier revision to have regressed from and
- * no change in between to blame. Only the passes of the criteria this run
- * failed are asked about.
+ * word. A pass of the checked revision itself is kept and the history is
+ * not asked about it: `classifyMainRun` reads it as a pass of this very
+ * revision, which is a failure of the revision and no regression. Only the
+ * passes of the criteria this run failed are asked about.
  */
 async function earlierPasses(client: GitHubClient, input: MainFindingsInput): Promise<MainPasses | undefined> {
   const store = input.passes
@@ -372,9 +373,7 @@ async function earlierPasses(client: GitHubClient, input: MainFindingsInput): Pr
   const earlier = new Map<string, boolean>()
   const passes: Array<[string, MainPasses['passes'][string]]> = []
   for (const [id, pass] of Object.entries(store.passes)) {
-    if (failed.has(id)) {
-      // A revision is not earlier than itself, and the history need not be asked.
-      if (pass.sha === input.headSha) continue
+    if (failed.has(id) && pass.sha !== input.headSha) {
       let known = earlier.get(pass.sha)
       if (known === undefined) {
         known = (await client.listCommitsBetween(pass.sha, input.headSha, 0))?.ahead === true
