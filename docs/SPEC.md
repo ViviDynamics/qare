@@ -995,7 +995,8 @@ how the code has behaved since #286, and the decision changes none of it.
 What the decision accepts, in CONSTITUTION.md's terms: such a check is pull
 request code with the runner's network, so for such a profile command checks
 do not meet the part of rule 7 that says the step "reaches nothing outside
-the declared stubs". The other part of rule 7 holds as it does everywhere:
+the declared stubs". Rule 7 states that exception itself, with the suites
+of #224 beside it (#297). The other part of rule 7 holds as it does everywhere:
 the step holds no model key and no GitHub token, contained or not. The run
 never calls such a check contained (rule 4: the evidence says what
 happened). It is allowed because a cell needs a docker daemon, a Linux host
