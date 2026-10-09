@@ -21,6 +21,11 @@ name: QARE pipeline
 #   - advisory: holds the GitHub identity only (carries out a reply to an
 #     advisory finding: /qa-dismiss records it, /qa-promote files an issue)
 #   - requeue: holds the GitHub identity only (posts /qa on refused PRs)
+#   - main_collect, main_execute, main_judge: the main lane (#294), a run
+#     against the default branch that a caller turns on. The same map:
+#     main_collect holds the GitHub token only, main_execute holds no secrets
+#     at all, and main_judge holds the model key and the GitHub identity in
+#     separate steps. They are at the end of this file, with their own notes.
 #
 # The advisory UX review (#150) adds no holder of the model key: it is the
 # second thing `qare judge` asks the model, in the step that already holds
@@ -200,6 +205,25 @@ on:
           installs nothing the pipeline has to fetch.
         type: string
         default: ''
+      main-lane:
+        description: >-
+          Set to 'true' to run the main lane: on a push to your default
+          branch, on a schedule or on a manual run, the pipeline boots the
+          app, runs the suites your ledger records for its active criteria,
+          judges them, and hands the result to `qare-action main-findings`
+          (findings on main become issues). Your workflow chooses the
+          trigger. Empty, the default, runs none of it.
+        type: string
+        default: ''
+      main-lane-dry-run:
+        description: >-
+          Whether the main lane only says what it would file. Anything but
+          'false' is a dry run: it reads, prints the issues it would open,
+          comment on, reopen or close and whom it would mention, and writes
+          nothing. Set it to 'false' to file for real, once you have read a
+          dry run and named `findings.fallback` in your profile.
+        type: string
+        default: 'true'
       qare-ref:
         description: >-
           The qare revision the pipeline runs: its source for the token-only
@@ -1422,3 +1446,560 @@ jobs:
             echo "first push to main: diffing from the empty tree"
           fi
           node .qare-pipeline/packages/action/dist/index.js requeue --keys-from-diff "$before...$PUSHED" --profile "$PROFILE"
+
+  # The main lane (#294): a run against the default branch, so that findings
+  # on main have a judged result to be filed from (#154). It is the pull
+  # request lane's shape with the pull request taken out:
+  #
+  #   main_collect -> main_execute -> main_judge
+  #
+  # There is no main_plan, and no model plans anything here. The ledger
+  # already records which suite proves each active criterion, so
+  # main_collect reads the plan out of the ledger with code (`qare ledger
+  # plan`). A criterion whose ledger checks name no suite is carried
+  # unplannable and reported unverified with that reason; it is never guessed
+  # at. The verifier still reads the evidence in main_judge, as it does for a
+  # pull request, told that no change is under review.
+  #
+  # Secret-hygiene map (rule 7), the same as above:
+  #   - main_collect: holds the GitHub token only (the checkout; no model key)
+  #   - main_execute: holds no secrets at all     (it runs the repository's code)
+  #   - main_judge:   holds the model key + GitHub identity only, in separate
+  #     steps (the verifier reads evidence and runs nothing; the identity is
+  #     for the step that files)
+  #
+  # Off unless the caller passes `main-lane: 'true'`, and then only on a push,
+  # a schedule or a manual run whose ref is the default branch: a pull
+  # request, a comment, a tag or another branch starts none of it. A dry run
+  # unless the caller also passes `main-lane-dry-run: 'false'`: it reads,
+  # prints the issues it would open and whom it would mention, and writes
+  # nothing.
+  #
+  # The ledger is read and never written (rule 5): a run on main records no
+  # pass and changes no criterion.
+
+  # label: main_collect (GitHub token only)
+  main_collect:
+    name: main collect (GitHub token only)
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    if: >-
+      inputs.main-lane == 'true' &&
+      contains(fromJSON('["push", "schedule", "workflow_dispatch"]'), github.event_name) &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    permissions:
+      contents: read
+    outputs:
+      criteria: ${{ steps.inputs.outputs.criteria }}
+      # The version of the qare this run uses, read from the revision the
+      # caller pinned. main_execute and main_judge pull the images it names.
+      qare-version: ${{ steps.qare.outputs.version }}
+    steps:
+      # The placement guard (#76), as in collect: before any checkout.
+      - name: Keep a public repository's run off a self-hosted runner
+        shell: bash
+        env:
+          QARE_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          QARE_SELF_HOSTED: ${{ inputs.self-hosted }}
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ "${QARE_REPOSITORY_VISIBILITY:-}" = "public" ] && [ "${QARE_SELF_HOSTED:-}" != "allow" ]; then
+            reason="this repository is public and the run landed on a self-hosted runner: a public repository keeps its runs on GitHub-hosted runners, because a runner that outlives its job keeps whatever a pull request left on it; to use your own capacity anyway, opt in with the pipeline input self-hosted: allow"
+            echo "$reason" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$reason"
+            exit 1
+          fi
+      # The revision the run was started for. Its tree supplies the ledger
+      # and nothing here runs it. No token is left in .git/config.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # The pinned qare, like every job that holds the token (rule 7).
+      - name: Check out qare at the pinned revision
+        uses: actions/checkout@v4
+        with:
+          repository: ViviDynamics/qare
+          ref: ${{ inputs.qare-ref }}
+          path: .qare-pipeline
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: .qare-pipeline/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .qare-pipeline/.nvmrc
+          cache: pnpm
+          cache-dependency-path: .qare-pipeline/pnpm-lock.yaml
+      - run: pnpm --dir .qare-pipeline install --frozen-lockfile
+      - run: pnpm --dir .qare-pipeline build
+      - name: Read the version of the pinned qare
+        id: qare
+        shell: bash
+        env:
+          QARE_REF: ${{ inputs.qare-ref }}
+        run: |
+          set -euo pipefail
+          # A release tag names its own images (#242): a release the
+          # automation computed carries the last stamped version in its
+          # package.json, and reading that ran an older release's images.
+          # Any other revision is named by the version it carries.
+          if [[ "$QARE_REF" =~ ^20[0-9]{2}\.[0-9]+\.[0-9]+$ ]]; then
+            version="$QARE_REF"
+          else
+            version="$(jq -r '.version // empty' .qare-pipeline/package.json)"
+          fi
+          if [ -z "$version" ]; then
+            echo "the qare revision this pipeline pinned carries no version in its package.json, so no image can be named for it" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      # The plan, read out of the ledger by code: every active criterion,
+      # checked by the suites its ledger checks name. The ledger sits in the
+      # profile directory (`<profile>/ledger.json`). A ledger that holds no
+      # active criterion has nothing to run: this says so, every later job
+      # skips, and the run stays green, as collect does for a change that
+      # states no criteria. A ledger that cannot be read fails here (rule 6).
+      - name: Plan from the checks the ledger records
+        id: inputs
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          rm -f plan.json
+          node .qare-pipeline/packages/cli/dist/index.js ledger plan --ledger "$PROFILE" --out plan.json | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ ! -f plan.json ]; then
+            echo "criteria=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "criteria=present" >> "$GITHUB_OUTPUT"
+      - name: Upload the plan
+        if: steps.inputs.outputs.criteria == 'present'
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-inputs
+          path: plan.json
+          if-no-files-found: error
+
+  # label: main_execute (no secrets)
+  main_execute:
+    name: main execute (no secrets)
+    needs: main_collect
+    if: needs.main_collect.outputs.criteria == 'present'
+    # Its own runners when the caller names them, as execute: this is the job
+    # that runs the repository's code.
+    runs-on: ${{ fromJSON(inputs.execute-runs-on || inputs.runs-on) }}
+    env:
+      QARE_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+      QARE_SELF_HOSTED: ${{ inputs.self-hosted }}
+    outputs:
+      # Where the evidence was uploaded, the one place an issue may link to
+      # (rule 4). Empty when nothing was uploaded.
+      evidence-url: ${{ steps.evidence.outputs.artifact-url }}
+      # The verdict the run recorded. Empty when the run wrote no
+      # result.json: then nothing was evaluated and main_judge is skipped.
+      verdict: ${{ steps.recorded.outputs.verdict }}
+    steps:
+      # The placement guard (#76), as in execute.
+      - name: Keep a public repository's run off a self-hosted runner
+        shell: bash
+        env:
+          QARE_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          QARE_SELF_HOSTED: ${{ inputs.self-hosted }}
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] && [ "${QARE_REPOSITORY_VISIBILITY:-}" = "public" ] && [ "${QARE_SELF_HOSTED:-}" != "allow" ]; then
+            reason="this repository is public and the run landed on a self-hosted runner: a public repository keeps its runs on GitHub-hosted runners, because a runner that outlives its job keeps whatever a pull request left on it; to use your own capacity anyway, opt in with the pipeline input self-hosted: allow"
+            echo "$reason" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$reason"
+            exit 1
+          fi
+      # The revision the run was started for, with no token left in
+      # .git/config (rule 7): the run's container is handed this workspace
+      # and executes the repository's code.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read the profile's flavour
+        id: flavour
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$PROFILE/config.yml" ]; then
+            echo "flavour=core" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          flavour="$(awk -F'[: ]+' '$1=="flavour"{print $2; exit}' "$PROFILE/config.yml")"
+          echo "flavour=${flavour:-core}" >> "$GITHUB_OUTPUT"
+      - name: Pull the flavour image
+        id: image
+        shell: bash
+        env:
+          QARE_VERSION: ${{ needs.main_collect.outputs.qare-version }}
+          FLAVOUR: ${{ steps.flavour.outputs.flavour }}
+        run: |
+          set -euo pipefail
+          # The runtime is pipeline infrastructure, resolved exactly as plan
+          # and judge resolve theirs (#88, rule 7): from the qare revision
+          # the caller pinned, which collect read, and never from the pull
+          # request's tree. For qare itself that revision is the base commit,
+          # so a version-bumping pull request ships green before its release
+          # exists, and the release lands after the merge, from the default
+          # branch's history (#194).
+          ref="ghcr.io/vividynamics/qare-$FLAVOUR:$QARE_VERSION"
+          if ! docker pull "$ref"; then
+            echo "no published qare-$FLAVOUR image for version $QARE_VERSION ($ref): the image family publishes when a release is tagged, so tag a release and the images job in qare's .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
+      - name: Download the plan
+        uses: actions/download-artifact@v4
+        with:
+          name: main-inputs
+          path: .
+      # The runner's docker, found exactly as execute finds it (#209, #256).
+      - name: Find the runner's docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The client and its plugins are copied under RUNNER_TEMP and
+          # mounted from there (#256). A mount is resolved by the daemon, and
+          # a runner in a pod has a daemon that does not see the runner's
+          # /usr/bin: mounted by its installed path the client arrives as an
+          # empty directory. RUNNER_TEMP is somewhere the daemon must already
+          # see, or no workspace would mount either.
+          stage="$RUNNER_TEMP/qare-docker-client"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          cp -L "$(command -v docker)" "$stage/docker"
+          docker_access=(--network host -v "$stage/docker:/usr/bin/docker:ro")
+          # The plugins are named by the CLI that will run them, so they are
+          # found wherever this runner keeps them. buildx travels with
+          # compose because a compose file that builds its image builds
+          # through it.
+          plugins=""
+          while read -r plugin path; do
+            case "$plugin" in compose | buildx) ;; *) continue ;; esac
+            [ -f "$path" ] || continue
+            cp -L "$path" "$stage/docker-$plugin"
+            docker_access+=(-v "$stage/docker-$plugin:/usr/local/lib/docker/cli-plugins/docker-$plugin:ro")
+            plugins="$plugins $plugin"
+          done < <(docker info --format '{{range .ClientInfo.Plugins}}{{println .Name .Path}}{{end}}' 2>/dev/null || true)
+          case "$plugins" in
+            *compose*) ;;
+            *) echo "this runner's docker has no compose plugin, so a profile that boots its app with compose cannot boot it here: install docker compose v2 on the runner" >> "$GITHUB_STEP_SUMMARY" ;;
+          esac
+          # The daemon is the one this runner's docker talks to: its socket,
+          # opened as the group that owns it, or the endpoint it is reached
+          # at when that is not a socket.
+          endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
+          case "$endpoint" in
+            unix://*)
+              socket="${endpoint#unix://}"
+              docker_access+=(-v "$socket:/var/run/docker.sock" --group-add "$(stat -L -c %g "$socket")")
+              ;;
+            ?*) docker_access+=(-e "DOCKER_HOST=$endpoint") ;;
+            *) echo "this runner's docker names no daemon endpoint, so a profile that boots its app cannot reach one" >> "$GITHUB_STEP_SUMMARY" ;;
+          esac
+          # One argument a line, for the steps that start the run's container.
+          printf '%s\n' "${docker_access[@]}" > "$RUNNER_TEMP/qare-docker-access"
+      - name: Run the plan on main
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          HEAD_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -uo pipefail
+          # One revision, so one side: the base and the head are the same
+          # commit, the run says there is nothing to compare, and whether a
+          # failure is a regression is the ledger's record to say, not a
+          # second boot's. The run is named for the workflow run, so two
+          # runs on one runner never share a compose project.
+          mapfile -t docker_access < "$RUNNER_TEMP/qare-docker-access"
+          code=0
+          docker run --rm \
+            -u "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e QARE_IMAGE_REF="$IMAGE_REF" \
+            -e QARE_IMAGE_DIGEST="$IMAGE_DIGEST" \
+            -e QARE_RUNNER_ENVIRONMENT="${RUNNER_ENVIRONMENT:-}" \
+            -e QARE_REPOSITORY_VISIBILITY="${QARE_REPOSITORY_VISIBILITY:-}" \
+            -e QARE_SELF_HOSTED="${QARE_SELF_HOSTED:-}" \
+            -v "$PWD:$PWD" -w "$PWD" \
+            "${docker_access[@]}" \
+            "$IMAGE_REF" qare run --plan plan.json \
+            --id "main-${RUN_ID}-${RUN_ATTEMPT}" \
+            --repo "$PWD" \
+            --base "$HEAD_SHA" \
+            --head "$HEAD_SHA" \
+            --profile "$PROFILE" \
+            --evidence evidence || code=$?
+          # 3 is refused, as in execute: the run wrote result.json and
+          # main_judge reports it. Without one, exit 3 is something else.
+          if [ "$code" -eq 3 ]; then
+            if [ ! -f evidence/result.json ]; then
+              echo "exit 3 but no evidence/result.json: not a refusal qare recorded" >&2
+              exit 1
+            fi
+            reason="$(jq -r '[.criteria[] | select(.outcome == "unverified") | .reason][0] // empty' evidence/result.json 2>/dev/null || true)"
+            echo "qare refused this run: ${reason:-it recorded no reason}; main_judge will report it" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # 2 is blocked. When every unverified criterion is one the ledger
+          # records no suite for, nothing was disproven and nothing is wrong
+          # with the revision: the gap is in the ledger. Any other blocked
+          # run, an environment that would not boot, is a fault and stays red.
+          if [ "$code" -eq 2 ] && [ -f evidence/result.json ] && jq -e '
+            .verdict == "blocked" and
+            ([.criteria[] | select(.outcome == "unverified")] | length) > 0 and
+            ([.criteria[] | select(.outcome == "unverified")
+              | (.reason // "")
+              | startswith("the planner could not plan it")] | all)
+          ' evidence/result.json > /dev/null; then
+            echo "verdict blocked: every criterion left unverified is one the ledger records no suite for; main_judge reports them, and nothing was disproven" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          exit "$code"
+      # A failed or blocked verdict leaves this job red, and main_judge still
+      # files it. Read whatever the run step exited with.
+      - name: Read the recorded verdict
+        id: recorded
+        if: always()
+        shell: bash
+        # No readable verdict fails this step (rule 6): judge is skipped, so a
+        # run that recorded nothing must not leave the pipeline green with
+        # nothing posted. The report job names the failure instead.
+        run: |
+          verdict=""
+          if [ -f evidence/result.json ]; then
+            verdict="$(jq -r '.verdict // empty' evidence/result.json 2>/dev/null || true)"
+          fi
+          if [ -z "$verdict" ]; then
+            echo "no readable verdict in evidence/result.json: the run recorded none, so nothing was evaluated" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+      # Teardown is the caller's job (#53), and this pipeline is the caller.
+      - name: Tear down what the run booted
+        if: always()
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: |
+          set -euo pipefail
+          if [ ! -d evidence ] || [ ! -f "$RUNNER_TEMP/qare-docker-access" ]; then
+            echo "no run evidence: nothing was booted, so there is nothing to tear down"
+            exit 0
+          fi
+          mapfile -t projects < <(find evidence -name 'isolation*.json' -exec jq -r '.project // empty' {} + | sort -u)
+          if [ "${#projects[@]}" -eq 0 ]; then
+            echo "the run booted no compose project"
+            exit 0
+          fi
+          mapfile -t docker_access < "$RUNNER_TEMP/qare-docker-access"
+          if ! docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              -v "$PWD:$PWD" -w "$PWD" \
+              "${docker_access[@]}" \
+              "$IMAGE_REF" qare reap "${projects[@]}"; then
+            echo "::warning::qare reap failed: a compose project this run booted may still be running on the runner (${projects[*]}); the verdict is unaffected"
+          fi
+      # Evidence is published, so it is redacted before it leaves this
+      # machine, and a redaction that fails uploads nothing (#52).
+      - name: Redact the evidence
+        id: redact
+        if: always()
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          if [ ! -d evidence ]; then
+            echo "no evidence directory: nothing to redact or upload"
+            exit 0
+          fi
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD:$PWD" -w "$PWD" \
+            "$IMAGE_REF" qare redact --evidence evidence --profile "$PROFILE"
+      - name: Upload evidence (raw results + result.json)
+        id: evidence
+        if: always() && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-evidence
+          path: evidence/
+          if-no-files-found: ignore
+
+  # label: main_judge (model key + GitHub token only)
+  main_judge:
+    name: main judge (model key + GitHub token only)
+    needs: [main_collect, main_execute]
+    # Whenever main_execute recorded a verdict, including a failed or blocked
+    # one that left it red: that verdict is what there is to file.
+    if: always() && needs.main_execute.outputs.verdict != ''
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    permissions:
+      # issues: write files, comments on, reopens and closes qare's own
+      # issues; pull-requests: read and contents: read read the range a
+      # finding blames. Nothing is pushed: the lane links the evidence
+      # artifact and puts no screenshot on qa-assets.
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      # The revision the run checked, for the ledger and the profile, which
+      # are read as data. This job holds secrets, so it never installs or
+      # runs the tree, and no token is left in .git/config: the verifier
+      # step holds the model key and must not find one. The checkout also
+      # gives a runner that outlives its jobs a clean workspace.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pull the core image
+        id: image
+        shell: bash
+        env:
+          QARE_VERSION: ${{ needs.main_collect.outputs.qare-version }}
+        run: |
+          set -euo pipefail
+          ref="ghcr.io/vividynamics/qare-core:$QARE_VERSION"
+          if ! docker pull "$ref"; then
+            echo "no published qare-core image for version $QARE_VERSION ($ref): the image family publishes when a release is tagged, so tag a release and the images job in qare's .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
+      - name: Download the plan
+        uses: actions/download-artifact@v4
+        with:
+          name: main-inputs
+          path: .
+      # Evidence gets a directory of its own: it is the verifier's file root.
+      - name: Download the evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: main-evidence
+          path: evidence
+      - name: Read the executed verdict
+        id: executed
+        shell: bash
+        run: echo "verdict=$(jq -r '.verdict' evidence/result.json)" >> "$GITHUB_OUTPUT"
+      # The verifier, as for a pull request: it reads the evidence of each
+      # proven criterion and may overturn it, so a suite that exited 0
+      # without showing its criterion does not close an issue. It is told
+      # there is no change under review (--no-diff). A refused run executed
+      # nothing, so qare judge asks no model for it.
+      - name: Judge the result on main
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          MODEL_KEY: ${{ secrets.model-key }}
+          MODEL_KEY_ENV: ${{ inputs.model-key-env }}
+          NARE_PROVIDER: ${{ inputs.nare-provider }}
+          NARE_BASE_URL: ${{ inputs.nare-base-url }}
+          NARE_MODEL: ${{ inputs.nare-model }}
+          NARE_STREAM: ${{ inputs.nare-stream }}
+          QARE_MAX_OUTPUT_TOKENS: ${{ inputs.max-output-tokens }}
+          QARE_VERIFY_BATCH_SIZE: ${{ inputs.verify-batch-size }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          # Fail closed (rule 6), as the judge step does: no key, no verifier.
+          if [ -z "$MODEL_KEY" ]; then
+            echo "no model key: the calling workflow must pass the model-key secret (secrets: model-key), and the secret it names must be set in the repository" | tee -a "$GITHUB_STEP_SUMMARY" >&2
+            exit 1
+          fi
+          if [[ ! "$MODEL_KEY_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            echo "model-key-env must be the name of an environment variable (got '$MODEL_KEY_ENV')" | tee -a "$GITHUB_STEP_SUMMARY" >&2
+            exit 1
+          fi
+          # In a file, never in this shell: see the plan step.
+          key_file="$(mktemp "$RUNNER_TEMP/model-key.XXXXXX")"
+          trap 'rm -f "$key_file"' EXIT
+          chmod 600 "$key_file"
+          printf '%s=%s\n' "$MODEL_KEY_ENV" "$MODEL_KEY" > "$key_file"
+          model_env=(--env-file "$key_file" -e NARE_PROVIDER -e NARE_MODEL)
+          if [ -n "$NARE_STREAM" ]; then
+            model_env+=(-e NARE_STREAM)
+          fi
+          if [ -n "$QARE_MAX_OUTPUT_TOKENS" ]; then
+            model_env+=(-e QARE_MAX_OUTPUT_TOKENS)
+          fi
+          if [ -n "$QARE_VERIFY_BATCH_SIZE" ]; then
+            model_env+=(-e QARE_VERIFY_BATCH_SIZE)
+          fi
+          if [ -n "$NARE_BASE_URL" ]; then
+            model_env+=(-e NARE_BASE_URL)
+          fi
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            "${model_env[@]}" \
+            -v "$PWD:$PWD" -w "$PWD" \
+            "$IMAGE_REF" qare judge \
+            --result evidence/result.json --outDir . \
+            --plan plan.json --no-diff \
+            --nare /usr/local/bin/nare --profile "$PROFILE"
+      # What the run found, filed as issues (#154), or on a dry run only
+      # printed. This step holds the identity and no model key, and runs
+      # nothing from the repository: the judged result, the ledger and the
+      # profile are read as data. Anything but the exact word `false` is a
+      # dry run, so a typo cannot turn filing on.
+      - name: File what the run on main found
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QARE_APP_ID: ${{ secrets.app-id }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_GITHUB_TOKEN: ${{ secrets.personal-access-token }}
+          MAIN_LANE_DRY_RUN: ${{ inputs.main-lane-dry-run }}
+          HEAD_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVIDENCE_URL: ${{ needs.main_execute.outputs.evidence-url }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          dry=true
+          if [ "${MAIN_LANE_DRY_RUN:-}" = "false" ]; then
+            dry=false
+          fi
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            -e GITHUB_TOKEN \
+            -e QARE_APP_ID \
+            -e QARE_APP_PRIVATE_KEY \
+            -e QARE_GITHUB_TOKEN \
+            -e GITHUB_REPOSITORY \
+            -v "$PWD:$PWD" -w "$PWD" \
+            --entrypoint node \
+            "$IMAGE_REF" /opt/qare/lib/packages/action/dist/index.js main-findings \
+            --result judged-result.json --ledger "$PROFILE" --profile "$PROFILE" \
+            --sha "$HEAD_SHA" --run-url "$RUN_URL" --artifact-url "$EVIDENCE_URL" \
+            --dry-run "$dry" > main-findings.txt
+          cat main-findings.txt
+          {
+            if [ "$dry" = "true" ]; then
+              echo "### Findings on main: dry run"
+              echo
+              echo "Nothing was filed and nobody was mentioned. This is what a real run would have done; pass \`main-lane-dry-run: 'false'\` to file."
+            else
+              echo "### Findings on main"
+            fi
+            echo
+            echo '````text'
+            cat main-findings.txt
+            echo '````'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload main judge artifacts (judged-result.json, main-findings.txt)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-judge-artifacts
+          path: |
+            judged-result.json
+            main-findings.txt
+          if-no-files-found: ignore

@@ -88,14 +88,14 @@ function expectCallFits(job: Job, where: string): void {
 
 test('the pipeline is a reusable workflow and nothing else triggers it', () => {
   expect(Object.keys(pipeline.on)).toEqual(['workflow_call'])
-  for (const job of ['collect', 'plan', 'execute', 'judge', 'report', 'advisory', 'requeue'])
+  for (const job of ['collect', 'plan', 'execute', 'judge', 'report', 'advisory', 'requeue', 'main_collect', 'main_execute', 'main_judge'])
     expect(Object.keys(pipeline.jobs)).toContain(job)
 })
 
 // #248: the planner and the verifier run inside a container, so the input has
 // to reach the step's environment and then cross into the container by name.
 test('nare-stream reaches the planner and the verifier containers, and only when set', () => {
-  for (const [job, name] of [['plan', 'Plan the QA run'], ['judge', 'Judge the result']] as const) {
+  for (const [job, name] of [['plan', 'Plan the QA run'], ['judge', 'Judge the result'], ['main_judge', 'Judge the result on main']] as const) {
     const step = pipeline.jobs[job]?.steps?.find((candidate) => candidate.name === name)
     expect(step?.env?.NARE_STREAM, name).toBe('${{ inputs.nare-stream }}')
     expect(step?.run?.replace(/\s+/g, ' '), name).toContain('if [ -n "$NARE_STREAM" ]; then model_env+=(-e NARE_STREAM) fi')
@@ -106,6 +106,9 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
   expect(Object.keys(call.inputs).sort()).toEqual([
     'artefacts',
     'execute-runs-on',
+    // #294: the main lane, off by default, and a dry run unless told otherwise.
+    'main-lane',
+    'main-lane-dry-run',
     'max-output-tokens',
     'model-key-env',
     'nare-base-url',
@@ -133,6 +136,8 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
   // empty string, which nare treats as false.
   expect(call.inputs['nare-stream']?.default).toBe('')
   expect(call.inputs['model-key-env']?.default).toBe('OPENAI_API_KEY')
+  expect(call.inputs['main-lane']?.default).toBe('')
+  expect(call.inputs['main-lane-dry-run']?.default).toBe('true')
   // A JSON string, because an input cannot be a list: one label or several.
   expect(JSON.parse(String(call.inputs['runs-on']?.default))).toBe('ubuntu-latest')
   // The model key and the identity (#61), each by name. A fork pull request
@@ -154,9 +159,10 @@ test('every input the pipeline declares is one it reads', () => {
 test('the streaming choice reaches the plan and judge containers', () => {
   const text = readFileSync(join(repoRoot, PIPELINE), 'utf8')
   // Both model steps map the input into the step environment...
-  expect([...text.matchAll(/NARE_STREAM: \$\{\{ inputs\.nare-stream \}\}/g)].length, 'plan and judge both set NARE_STREAM').toBe(2)
+  // (three model steps: plan, judge, and the main lane's judge, #294)
+  expect([...text.matchAll(/NARE_STREAM: \$\{\{ inputs\.nare-stream \}\}/g)].length, 'plan, judge and main_judge all set NARE_STREAM').toBe(3)
   // ...and the docker boundary forwards it, or nare never sees it.
-  expect([...text.matchAll(/model_env\+=\(-e NARE_STREAM\)/g)].length, 'plan and judge both forward it into their containers').toBe(2)
+  expect([...text.matchAll(/model_env\+=\(-e NARE_STREAM\)/g)].length, 'plan, judge and main_judge all forward it into their containers').toBe(3)
 })
 
 // #254: the output budget is the caller's to raise, and it has to cross the
@@ -164,8 +170,8 @@ test('the streaming choice reaches the plan and judge containers', () => {
 test('the output budget reaches the plan and judge containers, and only when set', () => {
   expect(call.inputs['max-output-tokens']?.default).toBe('')
   const text = readFileSync(join(repoRoot, PIPELINE), 'utf8')
-  expect([...text.matchAll(/QARE_MAX_OUTPUT_TOKENS: \$\{\{ inputs\.max-output-tokens \}\}/g)].length, 'plan and judge both set it').toBe(2)
-  for (const [job, name] of [['plan', 'Plan the QA run'], ['judge', 'Judge the result']] as const) {
+  expect([...text.matchAll(/QARE_MAX_OUTPUT_TOKENS: \$\{\{ inputs\.max-output-tokens \}\}/g)].length, 'plan, judge and main_judge all set it').toBe(3)
+  for (const [job, name] of [['plan', 'Plan the QA run'], ['judge', 'Judge the result'], ['main_judge', 'Judge the result on main']] as const) {
     const step = pipeline.jobs[job]?.steps?.find((candidate) => candidate.name === name)
     expect(step?.run?.replace(/\s+/g, ' '), name).toContain('if [ -n "$QARE_MAX_OUTPUT_TOKENS" ]; then model_env+=(-e QARE_MAX_OUTPUT_TOKENS) fi')
   }
@@ -214,10 +220,14 @@ test('the plan concurrency reaches the plan container, and only when set', () =>
 test('the verifier batch size reaches the judge container, and only when set', () => {
   expect(call.inputs['verify-batch-size']?.default).toBe('')
   const text = readFileSync(join(repoRoot, PIPELINE), 'utf8')
-  expect([...text.matchAll(/QARE_VERIFY_BATCH_SIZE: \$\{\{ inputs\.verify-batch-size \}\}/g)].length, 'the judge step alone sets it').toBe(1)
+  expect([...text.matchAll(/QARE_VERIFY_BATCH_SIZE: \$\{\{ inputs\.verify-batch-size \}\}/g)].length, 'the two steps that verify set it: judge, and the judge of the main lane (#294)').toBe(2)
   const judge = pipeline.jobs.judge?.steps?.find((candidate) => candidate.name === 'Judge the result')
   expect(judge?.env?.QARE_VERIFY_BATCH_SIZE).toBe('${{ inputs.verify-batch-size }}')
   expect(judge?.run?.replace(/\s+/g, ' ')).toContain('if [ -n "$QARE_VERIFY_BATCH_SIZE" ]; then model_env+=(-e QARE_VERIFY_BATCH_SIZE) fi')
+  const mainJudge = pipeline.jobs.main_judge?.steps?.find((candidate) => candidate.name === 'Judge the result on main')
+  expect(mainJudge?.env?.QARE_VERIFY_BATCH_SIZE).toBe('${{ inputs.verify-batch-size }}')
+  expect(mainJudge?.run?.replace(/\s+/g, ' ')).toContain('if [ -n "$QARE_VERIFY_BATCH_SIZE" ]; then model_env+=(-e QARE_VERIFY_BATCH_SIZE) fi')
+  expect(mainJudge?.run).not.toContain('QARE_PLAN_BATCH_SIZE')
   // The planner plans and verifies nothing: each step is handed its own setting and not the other's.
   const plan = pipeline.jobs.plan?.steps?.find((candidate) => candidate.name === 'Plan the QA run')
   expect(plan?.run).not.toContain('QARE_VERIFY_BATCH_SIZE')
@@ -228,9 +238,11 @@ test('the verifier batch size reaches the judge container, and only when set', (
 
 test('the caller chooses the runners for every job', () => {
   for (const [id, job] of Object.entries(pipeline.jobs)) {
-    if (id === 'execute') continue
+    // The two jobs that run repository code: the pull request's, and the default branch's (#294).
+    if (id === 'execute' || id === 'main_execute') continue
     expect(job['runs-on'], `${id} must run where the caller says`).toBe('${{ fromJSON(inputs.runs-on) }}')
   }
+  expect(pipeline.jobs.main_execute?.['runs-on']).toBe('${{ fromJSON(inputs.execute-runs-on || inputs.runs-on) }}')
   // Rule 7 is about machines: execute runs pull request code, so a caller
   // whose runners outlive a job can keep it off the ones that hold secrets.
   expect(pipeline.jobs.execute?.['runs-on']).toBe('${{ fromJSON(inputs.execute-runs-on || inputs.runs-on) }}')
@@ -262,9 +274,12 @@ test('the model key reaches the planner and the verifier steps, and nothing else
       expect(text, `${id}: ${step.name ?? ''} holds the model key and the identity`).not.toMatch(IDENTITY)
     }
   }
-  expect(holders).toEqual(['plan: Plan the QA run', 'judge: Judge the result'])
-  // The job that runs pull request code holds nothing at all.
+  // The planner, the verifier, and the verifier of a run on main (#294). No
+  // model plans on main, so the main lane adds one holder, not two.
+  expect(holders).toEqual(['plan: Plan the QA run', 'judge: Judge the result', 'main_judge: Judge the result on main'])
+  // The jobs that run repository code hold nothing at all.
   expect(JSON.stringify(pipeline.jobs.execute)).not.toMatch(/secrets\.|github\.token/)
+  expect(JSON.stringify(pipeline.jobs.main_execute)).not.toMatch(/secrets\.|github\.token/)
 })
 
 test('the identity reaches the steps that post, and nothing else', () => {
@@ -302,10 +317,12 @@ test('the identity reaches the steps that post, and nothing else', () => {
     'report: Report the failure on the pull request',
     'advisory: Carry out the advisory replies',
     'requeue: Re-queue refused PRs unblocked by the merged stubs',
+    // #294: the one step of the main lane that writes to GitHub, or on a dry run only reads.
+    'main_judge: File what the run on main found',
   ])
   // Rule 7: the identity exists where qare posts, never where the pull
   // request's code runs, and never beside the planner.
-  for (const id of ['collect', 'plan', 'execute']) expect(JSON.stringify(pipeline.jobs[id]), id).not.toMatch(IDENTITY)
+  for (const id of ['collect', 'plan', 'execute', 'main_collect', 'main_execute']) expect(JSON.stringify(pipeline.jobs[id]), id).not.toMatch(IDENTITY)
 })
 
 test('the sweep posts as the same identity, in its publishing step alone', () => {
@@ -321,7 +338,7 @@ test('the sweep posts as the same identity, in its publishing step alone', () =>
 })
 
 test('a missing model key stops the run by name rather than reaching the model without one', () => {
-  for (const [id, name] of [['plan', 'Plan the QA run'], ['judge', 'Judge the result']] as const) {
+  for (const [id, name] of [['plan', 'Plan the QA run'], ['judge', 'Judge the result'], ['main_judge', 'Judge the result on main']] as const) {
     const step = pipeline.jobs[id]?.steps?.find((candidate) => candidate.name === name)
     expect(step?.run, `${id} must fail closed without a key`).toMatch(/if \[ -z "\$MODEL_KEY" \]; then\n(?:.*\n)*?\s*exit 1\n/)
     expect(step?.run).toContain('model-key')
@@ -333,7 +350,7 @@ test('the model key never becomes a variable of the step that passes it on', () 
   // step's own shell, a name like IMAGE_REF would put the key where an image
   // name is expected. It goes to the container in a file outside the
   // workspace, and the shell's own variables stay what they were.
-  for (const [id, name] of [['plan', 'Plan the QA run'], ['judge', 'Judge the result']] as const) {
+  for (const [id, name] of [['plan', 'Plan the QA run'], ['judge', 'Judge the result'], ['main_judge', 'Judge the result on main']] as const) {
     const run = pipeline.jobs[id]?.steps?.find((candidate) => candidate.name === name)?.run ?? ''
     expect(run, id).not.toMatch(/export "\$MODEL_KEY_ENV/)
     expect(run, id).toContain('key_file="$(mktemp "$RUNNER_TEMP/model-key.XXXXXX")"')
