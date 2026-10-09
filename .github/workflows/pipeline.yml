@@ -1968,6 +1968,13 @@ jobs:
           if [ "${MAIN_LANE_DRY_RUN:-}" = "false" ]; then
             dry=false
           fi
+          # What the run amounted to is said first, with every criterion it
+          # left unverified and why: "nothing to file" must never read as
+          # "everything passed" when a criterion was not checked at all.
+          jq -r '
+            "the run on main: verdict \(.verdict); \([.criteria[] | select(.outcome == "proven")] | length) proven, \([.criteria[] | select(.outcome == "failed")] | length) failed, \([.criteria[] | select(.outcome == "unverified")] | length) unverified",
+            (.criteria[] | select(.outcome == "unverified") | "  unverified \(.id): \(.reason // "no reason recorded")")
+          ' judged-result.json > main-findings.txt
           docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
             -e GITHUB_TOKEN \
             -e QARE_APP_ID \
@@ -1979,7 +1986,7 @@ jobs:
             "$IMAGE_REF" /opt/qare/lib/packages/action/dist/index.js main-findings \
             --result judged-result.json --ledger "$PROFILE" --profile "$PROFILE" \
             --sha "$HEAD_SHA" --run-url "$RUN_URL" --artifact-url "$EVIDENCE_URL" \
-            --dry-run "$dry" > main-findings.txt
+            --dry-run "$dry" >> main-findings.txt
           cat main-findings.txt
           {
             if [ "$dry" = "true" ]; then

@@ -210,6 +210,7 @@ test('a dry run is the default, and only the exact word false turns filing on', 
   mkdirSync(bin)
   writeFileSync(join(bin, 'docker'), '#!/bin/sh\necho "docker $*"\n')
   chmodSync(join(bin, 'docker'), 0o755)
+  writeFileSync(join(dir, 'judged-result.json'), JSON.stringify({ schemaVersion: '1', verdict: 'passed', criteria: [{ id: 'sign-in', outcome: 'proven', evidence: [] }] }))
   const asked = (value: string | undefined): string => {
     const summary = join(dir, `summary-${String(value)}.md`)
     const env: Record<string, string> = {
@@ -232,6 +233,55 @@ test('a dry run is the default, and only the exact word false turns filing on', 
   }
   for (const value of [undefined, '', 'true', 'TRUE', 'False', 'FALSE', ' false', 'false ', 'no', '0', 'off']) expect(asked(value), JSON.stringify(value)).toBe('true')
   expect(asked('false')).toBe('false')
+})
+
+test('the filing step says what the run amounted to before it says what it files, so nothing to file never reads as all passed', () => {
+  const file = step('main_judge', 'File what the run on main found')
+  const dir = mkdtempSync(join(tmpdir(), 'qare-main-amount-'))
+  const bin = join(dir, 'bin')
+  mkdirSync(bin)
+  // main-findings, for a run in which nothing failed: it has nothing to file.
+  writeFileSync(join(bin, 'docker'), '#!/bin/sh\necho "dry run: nothing is written"\necho "no finding on main to file, update or close"\n')
+  chmodSync(join(bin, 'docker'), 0o755)
+  writeFileSync(
+    join(dir, 'judged-result.json'),
+    JSON.stringify({
+      schemaVersion: '1',
+      verdict: 'blocked',
+      criteria: [
+        { id: 'sign-in', outcome: 'proven', evidence: ['checks/sign-in/0/stdout.txt'] },
+        { id: 'receipts', outcome: 'unverified', reason: 'the planner could not plan it: its ledger checks name no suite, so the runner has nothing to execute for it' },
+        { id: 'exports', outcome: 'unverified', reason: 'verifier gave no readable answer' },
+      ],
+    }),
+  )
+  const summary = join(dir, 'summary.md')
+  const outcome = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', file.run ?? ''], {
+    cwd: dir,
+    env: { PATH: `${bin}:${process.env.PATH ?? ''}`, IMAGE_REF: 'image', HEAD_SHA: 'c0ffee0123456789c0ffee0123456789c0ffee01', RUN_URL: 'run', EVIDENCE_URL: '', PROFILE: '.qa', GITHUB_STEP_SUMMARY: summary },
+    encoding: 'utf8',
+  })
+  expect(outcome.status, outcome.stderr).toBe(0)
+  const expected = [
+    'the run on main: verdict blocked; 1 proven, 0 failed, 2 unverified',
+    '  unverified receipts: the planner could not plan it: its ledger checks name no suite, so the runner has nothing to execute for it',
+    '  unverified exports: verifier gave no readable answer',
+    'dry run: nothing is written',
+    'no finding on main to file, update or close',
+    '',
+  ].join('\n')
+  expect(readFileSync(join(dir, 'main-findings.txt'), 'utf8')).toBe(expected)
+  // The same text is the job summary, fenced, so nothing in it renders or mentions.
+  expect(readFileSync(summary, 'utf8')).toContain(`\`\`\`\`text\n${expected}\`\`\`\`\n`)
+
+  // A judged result that cannot be read stops the step: nothing is filed from a guess.
+  writeFileSync(join(dir, 'judged-result.json'), '{"verdict":')
+  const broken = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', file.run ?? ''], {
+    cwd: dir,
+    env: { PATH: `${bin}:${process.env.PATH ?? ''}`, IMAGE_REF: 'image', HEAD_SHA: 'c0ffee0123456789c0ffee0123456789c0ffee01', RUN_URL: 'run', EVIDENCE_URL: '', PROFILE: '.qa', GITHUB_STEP_SUMMARY: summary },
+    encoding: 'utf8',
+  })
+  expect(broken.status).not.toBe(0)
 })
 
 test('main_collect plans from the ledger without a model: criteria present with an active criterion, none without, red when the ledger will not load', () => {

@@ -742,7 +742,10 @@ A failed verdict leaves main_execute red, as it does on a pull request, and
 main_judge still reports it. What a dry run would have filed is in
 main_judge's job summary and in `main-findings.txt` in the
 `main-judge-artifacts` artifact: for each issue it would open, the title, the
-labels and the body, mentions and all.
+labels and the body, mentions and all. It opens with what the run amounted
+to (the verdict, and how many criteria were proven, failed and left
+unverified) and names each unverified criterion with its reason, so "nothing
+to file" never reads as "everything passed".
 
 ### What your ledger must hold
 
