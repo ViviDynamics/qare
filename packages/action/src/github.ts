@@ -182,7 +182,9 @@ export class GitHubClient {
   /**
    * The commits `head` has that `base` does not, newest first (#295): what
    * landed after a revision, as the history has it and whatever the commits'
-   * dates. `ahead` says whether `base` is an earlier revision of `head`.
+   * dates. `ahead` says whether `base` is an earlier revision of `head`,
+   * and `behind` whether it is a later one; neither, when they are the same
+   * commit or have diverged.
    * Undefined when GitHub cannot relate the two (a base that is no
    * longer in the history), so the caller can say so rather than guess.
    */
@@ -190,7 +192,7 @@ export class GitHubClient {
     base: string,
     head: string,
     limit: number,
-  ): Promise<{ commits: Array<{ sha: string; subject: string }>; truncated: boolean; ahead: boolean } | undefined> {
+  ): Promise<{ commits: Array<{ sha: string; subject: string }>; truncated: boolean; ahead: boolean; behind: boolean } | undefined> {
     interface Compared {
       status?: string
       ahead_by?: number
@@ -226,7 +228,10 @@ export class GitHubClient {
         oldestFirst = [...before, ...tail]
       }
       const newest = oldestFirst.reverse().slice(0, limit)
-      return { commits: newest, truncated: limit > 0 && total > newest.length, ahead }
+      // Whether the head is an earlier revision of the base: the other way round.
+      const behind =
+        typeof first.status === 'string' ? first.status === 'behind' : (first.behind_by ?? 0) > 0 && (first.ahead_by ?? total) === 0
+      return { commits: newest, truncated: limit > 0 && total > newest.length, ahead, behind }
     } catch (error) {
       if (error instanceof GitHubApiError && error.status === 404) return undefined
       throw error

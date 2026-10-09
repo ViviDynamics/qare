@@ -460,6 +460,7 @@ export {
   MAIN_PASSES_SCHEMA_VERSION,
   MainPassesError,
   mainPassEntryDigest,
+  mainPassesPath,
   mainPassesToRecord,
   parseMainPasses,
   recordMainPasses,

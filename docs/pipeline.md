@@ -794,7 +794,10 @@ mentions their authors.
 What is recorded, where, and by what:
 
 - **Where.** One file, `passes/main.json`, on the orphan `qa-assets` branch,
-  beside the screenshots and the run metrics. Each run that proves something
+  beside the screenshots and the run metrics. A repository with several
+  profiles has one record for each, so one profile's run never drops
+  another's passes: a profile other than `.qa` keeps its own at
+  `passes/<its directory, with "-" for "/">/main.json`. Each run that proves something
   adds one commit carrying the whole record, so the branch's history is the
   record's history. The ledger and your default branch are never written,
   and nothing lands as a commit your build would react to: filter your
@@ -805,13 +808,16 @@ What is recorded, where, and by what:
   the revision the changes are counted from: the commits your default
   branch has that the passing revision does not, as the history has them,
   whatever their dates. Runs do not always finish in the order their
-  revisions landed, so both sides ask the history: a run leaves untouched
-  every recorded pass whose revision is not behind its own (it neither
-  replaces nor drops it), and a failure is a regression only against a pass
-  of an earlier revision. A pass recorded for a later revision, or for one
-  rewritten out of the branch, is no last pass for that run. A pass of a
-  criterion the ledger no longer carries is dropped by the next run that is
-  ahead of it. The issue also says when the pass was recorded. If a criterion's text, proof or
+  revisions landed, so both sides ask the history. A run leaves untouched
+  every recorded pass of a revision that is ahead of its own (it neither
+  replaces nor drops it, and says so), and a failure is a regression only
+  against a pass of an earlier revision. A pass recorded for a later
+  revision, or for one rewritten out of the branch, is no last pass for
+  that run; the next run that proves the criterion replaces a pass of a
+  rewritten revision. A pass of a criterion the ledger no longer carries is
+  dropped by the next run that is not behind it. The order a criterion's
+  checks are listed in is no part of its wording. The issue also says when
+  the pass was recorded. If a criterion's text, proof or
   checks change in the ledger, its pass no longer stands until a run proves
   the new wording.
 - **By what.** main_judge's filing step, after everything is filed. It holds
@@ -911,6 +917,7 @@ your own that already has a judged result of a run on your default branch:
 | `--dry-run true` | Reads, writes nothing, and prints what a real run would open, comment on, reopen or close, and whom it would mention, with the title, the labels and the body of each issue it would open. Run it first. |
 | `--record-passes true` | Records what the run proved, in `passes/main.json` on the `qa-assets` branch, after filing: see "Regressions" above. Only the exact word records, and a dry run only says what it would record. |
 | `--branch` | The branch the record of passes is read from and written to, and screenshots are pushed to. `qa-assets` when left out. |
+| `--passes-profile` | The profile directory whose record of passes this is, for a repository with several profiles. Left out, or `.qa`, it is `passes/main.json`. |
 
 The command reads the record of passes on every run, whether or not it
 records, because that record is what makes a failure a regression. So the

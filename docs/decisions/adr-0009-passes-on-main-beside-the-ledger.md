@@ -65,10 +65,14 @@ lane, and never in the ledger.**
   does not), not by date. Runs do not always finish in the order their
   revisions landed, and a late run reads its own revision's older ledger, so
   order is asked of the history on both sides: when it writes, a run leaves
-  every recorded pass whose revision is not behind its own exactly as it is,
-  and when a failure is classified, a pass counts as the last pass only if
-  its revision is behind the checked one. A pass of a criterion the ledger
-  no longer carries is dropped by the next run that is ahead of it. Each write is one commit carrying the whole record,
+  every recorded pass of a revision ahead of its own exactly as it is, and
+  when a failure is classified, a pass counts as the last pass only if its
+  revision is behind the checked one. A pass of a revision the branch no
+  longer has is neither: it is no last pass, and the next run that proves
+  the criterion replaces it. A pass of a criterion the ledger no longer
+  carries is dropped by the next run that is not behind it. A repository
+  with several profiles keeps one record for each profile, so one profile's
+  run never drops another's passes. Each write is one commit carrying the whole record,
   so the branch's history is the record's history, and the record is read
   again where it is written: when another run's push lands first, this
   run's passes are applied to what that run wrote, never over it.

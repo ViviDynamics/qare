@@ -131,10 +131,12 @@ export interface MainFindingsOutcome {
   dryRun: boolean
   /**
    * Set when the run was asked to record what it proved (#295): the criteria
-   * a pass is recorded for, and whether it was written (never on a dry run,
-   * and never when the run proved none).
+   * it proved that a pass can be recorded for, whether the record was written
+   * (never on a dry run, and never when the run proved none), and, when it
+   * was, the criteria whose pass was left as a later revision's run recorded
+   * it: this run's pass of those is not the last, and is not written.
    */
-  passes?: { criteria: string[]; recorded: boolean }
+  passes?: { criteria: string[]; recorded: boolean; kept?: string[] }
 }
 
 interface OwnIssue {
@@ -156,7 +158,7 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
    * issue never names a pass this same run wrote. A criterion that failed
    * keeps the pass it had. A dry run writes nothing and says what it would.
    */
-  const recordPasses = async (): Promise<{ passes?: { criteria: string[]; recorded: boolean } }> => {
+  const recordPasses = async (): Promise<{ passes?: { criteria: string[]; recorded: boolean; kept?: string[] } }> => {
     const record = input.recordPasses
     if (record === undefined) return {}
     const criteria = mainPassesToRecord(input.result, input.ledger)
@@ -165,16 +167,21 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
     // Built on the record as it stands where it is written, not as it was
     // read when the step started: another run may have recorded since. One
     // that cannot be read there is refused, and nothing is written over it.
+    let kept: string[] = []
     await record.write(async (current) => {
       const store = current === undefined ? { passes: {} } : parseMainPasses(current)
-      // Which recorded revisions this run's is ahead of, asked of the history
-      // and not of the clock. A pass of any other revision is left as it is.
-      const behind = new Set<string>()
+      // Which recorded revisions are ahead of this run's, asked of the
+      // history and not of the clock: a pass of one of those is left as it
+      // is. Every other recorded pass this run may write over, a revision
+      // the branch no longer has among them, so the record is never stuck.
+      const ahead = new Set<string>()
       for (const sha of new Set(Object.values(store.passes).map((pass) => pass.sha)))
-        if (sha !== input.headSha && (await client.listCommitsBetween(sha, input.headSha, 0))?.ahead === true) behind.add(sha)
-      return serializeMainPasses(recordMainPasses(store, run, criteria, input.ledger, (sha) => behind.has(sha)))
+        if (sha !== input.headSha && (await client.listCommitsBetween(sha, input.headSha, 0))?.behind === true) ahead.add(sha)
+      const next = recordMainPasses(store, run, criteria, input.ledger, (sha) => !ahead.has(sha))
+      kept = criteria.filter((id) => next.passes[id]?.sha !== input.headSha)
+      return serializeMainPasses(next)
     })
-    return { passes: { criteria, recorded: true } }
+    return { passes: { criteria: criteria.filter((id) => !kept.includes(id)), recorded: true, kept } }
   }
 
   const mine = (issue: GitHubIssue): boolean => issue.user?.login === input.author

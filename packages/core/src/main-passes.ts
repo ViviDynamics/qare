@@ -26,7 +26,7 @@ import type { RunResult } from './result.js'
  */
 
 export const MAIN_PASSES_SCHEMA_VERSION = '1'
-/** Where the record sits on the `qa-assets` branch. */
+/** Where the record sits on the `qa-assets` branch, for the usual profile. */
 export const MAIN_PASSES_PATH = 'passes/main.json'
 
 /** The last pass of one criterion on the default branch. */
@@ -57,6 +57,24 @@ export class MainPassesError extends Error {
 
 function fail(field: string, message: string): never {
   throw new MainPassesError(`main passes: ${field}: ${message}`)
+}
+
+/**
+ * Where a profile's record sits on the `qa-assets` branch. A repository may
+ * carry several profiles, each with a ledger of its own, and a run drops
+ * the passes its ledger no longer carries: so each profile has a record of
+ * its own, and one profile's run never reads or drops another's passes. The
+ * usual profile (`.qa`, or none named) keeps `passes/main.json`. Any other
+ * is named by its directory, as one path segment: nothing in it may climb
+ * out of `passes/` or hide.
+ */
+export function mainPassesPath(profile?: string): string {
+  const given = profile ?? ''
+  const named = given.replace(/^(\.\/)+/, '').replace(/\/+$/, '')
+  if (given === '' || named === '.qa') return MAIN_PASSES_PATH
+  if (named === '' || named.split('/').some((segment) => segment === '' || segment === '.' || segment === '..') || !/^[A-Za-z0-9._/-]+$/.test(named))
+    fail('profile', `${JSON.stringify(profile)} cannot name a record: a profile directory is repository-relative, of letters, digits, ".", "_", "-" and "/", with no "." or ".." segment`)
+  return `passes/${named.replace(/\//g, '-')}/main.json`
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -127,7 +145,8 @@ export function serializeMainPasses(store: MainPasses): string {
  * touches only those leaves a pass standing.
  */
 export function mainPassEntryDigest(entry: LedgerEntry): string {
-  const proven = { criterion: entry.criterion, text: entry.text ?? null, proof: entry.proof, checks: [...(entry.checks ?? [])] }
+  // The checks as a set: the order they are listed in is no part of what was proven.
+  const proven = { criterion: entry.criterion, text: entry.text ?? null, proof: entry.proof, checks: [...new Set(entry.checks ?? [])].sort() }
   return `sha256:${createHash('sha256').update(JSON.stringify(proven), 'utf8').digest('hex')}`
 }
 
@@ -154,13 +173,16 @@ export function recordMainPasses(
   criteria: readonly string[],
   ledger: LedgerDocument,
   /**
-   * Whether a recorded revision is behind this run's in the history. Runs do
-   * not always finish in the order their revisions landed, and a run can be
+   * Whether this run's revision may speak for a recorded one: true unless
+   * the recorded revision is ahead of this run's in the history. Runs do not
+   * always finish in the order their revisions landed, and a run can be
    * started again days later: such a run reads its own revision's ledger,
    * which may word a criterion differently and may lack criteria added
-   * since. A pass whose revision is not behind this run's is therefore left
-   * exactly as it is, neither replaced nor dropped. Left out, every recorded
-   * revision is taken to be behind: the caller vouches for the order.
+   * since. A pass of a revision ahead of this run's is therefore left
+   * exactly as it is, neither replaced nor dropped. A pass of a revision the
+   * history no longer relates to this one (rewritten away) is not ahead, and
+   * is replaced like any other. Left out, no recorded revision is taken to
+   * be ahead: the caller vouches for the order.
    */
   behind: (sha: string) => boolean = () => true,
 ): MainPasses {

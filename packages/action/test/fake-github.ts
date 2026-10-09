@@ -513,7 +513,10 @@ export function startFakeGithub(): Promise<FakeGithub> {
     if (parts[0] === 'repos' && parts[3] === 'git' && parts[4] === 'trees' && parts.length === 5) {
       if (request.method !== 'POST') return respond(response, 404, { message: 'no such tree route' })
       const sha = objectSha('tree')
-      trees.set(sha, (body as { tree: FakeTreeEntry[] }).tree)
+      // As GitHub builds one: the entries given, laid over the base tree's when one is named.
+      const payload = body as { tree: FakeTreeEntry[]; base_tree?: string }
+      const base = payload.base_tree === undefined ? [] : (trees.get(payload.base_tree) ?? [])
+      trees.set(sha, [...base.filter((kept) => !payload.tree.some((entry) => entry.path === kept.path)), ...payload.tree])
       respond(response, 201, { sha })
       return
     }

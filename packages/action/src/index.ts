@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { resolve } from 'node:path'
-import { FileLedgerStore, loadProfile, loadResult, MAIN_PASSES_PATH, parseFleetConfig, parseMainPasses, redactionRules, RUN_VERDICTS, valueRules, VERSION, type MainPasses } from '@qare/core'
+import { FileLedgerStore, loadProfile, loadResult, mainPassesPath, parseFleetConfig, parseMainPasses, redactionRules, RUN_VERDICTS, valueRules, VERSION, type MainPasses } from '@qare/core'
 import { GitHubClient, GitHubClientError } from './github.js'
 import { GitHubQaAssetsPusher, QA_ASSETS_BRANCH } from './qa-assets.js'
 import { fileRefusalStubs, GitHubStubIssuePoster } from './stub-issues.js'
@@ -346,7 +346,16 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
   // yet is an ordinary no. One that cannot be read stops the step here, by
   // name, before anything is filed and before anything is written over it.
   const branch = flags.string('branch') || QA_ASSETS_BRANCH
-  const stored = await client.getContents(MAIN_PASSES_PATH, branch)
+  // A repository with several profiles keeps a record for each, so one
+  // profile's run never drops another's passes: --passes-profile names the
+  // profile directory. Left out, or `.qa`, it is the one usual record.
+  let passesPath: string
+  try {
+    passesPath = mainPassesPath(flags.string('passes-profile') || undefined)
+  } catch (error) {
+    throw new GitHubClientError(`--passes-profile ${JSON.stringify(flags.string('passes-profile'))} cannot name a record of passes (${error instanceof Error ? error.message : String(error)})`)
+  }
+  const stored = await client.getContents(passesPath, branch)
   // GitHub answers 404 for a file that is not there and for a repository
   // whose contents this identity may not read, alike. "No record" is only
   // believed from an identity that can read the revision the run checked:
@@ -354,14 +363,14 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
   const committed = stored === undefined || (record && !dryRun) ? await client.getCommitDate(headSha) : undefined
   if (stored === undefined && committed === undefined)
     throw new GitHubClientError(
-      `no record of passes was found at ${MAIN_PASSES_PATH} on the ${branch} branch, and this identity cannot read ${headSha} either, so a record that is not there cannot be told from one it may not read: nothing is filed and nothing is recorded; give the identity read access to the repository's contents`,
+      `no record of passes was found at ${passesPath} on the ${branch} branch, and this identity cannot read ${headSha} either, so a record that is not there cannot be told from one it may not read: nothing is filed and nothing is recorded; give the identity read access to the repository's contents`,
     )
   let passes: MainPasses | undefined
   try {
     passes = stored === undefined ? undefined : parseMainPasses(stored.toString('utf8'))
   } catch (error) {
     throw new GitHubClientError(
-      `the record of passes at ${MAIN_PASSES_PATH} on the ${branch} branch cannot be read, so nothing is filed and nothing is recorded (${error instanceof Error ? error.message : String(error)}); restore the file from the branch's history, or remove it to start the record again`,
+      `the record of passes at ${passesPath} on the ${branch} branch cannot be read, so nothing is filed and nothing is recorded (${error instanceof Error ? error.message : String(error)}); restore the file from the branch's history, or remove it to start the record again`,
     )
   }
   // A pass names when its revision was committed, so a revision GitHub
@@ -389,7 +398,7 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
       ? {
           at: committedAt,
           run: runUrl ?? `run ${process.env.GITHUB_RUN_ID ?? 'unidentified'}-${process.env.GITHUB_RUN_ATTEMPT ?? '1'}`,
-          write: async (build) => void (await new GitHubQaAssetsPusher(client, headSha, { branch }).pushMainPasses(build)),
+          write: async (build) => void (await new GitHubQaAssetsPusher(client, headSha, { branch }).pushMainPasses(build, passesPath)),
         }
       : undefined,
   })
@@ -408,11 +417,17 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
   }
   for (const criterion of outcome.flaky) out.write(`${criterion} is held by a quarantined check: nothing is filed for a flake\n`)
   if (outcome.passes !== undefined) {
-    const { criteria, recorded } = outcome.passes
+    const { criteria, recorded, kept = [] } = outcome.passes
     const at = headSha.slice(0, 12)
-    if (criteria.length === 0) out.write('no pass to record: the run proved no criterion the ledger carries as active\n')
-    else if (recorded) out.write(`recorded a pass for ${criteria.length} criteria at ${at} on ${branch} (${MAIN_PASSES_PATH}): ${criteria.join(', ')}\n`)
-    else out.write(`would record a pass for ${criteria.length} criteria at ${at}: ${criteria.join(', ')}\n`)
+    // What was written is what is said: a pass a later revision's run already
+    // recorded is left as it is, and is not reported as recorded here.
+    if (criteria.length === 0 && kept.length === 0) out.write('no pass to record: the run proved no criterion the ledger carries as active\n')
+    else if (!recorded) out.write(`would record a pass for ${criteria.length} criteria at ${at}: ${criteria.join(', ')}\n`)
+    else if (criteria.length === 0) out.write(`no pass recorded at ${at}: a later revision already holds the pass of ${kept.join(', ')}\n`)
+    else {
+      out.write(`recorded a pass for ${criteria.length} criteria at ${at} on ${branch} (${passesPath}): ${criteria.join(', ')}\n`)
+      if (kept.length > 0) out.write(`left as a later revision recorded it: ${kept.join(', ')}\n`)
+    }
   }
   return 0
 }

@@ -2016,7 +2016,7 @@ jobs:
             "$IMAGE_REF" /opt/qare/lib/packages/action/dist/index.js main-findings \
             --result judged-result.json --ledger "$PROFILE" --profile "$PROFILE" \
             --sha "$HEAD_SHA" --run-url "$RUN_URL" --artifact-url "$EVIDENCE_URL" \
-            --dry-run "$dry" --record-passes "$record" >> main-findings.txt
+            --dry-run "$dry" --record-passes "$record" --passes-profile "$PROFILE" >> main-findings.txt
           # The text quotes the run, the ledger and a model, so nothing in it
           # may be read as an instruction. In the log it sits between a
           # stop-commands marker and its one-time token, so no line of it is a

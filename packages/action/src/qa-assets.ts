@@ -106,7 +106,7 @@ export class GitHubQaAssetsPusher implements ScreenshotPusher {
 
   /**
    * The record of what runs on the default branch proved (#295) rides the
-   * same branch, at one path: each push is a new commit that carries the
+   * same branch, at one path for each profile: each push is a new commit that carries the
    * whole record, so the branch's history is the record's history.
    *
    * The record is read where it is written. `build` is handed the record as
@@ -116,17 +116,17 @@ export class GitHubQaAssetsPusher implements ScreenshotPusher {
    * so a pass another run recorded meanwhile is built on, never written
    * over. `build` throws to refuse: then nothing is written.
    */
-  async pushMainPasses(build: (current: string | undefined) => Promise<string>): Promise<string> {
+  async pushMainPasses(build: (current: string | undefined) => Promise<string>, path: string = MAIN_PASSES_PATH): Promise<string> {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       const parent = await this.client.getBranchHead(this.branch)
-      const current = parent === undefined ? undefined : (await this.client.getContents(MAIN_PASSES_PATH, parent))?.toString('utf8')
+      const current = parent === undefined ? undefined : (await this.client.getContents(path, parent))?.toString('utf8')
       const blob = await this.client.createBlob(Buffer.from(await build(current), 'utf8'))
       const parentTree = parent === undefined ? undefined : await this.client.getCommitTree(parent)
-      const tree = await this.client.createTree([{ path: MAIN_PASSES_PATH, mode: '100644', type: 'blob', sha: blob }], parentTree)
+      const tree = await this.client.createTree([{ path, mode: '100644', type: 'blob', sha: blob }], parentTree)
       const sha = await this.client.createCommit(`qa-assets: passes on the default branch at ${this.headSha.slice(0, 12)}`, tree, parent === undefined ? [] : [parent])
       try {
         await this.client.pushBranch(this.branch, sha, parent)
-        return MAIN_PASSES_PATH
+        return path
       } catch (error) {
         // Only a race is worth another try: the branch moved (GitHub refuses
         // an update that is not a fast forward, or a branch that now
@@ -136,7 +136,7 @@ export class GitHubQaAssetsPusher implements ScreenshotPusher {
         if (!raced || attempt === 3) throw error
       }
     }
-    return MAIN_PASSES_PATH
+    return path
   }
 
   /**

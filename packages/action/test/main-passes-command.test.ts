@@ -288,8 +288,34 @@ test('a late run of an older revision, with the older ledger, erases nothing the
   const before = await recorded()
   // The older revision's run, with the ledger as that revision had it.
   await writeFile(join(dir, 'ledger.json'), serializeLedgerDocument(ENTRIES, []))
+  out = []
   expect(await run(await result('passed', { 'BIL-014': 'proven', 'BIL-021': 'proven' }), PASSED_AT, ['--record-passes', 'true'])).toBe(0)
   expect(await recorded()).toEqual(before)
+  // And it says what it did: nothing was recorded, and why.
+  expect(out.join('')).toBe(
+    `no finding on main to file, update or close\nno pass recorded at ${PASSED_AT.slice(0, 12)}: a later revision already holds the pass of BIL-014, BIL-021\n`,
+  )
+})
+
+// Two profiles of one repository, each with a ledger of its own, record at
+// the same revision. Neither drops the other's passes.
+test('two profiles of one repository keep records of their own', async () => {
+  const api: LedgerEntry[] = [{ criterion: 'API-001', status: 'active', source: ['suite:api'], proof: 'flow', text: 'The API answers.', checks: ['suite:api'] }]
+  expect(await run(await result('passed', { 'BIL-014': 'proven', 'BIL-021': 'proven' }), PASSED_AT, ['--record-passes', 'true', '--passes-profile', 'services/web/qa'])).toBe(0)
+  await writeFile(join(dir, 'ledger.json'), serializeLedgerDocument(api, []))
+  expect(await run(await result('passed', { 'API-001': 'proven' }), PASSED_AT, ['--record-passes', 'true', '--passes-profile', 'services/api/qa'])).toBe(0)
+  const read = async (path: string): Promise<string[]> => Object.keys(parseMainPasses(((await client().getContents(path, 'qa-assets')) ?? Buffer.from('')).toString('utf8')).passes)
+  expect(await read('passes/services-web-qa/main.json')).toEqual(['BIL-014', 'BIL-021'])
+  expect(await read('passes/services-api-qa/main.json')).toEqual(['API-001'])
+  expect(await recorded()).toBeUndefined()
+  // Each reads its own when it files: the api profile's failure is a regression against its own pass.
+  fake.commitLog.push({ sha: FAILED_AT, message: 'Later (#12)', date: '2026-10-09T09:00:00Z' })
+  out = []
+  expect(await run(await result('failed', { 'API-001': 'failed' }), FAILED_AT, ['--passes-profile', 'services/api/qa'])).toBe(0)
+  expect(out.join('')).toContain('(qa-regression)')
+  // A name that is no path segment is refused before anything is read or written.
+  expect(await run(await result('passed', { 'API-001': 'proven' }), FAILED_AT, ['--passes-profile', '../elsewhere'])).toBe(1)
+  expect(err.join('')).toContain('--passes-profile')
 })
 
 // A pass recorded for a revision that was rewritten out of the branch: GitHub
@@ -303,8 +329,15 @@ test('a pass on a revision that diverged from the checked one is no last pass', 
   out = []
   expect(await run(await result('failed', { 'BIL-014': 'failed' }), FAILED_AT, ['--record-passes', 'true'])).toBe(0)
   expect(out.join('')).toContain('opened #100 for BIL-014 (qa-failure), mentioning nobody\n')
-  // And a run that is not ahead of it leaves the recorded pass alone.
+  // That run did not prove it, so the pass it had is still the one on record.
   expect((await recorded())?.passes['BIL-014']).toMatchObject({ sha: rewritten })
+  // The next run that proves it replaces the pass of the rewritten revision:
+  // only a pass of a later revision is left alone, and this is not one. The
+  // record is not stuck on a revision the branch no longer has.
+  out = []
+  expect(await run(await result('passed', { 'BIL-014': 'proven' }), FAILED_AT, ['--record-passes', 'true'])).toBe(0)
+  expect((await recorded())?.passes['BIL-014']).toMatchObject({ sha: FAILED_AT })
+  expect(out.join('')).toContain(`recorded a pass for 1 criteria at ${FAILED_AT.slice(0, 12)}`)
 })
 
 test('the comparison is read newest first, whole when it is short and from its last pages when it is long, in at most three requests', async () => {
@@ -323,11 +356,11 @@ test('the comparison is read newest first, whole when it is short and from its l
     expect(listed?.ahead, `${total} commits`).toBe(total > 0)
     // Asked only which is ahead: one request, no commits, nothing called cut.
     const asked = fake.calls.length
-    expect(await client().listCommitsBetween(base, head, 0), `${total} commits`).toEqual({ commits: [], truncated: false, ahead: total > 0 })
+    expect(await client().listCommitsBetween(base, head, 0), `${total} commits`).toEqual({ commits: [], truncated: false, ahead: total > 0, behind: false })
     expect(fake.calls.length - asked).toBe(1)
   }
   // The other way round the head is behind: nothing is ahead.
-  expect((await client().listCommitsBetween((250).toString(16).padStart(40, '7'), base, 0))?.ahead).toBe(false)
+  expect(await client().listCommitsBetween((250).toString(16).padStart(40, '7'), base, 0)).toMatchObject({ ahead: false, behind: true })
 })
 
 test('a pass on a revision GitHub cannot relate to the checked one is no last pass either', async () => {

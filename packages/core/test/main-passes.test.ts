@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import {
   MAIN_PASSES_PATH,
   MainPassesError,
+  mainPassesPath,
   classifyMainRun,
   mainPassEntryDigest,
   mainPassesToRecord,
@@ -112,6 +113,20 @@ describe('the record', () => {
     expect(parseMainPasses(text)).toEqual(store)
     expect(JSON.parse(text)).toMatchObject({ schemaVersion: '1' })
     expect(MAIN_PASSES_PATH).toBe('passes/main.json')
+  })
+
+  test('each profile of a repository has a record of its own, so one profile never drops another\'s passes', () => {
+    // The usual profile keeps the one path every single-profile repository has.
+    for (const usual of [undefined, '', '.qa', './.qa', '.qa/']) expect(mainPassesPath(usual)).toBe('passes/main.json')
+    expect(mainPassesPath('services/web/qa')).toBe('passes/services-web-qa/main.json')
+    expect(mainPassesPath('./services/api/.qa/')).toBe('passes/services-api-.qa/main.json')
+    expect(mainPassesPath('services/web/qa')).not.toBe(mainPassesPath('services/api/qa'))
+    // A name is a path segment on a branch: nothing that climbs or hides.
+    for (const bad of ['..', '../x', 'a/../b', 'a b', 'a\nb', '/', '.']) expect(() => mainPassesPath(bad), bad).toThrow(MainPassesError)
+  })
+
+  test('the order of a criterion\'s checks is no part of what a pass is of', () => {
+    expect(mainPassEntryDigest(entry('BIL-014', { checks: ['suite:a', 'app/x'] }))).toBe(mainPassEntryDigest(entry('BIL-014', { checks: ['app/x', 'suite:a'] })))
   })
 
   test('is read strictly: what it does not expect is an error by name, never no record', () => {
