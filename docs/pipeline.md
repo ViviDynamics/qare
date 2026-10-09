@@ -801,6 +801,9 @@ GitHub the first time an issue carries one.
   pushed to `qa-assets`.
 - A client profile's `artefacts`: the lane downloads no build.
 - Run metrics: a run on main records none.
+- The advisory UX review: its findings ride a pull request's comment, and a
+  run on main has none, so main_judge does not ask for it (`qare judge
+  --no-advisory`) and spends no model turn on it.
 
 ### The command itself
 

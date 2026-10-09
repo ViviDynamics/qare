@@ -1893,8 +1893,11 @@ jobs:
       # The verifier, as for a pull request: it reads the evidence of each
       # proven criterion and may overturn it, so a suite that exited 0
       # without showing its criterion does not close an issue. It is told
-      # there is no change under review (--no-diff). A refused run executed
-      # nothing, so qare judge asks no model for it.
+      # there is no change under review (--no-diff). The advisory UX review
+      # is not asked for (--no-advisory): its findings ride a pull request's
+      # comment, and a run on main has none, so the turn would be spent on
+      # nothing. A refused run executed nothing, so qare judge asks no model
+      # for it.
       - name: Judge the result on main
         shell: bash
         env:
@@ -1942,7 +1945,7 @@ jobs:
             -v "$PWD:$PWD" -w "$PWD" \
             "$IMAGE_REF" qare judge \
             --result evidence/result.json --outDir . \
-            --plan plan.json --no-diff \
+            --plan plan.json --no-diff --no-advisory \
             --nare /usr/local/bin/nare --profile "$PROFILE"
       # What the run found, filed as issues (#154), or on a dry run only
       # printed. This step holds the identity and no model key, and runs
@@ -1970,10 +1973,11 @@ jobs:
           fi
           # What the run amounted to is said first, with every criterion it
           # left unverified and why: "nothing to file" must never read as
-          # "everything passed" when a criterion was not checked at all.
+          # "everything passed" when a criterion was not checked at all. A
+          # reason can be a model's words, so its line breaks are folded.
           jq -r '
             "the run on main: verdict \(.verdict); \([.criteria[] | select(.outcome == "proven")] | length) proven, \([.criteria[] | select(.outcome == "failed")] | length) failed, \([.criteria[] | select(.outcome == "unverified")] | length) unverified",
-            (.criteria[] | select(.outcome == "unverified") | "  unverified \(.id): \(.reason // "no reason recorded")")
+            (.criteria[] | select(.outcome == "unverified") | "  unverified \(.id): \((.reason // "no reason recorded") | gsub("[\r\n]+"; " "))")
           ' judged-result.json > main-findings.txt
           docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
             -e GITHUB_TOKEN \
@@ -1987,7 +1991,15 @@ jobs:
             --result judged-result.json --ledger "$PROFILE" --profile "$PROFILE" \
             --sha "$HEAD_SHA" --run-url "$RUN_URL" --artifact-url "$EVIDENCE_URL" \
             --dry-run "$dry" >> main-findings.txt
+          # The text quotes the run, the ledger and a model, so nothing in it
+          # may be read as an instruction. In the log it sits between a
+          # stop-commands marker and its one-time token, so no line of it is a
+          # workflow command. In the summary it is an indented block, which no
+          # line of the text can close, so nothing in it renders or mentions.
+          token="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+          echo "::stop-commands::$token"
           cat main-findings.txt
+          echo "::$token::"
           {
             if [ "$dry" = "true" ]; then
               echo "### Findings on main: dry run"
@@ -1997,9 +2009,7 @@ jobs:
               echo "### Findings on main"
             fi
             echo
-            echo '````text'
-            cat main-findings.txt
-            echo '````'
+            sed 's/^/    /' main-findings.txt
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload main judge artifacts (judged-result.json, main-findings.txt)
         if: always()

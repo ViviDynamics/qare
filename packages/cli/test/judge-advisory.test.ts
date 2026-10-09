@@ -337,6 +337,19 @@ test('the profile turns the review off: the verifier still runs, the reviewer is
   expect(comment).not.toContain('Advisory')
 })
 
+// #294: a run on the default branch has no comment for findings to ride, so
+// its judge step asks for no review. The verifier is still asked.
+test('judge --no-advisory asks the verifier and never the reviewer', async () => {
+  const run = await signupRun()
+  const nare = await standInNare('reads-the-evidence')
+  const result = await judge([...run.args, '--nare', nare.binary, '--no-advisory'])
+  expect(result.out).toContain('verdict passed')
+  const calls = await nare.calls()
+  expect(calls).toHaveLength(1)
+  expect(calls[0]?.[1]).toContain('You are the qare verifier')
+  expect((await artifacts(run.dir)).judged.advisory).toBeUndefined()
+})
+
 test('judging without a model makes no review', async () => {
   const run = await signupRun()
   const nare = await standInNare('reads-the-evidence')

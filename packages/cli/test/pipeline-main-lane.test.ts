@@ -186,7 +186,7 @@ test('main_execute runs the plan the ledger wrote, against the one revision the 
 
 test('main_judge asks the verifier with no diff, and files from the judged result, the ledger and the profile', () => {
   const judged = step('main_judge', 'Judge the result on main')
-  expect(oneLine(judged.run)).toContain('qare judge --result evidence/result.json --outDir . --plan plan.json --no-diff --nare /usr/local/bin/nare --profile "$PROFILE"')
+  expect(oneLine(judged.run)).toContain('qare judge --result evidence/result.json --outDir . --plan plan.json --no-diff --no-advisory --nare /usr/local/bin/nare --profile "$PROFILE"')
   // Fail closed without a key, and the key travels in a file, as in judge.
   expect(judged.run).toMatch(/if \[ -z "\$MODEL_KEY" \]; then\n(?:.*\n)*?\s*exit 1\n/)
   expect(judged.run).toContain('--env-file "$key_file"')
@@ -229,6 +229,7 @@ test('a dry run is the default, and only the exact word false turns filing on', 
     const flag = /--dry-run (\S+)/.exec(printed)?.[1] ?? ''
     // The summary says which it was, in words.
     expect(readFileSync(summary, 'utf8')).toContain(flag === 'true' ? 'Nothing was filed and nobody was mentioned.' : '### Findings on main\n')
+    expect(outcome.stdout).toMatch(/^::stop-commands::[0-9a-f]{32}\n/)
     return flag
   }
   for (const value of [undefined, '', 'true', 'TRUE', 'False', 'FALSE', ' false', 'false ', 'no', '0', 'off']) expect(asked(value), JSON.stringify(value)).toBe('true')
@@ -241,7 +242,8 @@ test('the filing step says what the run amounted to before it says what it files
   const bin = join(dir, 'bin')
   mkdirSync(bin)
   // main-findings, for a run in which nothing failed: it has nothing to file.
-  writeFileSync(join(bin, 'docker'), '#!/bin/sh\necho "dry run: nothing is written"\necho "no finding on main to file, update or close"\n')
+  // Its last two lines are what an issue body could carry: a fence, and a line shaped like a workflow command.
+  writeFileSync(join(bin, 'docker'), '#!/bin/sh\necho "dry run: nothing is written"\necho "no finding on main to file, update or close"\necho \'````\'\necho "::warning::from an issue body"\n')
   chmodSync(join(bin, 'docker'), 0o755)
   writeFileSync(
     join(dir, 'judged-result.json'),
@@ -252,6 +254,7 @@ test('the filing step says what the run amounted to before it says what it files
         { id: 'sign-in', outcome: 'proven', evidence: ['checks/sign-in/0/stdout.txt'] },
         { id: 'receipts', outcome: 'unverified', reason: 'the planner could not plan it: its ledger checks name no suite, so the runner has nothing to execute for it' },
         { id: 'exports', outcome: 'unverified', reason: 'verifier gave no readable answer' },
+        { id: 'hostile', outcome: 'unverified', reason: 'verifier said\r\n::error::fake\nand more' },
       ],
     }),
   )
@@ -263,16 +266,28 @@ test('the filing step says what the run amounted to before it says what it files
   })
   expect(outcome.status, outcome.stderr).toBe(0)
   const expected = [
-    'the run on main: verdict blocked; 1 proven, 0 failed, 2 unverified',
+    'the run on main: verdict blocked; 1 proven, 0 failed, 3 unverified',
     '  unverified receipts: the planner could not plan it: its ledger checks name no suite, so the runner has nothing to execute for it',
     '  unverified exports: verifier gave no readable answer',
+    // A reason is model text: its line breaks are folded, so no line of it can start a workflow command.
+    '  unverified hostile: verifier said ::error::fake and more',
     'dry run: nothing is written',
     'no finding on main to file, update or close',
+    '````',
+    '::warning::from an issue body',
     '',
   ].join('\n')
   expect(readFileSync(join(dir, 'main-findings.txt'), 'utf8')).toBe(expected)
-  // The same text is the job summary, fenced, so nothing in it renders or mentions.
-  expect(readFileSync(summary, 'utf8')).toContain(`\`\`\`\`text\n${expected}\`\`\`\`\n`)
+  // In the log the text sits between a stop-commands marker and its token,
+  // so no line of it is read as a workflow command, whatever it says.
+  const token = /^::stop-commands::([0-9a-f]{32})$/m.exec(outcome.stdout)?.[1]
+  expect(token, outcome.stdout).toBeDefined()
+  expect(outcome.stdout).toBe(`::stop-commands::${token}\n${expected}::${token}::\n`)
+  // The job summary carries it as an indented block, which nothing in the
+  // text can close: every line is indented, so nothing renders or mentions.
+  const written = readFileSync(summary, 'utf8')
+  expect(written).toContain(`\n${expected.split('\n').slice(0, -1).map((line) => `    ${line}`).join('\n')}\n`)
+  expect(written.split('\n').filter((line) => line.startsWith('`'))).toEqual([])
 
   // A judged result that cannot be read stops the step: nothing is filed from a guess.
   writeFileSync(join(dir, 'judged-result.json'), '{"verdict":')
