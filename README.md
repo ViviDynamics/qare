@@ -1,4 +1,8 @@
-# qare
+<p align="center">
+  <img src="docs/brand/qare-tester.png" width="240" alt="The QAre tester, an older gentleman in a workshop apron tapping a phone with a puzzled look">
+</p>
+
+# QAre
 
 A QA agent harness. Given a pull request and the issue it closes, qare boots the
 app before and after the change against stubbed services, checks every
