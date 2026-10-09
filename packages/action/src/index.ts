@@ -347,6 +347,15 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
   // name, before anything is filed and before anything is written over it.
   const branch = flags.string('branch') || QA_ASSETS_BRANCH
   const stored = await client.getContents(MAIN_PASSES_PATH, branch)
+  // GitHub answers 404 for a file that is not there and for a repository
+  // whose contents this identity may not read, alike. "No record" is only
+  // believed from an identity that can read the revision the run checked:
+  // otherwise a regression would be filed as a plain failure, silently.
+  const committed = stored === undefined || (record && !dryRun) ? await client.getCommitDate(headSha) : undefined
+  if (stored === undefined && committed === undefined)
+    throw new GitHubClientError(
+      `no record of passes was found at ${MAIN_PASSES_PATH} on the ${branch} branch, and this identity cannot read ${headSha} either, so a record that is not there cannot be told from one it may not read: nothing is filed and nothing is recorded; give the identity read access to the repository's contents`,
+    )
   let passes: MainPasses | undefined
   try {
     passes = stored === undefined ? undefined : parseMainPasses(stored.toString('utf8'))
@@ -359,10 +368,9 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
   // GitHub cannot date gets no pass. A dry run writes nothing and asks nothing.
   let committedAt = ''
   if (record && !dryRun) {
-    const date = await client.getCommitDate(headSha)
-    if (date === undefined)
+    if (committed === undefined)
       throw new GitHubClientError(`could not read when ${headSha} was committed, so no pass can be recorded for it and nothing is filed`)
-    committedAt = new Date(date).toISOString().replace('.000Z', 'Z')
+    committedAt = new Date(committed).toISOString().replace('.000Z', 'Z')
   }
   const outcome = await publishMainFindings(client, {
     result,

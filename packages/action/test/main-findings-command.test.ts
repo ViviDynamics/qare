@@ -45,6 +45,8 @@ beforeEach(async () => {
     `${readFileSync(join(profileFixture, 'config.yml'), 'utf8')}\nfindings:\n  fallback: acme/qa-leads\nredact:\n  values:\n    - hunter2\n`,
   )
 
+  // The revision the run checked is a commit of the repository, long before the last pass.
+  fake.commitLog.push({ sha: HEAD, message: 'The checked revision', date: '2026-09-01T00:00:00Z' })
   fake.commitLog.push({ sha: '2'.repeat(40), message: 'Add the notice (#12)', date: '2026-09-29T00:00:00Z' })
   fake.commitPulls.set('2'.repeat(40), [12])
   fake.pullRecords.set(12, { title: 'Add the notice', author: { login: 'alice', type: 'User' }, merged: true, files: [], reviews: [] })

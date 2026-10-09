@@ -179,9 +179,42 @@ test('a record that cannot be read stops the step by name before anything is fil
   expect(writes().slice(before)).toEqual([])
 })
 
-test('a pass is not recorded for a revision whose commit date cannot be read: the changes since could not be counted from it', async () => {
-  const unknown = 'c3'.repeat(20)
-  expect(await run(await result('passed', { 'BIL-014': 'proven' }), unknown, ['--record-passes', 'true'])).toBe(1)
-  expect(err.join('')).toContain(`could not read when ${unknown} was committed`)
-  expect(await recorded()).toBeUndefined()
+// GitHub answers 404 both for a file that is not there and for a repository
+// whose contents an identity may not read. "No record" is believed only from
+// an identity that can read the revision the run checked; otherwise a
+// regression would be filed as a plain failure and nobody would know.
+test('no record is believed only from an identity that can read the repository: one that cannot read the checked revision stops the step before anything is filed', async () => {
+  const unreadable = 'c3'.repeat(20)
+  for (const extra of [[], ['--record-passes', 'true'], ['--dry-run', 'true']]) {
+    err = []
+    expect(await run(await result('failed', { 'BIL-014': 'failed' }), unreadable, extra)).toBe(1)
+    expect(err.join('')).toContain(`no record of passes was found at ${MAIN_PASSES_PATH} on the qa-assets branch, and this identity cannot read ${unreadable} either`)
+    expect(err.join('')).toContain('nothing is filed')
+  }
+  expect(fake.issues.size).toBe(0)
+  expect(writes()).toEqual([])
+})
+
+// Two criteria last passed on different revisions committed in the same
+// second. Each range leaves out its own passing revision and no other.
+test('criteria that passed on different revisions committed at the same moment each get their own range', async () => {
+  const twin = 'd4'.repeat(20)
+  fake.commitLog.push({ sha: twin, message: 'Twin change (#13)', date: PASSED_DATE })
+  fake.commitPulls.set(twin, [13])
+  fake.pullRecords.set(13, { title: 'Twin change', author: { login: 'carol', type: 'User' }, merged: true, files: ['app/receipts/a.rb'], reviews: [] })
+  expect(await run(await result('passed', { 'BIL-014': 'proven' }), PASSED_AT, ['--record-passes', 'true'])).toBe(0)
+  expect(await run(await result('passed', { 'BIL-021': 'proven' }), twin, ['--record-passes', 'true'])).toBe(0)
+  fake.commitLog.push({ sha: FAILED_AT, message: 'Rework payouts (#12)', date: '2026-10-09T09:00:00Z' })
+  fake.commitPulls.set(FAILED_AT, [12])
+  fake.pullRecords.set(12, { title: 'Rework payouts', author: { login: 'alice', type: 'User' }, merged: true, files: ['app/payouts/notice.rb'], reviews: [] })
+  out = []
+  expect(await run(await result('failed', { 'BIL-014': 'failed', 'BIL-021': 'failed' }), FAILED_AT)).toBe(0)
+  const first = fake.issues.get(100)?.body ?? ''
+  const second = fake.issues.get(101)?.body ?? ''
+  // BIL-014 passed on bob's revision: carol's twin and alice's change came since.
+  expect(first).toContain('`BIL-014`')
+  expect(mentionsIn(first).sort()).toEqual(['alice', 'carol'])
+  // BIL-021 passed on carol's revision: bob's twin and alice's change came since.
+  expect(second).toContain('`BIL-021`')
+  expect(mentionsIn(second).sort()).toEqual(['alice', 'bob'])
 })

@@ -248,11 +248,15 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
     const since = finding.lastProven?.at
     // A timestamp GitHub could not read as one names no range.
     if (since === undefined || Number.isNaN(Date.parse(since))) return undefined
-    const known = ranges.get(since)
+    // Keyed by the passing revision as well as its moment (#295): two
+    // criteria can have passed on different revisions committed in the same
+    // second, and each range leaves out its own passing revision.
+    const key = `${since} ${finding.lastProven?.sha ?? ''}`
+    const known = ranges.get(key)
     if (known !== undefined) return known
     // What GitHub says about the range is published, so it is redacted like the rest.
     const range = redactValue(await readRange(client, input.headSha, since, input.findings, finding.lastProven?.sha), rules)
-    ranges.set(since, range)
+    ranges.set(key, range)
     return range
   }
 

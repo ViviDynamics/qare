@@ -818,7 +818,12 @@ What is recorded, where, and by what:
   grant `contents: write` again, or no run of the workflow starts.
 - **If the record cannot be read** the filing step stops by name before it
   files or writes anything. Restore the file from the branch's history, or
-  remove it to start the record again.
+  remove it to start the record again. The same holds when no record is
+  found and the identity qare posts as cannot read the revision the run
+  checked: GitHub answers alike for a file that is not there and for
+  contents an identity may not read, so "no record" is believed only from an
+  identity that can read the repository. An App or a token you pass needs
+  read access to Contents (see "GitHub identity").
 
 The record is as trustworthy as the `qa-assets` branch: whoever can push to
 it can write a pass. A false pass cannot make a criterion pass or close an
