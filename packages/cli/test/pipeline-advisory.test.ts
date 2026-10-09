@@ -47,10 +47,12 @@ const stepNamed = (steps: Step[], name: string): Step => {
   expect(step, `no step named ${JSON.stringify(name)}`).toBeDefined()
   return step as Step
 }
+// The App arrives as the token the job's minting step minted, and its slug
+// (#305): no step that posts holds the App's private key.
 const IDENTITY_ENV = {
   GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}',
-  QARE_APP_ID: '${{ secrets.app-id }}',
-  QARE_APP_PRIVATE_KEY: '${{ secrets.app-private-key }}',
+  QARE_APP_TOKEN: '${{ steps.app.outputs.token }}',
+  QARE_APP_SLUG: '${{ steps.app.outputs.slug }}',
   QARE_GITHUB_TOKEN: '${{ secrets.personal-access-token }}',
 }
 
@@ -71,7 +73,8 @@ test('judge carries out the advisory replies before it asks the model, with the 
   expect(run).toContain('--out advisory-dismissed.json')
   // The image's own qare-action, as the posting steps run it.
   expect(run).toContain('/opt/qare/lib/packages/action/dist/index.js')
-  for (const variable of ['GITHUB_TOKEN', 'QARE_APP_ID', 'QARE_APP_PRIVATE_KEY', 'QARE_GITHUB_TOKEN', 'GITHUB_REPOSITORY']) expect(run).toContain(`-e ${variable} `)
+  for (const variable of ['GITHUB_TOKEN', 'QARE_APP_TOKEN', 'QARE_APP_SLUG', 'QARE_GITHUB_TOKEN', 'GITHUB_REPOSITORY']) expect(run).toContain(`-e ${variable} `)
+  expect(replies.env?.QARE_APP_PRIVATE_KEY).toBeUndefined()
 })
 
 test('advisory work gates nothing: a failed sweep is a warning, and judge then treats nothing as dismissed', () => {
@@ -88,7 +91,7 @@ test('judge hands the reviewer the dismissed list when there is one, and the mod
   const run = step.run ?? ''
   expect(run).toMatch(/if \[ -f advisory-dismissed\.json \]; then\n\s+dismissed=\(--dismissed advisory-dismissed\.json\)\n\s*fi/)
   expect(run).toContain('"${dismissed[@]}"')
-  expect(JSON.stringify(step)).not.toMatch(/GITHUB_TOKEN|GH_TOKEN|github\.token|QARE_APP_ID|QARE_APP_PRIVATE_KEY|QARE_GITHUB_TOKEN/)
+  expect(JSON.stringify(step)).not.toMatch(/GITHUB_TOKEN|GH_TOKEN|github\.token|QARE_APP_ID|QARE_APP_PRIVATE_KEY|QARE_APP_TOKEN|steps\.app\.|QARE_GITHUB_TOKEN/)
 })
 
 test('a reply on a pull request starts the advisory job, which holds the identity only and reads no pull request code', () => {

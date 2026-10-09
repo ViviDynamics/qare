@@ -30,7 +30,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.43
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.44
     with:
       nare-model: gpt-4.1-mini
     secrets:
@@ -67,7 +67,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.43
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.44
     with:
       runs-on: '["self-hosted", "linux", "x64"]'
       profile: services/web/qa
@@ -180,9 +180,63 @@ that calls the pipeline:
 | Metadata | Read | Required by GitHub for every App. |
 
 It needs no webhook, no organisation permission and no account permission.
-qare signs in as the App with the private key, asks for the installation on
-the calling repository, and is given a token for that one repository that
-expires within the hour. The key itself is only ever used to sign in.
+
+Where the private key goes: one step of each job that posts, and nowhere
+else. That step, "Mint the App token for this job", runs
+`scripts/mint-app-token.mjs` of the pinned qare with node on the runner,
+before any dependency is installed, any artifact downloaded or any container
+run. The script imports node's own modules alone. It signs in as the App with the private
+key, asks for the installation on the calling repository, and is given a
+token for that one repository, with the permissions that job declares and no
+others, that expires within the hour. The steps that post are handed that
+token and the App's slug. The key never enters a container, and no step that
+holds it reads anything the run produced. A job tries to give its token back
+when it ends, whether it passed or failed (with `curl` 7.55 or later; a
+revocation that fails is a warning, and the token expires within the hour
+either way).
+
+What this does not change: the key is still a secret of the job. GitHub
+hands a job's runner every secret the job's steps name, so what runs on the
+runner later in the same job (the build of the pinned qare in report,
+advisory and requeue, by its lockfile and with no cache, and the action that
+sets pnpm up for it) runs on a machine that was given the key, though never
+in its own environment. A container is not that machine. And "before
+anything else of the run" is a statement about one job: a runner that
+outlives its jobs keeps what earlier jobs left on it, so on your own runners
+give execute a pool of its own with `execute-runs-on`.
+
+Before judge and main_judge post from the image with a minted token, they
+check that the image reads one, and stop by name if it does not: an image
+older than this would otherwise find no App and post as something weaker.
+
+Three things follow from that:
+
+- **The App must hold each permission in the table.** A job asks for exactly
+  what it declares (judge: Contents, Checks, Issues and Pull requests at
+  write; report: Checks, Issues and Pull requests at write and Contents at
+  read; advisory and requeue: Issues and Pull requests at write and Contents
+  at read; main_judge: Contents and Issues at write and Pull requests at
+  read). An App that lacks one is refused the token, and the minting step
+  fails with a message that names what was asked for. report mints the same
+  way, so nothing is posted on the pull request: the red job is the notice.
+- **A token cannot be renewed without the key, so it lasts an hour.** The
+  steps of a job that post must all run within an hour of the job's first
+  steps. In judge and main_judge the verifier's model turns sit between the
+  minting step and the posting steps, so a verifier that takes most of an
+  hour leaves a verdict the job cannot post. The posting step then stops
+  with a message that names the expiry, having sent nothing, and the report
+  job, which mints a token of its own, says on the pull request that the
+  verdict went unpublished. A larger `verify-batch-size` asks the model
+  fewer times.
+- **The run's own jobs are read with the run's own token.** report lists the
+  jobs of the run to name the one that failed, with `actions: read` of the
+  Actions token, so the App needs no Actions permission. Only when that
+  token is refused is the identity asked instead.
+
+`qare-action` run outside the pipeline still takes `QARE_APP_ID` and
+`QARE_APP_PRIVATE_KEY` and mints the token itself, as the examples further
+down do. A job of your own that would rather not hand it the key can run the
+same script first and pass `QARE_APP_TOKEN` and `QARE_APP_SLUG` instead.
 
 A personal access token, fine-grained, limited to the repositories that call
 the pipeline: Contents, Issues and Pull requests at Read and write, Metadata
@@ -232,7 +286,9 @@ A GitHub-hosted runner has all of it. Your own runner needs `docker`, `git`,
 `curl` and `jq`. It does not need the GitHub CLI, nor node, pnpm or Python set up by hand:
 plan, execute and judge run qare and nare inside the published images
 (`ghcr.io/vividynamics/qare-core` and the flavour the profile names), and
-the three jobs that hold only the GitHub token set up node themselves.
+the jobs that run anything outside an image (collect, main_collect, report,
+advisory, requeue, and the one step of judge and main_judge that mints the
+App's token) set up node themselves with `actions/setup-node`.
 
 A profile that boots its application (`app.boot`) also needs, on the runner
 execute lands on, the docker compose v2 plugin, and the buildx plugin if the
@@ -384,7 +440,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.43
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.44
     with:
       nare-model: gpt-4.1-mini
       artefacts: qare-artefacts
@@ -710,7 +766,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.43
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.44
     with:
       nare-model: gpt-4.1-mini
       main-lane: 'true'
@@ -997,8 +1053,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: qare/.nvmrc
-          cache: pnpm
-          cache-dependency-path: qare/pnpm-lock.yaml
       - run: pnpm --dir qare install --frozen-lockfile
       - run: pnpm --dir qare build
       - name: Report on the fleet

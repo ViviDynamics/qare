@@ -44,7 +44,7 @@ const text = readFileSync(PIPELINE, 'utf8')
 const pipeline = parse(text) as { on: { workflow_call: { inputs: Record<string, Input> } }; jobs: Record<string, Job> }
 const inputs = pipeline.on.workflow_call.inputs
 const MAIN_JOBS = ['main_collect', 'main_execute', 'main_judge']
-const IDENTITY = /secrets\.(app-id|app-private-key|personal-access-token)|QARE_APP_ID|QARE_APP_PRIVATE_KEY|QARE_GITHUB_TOKEN|GITHUB_TOKEN|GH_TOKEN|github\.token/
+const IDENTITY = /secrets\.(app-id|app-private-key|personal-access-token)|QARE_APP_ID|QARE_APP_PRIVATE_KEY|QARE_APP_TOKEN|steps\.app\.outputs|QARE_GITHUB_TOKEN|GITHUB_TOKEN|GH_TOKEN|github\.token/
 
 function job(id: string): Job {
   const found = pipeline.jobs[id]
@@ -128,16 +128,23 @@ test('in main_judge no step holds both the model key and a GitHub identity, and 
   for (const candidate of judge.steps ?? []) {
     const body = JSON.stringify(candidate)
     const key = body.includes('secrets.model-key')
-    const identity = IDENTITY.test(body)
+    // The step that only asks whether a token was minted, to check the image
+    // can read one, is handed no token and no secret (pipeline-identity.test.ts).
+    const identity = IDENTITY.test(body) && candidate.name !== 'Check that the image reads the minted token'
     expect(key && identity, `main_judge: ${candidate.name ?? ''} holds the model key and an identity`).toBe(false)
     if (key) keyHolders.push(candidate.name ?? '')
     if (identity) identityHolders.push(candidate.name ?? '')
   }
   expect(keyHolders).toEqual(['Judge the result on main'])
-  expect(identityHolders).toEqual(['File what the run on main found'])
+  // The step that mints the App's token from its private key, before
+  // anything of the run is on the machine (#305); the one step that posts
+  // with it; and the step that gives the token back.
+  expect(identityHolders).toEqual(['Mint the App token for this job', 'File what the run on main found', 'Revoke the App token this job minted'])
+  // The revision the run checked, and the pinned qare's scripts for the
+  // minting step: neither leaves a token behind.
   const checkouts = (judge.steps ?? []).filter((candidate) => candidate.uses?.startsWith('actions/checkout@'))
-  expect(checkouts).toHaveLength(1)
-  expect(checkouts[0]?.with?.['persist-credentials']).toBe(false)
+  expect(checkouts).toHaveLength(2)
+  for (const checkout of checkouts) expect(checkout.with?.['persist-credentials']).toBe(false)
   // What filing needs, and what recording a pass needs (#295): contents: write
   // is for the push to the qa-assets branch, which is where a pass is
   // recorded. The lane never writes the default branch.
