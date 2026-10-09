@@ -79,3 +79,15 @@ to a pass.
 The step that executes pull request code holds no model key and no GitHub
 token, and reaches nothing outside the declared stubs. Planning and judging run
 in separate steps.
+
+Two exceptions to "reaches nothing outside the declared stubs" are decided
+([ADR-0008](docs/decisions/adr-0008-command-checks-without-a-cell.md)):
+
+- When a profile declares no contained command, a command check may run with
+  the step's network, and the evidence records that it ran uncontained.
+- A suite runs uncontained, by the decision recorded in #224, and its
+  evidence says so.
+
+Neither is an exception to the rest of the rule. The step holds no model key
+and no GitHub token whether or not a check is contained, and a check that ran
+uncontained is never recorded as contained.

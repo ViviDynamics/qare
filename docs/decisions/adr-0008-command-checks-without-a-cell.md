@@ -67,10 +67,10 @@ uncontained.**
   runs in it, and only the profile's own `egress: uncontained` takes a check
   out (#286, [ADR-0007](./adr-0007-declared-commands-are-preferred-forms.md)).
 
-CONSTITUTION.md is not edited by this decision. Rule 7 still states the rule
-without the exception, so the two read differently until the owner says
-whether the constitution's own text should carry it; until then this ADR is
-the record that the gap is known and accepted, and by whom.
+CONSTITUTION.md rule 7 states this exception in its own words, with the
+suites of #224 beside it, and names this ADR as the record. The owner added
+it on 2026-10-09 (issue #297), after this ADR was first written without it,
+so the constitution and the decision record read the same.
 
 ## Consequences
 
