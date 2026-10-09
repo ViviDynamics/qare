@@ -1489,8 +1489,10 @@ the executed result and the ledger. No model has a say in any of it.
   for the fallback, closed when a run executes a check again; while it is
   down, nothing is reported as failing or recovered. A criterion held by a
   quarantined check files nothing: a flake goes to quarantine and the
-  standing report. A failure nothing shows ever passed is a `qa-failure`
-  issue, never called a regression.
+  standing report. A failure no earlier revision is shown to have passed is
+  a `qa-failure` issue, never called a regression: one nothing shows ever
+  passed, and one that fails on the very revision it passed on, where
+  nothing landed in between to blame (the issue says which).
 - **Hand-off.** The `qa-regression` label is the signal an orchestrator
   picks an issue up by. qare itself never fixes and never merges.
 

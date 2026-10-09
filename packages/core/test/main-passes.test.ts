@@ -234,6 +234,13 @@ describe('classifying a run on main against the record', () => {
       expect(finding?.lastProven).toBeUndefined()
       expect(finding?.passedHere).toEqual({ run: 'main-1-1', recordedAt: RUN_A.recordedAt })
     }
+    // Where the run's own base side proved it and its head failed it, that is
+    // the run's own evidence of a regression, and it is not talked over: the
+    // finding is a regression and does not also say it is none.
+    const based = result('failed', [{ id: 'BIL-014', outcome: 'failed', evidence: ['checks/BIL-014/0/stdout.txt'], base: { outcome: 'proven', evidence: ['base/checks/BIL-014/0/stdout.txt'] }, regression: true }])
+    const basedFinding = classifyMainRun(based, book, store, SHA_A).findings[0]
+    expect(basedFinding?.kind).toBe('regression')
+    expect(basedFinding?.passedHere).toBeUndefined()
     // Checked at another revision, the same pass is an earlier one: a regression.
     expect(classifyMainRun(failed, book, store, SHA_B).findings[0]).toMatchObject({ kind: 'regression', lastProven: { sha: SHA_A } })
     expect(classifyMainRun(failed, book, store, SHA_B).findings[0]?.passedHere).toBeUndefined()

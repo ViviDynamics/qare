@@ -186,8 +186,8 @@ comments on the issue while the criterion still fails and closes it when a
 run proves the criterion again, so an orchestrator need not close it.
 
 `qa-environment` (nothing could boot or be reached) and `qa-failure` (a
-failure nothing shows ever passed) are not hand-offs: neither names a change
-to undo.
+failure no earlier revision is shown to have passed) are not hand-offs:
+neither names a change to undo.
 
 ## The worked example
 

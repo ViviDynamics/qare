@@ -101,6 +101,11 @@ lane, and never in the ledger.**
   issue never names a pass its own run wrote. If the push then fails (an
   identity with no write access to contents), the issues stand and the step
   is red: the pass is missing, never wrong.
+- **Accepted:** a criterion that fails keeps its pass on record. If no
+  issue stood for that first failure (a dry run, or the run had opened its
+  ten), a failure of the next revision is a regression counted from the
+  last pass, and names the authors of what landed since, though the failure
+  was first seen a revision earlier. The range is still the true one.
 - **Not accepted, and still closed:** a write to the default branch, a
   ledger change without review, a pass decided by a model, and a pass
   written by the job that runs repository code.

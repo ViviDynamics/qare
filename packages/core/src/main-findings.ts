@@ -19,7 +19,7 @@ import type { CriterionResult, RunResult } from './result.js'
 export const QA_REGRESSION_LABEL = 'qa-regression'
 /** The label of the one issue a run files when nothing could boot or be reached. */
 export const QA_ENVIRONMENT_LABEL = 'qa-environment'
-/** The label of a failure nothing shows ever passed: not a regression, so never handed off as one. */
+/** The label of a failure no earlier revision is shown to have passed: not a regression, so never handed off as one. */
 export const QA_FAILURE_LABEL = 'qa-failure'
 
 export const ENVIRONMENT_FINGERPRINT = 'mf-environment'
@@ -157,7 +157,8 @@ function reasonOf(criterion: CriterionResult): string | undefined {
  * What a judged result of a run on `main` amounts to. A failed criterion is
  * a finding: a regression when the ledger recorded a pass, the record of
  * passes on the default branch holds one that still stands (#295), or the
- * run's own base side proved it (#147), a plain failure otherwise. A proven criterion
+ * run's own base side proved it (#147), a plain failure otherwise, one that
+ * fails on the very revision a pass is recorded for among them. A proven criterion
  * recovers. A run in which no check executed and every criterion is
  * unverified for the environment's sake is one environment finding. A
  * quarantined check, a waiver, a held question and a refusal file nothing:
@@ -189,7 +190,10 @@ export function classifyMainRun(result: RunResult, ledger: LedgerDocument, passe
       continue
     }
     const entry = entries.get(criterion.id)
-    const passedHere = here.get(criterion.id)
+    // Where the run's own base side proved it (#147), that is this run's
+    // evidence of a regression and is what the finding says: a pass of this
+    // revision on record does not talk over it.
+    const passedHere = criterion.regression === true ? undefined : here.get(criterion.id)
     // A pass of this revision stands in the way of any older one: it is the
     // last pass there is, and it is not one to count changes from.
     const proven = passedHere === undefined ? lastProven.get(criterion.id) : undefined

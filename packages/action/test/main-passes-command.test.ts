@@ -213,6 +213,14 @@ test('a criterion named __proto__ has its recorded pass read, and its regression
   expect(out.join('')).toContain('(qa-regression)')
 })
 
+test('a dry run that would record stops, as a real run does, when the checked revision cannot be dated', async () => {
+  // A record exists, so "no record" is not what stops it: the missing commit date is.
+  expect(await run(await result('passed', { 'BIL-014': 'proven' }), PASSED_AT, ['--record-passes', 'true'])).toBe(0)
+  const undatable = 'c3'.repeat(20)
+  expect(await run(await result('passed', { 'BIL-014': 'proven' }), undatable, ['--record-passes', 'true', '--dry-run', 'true'])).toBe(1)
+  expect(err.join('')).toContain(`could not read when ${undatable} was committed`)
+})
+
 test('without --record-passes nothing is recorded, and only the exact word true records', async () => {
   const passing = await result('passed', { 'BIL-014': 'proven' })
   expect(await run(passing, PASSED_AT)).toBe(0)
