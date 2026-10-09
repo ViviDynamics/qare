@@ -1405,7 +1405,10 @@ caller passes `main-lane-dry-run` as the exact word `false`, the step reads,
 prints the title, the labels and the body of each issue it would open, and
 whom it would mention, and writes nothing. The lane reads the ledger and
 never writes it (rule 5): a run on main records no pass and changes no
-criterion. See "Findings on main" in [pipeline.md](./pipeline.md).
+criterion. Nothing else records a pass in the ledger yet either (#295), so
+the "Blame" below has no last pass to start from: until that lands, a
+failure the lane files is a `qa-failure` for the fallback, never a
+regression. See "Findings on main" in [pipeline.md](./pipeline.md).
 
 What is a finding, of which kind, and who it names is decided in code from
 the executed result and the ledger. No model has a say in any of it.

@@ -773,7 +773,9 @@ says there is nothing to run and the other two jobs skip.
 The lane never writes the ledger. So that an issue can say when a criterion
 last passed and blame the changes since, the ledger's history needs a
 `verify` record for it; without one a failure is filed as `qa-failure`, for
-the profile's fallback, and never called a regression.
+the profile's fallback, and never called a regression. No command writes
+that record yet (#295), so today every failure the lane files is a
+`qa-failure`: nobody is blamed, and only the fallback is mentioned.
 
 ### Filing for real
 
