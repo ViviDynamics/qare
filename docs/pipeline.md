@@ -812,8 +812,9 @@ What is recorded, where, and by what:
   every recorded pass of a revision that is ahead of its own (it neither
   replaces nor drops it, and says so), and a failure is a regression only
   against a pass of an earlier revision. A pass recorded for a later
-  revision, or for one rewritten out of the branch, is no last pass for
-  that run; the next run that proves the criterion replaces a pass of a
+  revision, for the very revision that now fails (the same revision run
+  again: nothing landed in between to blame), or for one rewritten out of
+  the branch, is no last pass for that run; the next run that proves the criterion replaces a pass of a
   rewritten revision. A pass of a criterion the ledger no longer carries is
   dropped by the next run that is not behind it. The order a criterion's
   checks are listed in is no part of its wording. The issue also says when
@@ -826,7 +827,9 @@ What is recorded, where, and by what:
   and cannot write it. The verifier can only take a pass away. A pull
   request cannot reach it: the lane does not run on one.
 - **On a dry run** nothing is recorded. The dry run says which criteria it
-  would record a pass for.
+  would record a pass for, and which it would leave because a later
+  revision already holds their pass: it asks the history what a real run
+  would.
 - **Permissions.** main_judge declares `contents: write` for this one push.
   The calling job already grants it in the ceiling above, so a caller adds
   nothing. A caller that had narrowed its ceiling to `contents: read` must

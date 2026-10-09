@@ -163,14 +163,10 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
     const record = input.recordPasses
     if (record === undefined) return {}
     const criteria = mainPassesToRecord(input.result, input.ledger)
-    if (criteria.length === 0 || dryRun) return { passes: { criteria, recorded: false } }
+    if (criteria.length === 0) return { passes: { criteria, recorded: false } }
     const run = { sha: input.headSha, at: record.at, run: record.run, recordedAt: record.now ?? new Date().toISOString() }
-    // Built on the record as it stands where it is written, not as it was
-    // read when the step started: another run may have recorded since. One
-    // that cannot be read there is refused, and nothing is written over it.
-    let kept: string[] = []
-    await record.write(async (current) => {
-      const store = current === undefined ? { passes: {} } : parseMainPasses(current)
+    /** The record with this run's passes applied, and the criteria whose pass a later revision already holds. */
+    const merge = async (store: MainPasses): Promise<{ next: MainPasses; kept: string[] }> => {
       // Which recorded revisions are ahead of this run's, asked of the
       // history and not of the clock: a pass of one of those is left as it
       // is. Every other recorded pass this run may write over, a revision
@@ -190,8 +186,23 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
       const ahead = new Set<string>()
       for (const sha of inPlay) if ((await client.listCommitsBetween(sha, input.headSha, 0))?.behind === true) ahead.add(sha)
       const next = recordMainPasses(store, run, criteria, input.ledger, (sha) => !ahead.has(sha))
-      kept = criteria.filter((id) => mainPassOf(next, id)?.sha !== input.headSha)
-      return serializeMainPasses(next)
+      return { next, kept: criteria.filter((id) => mainPassOf(next, id)?.sha !== input.headSha) }
+    }
+    // A dry run does everything but the write: it asks the history the same
+    // questions of the record as it was read, so what it says it would
+    // record is what a real run would, a pass a later revision holds left out.
+    if (dryRun) {
+      const { kept } = await merge(input.passes ?? { passes: {} })
+      return { passes: { criteria: criteria.filter((id) => !kept.includes(id)), recorded: false, kept } }
+    }
+    // Built on the record as it stands where it is written, not as it was
+    // read when the step started: another run may have recorded since. One
+    // that cannot be read there is refused, and nothing is written over it.
+    let kept: string[] = []
+    await record.write(async (current) => {
+      const merged = await merge(current === undefined ? { passes: {} } : parseMainPasses(current))
+      kept = merged.kept
+      return serializeMainPasses(merged.next)
     })
     return { passes: { criteria: criteria.filter((id) => !kept.includes(id)), recorded: true, kept } }
   }
@@ -349,8 +360,10 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
  * later revision, or for one GitHub can no longer relate to this one, says
  * nothing about whether the criterion passed before this revision, so it is
  * no last pass for this run and a failure is not called a regression on its
- * word. A pass of the checked revision itself stands. Only the passes of
- * the criteria this run failed are asked about.
+ * word. Neither is a pass of the checked revision itself: a criterion that
+ * fails where it passed has no earlier revision to have regressed from and
+ * no change in between to blame. Only the passes of the criteria this run
+ * failed are asked about.
  */
 async function earlierPasses(client: GitHubClient, input: MainFindingsInput): Promise<MainPasses | undefined> {
   const store = input.passes
@@ -359,7 +372,9 @@ async function earlierPasses(client: GitHubClient, input: MainFindingsInput): Pr
   const earlier = new Map<string, boolean>()
   const passes: Array<[string, MainPasses['passes'][string]]> = []
   for (const [id, pass] of Object.entries(store.passes)) {
-    if (failed.has(id) && pass.sha !== input.headSha) {
+    if (failed.has(id)) {
+      // A revision is not earlier than itself, and the history need not be asked.
+      if (pass.sha === input.headSha) continue
       let known = earlier.get(pass.sha)
       if (known === undefined) {
         known = (await client.listCommitsBetween(pass.sha, input.headSha, 0))?.ahead === true

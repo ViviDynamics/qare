@@ -360,7 +360,7 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
   // whose contents this identity may not read, alike. "No record" is only
   // believed from an identity that can read the revision the run checked:
   // otherwise a regression would be filed as a plain failure, silently.
-  const committed = stored === undefined || (record && !dryRun) ? await client.getCommitDate(headSha) : undefined
+  const committed = stored === undefined || record ? await client.getCommitDate(headSha) : undefined
   if (stored === undefined && committed === undefined)
     throw new GitHubClientError(
       `no record of passes was found at ${passesPath} on the ${branch} branch, and this identity cannot read ${headSha} either, so a record that is not there cannot be told from one it may not read: nothing is filed and nothing is recorded; give the identity read access to the repository's contents`,
@@ -374,9 +374,9 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
     )
   }
   // A pass names when its revision was committed, so a revision GitHub
-  // cannot date gets no pass. A dry run writes nothing.
+  // cannot date gets no pass. A dry run reads the same and writes nothing.
   let committedAt = ''
-  if (record && !dryRun) {
+  if (record) {
     if (committed === undefined)
       throw new GitHubClientError(`could not read when ${headSha} was committed, so no pass can be recorded for it and nothing is filed`)
     committedAt = new Date(committed).toISOString().replace('.000Z', 'Z')
@@ -422,7 +422,11 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
     // What was written is what is said: a pass a later revision's run already
     // recorded is left as it is, and is not reported as recorded here.
     if (criteria.length === 0 && kept.length === 0) out.write('no pass to record: the run proved no criterion the ledger carries as active\n')
-    else if (!recorded) out.write(`would record a pass for ${criteria.length} criteria at ${at}: ${criteria.join(', ')}\n`)
+    else if (!recorded && criteria.length === 0) out.write(`would record no pass at ${at}: a later revision already holds the pass of ${kept.join(', ')}\n`)
+    else if (!recorded) {
+      out.write(`would record a pass for ${criteria.length} criteria at ${at}: ${criteria.join(', ')}\n`)
+      if (kept.length > 0) out.write(`would leave as a later revision recorded it: ${kept.join(', ')}\n`)
+    }
     else if (criteria.length === 0) out.write(`no pass recorded at ${at}: a later revision already holds the pass of ${kept.join(', ')}\n`)
     else {
       out.write(`recorded a pass for ${criteria.length} criteria at ${at} on ${branch} (${passesPath}): ${criteria.join(', ')}\n`)

@@ -67,8 +67,9 @@ lane, and never in the ledger.**
   order is asked of the history on both sides: when it writes, a run leaves
   every recorded pass of a revision ahead of its own exactly as it is, and
   when a failure is classified, a pass counts as the last pass only if its
-  revision is behind the checked one. A pass of a revision the branch no
-  longer has is neither: it is no last pass, and the next run that proves
+  revision is behind the checked one (a pass of the checked revision
+  itself is not: nothing landed in between to blame). A pass of a revision
+  the branch no longer has is neither: it is no last pass, and the next run that proves
   the criterion replaces it. A pass of a criterion the ledger no longer
   carries is dropped by the next run that is not behind it. A repository
   with several profiles keeps one record for each profile, so one profile's
