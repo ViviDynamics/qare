@@ -6,6 +6,7 @@ import { electronDisplayProblem } from './flow-electron.js'
 import { describeHost, detectHost, requirementsOf, unmetRequirements, virtualisationProblem, type HostKind, type HostProbes, type Requirements } from './placement.js'
 import { ProfileMissingError, loadProfile, type QaProfile } from './profile.js'
 import { VERSION } from './version.js'
+import { inspectRunnerSafety, type RunnerSafetyFinding, type RunnerSafetyProbes } from './runner-safety.js'
 
 /**
  * One thing `qare doctor` looks at: what was found, whether the run needs it,
@@ -19,6 +20,8 @@ export interface DoctorFinding {
   detail: string
   /** How to install it, named when the finding is required and not ok. */
   install?: string
+  checklist?: RunnerSafetyFinding['checklist']
+  status?: RunnerSafetyFinding['status']
 }
 
 export interface DoctorReport {
@@ -45,6 +48,7 @@ export interface DoctorProbes {
   display?: () => string | undefined
   /** The host a profile's requirements are held to (#76): its kind, its virtualisation, its devices, its cell. */
   host?: HostProbes
+  runnerSafety?: RunnerSafetyProbes
 }
 
 export interface DoctorOpts {
@@ -257,6 +261,9 @@ export async function runDoctor(opts: DoctorOpts = {}): Promise<DoctorReport> {
         `attach an ${kind} device with USB debugging allowed, and install adb (the Android platform tools) on PATH`,
       )),
     })
+
+  const safety = await inspectRunnerSafety(probes.host?.env, probes.runnerSafety)
+  findings.push(...(safety ?? []).map(finding => ({ ...finding, name: `self-hosted ${finding.checklist}`, ok: finding.status !== 'finding', required: false })))
 
   return {
     execution,

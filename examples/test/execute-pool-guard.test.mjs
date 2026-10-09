@@ -22,7 +22,7 @@ async function beforeCheckout(job, changes = {}) {
   const summary = join(dir, 'summary')
   try {
     const outcome = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', steps.slice(0, checkout).map((step) => step.run ?? '').join('\n')], {
-      env: { PATH: process.env.PATH, GITHUB_STEP_SUMMARY: summary, ...shared, ...changes }, encoding: 'utf8',
+      env: { PATH: process.env.PATH, HOME: dir, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: summary, ...shared, ...changes }, encoding: 'utf8',
     })
     return { code: outcome.status, stdout: outcome.stdout, summary: await readFile(summary, 'utf8').catch(() => '') }
   } finally { await rm(dir, { recursive: true, force: true }) }

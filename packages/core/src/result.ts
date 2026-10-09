@@ -5,6 +5,7 @@ import { parseProfileRef, type JobProfileRef } from './job.js'
 import type { MailProof } from './mailbox.js'
 import type { ModelUsage } from './metrics.js'
 import { RUNNER_KINDS, type HostKind, type Requirements, type RunnerKind } from './placement.js'
+import { RUNNER_CHECKLIST_ITEMS, type RunnerSafetyFinding } from './runner-safety.js'
 import { DEVICE_KINDS, HOST_OPERATING_SYSTEMS, isUnsafeProfileName, type DeviceKind, type HostOperatingSystem } from './profile.js'
 
 export const RESULT_SCHEMA_VERSION = '1'
@@ -461,7 +462,20 @@ function parseEnvironment(value: unknown): RunEnvironment | undefined {
     },
     ...(value.image === undefined ? {} : { image: parseRunImage(value.image) }),
     ...(value.host === undefined ? {} : { host: parseHost(value.host) }),
+    ...(value.runnerSafety === undefined ? {} : { runnerSafety: parseRunnerSafety(value.runnerSafety) }),
   }
+}
+
+function parseRunnerSafety(value: unknown): RunnerSafetyFinding[] {
+  const field = 'environment.runnerSafety'
+  if (!Array.isArray(value)) fail(field, `${field} must be an array`)
+  return value.map((entry, index) => {
+    const at = `${field}[${index}]`
+    if (!isRecord(entry)) fail(at, `${at} must be a JSON object`)
+    if (!(RUNNER_CHECKLIST_ITEMS as readonly unknown[]).includes(entry.checklist)) fail(`${at}.checklist`, `${at}.checklist must name a self-hosted checklist item`)
+    if (entry.status !== 'finding' && entry.status !== 'unobservable') fail(`${at}.status`, `${at}.status must be finding or unobservable`)
+    return { checklist: entry.checklist as RunnerSafetyFinding['checklist'], status: entry.status, detail: nonEmptyString(entry.detail, `${at}.detail`, 'runner finding detail') }
+  })
 }
 
 /**
