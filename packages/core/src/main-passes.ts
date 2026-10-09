@@ -65,8 +65,8 @@ function fail(field: string, message: string): never {
  * the passes its ledger no longer carries: so each profile has a record of
  * its own, and one profile's run never reads or drops another's passes. The
  * usual profile (`.qa`, or none named) keeps `passes/main.json`. Any other
- * is named by its directory, as one path segment: nothing in it may climb
- * out of `passes/` or hide.
+ * is named by its directory, under `passes/profiles/`: nothing in it may
+ * climb out or hide.
  */
 export function mainPassesPath(profile?: string): string {
   const given = profile ?? ''
@@ -74,7 +74,9 @@ export function mainPassesPath(profile?: string): string {
   if (given === '' || named === '.qa') return MAIN_PASSES_PATH
   if (named === '' || named.split('/').some((segment) => segment === '' || segment === '.' || segment === '..') || !/^[A-Za-z0-9._/-]+$/.test(named))
     fail('profile', `${JSON.stringify(profile)} cannot name a record: a profile directory is repository-relative, of letters, digits, ".", "_", "-" and "/", with no "." or ".." segment`)
-  return `passes/${named.replace(/\//g, '-')}/main.json`
+  // The directory itself, under a prefix of its own: two directories are
+  // never one record, and none can sit on the usual record or in another's.
+  return `passes/profiles/${named}/main.json`
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

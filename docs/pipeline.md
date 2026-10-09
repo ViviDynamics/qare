@@ -797,7 +797,7 @@ What is recorded, where, and by what:
   beside the screenshots and the run metrics. A repository with several
   profiles has one record for each, so one profile's run never drops
   another's passes: a profile other than `.qa` keeps its own at
-  `passes/<its directory, with "-" for "/">/main.json`. Each run that proves something
+  `passes/profiles/<its directory>/main.json`. Each run that proves something
   adds one commit carrying the whole record, so the branch's history is the
   record's history. The ledger and your default branch are never written,
   and nothing lands as a commit your build would react to: filter your
@@ -917,7 +917,7 @@ your own that already has a judged result of a run on your default branch:
 | `--dry-run true` | Reads, writes nothing, and prints what a real run would open, comment on, reopen or close, and whom it would mention, with the title, the labels and the body of each issue it would open. Run it first. |
 | `--record-passes true` | Records what the run proved, in `passes/main.json` on the `qa-assets` branch, after filing: see "Regressions" above. Only the exact word records, and a dry run only says what it would record. |
 | `--branch` | The branch the record of passes is read from and written to, and screenshots are pushed to. `qa-assets` when left out. |
-| `--passes-profile` | The profile directory whose record of passes this is, for a repository with several profiles. Left out, or `.qa`, it is `passes/main.json`. |
+| `--passes-profile` | The profile directory whose record of passes this is, for a repository with several profiles. Left out, or `.qa`, it is `passes/main.json`; any other is `passes/profiles/<directory>/main.json`. |
 
 The command reads the record of passes on every run, whether or not it
 records, because that record is what makes a failure a regression. So the

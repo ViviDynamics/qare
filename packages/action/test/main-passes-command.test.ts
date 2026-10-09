@@ -305,8 +305,8 @@ test('two profiles of one repository keep records of their own', async () => {
   await writeFile(join(dir, 'ledger.json'), serializeLedgerDocument(api, []))
   expect(await run(await result('passed', { 'API-001': 'proven' }), PASSED_AT, ['--record-passes', 'true', '--passes-profile', 'services/api/qa'])).toBe(0)
   const read = async (path: string): Promise<string[]> => Object.keys(parseMainPasses(((await client().getContents(path, 'qa-assets')) ?? Buffer.from('')).toString('utf8')).passes)
-  expect(await read('passes/services-web-qa/main.json')).toEqual(['BIL-014', 'BIL-021'])
-  expect(await read('passes/services-api-qa/main.json')).toEqual(['API-001'])
+  expect(await read('passes/profiles/services/web/qa/main.json')).toEqual(['BIL-014', 'BIL-021'])
+  expect(await read('passes/profiles/services/api/qa/main.json')).toEqual(['API-001'])
   expect(await recorded()).toBeUndefined()
   // Each reads its own when it files: the api profile's failure is a regression against its own pass.
   fake.commitLog.push({ sha: FAILED_AT, message: 'Later (#12)', date: '2026-10-09T09:00:00Z' })

@@ -1980,7 +1980,7 @@ jobs:
           MAIN_LANE_DRY_RUN: ${{ inputs.main-lane-dry-run }}
           MAIN_LANE_RECORD_PASSES: ${{ inputs.main-lane-record-passes }}
           HEAD_SHA: ${{ github.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
           EVIDENCE_URL: ${{ needs.main_execute.outputs.evidence-url }}
           PROFILE: ${{ inputs.profile }}
         run: |

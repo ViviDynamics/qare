@@ -243,6 +243,9 @@ test('main_judge asks the verifier with no diff, and files from the judged resul
   const file = step('main_judge', 'File what the run on main found')
   expect(oneLine(file.run)).toContain('main-findings --result judged-result.json --ledger "$PROFILE" --profile "$PROFILE" --sha "$HEAD_SHA" --run-url "$RUN_URL" --artifact-url "$EVIDENCE_URL" --dry-run "$dry" --record-passes "$record" --passes-profile "$PROFILE"')
   expect(file.env?.HEAD_SHA).toBe('${{ github.sha }}')
+  // The run is named with its attempt: a pass recorded by one attempt and a
+  // failure filed by the next are told apart in the issue.
+  expect(file.env?.RUN_URL).toBe('${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}')
   expect(file.env?.EVIDENCE_URL).toBe('${{ needs.main_execute.outputs.evidence-url }}')
   expect(file.run).not.toContain('${{')
 })

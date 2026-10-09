@@ -118,8 +118,12 @@ describe('the record', () => {
   test('each profile of a repository has a record of its own, so one profile never drops another\'s passes', () => {
     // The usual profile keeps the one path every single-profile repository has.
     for (const usual of [undefined, '', '.qa', './.qa', '.qa/']) expect(mainPassesPath(usual)).toBe('passes/main.json')
-    expect(mainPassesPath('services/web/qa')).toBe('passes/services-web-qa/main.json')
-    expect(mainPassesPath('./services/api/.qa/')).toBe('passes/services-api-.qa/main.json')
+    expect(mainPassesPath('services/web/qa')).toBe('passes/profiles/services/web/qa/main.json')
+    expect(mainPassesPath('./services/api/.qa/')).toBe('passes/profiles/services/api/.qa/main.json')
+    // Two directories are two records, however alike their names: the path is the directory itself.
+    expect(mainPassesPath('qa/web')).not.toBe(mainPassesPath('qa-web'))
+    // And none of them can sit on the usual record or inside another's.
+    expect(mainPassesPath('main.json')).toBe('passes/profiles/main.json/main.json')
     expect(mainPassesPath('services/web/qa')).not.toBe(mainPassesPath('services/api/qa'))
     // A name is a path segment on a branch: nothing that climbs or hides.
     for (const bad of ['..', '../x', 'a/../b', 'a b', 'a\nb', '/', '.']) expect(() => mainPassesPath(bad), bad).toThrow(MainPassesError)
