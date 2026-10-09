@@ -970,7 +970,7 @@ async function doctorCommand(argv: string[], out: Writer, err: Writer): Promise<
     } else {
       out.write(`execution ${report.execution}\n`)
       for (const finding of report.findings) {
-        out.write(`${finding.required && !finding.ok ? 'missing' : 'ok'} ${finding.name}: ${finding.detail}\n`)
+        out.write(`${finding.status ?? (finding.required && !finding.ok ? 'missing' : 'ok')} ${finding.name}: ${finding.detail}\n`)
         if (finding.install !== undefined) out.write(`  ${finding.install}\n`)
       }
       out.write(report.ready ? 'this host can run qare natively\n' : 'this host is missing what the run needs\n')
