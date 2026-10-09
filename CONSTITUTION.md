@@ -85,7 +85,7 @@ Two exceptions to "reaches nothing outside the declared stubs" are decided
 
 - When a profile declares no contained command, a command check may run with
   the step's network, and the evidence records that it ran uncontained.
-- A suite runs uncontained, by the decision recorded in #224, and its
+- Suites run uncontained, by the decision recorded in #224, and a suite's
   evidence says so.
 
 These are what happens where a profile has said nothing. What a profile
