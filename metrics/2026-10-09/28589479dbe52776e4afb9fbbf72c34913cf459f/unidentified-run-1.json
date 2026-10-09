@@ -1,0 +1,93 @@
+{
+  "schemaVersion": "qare.metrics.v1",
+  "recordedAt": "2026-10-09T00:51:34.872Z",
+  "runId": "pr-296",
+  "startedAt": "2026-10-09T00:51:13.242Z",
+  "finishedAt": "2026-10-09T00:51:13.270Z",
+  "wallMs": 28,
+  "verdict": "blocked",
+  "criteria": {
+    "selected": [
+      {
+        "id": "c-ffb638417950165b",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-20be90fa2ea68969",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-25eee4944d92fcb2",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-c3826b011985657c",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-6f95547a579afe70",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-991fba7d1786c300",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-e75e8f1e4e727c0b",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-44b204828928d6ad",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-40c091992149bbdf",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-9b084bfbcbdbe2d6",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-55f1529138f6490f",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-282d39acf054fd12",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-eae1e0be40f69c43",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-ad2b1a8edbfecf47",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-1033c67b1febfd49",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-7b5f13056aac5df3",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-3447856fcd3c0f33",
+        "outcome": "unverified"
+      }
+    ],
+    "counts": {
+      "unverified": 17
+    }
+  },
+  "model": {
+    "plan": {
+      "inputTokens": 928532,
+      "outputTokens": 12321
+    }
+  },
+  "context": {
+    "pr": 296
+  }
+}
