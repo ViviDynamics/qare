@@ -171,10 +171,18 @@ on:
         default: '"ubuntu-latest"'
       execute-runs-on:
         description: >-
-          Where execute runs, in the same JSON form, when it should not share
-          runners with the jobs that hold secrets. execute runs pull request
-          code, so on runners that outlive a job give it a pool of its own.
-          Empty means runs-on.
+          Where execute and main_execute run, in the same JSON form as
+          runs-on. On self-hosted runners this must name a different pool
+          unless ephemeral-runners is 'true'. Empty means runs-on on hosted
+          runners. The execute pool must never run jobs holding secrets.
+        type: string
+        default: ''
+      ephemeral-runners:
+        description: >-
+          Set to 'true' to declare that every job gets a fresh machine that
+          is destroyed afterwards, with no docker daemon, volume or cache
+          shared between jobs. Recorded as a caller declaration in evidence.
+          Self-hosted execute otherwise requires a separate execute-runs-on.
         type: string
         default: ''
       self-hosted:
@@ -641,6 +649,35 @@ jobs:
       # reaches the repository once, here, and never again. Two commits
       # deep, so the merge commit's parents, the base and the head the run
       # names with --base and --head, are in the object store without it.
+      # Require machine isolation before repository code reaches this host (#308).
+      - name: Require a separate execute pool or ephemeral runners
+        shell: bash
+        env:
+          QARE_RUNS_ON: ${{ inputs.runs-on }}
+          QARE_EXECUTE_RUNS_ON: ${{ inputs.execute-runs-on }}
+          QARE_EPHEMERAL_RUNNERS: ${{ inputs.ephemeral-runners }}
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ] || [ "${QARE_EPHEMERAL_RUNNERS:-}" = "true" ]; then
+            exit 0
+          fi
+          # Labels are case-insensitive sets, not JSON text: reordering or
+          # spelling one label as an array cannot declare a different pool.
+          selector() {
+            jq -ce 'if type == "string" then [.] else . end
+              | if type == "array" and length > 0 and all(.[]; type == "string" and length > 0)
+                then map(ascii_downcase) | unique
+                else error("expected a runner label or a non-empty array of labels") end' <<< "$1"
+          }
+          reason="self-hosted execution requires execute-runs-on to name a pool different from runs-on, or ephemeral-runners: 'true' to declare a fresh machine and docker daemon for every job, with no shared volume or cache"
+          if [ -z "${QARE_EXECUTE_RUNS_ON:-}" ] ||
+             ! general=$(selector "${QARE_RUNS_ON:-}") ||
+             ! execution=$(selector "$QARE_EXECUTE_RUNS_ON") ||
+             [ "$general" = "$execution" ]; then
+            echo "$reason" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$reason"
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -1630,6 +1667,35 @@ jobs:
       # The revision the run was started for, with no token left in
       # .git/config (rule 7): the run's container is handed this workspace
       # and executes the repository's code.
+      # Require machine isolation before repository code reaches this host (#308).
+      - name: Require a separate execute pool or ephemeral runners
+        shell: bash
+        env:
+          QARE_RUNS_ON: ${{ inputs.runs-on }}
+          QARE_EXECUTE_RUNS_ON: ${{ inputs.execute-runs-on }}
+          QARE_EPHEMERAL_RUNNERS: ${{ inputs.ephemeral-runners }}
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != "self-hosted" ] || [ "${QARE_EPHEMERAL_RUNNERS:-}" = "true" ]; then
+            exit 0
+          fi
+          # Labels are case-insensitive sets, not JSON text: reordering or
+          # spelling one label as an array cannot declare a different pool.
+          selector() {
+            jq -ce 'if type == "string" then [.] else . end
+              | if type == "array" and length > 0 and all(.[]; type == "string" and length > 0)
+                then map(ascii_downcase) | unique
+                else error("expected a runner label or a non-empty array of labels") end' <<< "$1"
+          }
+          reason="self-hosted execution requires execute-runs-on to name a pool different from runs-on, or ephemeral-runners: 'true' to declare a fresh machine and docker daemon for every job, with no shared volume or cache"
+          if [ -z "${QARE_EXECUTE_RUNS_ON:-}" ] ||
+             ! general=$(selector "${QARE_RUNS_ON:-}") ||
+             ! execution=$(selector "$QARE_EXECUTE_RUNS_ON") ||
+             [ "$general" = "$execution" ]; then
+            echo "$reason" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::$reason"
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
