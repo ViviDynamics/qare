@@ -650,7 +650,6 @@ jobs:
       # reaches the repository once, here, and never again. Two commits
       # deep, so the merge commit's parents, the base and the head the run
       # names with --base and --head, are in the object store without it.
-<<<<<<< HEAD
       # Require machine isolation before repository code reaches this host (#308).
       - name: Require a separate execute pool or ephemeral runners
         shell: bash
@@ -680,7 +679,6 @@ jobs:
             echo "::error::$reason"
             exit 1
           fi
-=======
       - name: Inspect self-hosted runner checklist
         shell: bash
         run: |
@@ -735,7 +733,6 @@ jobs:
             if [ "$cluster" = true ]; then echo '- finding network: the cluster API is reachable'; fi
             if [ "$remote" = true ]; then echo '- finding docker: a remote daemon is reachable; verify exclusive ownership'; fi
           } >> "$GITHUB_STEP_SUMMARY"
->>>>>>> b4d83f0 (feat: inspect self-hosted execute jobs before checkout and publish checklist)
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -1732,7 +1729,6 @@ jobs:
       # The revision the run was started for, with no token left in
       # .git/config (rule 7): the run's container is handed this workspace
       # and executes the repository's code.
-<<<<<<< HEAD
       # Require machine isolation before repository code reaches this host (#308).
       - name: Require a separate execute pool or ephemeral runners
         shell: bash
@@ -1762,7 +1758,6 @@ jobs:
             echo "::error::$reason"
             exit 1
           fi
-=======
       - name: Inspect self-hosted runner checklist
         shell: bash
         run: |
@@ -1817,7 +1812,6 @@ jobs:
             if [ "$cluster" = true ]; then echo '- finding network: the cluster API is reachable'; fi
             if [ "$remote" = true ]; then echo '- finding docker: a remote daemon is reachable; verify exclusive ownership'; fi
           } >> "$GITHUB_STEP_SUMMARY"
->>>>>>> b4d83f0 (feat: inspect self-hosted execute jobs before checkout and publish checklist)
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
