@@ -19,12 +19,27 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+      # pnpm as package.json names it (#310): corepack, which ships with node,
+      # reads `packageManager`, which carries the version and the hash the
+      # download is checked against. No action installs it. The version that
+      # resolved is then held to the one named, so a runner that answers with
+      # another pnpm stops here.
+      - name: Enable the pnpm package.json names
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          wanted="$(jq -r '.packageManager // empty' package.json)"
+          wanted="${wanted%%+*}"
+          found="pnpm@$(pnpm --version)"
+          if [ "$found" != "$wanted" ]; then
+            echo "::error::corepack resolved $found, and package.json names ${wanted:-no package manager}"
+            exit 1
+          fi
       - run: pnpm install --frozen-lockfile
       # build first: workspace types (@qare/core etc.) resolve to dist/, so a
       # fresh checkout cannot typecheck or test until packages are built
@@ -45,15 +60,25 @@ jobs:
   compose-boot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
           fetch-depth: 2
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+      - name: Enable the pnpm package.json names
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          wanted="$(jq -r '.packageManager // empty' package.json)"
+          wanted="${wanted%%+*}"
+          found="pnpm@$(pnpm --version)"
+          if [ "$found" != "$wanted" ]; then
+            echo "::error::corepack resolved $found, and package.json names ${wanted:-no package manager}"
+            exit 1
+          fi
       # The step reader parses the workflow with the workspace's yaml.
       - run: pnpm install --frozen-lockfile
       - name: Build the core image
@@ -62,7 +87,7 @@ jobs:
         run: scripts/compose-boot.sh qare-core:ci
       - name: Upload the run's evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: compose-boot-evidence
           path: evidence/
@@ -79,15 +104,25 @@ jobs:
   mail-sink:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
           fetch-depth: 2
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+      - name: Enable the pnpm package.json names
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          wanted="$(jq -r '.packageManager // empty' package.json)"
+          wanted="${wanted%%+*}"
+          found="pnpm@$(pnpm --version)"
+          if [ "$found" != "$wanted" ]; then
+            echo "::error::corepack resolved $found, and package.json names ${wanted:-no package manager}"
+            exit 1
+          fi
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Build the core image
@@ -96,7 +131,7 @@ jobs:
         run: scripts/mail-sink.sh qare-core:ci
       - name: Upload the run's evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: mail-sink-evidence
           path: evidence/
@@ -121,15 +156,25 @@ jobs:
   electron-driver:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
           fetch-depth: 2
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+      - name: Enable the pnpm package.json names
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          wanted="$(jq -r '.packageManager // empty' package.json)"
+          wanted="${wanted%%+*}"
+          found="pnpm@$(pnpm --version)"
+          if [ "$found" != "$wanted" ]; then
+            echo "::error::corepack resolved $found, and package.json names ${wanted:-no package manager}"
+            exit 1
+          fi
       # The step reader parses the workflow with the workspace's yaml.
       - run: pnpm install --frozen-lockfile
       - name: Build the core image
@@ -142,7 +187,7 @@ jobs:
         run: scripts/client-provision.sh qare-web:ci
       - name: Upload the run's evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: electron-driver-evidence
           path: evidence/
@@ -155,12 +200,22 @@ jobs:
   images:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+      - name: Enable the pnpm package.json names
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          wanted="$(jq -r '.packageManager // empty' package.json)"
+          wanted="${wanted%%+*}"
+          found="pnpm@$(pnpm --version)"
+          if [ "$found" != "$wanted" ]; then
+            echo "::error::corepack resolved $found, and package.json names ${wanted:-no package manager}"
+            exit 1
+          fi
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
         # The core image: the workspace builds inside it, so the build needs

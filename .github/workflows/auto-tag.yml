@@ -48,8 +48,11 @@ jobs:
     name: tag the release version
     # workflow_run fires for pull requests and failures too: the job accepts
     # nothing but a successful push to this repository's main.
+    # A manual run counts for main alone (#310): started from any other ref
+    # it would tag and release that ref's commit.
     if: >-
-      github.event_name == 'workflow_dispatch' || (
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (
+        github.event_name == 'workflow_run' &&
         github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.event == 'push' &&
         github.event.workflow_run.head_branch == 'main' &&
@@ -66,12 +69,23 @@ jobs:
       # GitHub has intermittently treated the tag's commit objects as new and
       # rejected the push from a workflow token (steward's create-tag job
       # documents the same lesson).
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
+      # Held to CalVer before it is written anywhere (#310): the job's
+      # environment file is read line by line, so a version is one line of
+      # that shape or nothing is written at all.
       - name: Read the version package.json carries
-        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -r '.version | if type == "string" then . else "" end' package.json)"
+          if [[ ! "$version" =~ ^20[0-9]{2}\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::the version package.json carries is not a CalVer version (YYYY.M.PATCH, as 2026.9.0), so nothing is tagged"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_ENV"
       - name: Decide the version to tag
         env:
           GH_TOKEN: ${{ github.token }}

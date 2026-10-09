@@ -282,6 +282,18 @@ grants these all the same.
 Granting less stops the run before any job starts, with an error that names
 the job and the permission.
 
+## What the pipeline trusts
+
+Every action the pipeline uses is named by its full commit, with the version
+beside it as a comment, so a tag that moves changes nothing a run executes;
+a test holds every workflow file to that. pnpm is the one qare's
+`package.json` names, by version and hash, enabled with corepack: no action
+installs it. No job restores a dependency cache.
+
+The examples in this guide name actions the same way. Name the actions of
+your own jobs by commit too: a job that holds a secret runs whatever its
+actions' tags point at on the day.
+
 ## What the runner needs
 
 A GitHub-hosted runner has all of it. Your own runner needs `docker`, `git`,
@@ -502,12 +514,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: make package && mkdir -p qare-artefacts && cp out/my-app.tar qare-artefacts/head.tar
       # The build of the base: whatever your pipeline already keeps for the
       # default branch, fetched here, or built here from the base commit.
       - run: make fetch-base-build && cp out/base/my-app.tar qare-artefacts/base.tar
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: qare-artefacts
           path: qare-artefacts/
@@ -1123,22 +1135,20 @@ jobs:
   fleet:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # qare at a release, beside the checkout whose .qa/fleet.json it reads.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ViviDynamics/qare
           ref: 2026.10.36
           path: qare
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
-        with:
-          package_json_file: qare/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: qare/.nvmrc
-      - run: pnpm --dir qare install --frozen-lockfile
-      - run: pnpm --dir qare build
+      # corepack reads the pnpm qare's package.json names, by version and hash.
+      - run: corepack enable && pnpm install --frozen-lockfile && pnpm build
+        working-directory: qare
       - name: Report on the fleet
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
