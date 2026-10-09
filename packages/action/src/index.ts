@@ -364,8 +364,8 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
       `the record of passes at ${MAIN_PASSES_PATH} on the ${branch} branch cannot be read, so nothing is filed and nothing is recorded (${error instanceof Error ? error.message : String(error)}); restore the file from the branch's history, or remove it to start the record again`,
     )
   }
-  // A pass is counted from when its revision was committed, so a revision
-  // GitHub cannot date gets no pass. A dry run writes nothing and asks nothing.
+  // A pass names when its revision was committed, so a revision GitHub
+  // cannot date gets no pass. A dry run writes nothing.
   let committedAt = ''
   if (record && !dryRun) {
     if (committed === undefined)
@@ -389,7 +389,7 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
       ? {
           at: committedAt,
           run: runUrl ?? `run ${process.env.GITHUB_RUN_ID ?? 'unidentified'}-${process.env.GITHUB_RUN_ATTEMPT ?? '1'}`,
-          write: async (text) => void (await new GitHubQaAssetsPusher(client, headSha, { branch }).pushMainPasses(text)),
+          write: async (build) => void (await new GitHubQaAssetsPusher(client, headSha, { branch }).pushMainPasses(build)),
         }
       : undefined,
   })

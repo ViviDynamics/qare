@@ -802,7 +802,10 @@ What is recorded, where, and by what:
 - **What.** For each `active` criterion the judged result proved: the
   revision, when it was committed, the run, and a digest of the ledger entry
   that was proven. A criterion that failed keeps the pass it had, which is
-  the revision the changes are counted from. If a criterion's text, proof or
+  the revision the changes are counted from: the commits your default
+  branch has that the passing revision does not, as the history has them,
+  whatever their dates. A run of an earlier revision that finishes late
+  never replaces the pass of a later one. If a criterion's text, proof or
   checks change in the ledger, its pass no longer stands until a run proves
   the new wording.
 - **By what.** main_judge's filing step, after everything is filed. It holds
@@ -900,10 +903,19 @@ your own that already has a judged result of a run on your default branch:
 | `--evidence` | The run's evidence directory. Given, the failing criteria's screenshots are pushed to `qa-assets` and linked. |
 | `--run-url`, `--artifact-url` | Links the issue carries. Each must be an https URL. |
 | `--dry-run true` | Reads, writes nothing, and prints what a real run would open, comment on, reopen or close, and whom it would mention, with the title, the labels and the body of each issue it would open. Run it first. |
+| `--record-passes true` | Records what the run proved, in `passes/main.json` on the `qa-assets` branch, after filing: see "Regressions" above. Only the exact word records, and a dry run only says what it would record. |
+| `--branch` | The branch the record of passes is read from and written to, and screenshots are pushed to. `qa-assets` when left out. |
+
+The command reads the record of passes on every run, whether or not it
+records, because that record is what makes a failure a regression. So the
+identity it runs as must be able to read the repository's contents: when no
+record is found and the identity cannot read the checked revision either,
+the command stops rather than file a regression as a plain failure.
 
 The job needs `issues: write` to file, `pull-requests: read` and `contents:
-read` to read the range, and `contents: write` only when `--evidence` pushes
-screenshots. It is a judge-side step: give it the identity and nothing that
+read` to read the record and the range, and `contents: write` only when
+`--record-passes` writes the record or `--evidence` pushes screenshots. It
+is a judge-side step: give it the identity and nothing that
 runs repository code (rule 7).
 
 ## Fleet report

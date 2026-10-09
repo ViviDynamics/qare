@@ -8,6 +8,7 @@ import {
   isBotAccount,
   mainCriterionKey,
   mainPassesToRecord,
+  parseMainPasses,
   recordMainPasses,
   serializeMainPasses,
   mainFindingMarker,
@@ -92,7 +93,13 @@ export interface MainFindingsInput {
         run: string
         /** Injected clock for the record; defaults to now. */
         now?: string
-        write(text: string): Promise<void>
+        /**
+         * Writes the record. `build` is handed the record as it stands where
+         * it is written (undefined when there is none yet) and returns the
+         * text to write; it may be asked more than once, when another run's
+         * write lands first.
+         */
+        write(build: (current: string | undefined) => Promise<string>): Promise<void>
       }
     | undefined
 }
@@ -154,13 +161,13 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
     if (record === undefined) return {}
     const criteria = mainPassesToRecord(input.result, input.ledger)
     if (criteria.length === 0 || dryRun) return { passes: { criteria, recorded: false } }
-    const next = recordMainPasses(
-      input.passes ?? { passes: {} },
-      { sha: input.headSha, at: record.at, run: record.run, recordedAt: record.now ?? new Date().toISOString() },
-      criteria,
-      input.ledger,
+    const run = { sha: input.headSha, at: record.at, run: record.run, recordedAt: record.now ?? new Date().toISOString() }
+    // Built on the record as it stands where it is written, not as it was
+    // read when the step started: another run may have recorded since. One
+    // that cannot be read there is refused, and nothing is written over it.
+    await record.write(async (current) =>
+      serializeMainPasses(recordMainPasses(current === undefined ? { passes: {} } : parseMainPasses(current), run, criteria, input.ledger)),
     )
-    await record.write(serializeMainPasses(next))
     return { passes: { criteria, recorded: true } }
   }
 
@@ -316,9 +323,13 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
  * runs costs a fixed number of requests, and the range says it was cut.
  */
 async function readRange(client: GitHubClient, head: string, since: string, config: BlameConfig | undefined, passed?: string): Promise<BlameRange> {
-  const listed = await client.listCommitsSince(head, since, MAX_COMMITS)
-  // The range is counted from when the passing revision was committed, and
-  // GitHub lists that commit too. It passed, so it is no change since (#295).
+  // A pass that names its revision (#295) is counted from in the history:
+  // the commits the checked revision has that the passing one does not,
+  // whatever their dates. A pass that names only a moment (a ledger's own
+  // verify record), or a passing revision GitHub can no longer relate to
+  // this one, is counted from by date, leaving the passing revision out.
+  const between = passed === undefined ? undefined : await client.listCommitsBetween(passed, head, MAX_COMMITS)
+  const listed = between ?? (await client.listCommitsSince(head, since, MAX_COMMITS))
   const commits = passed === undefined ? listed.commits : listed.commits.filter((commit) => commit.sha !== passed)
   const truncated = listed.truncated
   const numbers: number[] = []

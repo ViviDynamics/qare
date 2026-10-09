@@ -67,6 +67,22 @@ describe('the record', () => {
     expect(Object.keys(third.passes)).toEqual(['BIL-014', 'BIL-021'])
   })
 
+  test('a run of an earlier revision never replaces the pass of a later one', () => {
+    // A run that was started first and finished last, or was run again: its
+    // revision is older, and counting the changes from it would blame the
+    // innocent changes between the two.
+    const book = ledger([entry('BIL-014')])
+    const later = recordMainPasses(EMPTY, RUN_B, ['BIL-014'], book)
+    const afterOlder = recordMainPasses(later, RUN_A, ['BIL-014'], book)
+    expect(afterOlder.passes['BIL-014']).toMatchObject({ sha: SHA_B, run: 'main-2-1' })
+    // The same revision proven again is the same pass, by the run that proved it last.
+    const again = recordMainPasses(later, { ...RUN_B, run: 'main-3-1' }, ['BIL-014'], book)
+    expect(again.passes['BIL-014']).toMatchObject({ sha: SHA_B, run: 'main-3-1' })
+    // A pass of other wording is no pass of this entry: whatever its date, it is replaced.
+    const reworded = ledger([entry('BIL-014', { text: 'New words.' })])
+    expect(recordMainPasses(later, RUN_A, ['BIL-014'], reworded).passes['BIL-014']).toMatchObject({ sha: SHA_A })
+  })
+
   test('is written the same for the same passes, and reads back as it was written', () => {
     const book = ledger([entry('BIL-021'), entry('BIL-014')])
     const store = recordMainPasses(EMPTY, RUN_A, ['BIL-021', 'BIL-014'], book)

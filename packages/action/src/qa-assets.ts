@@ -107,14 +107,30 @@ export class GitHubQaAssetsPusher implements ScreenshotPusher {
   /**
    * The record of what runs on the default branch proved (#295) rides the
    * same branch, at one path: each push is a new commit that carries the
-   * whole record, so the branch's history is the record's history. The text
-   * is written as it is handed in; the caller serialises it strictly.
+   * whole record, so the branch's history is the record's history.
+   *
+   * The record is read where it is written. `build` is handed the record as
+   * the branch head holds it at that moment (undefined when there is none)
+   * and returns the text to write; when another run's push lands first and
+   * this one is refused, the head is read again and `build` is asked again,
+   * so a pass another run recorded meanwhile is built on, never written
+   * over. `build` throws to refuse: then nothing is written.
    */
-  async pushMainPasses(text: string): Promise<string> {
-    await this.commitOntoBranch(
-      [{ path: MAIN_PASSES_PATH, content: Buffer.from(text, 'utf8') }],
-      `qa-assets: passes on the default branch at ${this.headSha.slice(0, 12)}`,
-    )
+  async pushMainPasses(build: (current: string | undefined) => Promise<string>): Promise<string> {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const parent = await this.client.getBranchHead(this.branch)
+      const current = parent === undefined ? undefined : (await this.client.getContents(MAIN_PASSES_PATH, parent))?.toString('utf8')
+      const blob = await this.client.createBlob(Buffer.from(await build(current), 'utf8'))
+      const parentTree = parent === undefined ? undefined : await this.client.getCommitTree(parent)
+      const tree = await this.client.createTree([{ path: MAIN_PASSES_PATH, mode: '100644', type: 'blob', sha: blob }], parentTree)
+      const sha = await this.client.createCommit(`qa-assets: passes on the default branch at ${this.headSha.slice(0, 12)}`, tree, parent === undefined ? [] : [parent])
+      try {
+        await this.client.pushBranch(this.branch, sha, parent)
+        return MAIN_PASSES_PATH
+      } catch (error) {
+        if (attempt === 3) throw error
+      }
+    }
     return MAIN_PASSES_PATH
   }
 

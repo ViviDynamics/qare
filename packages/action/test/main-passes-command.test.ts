@@ -170,7 +170,7 @@ test('a run that proves nothing writes no record, and says so', async () => {
 })
 
 test('a record that cannot be read stops the step by name before anything is filed, and is never written over', async () => {
-  await new GitHubQaAssetsPusher(client(), PASSED_AT).pushMainPasses('{"schemaVersion":"1","passes":{"BIL-014":{"sha":"main"}}}')
+  await new GitHubQaAssetsPusher(client(), PASSED_AT).pushMainPasses(async () => '{"schemaVersion":"1","passes":{"BIL-014":{"sha":"main"}}}')
   const before = writes().length
   expect(await run(await result('failed', { 'BIL-014': 'failed', 'BIL-021': 'proven' }), PASSED_AT, ['--record-passes', 'true'])).toBe(1)
   expect(err.join('')).toContain(`the record of passes at ${MAIN_PASSES_PATH} on the qa-assets branch cannot be read`)
@@ -195,9 +195,10 @@ test('no record is believed only from an identity that can read the repository: 
   expect(writes()).toEqual([])
 })
 
-// Two criteria last passed on different revisions committed in the same
-// second. Each range leaves out its own passing revision and no other.
-test('criteria that passed on different revisions committed at the same moment each get their own range', async () => {
+// The range is the commits after the passing revision, as the history has
+// them, not the commits dated after it: commits that share its second, and
+// commits dated before it that landed later, are told apart by where they sit.
+test('the changes since a recorded pass are the commits after its revision in the history, whatever their dates', async () => {
   const twin = 'd4'.repeat(20)
   fake.commitLog.push({ sha: twin, message: 'Twin change (#13)', date: PASSED_DATE })
   fake.commitPulls.set(twin, [13])
@@ -211,10 +212,54 @@ test('criteria that passed on different revisions committed at the same moment e
   expect(await run(await result('failed', { 'BIL-014': 'failed', 'BIL-021': 'failed' }), FAILED_AT)).toBe(0)
   const first = fake.issues.get(100)?.body ?? ''
   const second = fake.issues.get(101)?.body ?? ''
-  // BIL-014 passed on bob's revision: carol's twin and alice's change came since.
+  // BIL-014 passed on bob's revision: carol's change, committed in the same second, and alice's came after it.
   expect(first).toContain('`BIL-014`')
   expect(mentionsIn(first).sort()).toEqual(['alice', 'carol'])
-  // BIL-021 passed on carol's revision: bob's twin and alice's change came since.
+  // BIL-021 passed on carol's revision. Bob's commit shares its second and sits before it: it is not a change since.
   expect(second).toContain('`BIL-021`')
-  expect(mentionsIn(second).sort()).toEqual(['alice', 'bob'])
+  expect(mentionsIn(second)).toEqual(['alice'])
+  expect(second).not.toContain('#11')
+})
+
+test('a commit dated before the pass that landed after it is a change since', async () => {
+  expect(await run(await result('passed', { 'BIL-014': 'proven' }), PASSED_AT, ['--record-passes', 'true'])).toBe(0)
+  // Written last week, merged today: its date is before the passing revision's.
+  const old = 'e5'.repeat(20)
+  fake.commitLog.push({ sha: old, message: 'An old branch lands (#14)', date: '2026-10-01T00:00:00Z' })
+  fake.commitPulls.set(old, [14])
+  fake.pullRecords.set(14, { title: 'An old branch lands', author: { login: 'dave', type: 'User' }, merged: true, files: ['app/payouts/b.rb'], reviews: [] })
+  out = []
+  expect(await run(await result('failed', { 'BIL-014': 'failed' }), old)).toBe(0)
+  expect(out.join('')).toBe('opened #100 for BIL-014 (qa-regression), mentioning dave\n')
+})
+
+// Two runs can finish close together. The record is read again where it is
+// written, so a pass another run recorded meanwhile is kept, not written over.
+test('a pass another run recorded while this one was filing is kept', async () => {
+  const pusher = new GitHubQaAssetsPusher(client(), FAILED_AT)
+  const seen: Array<string | undefined> = []
+  let raced = false
+  await pusher.pushMainPasses(async (current) => {
+    seen.push(current)
+    if (!raced) {
+      raced = true
+      // Another run lands its record between this run's read and its push, so
+      // this run's push is refused: the branch is no longer where it read it.
+      await new GitHubQaAssetsPusher(client(), PASSED_AT).pushMainPasses(async () => '{"other":"run"}')
+    }
+    return `{"saw":${JSON.stringify(current ?? null)}}`
+  })
+  // The second attempt was handed what the other run wrote, and built on it.
+  expect(seen).toEqual([undefined, '{"other":"run"}'])
+  expect((await client().getContents(MAIN_PASSES_PATH, 'qa-assets'))?.toString('utf8')).toBe('{"saw":"{\\"other\\":\\"run\\"}"}')
+})
+
+test('two runs that record one after the other keep each other\'s passes, and the older revision never replaces the newer', async () => {
+  fake.commitLog.push({ sha: FAILED_AT, message: 'Later (#12)', date: '2026-10-09T09:00:00Z' })
+  expect(await run(await result('passed', { 'BIL-014': 'proven', 'BIL-021': 'proven' }), FAILED_AT, ['--record-passes', 'true'])).toBe(0)
+  // A run of the earlier revision finishes afterwards, and proved one criterion.
+  expect(await run(await result('failed', { 'BIL-014': 'proven', 'BIL-021': 'failed' }), PASSED_AT, ['--record-passes', 'true'])).toBe(0)
+  const store = await recorded()
+  expect(store?.passes['BIL-014']).toMatchObject({ sha: FAILED_AT })
+  expect(store?.passes['BIL-021']).toMatchObject({ sha: FAILED_AT })
 })

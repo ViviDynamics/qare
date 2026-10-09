@@ -427,6 +427,22 @@ export function startFakeGithub(): Promise<FakeGithub> {
       respond(response, 200, listed.map((commit) => ({ sha: commit.sha, commit: { message: commit.message, committer: { date: commit.date } } })))
       return
     }
+    // The commits one revision has that another does not (#295), on the
+    // fake's one line of history: `commitLog` in the order they landed.
+    if (parts[0] === 'repos' && parts[3] === 'compare' && parts.length === 5 && request.method === 'GET') {
+      const [base, head] = (parts[4] ?? '').split('...')
+      const from = commitLog.findIndex((commit) => commit.sha === base)
+      const to = commitLog.findIndex((commit) => commit.sha === head)
+      if (from === -1 || to === -1) return respond(response, 404, { message: 'no common ancestor' })
+      const between = commitLog.slice(from + 1, to + 1)
+      const perPage = Number(url.searchParams.get('per_page') ?? '30')
+      const page = Number(url.searchParams.get('page') ?? '1')
+      respond(response, 200, {
+        total_commits: between.length,
+        commits: between.slice((page - 1) * perPage, page * perPage).map((commit) => ({ sha: commit.sha, commit: { message: commit.message } })),
+      })
+      return
+    }
     // One commit, as blame's record of passes reads it (#295): when it was committed.
     if (parts[0] === 'repos' && parts[3] === 'commits' && parts.length === 5 && request.method === 'GET') {
       const commit = commitLog.find((candidate) => candidate.sha === parts[4])
@@ -558,7 +574,8 @@ export function startFakeGithub(): Promise<FakeGithub> {
     if (parts[0] === 'repos' && parts[3] === 'contents' && parts.length >= 5 && request.method === 'GET') {
       const path = parts.slice(4).join('/')
       const ref = url.searchParams.get('ref') ?? ''
-      const head = refs.get(`refs/heads/${ref}`)
+      // A branch, or a commit named by its sha.
+      const head = refs.get(`refs/heads/${ref}`) ?? (commits.has(ref) ? ref : undefined)
       const tree = head === undefined ? undefined : trees.get(commits.get(head)?.tree ?? '')
       const entry = tree?.find((candidate) => candidate.path === path)
       const content = entry === undefined ? undefined : blobs.get(entry.sha)

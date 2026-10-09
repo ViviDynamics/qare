@@ -144,7 +144,8 @@ export function mainPassesToRecord(result: RunResult, ledger: LedgerDocument): s
 /**
  * The record with a run's passes written over the ones it had. A criterion
  * the run did not prove keeps the pass it had: that is the revision a later
- * issue counts the changes from.
+ * issue counts the changes from. So does a criterion whose recorded pass is
+ * of a later revision than this run's.
  */
 export function recordMainPasses(
   store: MainPasses,
@@ -157,7 +158,14 @@ export function recordMainPasses(
   for (const id of criteria) {
     const entry = entries.get(id)
     if (entry === undefined || entry.status !== 'active') continue
-    passes[id] = { sha: run.sha, at: run.at, run: run.run, recordedAt: run.recordedAt, entry: mainPassEntryDigest(entry) }
+    const digest = mainPassEntryDigest(entry)
+    const had = passes[id]
+    // A run of an earlier revision can finish after a run of a later one. Its
+    // pass is true, but it is not the last: counting the changes from it
+    // would blame what landed between the two. The pass of the same wording
+    // on the later revision stands.
+    if (had !== undefined && had.entry === digest && Date.parse(had.at) > Date.parse(run.at)) continue
+    passes[id] = { sha: run.sha, at: run.at, run: run.run, recordedAt: run.recordedAt, entry: digest }
   }
   return parseMainPasses(serializeMainPasses({ passes }))
 }

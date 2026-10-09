@@ -60,9 +60,13 @@ lane, and never in the ledger.**
   the only place a criterion is stated.
 - **What is kept.** For each criterion its last pass: the revision, when it
   was committed, the run, when it was recorded. A criterion that fails keeps
-  the pass it had; that revision is where the changes are counted from. Each
-  write is one commit carrying the whole record, so the branch's history is
-  the record's history.
+  the pass it had; that revision is where the changes are counted from, in
+  the history (the commits the checked revision has that the passing one
+  does not), not by date. A run of an earlier revision never replaces the
+  pass of a later one. Each write is one commit carrying the whole record,
+  so the branch's history is the record's history, and the record is read
+  again where it is written: when another run's push lands first, this
+  run's passes are applied to what that run wrote, never over it.
 - **Off by default.** The caller passes `main-lane-record-passes: 'true'`.
   Anything else records nothing. A dry run records nothing and says what it
   would record.
@@ -83,9 +87,10 @@ lane, and never in the ledger.**
   forged pass can do is bounded: a later failure reads as a regression and
   names the authors of the changes since. It cannot make a criterion pass,
   close an issue, or change a criterion.
-- **Accepted:** two runs that record at the same moment can lose one run's
-  passes for the criteria the other did not prove. A caller's concurrency
-  group makes that rare, and the next run records them again.
+- **Accepted:** the passes are recorded after the issues are filed, so an
+  issue never names a pass its own run wrote. If the push then fails (an
+  identity with no write access to contents), the issues stand and the step
+  is red: the pass is missing, never wrong.
 - **Not accepted, and still closed:** a write to the default branch, a
   ledger change without review, a pass decided by a model, and a pass
   written by the job that runs repository code.

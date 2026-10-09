@@ -180,6 +180,36 @@ export class GitHubClient {
   }
 
   /**
+   * The commits `head` has that `base` does not, newest first (#295): what
+   * landed after a revision, as the history has it and whatever the commits'
+   * dates. Undefined when GitHub cannot relate the two (a base that is no
+   * longer in the history), so the caller can say so rather than guess.
+   */
+  async listCommitsBetween(base: string, head: string, limit: number): Promise<{ commits: Array<{ sha: string; subject: string }>; truncated: boolean } | undefined> {
+    const commits: Array<{ sha: string; subject: string }> = []
+    let total = 0
+    try {
+      for (let page = 1; ; page += 1) {
+        const compared = await this.request<{ total_commits?: number; commits?: Array<{ sha: string; commit?: { message?: string } }> }>(
+          'GET',
+          `/repos/${this.repository}/compare/${base}...${head}`,
+          new URLSearchParams({ per_page: '100', page: String(page) }),
+        )
+        total = typeof compared.total_commits === 'number' ? compared.total_commits : total
+        const batch = Array.isArray(compared.commits) ? compared.commits : []
+        for (const entry of batch) commits.push({ sha: entry.sha, subject: (entry.commit?.message ?? '').split('\n')[0] ?? '' })
+        if (batch.length < 100 || commits.length >= total) break
+      }
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) return undefined
+      throw error
+    }
+    // GitHub lists them oldest first; the newest are the ones kept and shown.
+    const newest = commits.reverse()
+    return { commits: newest.slice(0, limit), truncated: newest.length > limit || total > commits.length }
+  }
+
+  /**
    * When a commit was committed, as GitHub records it (#295): the moment the
    * changes since a recorded pass are counted from. Undefined when GitHub
    * does not know the commit or gives no date that can be read.
