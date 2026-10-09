@@ -84,3 +84,23 @@ export function criteriaSubsetPlan(resolved: ResolvedCriterion[]): Plan {
     ),
   }
 }
+
+/**
+ * The plan of a run on the default branch (#294): every criterion the ledger
+ * carries as `active`, in the ledger's canonical order, checked by the suites
+ * its ledger checks name. No model writes it. The ledger already records
+ * which suite proves each criterion, so the plan is read out of the ledger by
+ * code, and a criterion whose checks name no suite is carried unplannable
+ * with that reason rather than guessed at. `proposed` criteria are left out:
+ * nothing has proven them yet, so a failure of one is not a finding on main.
+ * Undefined when the ledger holds no active criterion: there is nothing to
+ * run, and an empty plan must never be mistaken for one that passed.
+ */
+export function ledgerActivePlan(entries: LedgerEntry[]): Plan | undefined {
+  const active = entries
+    .filter((entry) => entry.status === 'active')
+    .map((entry) => entry.criterion)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+  if (active.length === 0) return undefined
+  return criteriaSubsetPlan(resolveCriteriaSubset(entries, active))
+}

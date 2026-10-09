@@ -68,12 +68,14 @@ export interface MainRunClassification {
   environmentUp: boolean
 }
 
-type UnverifiedCause = 'waived' | 'quarantine' | 'verifier' | 'held' | 'refused' | 'not-selected' | 'environment'
+type UnverifiedCause = 'waived' | 'quarantine' | 'verifier' | 'held' | 'refused' | 'not-selected' | 'unplanned' | 'environment'
 
 /**
  * Why a criterion is unverified, read from the start of its reason, where the
  * code that wrote it names the cause. Only what none of the named causes
- * claims is the environment.
+ * claims is the environment. A criterion nothing was planned for (#294: on
+ * main, one whose ledger checks name no suite) was never run, which says
+ * nothing about whether the app boots, so it is not the environment either.
  */
 function unverifiedCause(reason: string): UnverifiedCause {
   if (reason.startsWith('waived by ')) return 'waived'
@@ -82,6 +84,7 @@ function unverifiedCause(reason: string): UnverifiedCause {
   if (reason.startsWith('held for an open question')) return 'held'
   if (reason.startsWith('refused: ')) return 'refused'
   if (reason.startsWith('not selected')) return 'not-selected'
+  if (reason.startsWith('the planner could not plan it')) return 'unplanned'
   return 'environment'
 }
 
@@ -139,6 +142,7 @@ export function classifyMainRun(result: RunResult, ledger: LedgerDocument): Main
   const recovered: string[] = []
   const flaky: string[] = []
   const down: Array<{ id: string; reason: string }> = []
+  let unplanned = 0
   for (const criterion of result.criteria) {
     if (criterion.outcome === 'proven') {
       recovered.push(criterion.id)
@@ -148,6 +152,7 @@ export function classifyMainRun(result: RunResult, ledger: LedgerDocument): Main
       const cause = unverifiedCause(criterion.reason)
       if (cause === 'quarantine') flaky.push(criterion.id)
       if (cause === 'environment') down.push({ id: criterion.id, reason: criterion.reason })
+      if (cause === 'unplanned') unplanned += 1
       continue
     }
     const entry = entries.get(criterion.id)
@@ -166,9 +171,11 @@ export function classifyMainRun(result: RunResult, ledger: LedgerDocument): Main
     })
   }
   const environmentUp = recovered.length > 0 || findings.length > 0
-  // Nothing executed and everything is unverified for the environment's sake:
-  // the run could not boot or reach the app. One finding, whatever the count.
-  if (result.verdict === 'blocked' && !environmentUp && down.length > 0 && down.length === result.criteria.length) {
+  // Nothing executed and everything that could have run is unverified for the
+  // environment's sake: the run could not boot or reach the app. One finding,
+  // whatever the count. A criterion nothing was planned for could not have
+  // run in any environment, so it neither makes this finding nor hides it.
+  if (result.verdict === 'blocked' && !environmentUp && down.length > 0 && down.length === result.criteria.length - unplanned) {
     return {
       environment: {
         kind: 'environment',

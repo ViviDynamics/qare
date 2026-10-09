@@ -462,7 +462,17 @@ test('a dry run says what it would do and writes nothing', async () => {
     mergeBy(fake, 12, 'alice')
     const outcome = await publishMainFindings(client(fake), input(failing(), { dryRun: true }))
     expect(outcome.dryRun).toBe(true)
-    expect(outcome.actions).toEqual([{ action: 'opened', kind: 'regression', criterion: 'BIL-014', fingerprint: expect.stringMatching(/^mf-/) as string, mentions: ['alice'] }])
+    expect(outcome.actions).toEqual([
+      {
+        action: 'opened',
+        kind: 'regression',
+        criterion: 'BIL-014',
+        fingerprint: expect.stringMatching(/^mf-/) as string,
+        mentions: ['alice'],
+        // #294: the issue it would have opened, as it would have been written.
+        draft: { title: expect.stringContaining('BIL-014') as string, body: expect.stringContaining('@alice') as string, labels: ['qa-regression'] },
+      },
+    ])
     expect(writes(fake)).toEqual([])
     expect(fake.issues.size).toBe(0)
   } finally {

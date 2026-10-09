@@ -72,7 +72,20 @@ export interface MainFindingsInput {
 }
 
 export type MainFindingAction =
-  | { action: 'opened'; kind: 'regression' | 'failure' | 'environment'; criterion?: string; fingerprint: string; issue?: number; mentions: string[] }
+  | {
+      action: 'opened'
+      kind: 'regression' | 'failure' | 'environment'
+      criterion?: string
+      fingerprint: string
+      issue?: number
+      mentions: string[]
+      /**
+       * On a dry run alone (#294): the issue a real run would have opened,
+       * as it would have been written, so whoever turns filing on has read
+       * what will be filed. A real run carries none: the issue is the record.
+       */
+      draft?: { title: string; body: string; labels: string[] }
+    }
   | { action: 'updated' | 'reopened'; criterion?: string; fingerprint: string; issue: number }
   | { action: 'closed'; criterion?: string; issue: number }
   /** A finding with no issue yet that this run did not open one for: the run had opened its share. */
@@ -163,6 +176,7 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
           fingerprint: ENVIRONMENT_FINGERPRINT,
           ...(created === undefined ? {} : { issue: created.number }),
           mentions: blame.mentions,
+          ...(dryRun ? { draft: { title: draft.title, body: draft.body, labels: [...draft.labels] } } : {}),
         })
       }
     }
@@ -224,6 +238,7 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
       fingerprint: finding.fingerprint,
       ...(created === undefined ? {} : { issue: created.number }),
       mentions: blame.mentions,
+      ...(dryRun ? { draft: { title: draft.title, body: draft.body, labels: [...draft.labels] } } : {}),
     })
   }
 
