@@ -103,6 +103,30 @@ describe('classifying a run on main', () => {
     expect(classified.environmentUp).toBe(false)
   })
 
+  // #294: the main lane runs the checks the ledger records. A criterion whose
+  // ledger checks name no suite was never run, which says nothing about
+  // whether the app boots: it is not an environment that is down.
+  test('a blocked run in which nothing could be run for want of a recorded suite is not an environment that is down', () => {
+    const reason = 'the planner could not plan it: its ledger checks name no suite, so the runner has nothing to execute for it'
+    const run = result('blocked', [
+      { id: 'BIL-014', outcome: 'unverified', reason },
+      { id: 'BIL-021', outcome: 'unverified', reason },
+    ])
+    const classified = classifyMainRun(run, ledger([entry('BIL-014'), entry('BIL-021')]))
+    expect(classified.environment).toBeUndefined()
+    expect(classified.findings).toEqual([])
+    expect(classified.environmentUp).toBe(false)
+  })
+
+  test('criteria nothing could be run for do not hide an environment that stopped every criterion that could run', () => {
+    const run = result('blocked', [
+      { id: 'BIL-014', outcome: 'unverified', reason: 'the planner could not plan it: its ledger checks name no suite, so the runner has nothing to execute for it' },
+      { id: 'BIL-021', outcome: 'unverified', reason: 'boot did not come up' },
+    ])
+    const classified = classifyMainRun(run, ledger([entry('BIL-014'), entry('BIL-021')]))
+    expect(classified.environment).toMatchObject({ kind: 'environment', reasons: ['boot did not come up'], criteria: ['BIL-021'] })
+  })
+
   test('a refused run files nothing here: a missing stub has its own issue', () => {
     const run = result('refused', [{ id: 'BIL-014', outcome: 'unverified', reason: 'refused: missing stub: api.stripe.com:443 (https)' }])
     const classified = classifyMainRun(run, ledger([entry('BIL-014')]))

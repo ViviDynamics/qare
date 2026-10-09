@@ -10,6 +10,8 @@ import {
   FileLedgerStore,
   resolveCriteriaSubset,
   criteriaSubsetPlan,
+  ledgerActivePlan,
+  NO_DIFF,
   buildReadinessReport,
   ingestCommentMarker,
   ingestCriteria,
@@ -152,7 +154,7 @@ export async function main(
   // the image it is in, never by a person, so the usage below does not list it.
   if (argv[0] === 'cell') return runCellCommand(argv.slice(1), { out: (line) => out.write(`${line}\n`), err: (line) => err.write(`${line}\n`) })
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) [--base-repo <dir>] [--workers <n>] | qare judge --result <path> (--plan <path> --diff <path> [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] [--dismissed <path>] | qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare init [path] [--target <url>] [--health <path>] [--service <name>] [--model <name>] [--file-issues <owner/name>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare sweep [--ledger <dir>] [--json] [--out <file>] | qare metrics <record|note> | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) [--base-repo <dir>] [--workers <n>] | qare judge --result <path> (--plan <path> (--diff <path> | --no-diff) [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] [--dismissed <path>] [--no-advisory] | qare ledger <list|show|diff|status|plan|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare init [path] [--target <url>] [--health <path>] [--service <name>] [--model <name>] [--file-issues <owner/name>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare sweep [--ledger <dir>] [--json] [--out <file>] | qare metrics <record|note> | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -1077,6 +1079,11 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     const binary = flag(argv, '--nare')
     const planPath = flag(argv, '--plan')
     const diffPath = flag(argv, '--diff')
+    // A run on the default branch reviews no change (#294). The verifier is
+    // told so, in the words every other diffless run uses, instead of being
+    // handed an empty diff it could read as a change that does nothing.
+    const noDiff = argv.includes('--no-diff')
+    if (noDiff && diffPath !== undefined) throw new Error('qare judge takes --diff <path> or --no-diff, not both')
     const flowActions = flowActionKinds(flag(argv, '--flow-actions'))
 
     const resultPath = resolve(resultSpec)
@@ -1090,9 +1097,9 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     // Nothing ran on a refused run, so there is no evidence for the verifier
     // to read and a model call would be spent on nothing.
     const verify = runnerSpec === 'nare' && loaded.verdict !== 'refused'
-    if (verify && (planPath === undefined || diffPath === undefined))
+    if (verify && (planPath === undefined || (diffPath === undefined && !noDiff)))
       throw new Error(
-        'qare judge checks proven criteria with the verifier, which needs --plan <path> (for the criteria text) and --diff <path>; pass --runner none to judge without it',
+        'qare judge checks proven criteria with the verifier, which needs --plan <path> (for the criteria text) and --diff <path>, or --no-diff when no change is under review; pass --runner none to judge without it',
       )
     const plan = verify ? loadPlan(await readFile(resolve(planPath as string), 'utf8'), flowActions) : undefined
     // Evidence paths in result.json are relative to its directory, and that
@@ -1104,7 +1111,7 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
       // The verifier reads the diff, and the diff can carry the seeded values
       // the profile rules exist for: the model-facing text is swept like any
       // evidence (#64).
-      diff: verify ? redactText(await readFile(resolve(diffPath as string), 'utf8'), rules) : '',
+      diff: !verify ? '' : noDiff ? NO_DIFF : redactText(await readFile(resolve(diffPath as string), 'utf8'), rules),
       rules,
       ...(verify ? { verifier: nareRunners(binary).verifier(evidenceDir) } : {}),
     })
@@ -1115,7 +1122,9 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
     // verdict line below are written from `judged`, which the review never
     // touches, and the review's findings ride the comment and the `advisory`
     // key alone.
-    const result = verify
+    // A run with no comment for findings to ride (#294: a run on the default
+    // branch) asks for no review: --no-advisory spends no model turn on one.
+    const result = verify && !argv.includes('--no-advisory')
       ? await reviewAdvisory(judged, { argv, binary, evidenceDir, texts, rules, profiles: loaded.profiles, err })
       : judged
     await mkdir(outDir, { recursive: true })
@@ -1345,12 +1354,13 @@ export async function runLedgerCommand(argv: string[], out: Writer, err: Writer)
     const dir = resolve(ledgerSpec ?? '.qa')
     if (sub === undefined)
       throw new Error(
-        'qare ledger requires a subcommand; usage: qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>]',
+        'qare ledger requires a subcommand; usage: qare ledger <list|show|diff|status|plan|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>]',
       )
     if (sub === 'list') return await ledgerList(dir, out)
     if (sub === 'show') return await ledgerShow(dir, subArgs[0], out)
     if (sub === 'diff') return await ledgerDiff(dir, subArgs, out)
     if (sub === 'status') return await ledgerStatus(dir, out, err)
+    if (sub === 'plan') return await ledgerPlan(subArgs, dir, ledgerSpec ?? '.qa', out, err)
     if (sub === 'contradict') return await ledgerContradict(subArgs, dir, out)
     if (sub === 'resolve') return await ledgerResolve(subArgs, dir, out)
     if (sub === 'decide') return await ledgerDecide(subArgs, dir, out)
@@ -1359,11 +1369,54 @@ export async function runLedgerCommand(argv: string[], out: Writer, err: Writer)
     if (sub === 'publish') return await ledgerPublish(subArgs, dir, out)
     if (sub === 'migrate') return await ledgerMigrate(subArgs, dir, out)
     throw new Error(
-      `unknown ledger subcommand ${JSON.stringify(sub)}; usage: qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>]`,
+      `unknown ledger subcommand ${JSON.stringify(sub)}; usage: qare ledger <list|show|diff|status|plan|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>]`,
     )
   } catch (error) {
     err.write(`${formatError(error)}\n`)
     return 1
+  }
+}
+
+/**
+ * `qare ledger plan`: the plan of a run on the default branch (#294). It
+ * holds every criterion the ledger carries as `active`, each checked by the
+ * suites its ledger checks name, and no model writes it: the ledger already
+ * says what proves each criterion, so the plan is read out of it by code and
+ * `qare run --plan` and `qare judge --plan` read it as they read a planner's.
+ *
+ * A ledger that holds no active criterion, or no ledger at all, has nothing
+ * to run: no plan is written, any file at --out is removed so a plan left
+ * from before cannot stand in, and the command succeeds, because whether
+ * that is neutral is the pipeline's call (as `qare issue-criteria` does for
+ * a change that states no criteria). A ledger that cannot be read is not
+ * nothing to run: it exits 4, and writes no plan either (rule 6).
+ */
+async function ledgerPlan(argv: string[], ledgerDir: string, ledgerName: string, out: Writer, err: Writer): Promise<number> {
+  let target: string | undefined
+  try {
+    for (const arg of argv.filter((entry) => entry.startsWith('-')))
+      if (arg !== '--out') throw new Error(`qare ledger plan does not take ${arg}`)
+    const outPath = argv.includes('--out') ? flag(argv, '--out') : undefined
+    if (outPath === undefined) throw new Error('qare ledger plan requires --out <plan.json>')
+    target = resolve(outPath)
+    const entries = await new FileLedgerStore(ledgerDir).load()
+    const plan = ledgerActivePlan(entries)
+    if (plan === undefined) {
+      await rm(target, { force: true })
+      out.write(`the ledger at ${ledgerName} holds no active criterion, so there is nothing to run\n`)
+      return 0
+    }
+    await mkdir(dirname(target), { recursive: true })
+    await writeFile(target, `${JSON.stringify(plan, null, 2)}\n`, 'utf8')
+    const unrunnable = plan.criteria.filter((criterion) => 'unplannable' in criterion).length
+    out.write(`${plan.criteria.length} active criteria (${unrunnable} with no suite to run); ${outPath}\n`)
+    return 0
+  } catch (error) {
+    // Nothing half-written and nothing stale: a ledger that would not load
+    // leaves no plan a later step could run.
+    if (target !== undefined) await rm(target, { force: true }).catch(() => {})
+    err.write(`${formatError(error)}\n`)
+    return 4
   }
 }
 

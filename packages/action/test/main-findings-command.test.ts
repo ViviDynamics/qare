@@ -84,9 +84,35 @@ test('names the fallback of the profile it is given when no change can be blamed
 
 test('a dry run prints what it would do and writes nothing', async () => {
   expect(await run(['--dry-run', 'true'])).toBe(0)
-  expect(out.join('')).toBe('dry run: nothing is written\nwould open an issue for BIL-014 (qa-regression), mentioning alice\n')
+  expect(out.join('').startsWith('dry run: nothing is written\nwould open an issue for BIL-014 (qa-regression), mentioning alice\n')).toBe(true)
   expect(fake.issues.size).toBe(0)
   expect(fake.calls.every((call) => call.method === 'GET')).toBe(true)
+})
+
+// #294: the dry run is what the owner reads before turning filing on, so it
+// prints the issue itself: the title, the labels and the body, mentions and
+// all, and still writes nothing.
+test('a dry run prints the title, the labels and the body of each issue it would open', async () => {
+  expect(await run(['--dry-run', 'true', '--run-url', RUN_URL, '--profile', join(dir, 'profile')])).toBe(0)
+  const text = out.join('')
+  expect(text).toContain('would open an issue for BIL-014 (qa-regression), mentioning alice\n')
+  expect(text).toMatch(/\n {2}title: .*BIL-014.*\n/)
+  expect(text).toContain('\n  labels: qa-regression\n')
+  expect(text).toContain('\n  body:\n')
+  // The body is the one a real run would write: the mention, the link, and nothing unredacted.
+  expect(text).toContain('@alice')
+  expect(text).toContain(`[the run](<${RUN_URL}>)`)
+  expect(text).not.toContain('hunter2')
+  // Every line of the body is indented under its heading, so it reads as one block.
+  const body = text.slice(text.indexOf('\n  body:\n') + '\n  body:\n'.length)
+  for (const line of body.split('\n').filter((entry) => entry !== '')) expect(line.startsWith('    ')).toBe(true)
+  expect(fake.issues.size).toBe(0)
+  expect(fake.calls.every((call) => call.method === 'GET')).toBe(true)
+})
+
+test('a real run prints no issue body: the issue is where it is read', async () => {
+  expect(await run(['--run-url', RUN_URL, '--profile', join(dir, 'profile')])).toBe(0)
+  expect(out.join('')).toBe('opened #100 for BIL-014 (qa-regression), mentioning alice\n')
 })
 
 test('a run with nothing to file says so', async () => {

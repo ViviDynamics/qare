@@ -454,7 +454,7 @@ export type {
   SelectedReason,
   UnselectedReason,
 } from './selection.js'
-export { resolveCriteriaSubset, criteriaSubsetPlan, CriteriaSubsetError } from './subset.js'
+export { resolveCriteriaSubset, criteriaSubsetPlan, ledgerActivePlan, CriteriaSubsetError } from './subset.js'
 export type { ResolvedCriterion } from './subset.js'
 export { readinessInventory, buildReadinessReport, normalizeOrigin, parseComposeServices, READINESS_MAX_FILES, INIT_PLACEHOLDER } from './readiness.js'
 export type {

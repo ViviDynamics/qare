@@ -297,7 +297,8 @@ async function advisoryRepliesCommand(argv: string[], out: Writer): Promise<numb
  * This is a judge-side step: it holds the GitHub identity (#61) and runs
  * nothing from the repository (rule 7). The result, the ledger and the
  * profile are read as data. `--dry-run true` reads and writes nothing, and
- * prints what a real run would do and whom it would mention.
+ * prints what a real run would do and whom it would mention, with the title,
+ * the labels and the body of each issue it would open (#294).
  */
 async function mainFindingsCommand(argv: string[], out: Writer): Promise<number> {
   const flags = parseFlags(argv)
@@ -347,7 +348,17 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
   })
   if (dryRun) out.write('dry run: nothing is written\n')
   if (outcome.actions.length === 0) out.write('no finding on main to file, update or close\n')
-  for (const action of outcome.actions) out.write(`${describeMainFindingAction(action, dryRun)}\n`)
+  for (const action of outcome.actions) {
+    out.write(`${describeMainFindingAction(action, dryRun)}\n`)
+    // A dry run shows the issue itself (#294), indented under the line that
+    // names it: what would be filed is read before filing is turned on.
+    if (action.action === 'opened' && action.draft !== undefined) {
+      out.write(`  title: ${action.draft.title}\n`)
+      out.write(`  labels: ${action.draft.labels.join(', ')}\n`)
+      out.write('  body:\n')
+      for (const line of action.draft.body.split('\n')) out.write(`    ${line}\n`)
+    }
+  }
   for (const criterion of outcome.flaky) out.write(`${criterion} is held by a quarantined check: nothing is filed for a flake\n`)
   return 0
 }

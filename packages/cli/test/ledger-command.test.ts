@@ -269,7 +269,7 @@ test('main rejects an unknown ledger subcommand with exit 1', async () => {
   expect(code).toBe(1)
   expect(linesOf(out.chunks)).toEqual([])
   expect(linesOf(errs.chunks)).toEqual([
-    'Error: unknown ledger subcommand "explode"; usage: qare ledger <list|show|diff|status|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>]',
+    'Error: unknown ledger subcommand "explode"; usage: qare ledger <list|show|diff|status|plan|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>]',
   ])
 })
 

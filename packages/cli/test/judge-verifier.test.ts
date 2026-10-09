@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
-import { RESULT_SCHEMA_VERSION } from '@qare/core'
+import { NO_DIFF, RESULT_SCHEMA_VERSION } from '@qare/core'
 import { main } from '../src/index.js'
 import type { Writer } from '../src/index.js'
 
@@ -125,6 +125,36 @@ test('the verifier reads the criterion text and the diff, confined read-only to 
   expect(argv[argv.indexOf('--tools') + 1]).toBe('read')
   expect(argv[argv.indexOf('--root') + 1]).toBe(join(dir, 'evidence'))
   expect(argv).toContain('--schema')
+})
+
+// #294: a run on the default branch reviews no change. The verifier is told
+// so in the words every other diffless run uses, rather than handed an empty
+// diff it could read as a change that does nothing.
+test('judge --no-diff tells the verifier there is no change under review', async () => {
+  const { dir, resultPath, planPath } = await provenRun()
+  const nare = await fakeNare({ findings: [] })
+
+  const run = await judge(['--result', resultPath, '--plan', planPath, '--no-diff', '--nare', nare.binary, '--outDir', dir])
+
+  expect(run.code).toBe(0)
+  expect(run.out).toContain('verdict passed')
+  const prompt = (await nare.argv())[1] ?? ''
+  expect(prompt).toContain(NO_DIFF)
+  expect(prompt).toContain('The ledger exports every row to CSV.')
+})
+
+test('judge refuses --diff and --no-diff together, and neither of them, by name', async () => {
+  const { dir, resultPath, planPath, diffPath } = await provenRun()
+  const nare = await fakeNare({ findings: [] })
+
+  const both = await judge(['--result', resultPath, '--plan', planPath, '--diff', diffPath, '--no-diff', '--nare', nare.binary, '--outDir', dir])
+  expect(both.code).toBe(4)
+  expect(both.err).toContain('qare judge takes --diff <path> or --no-diff, not both')
+
+  const neither = await judge(['--result', resultPath, '--plan', planPath, '--nare', nare.binary, '--outDir', dir])
+  expect(neither.code).toBe(4)
+  expect(neither.err).toContain('--diff <path>')
+  expect(existsSync(join(dir, 'judged-result.json'))).toBe(false)
 })
 
 test('no findings leaves the pass standing', async () => {
