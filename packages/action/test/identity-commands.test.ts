@@ -42,7 +42,7 @@ beforeEach(async () => {
   out = []
   err = []
   // Whatever the machine running the tests carries is not this install's.
-  for (const name of ['QARE_APP_ID', 'QARE_APP_PRIVATE_KEY', 'QARE_GITHUB_TOKEN', 'GITHUB_TOKEN']) vi.stubEnv(name, '')
+  for (const name of ['QARE_APP_ID', 'QARE_APP_PRIVATE_KEY', 'QARE_APP_TOKEN', 'QARE_APP_SLUG', 'QARE_APP_TOKEN_EXPIRES_AT', 'QARE_GITHUB_TOKEN', 'GITHUB_TOKEN']) vi.stubEnv(name, '')
 })
 
 afterEach(async () => {
@@ -189,3 +189,47 @@ for (const [name, env, token] of [
     for (const call of writes) expect(call.authorization, `${call.method} ${call.path}`).toBe(`Bearer ${token}`)
   })
 }
+
+// #305: the pipeline mints the App's token in a step of its own and hands
+// the posting steps the token and the slug. The commands post as the App
+// with no private key anywhere in their environment.
+const MINTED_TOKEN = 'ghs_minted_by_the_runner'
+const MINTED = { QARE_APP_TOKEN: MINTED_TOKEN, QARE_APP_SLUG: 'qare', GITHUB_TOKEN: FAKE_TOKEN }
+
+test('post-evidence with a minted token posts as the App, finds its comment again, and signs nothing', async () => {
+  fake.tokens.set(MINTED_TOKEN, { login: 'qare[bot]', kind: 'installation' })
+  configure(MINTED)
+  expect(await postEvidence()).toBe(0)
+  expect(await postEvidence()).toBe(0)
+  expect(err.join('')).toBe('')
+  expect(evidenceComments().map((record) => record.author)).toEqual(['qare[bot]'])
+  expect(fake.checkRuns).toHaveLength(2)
+  expect(fake.minted).toEqual([])
+  for (const call of fake.calls) expect(call.authorization, `${call.method} ${call.path}`).toBe(`Bearer ${MINTED_TOKEN}`)
+})
+
+// The report job reads the run's own jobs, which is the run's own business:
+// the calling job grants its token actions: read for exactly this, so the
+// App is never asked to hold a permission it posts nothing with.
+test('report-failure reads the run\'s jobs with the Actions token, and posts as the identity', async () => {
+  fake.tokens.set(MINTED_TOKEN, { login: 'qare[bot]', kind: 'installation' })
+  configure(MINTED)
+  fake.runJobs.set('77/1', [{ name: 'plan', conclusion: 'failure', steps: [{ name: 'Plan the QA run', conclusion: 'failure' }] }])
+  expect(await run(['report-failure', '--run-id', '77', '--attempt', '1', '--pr', '12', '--sha', SHA])).toBe(0)
+  const jobs = fake.calls.filter((call) => call.path.includes('/actions/runs/'))
+  expect(jobs.length).toBeGreaterThan(0)
+  for (const call of jobs) expect(call.authorization).toBe(`Bearer ${FAKE_TOKEN}`)
+  const writes = fake.calls.filter((call) => call.method !== 'GET')
+  expect(writes.length).toBeGreaterThan(0)
+  for (const call of writes) expect(call.authorization, `${call.method} ${call.path}`).toBe(`Bearer ${MINTED_TOKEN}`)
+})
+
+test('report-failure asks again as the identity when the run\'s own token may not read the run\'s jobs', async () => {
+  // A calling job that did not grant actions: read, beside an identity that can read them.
+  fake.tokens.set(FAKE_TOKEN, { login: 'github-actions[bot]', kind: 'actions', noActions: true })
+  configure(TOKEN)
+  fake.runJobs.set('77/1', [{ name: 'plan', conclusion: 'failure', steps: [{ name: 'Plan the QA run', conclusion: 'failure' }] }])
+  expect(await run(['report-failure', '--run-id', '77', '--attempt', '1', '--pr', '12', '--sha', SHA])).toBe(0)
+  const jobs = fake.calls.filter((call) => call.path.includes('/actions/runs/'))
+  expect(jobs.map((call) => call.authorization)).toEqual([`Bearer ${FAKE_TOKEN}`, `Bearer ${PAT}`])
+})

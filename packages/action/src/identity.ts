@@ -40,6 +40,12 @@ export interface GitHubIdentity {
 
 export const APP_ID_ENV = 'QARE_APP_ID'
 export const APP_PRIVATE_KEY_ENV = 'QARE_APP_PRIVATE_KEY'
+/** An installation token the App was already given, minted outside this process (#305). */
+export const APP_TOKEN_ENV = 'QARE_APP_TOKEN'
+/** The slug of the App that token belongs to: its login is `<slug>[bot]`. */
+export const APP_SLUG_ENV = 'QARE_APP_SLUG'
+/** When that token expires, as the step that minted it was told. Optional: it turns GitHub's refusal into a named one. */
+export const APP_TOKEN_EXPIRES_AT_ENV = 'QARE_APP_TOKEN_EXPIRES_AT'
 export const PERSONAL_TOKEN_ENV = 'QARE_GITHUB_TOKEN'
 export const ACTIONS_TOKEN_ENV = 'GITHUB_TOKEN'
 
@@ -88,6 +94,19 @@ export function resolveIdentity(options: IdentityOptions): GitHubIdentity {
     return new TokenIdentity(named, set(ACTIONS_TOKEN_ENV), transport)
   }
 
+  // A token the App was already given (#305): a pipeline mints it in a step
+  // of its own and hands the posting steps the token and the App's slug, so
+  // the private key is not here to be read. It is the App all the same.
+  const minted = set(APP_TOKEN_ENV)
+  if (minted !== undefined) {
+    const slug = set(APP_SLUG_ENV)
+    if (slug === undefined)
+      throw new GitHubClientError(
+        `qare-action was given a GitHub App's token without the App's name: ${APP_TOKEN_ENV} is set and ${APP_SLUG_ENV} is not, so it could not find its own comments again. Set both, as the step that minted the token hands them over`,
+      )
+    return new MintedAppIdentity(minted, slug, set(APP_TOKEN_EXPIRES_AT_ENV), options.now)
+  }
+
   const appId = set(APP_ID_ENV)
   const privateKey = set(APP_PRIVATE_KEY_ENV)
   if (appId !== undefined || privateKey !== undefined) {
@@ -132,6 +151,68 @@ export class ActionsTokenIdentity implements GitHubIdentity {
 
   triggersWorkflows(): Promise<boolean> {
     return Promise.resolve(false)
+  }
+}
+
+/**
+ * A GitHub App, by a token it was already given (#305). In a pipeline the
+ * private key is used once, in a step of its own that runs on the runner
+ * (scripts/mint-app-token.mjs), and the steps that post are handed what that
+ * step minted: a token for the one repository, with the permissions of the
+ * one job, that expires within the hour. This identity signs nothing and
+ * cannot renew the token. A job that outlives it is told so by name, before
+ * GitHub is asked, when the minting step handed the expiry over too; without
+ * the expiry it is refused by GitHub, in GitHub's words. The login is the
+ * App's slug, which the minting step read from the installation and hands
+ * over beside the token.
+ */
+export class MintedAppIdentity implements GitHubIdentity {
+  readonly kind = 'app' as const
+  private readonly slug: string
+  private readonly expiresAt: number | undefined
+  private readonly now: () => number
+
+  constructor(
+    private readonly value: string,
+    slug: string,
+    expiresAt?: string | undefined,
+    now?: (() => number) | undefined,
+  ) {
+    // What a token is made of, as the minting step checked it: a line break
+    // or a space is how it was handed over, never part of it.
+    if (!/^[A-Za-z0-9_.-]+$/.test(value))
+      throw new GitHubClientError(`${APP_TOKEN_ENV} is not a token GitHub mints: it must be handed over as the minting step wrote it, with nothing around it`)
+    // The slug becomes the login qare looks for its own comments under.
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(slug.trim()))
+      throw new GitHubClientError(`${APP_SLUG_ENV} must be the App's slug: letters, digits and hyphens, as GitHub writes it in the App's address`)
+    this.slug = slug.trim()
+    if (expiresAt !== undefined && Number.isNaN(Date.parse(expiresAt)))
+      throw new GitHubClientError(`${APP_TOKEN_EXPIRES_AT_ENV} must be the moment the token expires, as GitHub wrote it (2026-10-09T11:00:00Z)`)
+    this.expiresAt = expiresAt === undefined ? undefined : Date.parse(expiresAt)
+    this.now = now ?? Date.now
+  }
+
+  token(): Promise<string> {
+    // The same margin a renewing identity replaces its token at: a request must not outlive the token.
+    if (this.expiresAt !== undefined && this.expiresAt - this.now() <= RENEW_BEFORE_MS)
+      return Promise.reject(
+        new GitHubClientError(
+          `the GitHub App's token for this job expires at ${new Date(this.expiresAt).toISOString()} and cannot be renewed here: it is minted once, when the job starts, and lasts an hour, so everything the job posts must be posted within that hour. This request was not sent`,
+        ),
+      )
+    return Promise.resolve(this.value)
+  }
+
+  checksToken(): Promise<string> {
+    return this.token()
+  }
+
+  login(): Promise<string> {
+    return Promise.resolve(`${this.slug}[bot]`)
+  }
+
+  triggersWorkflows(): Promise<boolean> {
+    return Promise.resolve(true)
   }
 }
 

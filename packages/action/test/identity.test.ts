@@ -260,3 +260,60 @@ test('a token whose user cannot be read for another reason is an error, never a 
   fake.tokens.set(PAT, { login: 'jason', kind: 'user', rateLimited: true })
   await expect(resolve({ QARE_GITHUB_TOKEN: PAT }).login()).rejects.toThrow(/rate limit/)
 })
+
+// #305: in a pipeline the App's private key is used once, in a step of its
+// own on the runner, and the steps that post are handed the token it minted
+// and the App's slug. qare-action then posts as the App with no key at all.
+const MINTED = { QARE_APP_TOKEN: 'ghs_minted_by_the_runner', QARE_APP_SLUG: 'qare' }
+
+test('a minted installation token and the App\'s slug are the App, with no private key in the environment', async () => {
+  fake.tokens.set(MINTED.QARE_APP_TOKEN, { login: 'qare[bot]', kind: 'installation' })
+  const identity = resolve({ ...MINTED, QARE_GITHUB_TOKEN: PAT, GITHUB_TOKEN: FAKE_TOKEN })
+  expect(identity.kind).toBe('app')
+  expect(await identity.login()).toBe('qare[bot]')
+  expect(await identity.token()).toBe(MINTED.QARE_APP_TOKEN)
+  expect(await identity.checksToken()).toBe(MINTED.QARE_APP_TOKEN)
+  expect(await identity.triggersWorkflows()).toBe(true)
+  // Nothing is asked of GitHub to learn any of it: no sign-in, no /user.
+  expect(fake.calls).toEqual([])
+  const client = new GitHubClient({ repository: REPOSITORY, apiRoot: fake.url, identity })
+  fake.issues.set(9, { number: 9, title: 't', body: 'b', comments: [] })
+  await client.postIssueComment(9, 'posted with the minted token')
+  expect(fake.calls.map((call) => call.authorization)).toEqual([`Bearer ${MINTED.QARE_APP_TOKEN}`])
+  expect(fake.minted).toEqual([])
+})
+
+test('a minted token handed over without the App\'s slug stops by name: its comments could not be found again', () => {
+  expect(() => resolve({ QARE_APP_TOKEN: MINTED.QARE_APP_TOKEN, GITHUB_TOKEN: FAKE_TOKEN })).toThrow(GitHubClientError)
+  expect(() => resolve({ QARE_APP_TOKEN: MINTED.QARE_APP_TOKEN, GITHUB_TOKEN: FAKE_TOKEN })).toThrow(/QARE_APP_SLUG/)
+  // A token that could not be one (a stray line break from how it was handed over) is refused by name.
+  expect(() => resolve({ QARE_APP_TOKEN: 'ghs_minted\nby the runner', QARE_APP_SLUG: 'qare' })).toThrow(/QARE_APP_TOKEN/)
+  // A slug that could not be one is refused too, and never becomes a login.
+  expect(() => resolve({ QARE_APP_TOKEN: MINTED.QARE_APP_TOKEN, QARE_APP_SLUG: 'qare[bot] @everyone' })).toThrow(/QARE_APP_SLUG/)
+})
+
+test('a minted token past its expiry is named before GitHub is asked anything: it cannot be renewed without the key', async () => {
+  let now = Date.parse('2026-10-09T10:00:00Z')
+  const env = { ...MINTED, QARE_APP_TOKEN_EXPIRES_AT: '2026-10-09T11:00:00Z' }
+  const identity = resolve(env, { now: () => now })
+  expect(await identity.token()).toBe(MINTED.QARE_APP_TOKEN)
+  now = Date.parse('2026-10-09T10:59:30Z')
+  // Inside its last minute a request could outlive it.
+  await expect(identity.token()).rejects.toThrow(GitHubClientError)
+  await expect(identity.token()).rejects.toThrow(/expire[sd] at 2026-10-09T11:00:00.000Z/)
+  await expect(identity.checksToken()).rejects.toThrow(/an hour/)
+  await expect(identity.token()).rejects.toThrow(/This request was not sent/)
+  expect(fake.calls).toEqual([])
+  // An expiry that is no moment in time is refused when the identity is chosen, never ignored.
+  expect(() => resolve({ ...MINTED, QARE_APP_TOKEN_EXPIRES_AT: 'tomorrow' })).toThrow(/QARE_APP_TOKEN_EXPIRES_AT/)
+  // Without one, the token is used until GitHub refuses it.
+  expect(await resolve(MINTED, { now: () => now }).token()).toBe(MINTED.QARE_APP_TOKEN)
+})
+
+test('an empty minted token is no App: the personal token and the Actions token are chosen as before', () => {
+  // What a workflow hands over when no App was passed: both empty.
+  expect(resolve({ QARE_APP_TOKEN: '', QARE_APP_SLUG: '', QARE_GITHUB_TOKEN: PAT, GITHUB_TOKEN: FAKE_TOKEN }).kind).toBe('token')
+  expect(resolve({ QARE_APP_TOKEN: '', QARE_APP_SLUG: '', GITHUB_TOKEN: FAKE_TOKEN }).kind).toBe('actions')
+  // A token named on the command line is still the caller's explicit choice.
+  expect(resolve({ ...MINTED, MY_TOKEN: PAT }, { tokenEnv: 'MY_TOKEN' }).kind).toBe('token')
+})
