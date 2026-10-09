@@ -44,7 +44,7 @@ tools, and its tests, read like the first: a profile that declares
 
 | Option | What it gives | What it costs |
 | --- | --- | --- |
-| 1. Preferred forms (today) | No plan that is accepted today is refused tomorrow. A profile author adds a command to help the planner and loses nothing by it. | A planner may still write a declared program in a form that cannot work, and the run finds out. A form no declaration matches also runs outside the command cell (see "What this costs"). |
+| 1. Preferred forms (today) | No plan that is accepted today is refused tomorrow. A profile author adds a command to help the planner and loses nothing by it. | A planner may still write a declared program in a form that cannot work, and the run finds out. When this ADR was first written, a form no declaration matched also ran outside the command cell; #286 closed that (see "What this cost before #286"). |
 | 2. Only forms | A declared program can be planned only as the profile wrote it, so a malformed use is caught at the plan step for every program, not only grep, and every planned use of a declared program is one the run contains. | Declaring a command silently forbids every other use of its program. A profile that declares `node -- {{path}}` can no longer plan `node --version`, `node --check`, or `node --test`; one that declares a `pnpm` test command can no longer plan `pnpm --version`. Existing consumers' profiles would lose plans they get today, with no change on their side, and the criteria behind them would come back unplannable. |
 
 ## Decision

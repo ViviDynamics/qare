@@ -7,7 +7,9 @@ what the code has done since #286 and changes no behaviour.
 ## Context
 
 Since #286 a command check is contained by the program it runs, whatever its
-form, and on a run that has a command cell every command check runs in it. A
+form, and on a run that has a command cell a command check runs in it unless
+the profile opts its program out in as many words (`egress: uncontained` on
+the declared form, or on every declaration of the program). A
 run has a cell only when its profile declares at least one command that runs
 contained (`commandCellContextOf` in `packages/core/src/run.ts`).
 
@@ -29,7 +31,7 @@ outside a cell without the profile saying so in as many words?
 | Option | What it gives | What it costs |
 | --- | --- | --- |
 | 1. It may, and the evidence says so (today) | Every host that runs qare today keeps running it: a one-off `qare check` on a laptop, a native run, a target on the machine's own loopback. | For a profile that declares no contained command, command checks do not meet the second half of rule 7. A reader has to look at the evidence to know. |
-| 2. It may not | Every command check is in a cell or is refused by name, so the second half of rule 7 holds for command checks in every profile. | A cell needs a docker daemon, a Linux host and the image. A host without all three would have every command check refused. A target on the machine's own loopback cannot be reached from a cell at all. The harness's own suite runs several hundred command checks natively, and each would need a cell or a stand-in. Suites are uncontained by the decision recorded in #224, so command checks alone would still not make rule 7 hold. |
+| 2. It may not | Every command check the profile has not opted out is in a cell or is refused by name, so the second half of rule 7 holds for command checks in every profile. | A cell needs a docker daemon, a Linux host and the image. A host without all three would have every command check refused. A target on the machine's own loopback cannot be reached from a cell at all. The harness's own suite runs several hundred command checks natively, and each would need a cell or a stand-in. Suites are uncontained by the decision recorded in #224, so command checks alone would still not make rule 7 hold. |
 
 ## Decision
 
@@ -39,9 +41,9 @@ uncontained.**
 
 - Nothing changes in the code. This is the behaviour #286 shipped in
   2026.10.34.
-- Declaring one contained command is the way a profile gets a cell for all
-  its command checks. No other profile key gives one, and this decision adds
-  none.
+- Declaring one contained command is the way a profile gets a cell for its
+  command checks (all of them but the programs it opts out). No other profile
+  key gives one, and this decision adds none.
 - Suites stay as #224 recorded them: uncontained, because a suite may need
   the docker daemon a cell withholds, with evidence that says so in as many
   words. This decision does not revisit that.
@@ -61,8 +63,14 @@ uncontained.**
   `"containment": "none"` with the reason for every such check. A reader of
   a run can always tell which checks had the network.
 - **Not accepted, and still closed:** the form of a check as a way out of a
-  cell. On a run that has a cell, every command check runs in it (#286,
-  [ADR-0007](./adr-0007-declared-commands-are-preferred-forms.md)).
+  cell. On a run that has a cell, a check of a form no declaration matches
+  runs in it, and only the profile's own `egress: uncontained` takes a check
+  out (#286, [ADR-0007](./adr-0007-declared-commands-are-preferred-forms.md)).
+
+CONSTITUTION.md is not edited by this decision. Rule 7 still states the rule
+without the exception, so the two read differently until the owner says
+whether the constitution's own text should carry it; until then this ADR is
+the record that the gap is known and accepted, and by whom.
 
 ## Consequences
 
