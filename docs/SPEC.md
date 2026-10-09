@@ -1380,6 +1380,33 @@ a missing stub does (#31): one issue per problem, found again by a hidden
 marker, never a pile of duplicates. `qare-action main-findings` reads the
 judged result of such a run, the ledger and the profile, and files.
 
+The run that produces that judged result is the pipeline's main lane (#294),
+which a caller turns on with the input `main-lane`. On a push to the default
+branch, on a schedule or on a manual run, and for the default branch alone,
+it does what the pull request lane does with the pull request taken out:
+
+- **main_collect** reads the ledger at the revision and writes the plan from
+  the checks the ledger records: every `active` criterion, checked by the
+  suites its `checks` name (`qare ledger plan`). No model plans on main. The
+  ledger already says what proves each criterion, so re-planning would only
+  let two runs of the same revision check different things. A criterion whose
+  checks name no suite is reported unverified with that reason; it is not
+  guessed at, it files nothing, and it is never read as an environment that
+  is down. `proposed` criteria are not run.
+- **main_execute** boots the app and runs the plan, and holds no secret
+  (rule 7). It is the only job of the lane that runs the repository's code.
+- **main_judge** asks the verifier about the evidence of each proven
+  criterion, told that no change is under review (`qare judge --no-diff`), in
+  the step that holds the model key, and then calls `main-findings` in the
+  step that holds the GitHub identity. No step holds both.
+
+The lane is off by default, and on it is a dry run by default: unless the
+caller passes `main-lane-dry-run` as the exact word `false`, the step reads,
+prints the title, the labels and the body of each issue it would open, and
+whom it would mention, and writes nothing. The lane reads the ledger and
+never writes it (rule 5): a run on main records no pass and changes no
+criterion. See "Findings on main" in [pipeline.md](./pipeline.md).
+
 What is a finding, of which kind, and who it names is decided in code from
 the executed result and the ledger. No model has a say in any of it.
 

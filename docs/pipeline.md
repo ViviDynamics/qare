@@ -103,6 +103,8 @@ UX review".
 | `self-hosted` | empty | `allow` lets a public repository's pipeline run on self-hosted runners. Empty, collect, plan and execute stop there by name, before any checkout. It changes nothing for a private repository or on hosted runners. See "Your own runners". |
 | `planner-diff-exclude` | empty | Space-separated git pathspecs left out of the planner's copy of the diff, for a diff too large to plan from whole. execute and judge still read the full diff. |
 | `artefacts` | empty | The name of a workflow artifact that holds the builds a client profile installs, uploaded by an earlier job of your workflow. execute downloads it into `qare-artefacts/` at the repository root before the run. See "Profiles that install a build". |
+| `main-lane` | empty | `true` runs the main lane: on a push to your default branch, on a schedule or on a manual run, the pipeline boots the app, runs the suites the ledger records for its active criteria, judges them, and hands the result to `main-findings`. Empty, none of it runs. See "Findings on main". |
+| `main-lane-dry-run` | `true` | Whether the main lane only says what it would file. Anything but `false` is a dry run: it reads, prints the issues it would open and whom it would mention, and writes nothing. |
 | `qare-ref` | the release | The qare revision the pipeline runs. It defaults to the release the workflow file ships in. Leave it alone and pin the release in `uses:`. |
 
 ## Secrets
@@ -214,6 +216,7 @@ it needs under it:
 | `checks: write` | judge and report, for the check run on the head commit. |
 | `pull-requests: write`, `issues: write` | judge, report, advisory and requeue, for the comment, the stub issues and the replies to advisory findings. collect reads issues. |
 | `actions: read` | report, to name the job and step that failed when no verdict was published. |
+| `issues: write`, `pull-requests: read`, `contents: read` | main_judge, when the main lane is on: to file what a run on the default branch found, and to read the changes a finding blames. |
 
 These are the permissions of the run's own token. A GitHub App or a personal
 access token carries its own (see "GitHub identity"), and the calling job
@@ -679,15 +682,125 @@ run.
 
 ## Findings on main
 
-A run against `main` has no pull request to comment on. `qare-action
-main-findings` files what it found as issues instead: one per problem,
-commented on while it still fails, closed when a run proves the criterion
-again. See "Findings on main" in [SPEC.md](./SPEC.md) for what an issue says
-and whom it mentions.
+A run against your default branch has no pull request to comment on. With the
+main lane on, the pipeline makes that run and `qare-action main-findings`
+files what it found as issues instead: one per problem, commented on while it
+still fails, closed when a run proves the criterion again. See "Findings on
+main" in [SPEC.md](./SPEC.md) for what an issue says and whom it mentions.
 
-Nothing in the pipeline calls it. It opens issues and mentions people, so
-it is a step you add, in a job that already has a judged result of a run on
-your default branch:
+The lane is off until you turn it on, and when you turn it on it is a dry
+run: it reads, prints the issues it would open and whom it would mention, and
+writes nothing. Start there:
+
+```yaml
+name: QARE
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+jobs:
+  qare:
+    permissions:
+      actions: read
+      checks: write
+      contents: write
+      issues: write
+      pull-requests: write
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.36
+    with:
+      nare-model: gpt-4.1-mini
+      main-lane: 'true'
+    secrets:
+      model-key: ${{ secrets.OPENAI_API_KEY }}
+```
+
+The triggers are yours: a `push` to the default branch checks every merge, a
+`schedule` checks at a fixed hour whatever merged, and `workflow_dispatch`
+lets you start one by hand. Any of the three starts the lane, and only for
+the default branch: a pull request, a comment, a tag or another branch starts
+none of it. A push trigger with no `paths` filter also runs requeue (see
+"Triggers"), which is harmless without stubs. If your workflow has a
+`concurrency` group that cancels in progress, a second merge cancels the run
+of the first; the newer revision is the one worth checking.
+
+### What the lane does
+
+| Job | Holds | What it does |
+| --- | --- | --- |
+| main_collect | the GitHub token | Reads the ledger at the revision and writes the plan from the checks the ledger records. No model is asked. |
+| main_execute | nothing | Boots the app and runs the plan, as execute does. It is the only job that runs your repository's code. |
+| main_judge | the model key, then the identity, in separate steps | The verifier reads the evidence, told that no change is under review. Then `main-findings` files, or on a dry run prints. |
+
+There is no planning step and no model plans on main. The ledger already
+says which suite proves each criterion, so the plan is read out of it by
+`qare ledger plan`, and what ran on Tuesday is what runs on Wednesday.
+
+A failed verdict leaves main_execute red, as it does on a pull request, and
+main_judge still reports it. What a dry run would have filed is in
+main_judge's job summary and in `main-findings.txt` in the
+`main-judge-artifacts` artifact: for each issue it would open, the title, the
+labels and the body, mentions and all.
+
+### What your ledger must hold
+
+The lane runs what the ledger records and nothing else. For it to have
+something to run:
+
+- `<profile>/ledger.json` exists on the default branch (`.qa/ledger.json`
+  with the default profile). It is the ledger's own file, with its integrity
+  digest and its history: write it with `qare ingest` and `qare-action
+  ingest-deliver`, which open a pull request, or with `qare ledger import`
+  from a draft, never by hand. A ledger that fails its integrity check stops
+  the lane red.
+- At least one entry has `status` `active`. `proposed` entries are not run:
+  nothing has proven them, so a failure of one is not a finding on main.
+- Each of those entries has a `checks` reference of the form `suite:<name>`,
+  naming a suite in the profile's `suites`. That suite's command is what
+  runs. An entry whose checks name no suite is reported unverified with that
+  reason, and files nothing.
+- Each entry has a `text`: it is what the verifier is asked about and what
+  an issue quotes.
+
+A ledger with no `active` entry, or no ledger, is not an error: main_collect
+says there is nothing to run and the other two jobs skip.
+
+The lane never writes the ledger. So that an issue can say when a criterion
+last passed and blame the changes since, the ledger's history needs a
+`verify` record for it; without one a failure is filed as `qa-failure`, for
+the profile's fallback, and never called a regression.
+
+### Filing for real
+
+When you have read a dry run:
+
+1. Name who hears of a finding nobody can be blamed for, in the profile:
+
+   ```yaml
+   findings:
+     fallback: acme/qa-leads   # a person or a team
+     bots: [release-robot]     # an orchestrator that opens pull requests with a person's token
+   ```
+
+2. Pass `main-lane-dry-run: 'false'`. Only that exact word files; anything
+   else is a dry run.
+
+The labels `qa-regression`, `qa-environment` and `qa-failure` are created by
+GitHub the first time an issue carries one.
+
+### Not in the lane yet
+
+- Screenshots: an issue links the run's evidence artifact, and nothing is
+  pushed to `qa-assets`.
+- A client profile's `artefacts`: the lane downloads no build.
+- Run metrics: a run on main records none.
+
+### The command itself
+
+The lane calls `qare-action main-findings` for you. To call it from a job of
+your own that already has a judged result of a run on your default branch:
 
 ```yaml
       - name: File what the run on main found
@@ -711,23 +824,12 @@ your default branch:
 | `--profile` | The profile directory: `findings.fallback`, `findings.bots` and the `redact` rules. Without it nobody is a fallback and only the built-in rules redact. |
 | `--evidence` | The run's evidence directory. Given, the failing criteria's screenshots are pushed to `qa-assets` and linked. |
 | `--run-url`, `--artifact-url` | Links the issue carries. Each must be an https URL. |
-| `--dry-run true` | Reads, writes nothing, and prints what a real run would open, comment on, reopen or close, and whom it would mention. Run it first. |
+| `--dry-run true` | Reads, writes nothing, and prints what a real run would open, comment on, reopen or close, and whom it would mention, with the title, the labels and the body of each issue it would open. Run it first. |
 
 The job needs `issues: write` to file, `pull-requests: read` and `contents:
 read` to read the range, and `contents: write` only when `--evidence` pushes
 screenshots. It is a judge-side step: give it the identity and nothing that
 runs repository code (rule 7).
-
-The profile says who hears of a finding nobody can be blamed for:
-
-```yaml
-findings:
-  fallback: acme/qa-leads   # a person or a team
-  bots: [release-robot]     # an orchestrator that opens pull requests with a person's token
-```
-
-The labels `qa-regression`, `qa-environment` and `qa-failure` are created by
-GitHub the first time an issue carries one.
 
 ## Fleet report
 
@@ -870,6 +972,9 @@ merged. Leave the push trigger out if you do not use stubs. Filter pushes to
 the default branch, so the `qa-assets` pushes judge makes do not start a run.
 An `issue_comment` trigger runs the advisory job alone, on a reply to an
 advisory finding: see "Advisory UX review".
+
+A `push` to your default branch, a `schedule` or a `workflow_dispatch` also
+runs the main lane when `main-lane` is `true`: see "Findings on main".
 
 Call the pipeline once per workflow run. Its artifacts have fixed names, so
 two calls in one run would overwrite each other.
