@@ -99,10 +99,30 @@ describe('the record', () => {
     expect(Object.keys(after.passes)).toEqual(['BIL-014'])
   })
 
-  test('a criterion id that is no plain key is refused, in the record and from the ledger', () => {
+  test('every criterion id the ledger takes has a pass of its own, the ones an object would mistake for its own machinery among them', () => {
+    // The ledger's schema allows these ids, so the record holds them like any other.
+    const odd = ['__proto__', 'constructor', 'toString', 'hasOwnProperty']
+    const book = ledger([...odd.map((id) => entry(id)), entry('BIL-014')])
+    // Nothing recorded yet: none of them has a pass, whatever an object inherits.
+    expect([...standingMainPasses(EMPTY, book).keys()]).toEqual([])
+    expect(classifyMainRun(result('failed', odd.map((id) => ({ id, outcome: 'failed', evidence: ['checks/x/0/stdout.txt'] }))), book, EMPTY).findings.map((finding) => finding.kind)).toEqual(odd.map(() => 'failure'))
+    const store = parseMainPasses(serializeMainPasses(recordMainPasses(EMPTY, RUN_A, [...odd, 'BIL-014'], book)))
+    expect(Object.keys(store.passes).sort()).toEqual([...odd, 'BIL-014'].sort())
+    expect([...standingMainPasses(store, book).keys()].sort()).toEqual([...odd, 'BIL-014'].sort())
+    // Written over like any other, and kept when the run did not prove them.
+    const again = recordMainPasses(store, RUN_B, ['__proto__'], book)
+    expect(Object.getOwnPropertyDescriptor(again.passes, '__proto__')?.value).toMatchObject({ sha: SHA_B })
+    expect(Object.getOwnPropertyDescriptor(again.passes, 'constructor')?.value).toMatchObject({ sha: SHA_A })
+    expect(Object.getPrototypeOf(again.passes)).toBe(Object.prototype)
+  })
+
+  test('a moment that is no moment of the calendar is refused, not read as another day', () => {
     const good = serializeMainPasses(recordMainPasses(EMPTY, RUN_A, ['BIL-014'], ledger([entry('BIL-014')])))
-    expect(() => parseMainPasses(good.replace('"BIL-014"', '"__proto__"'))).toThrow(MainPassesError)
-    expect(() => recordMainPasses(EMPTY, RUN_A, ['__proto__'], ledger([entry('__proto__')]))).toThrow(MainPassesError)
+    for (const impossible of ['2026-02-31T00:00:00Z', '2026-13-01T00:00:00Z', '2026-10-08T24:30:00Z', '2026-04-31T12:00:00.000Z'])
+      expect(() => parseMainPasses(good.replace(RUN_A.at, impossible)), impossible).toThrow(MainPassesError)
+    // With and without a fraction of a second, a real moment is taken.
+    for (const real of ['2026-02-28T23:59:59Z', '2024-02-29T00:00:00.5Z', '2026-10-08T12:00:00.000Z'])
+      expect(parseMainPasses(good.replace(RUN_A.at, real)).passes['BIL-014']?.at, real).toBe(real)
   })
 
   test('is written the same for the same passes, and reads back as it was written', () => {

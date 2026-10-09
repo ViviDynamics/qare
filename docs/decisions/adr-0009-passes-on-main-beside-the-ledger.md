@@ -108,11 +108,12 @@ lane, and never in the ledger.**
 
 - A repository gets regressions by turning one input on. Until a run has
   recorded a pass for a criterion, its failure is still a `qa-failure`.
-- docs/SPEC.md's "Verify" step of the ledger lifecycle ("every run records
-  its verdict against the criteria it covered") is not what the pipeline
-  does: no pipeline job writes a `verify` change. `classifyMainRun` still
-  reads `verify` history where a ledger carries it, and takes the later of
-  the two.
+- docs/SPEC.md's "Verify" step of the ledger lifecycle used to say that
+  every run records its verdict in the ledger. No pipeline job ever wrote a
+  `verify` change, so the step now says what happens: a pass is recorded
+  beside the ledger, by a run on the default branch, when the repository
+  asks. `classifyMainRun` still reads `verify` history where a ledger
+  carries it, and takes the later of the two.
 - The fleet report and the sweep read the ledger's own history for "last
   verified" and do not read this record yet.
 

@@ -7,6 +7,7 @@ import {
   classifyMainRun,
   isBotAccount,
   mainCriterionKey,
+  mainPassOf,
   mainPassesToRecord,
   parseMainPasses,
   recordMainPasses,
@@ -174,11 +175,22 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
       // history and not of the clock: a pass of one of those is left as it
       // is. Every other recorded pass this run may write over, a revision
       // the branch no longer has among them, so the record is never stuck.
+      // Asked only of the passes this run could touch: the ones of the
+      // criteria it proved, which it would write over, and the ones of
+      // criteria its ledger does not carry, which it would drop. A record
+      // that has lived a while holds passes of many revisions, and the rest
+      // are left as they are whatever the answer.
+      const carried = new Set(input.ledger.entries.map((entry) => entry.criterion))
+      const proved = new Set(criteria)
+      const inPlay = new Set(
+        Object.entries(store.passes)
+          .filter(([id, pass]) => pass.sha !== input.headSha && (proved.has(id) || !carried.has(id)))
+          .map(([, pass]) => pass.sha),
+      )
       const ahead = new Set<string>()
-      for (const sha of new Set(Object.values(store.passes).map((pass) => pass.sha)))
-        if (sha !== input.headSha && (await client.listCommitsBetween(sha, input.headSha, 0))?.behind === true) ahead.add(sha)
+      for (const sha of inPlay) if ((await client.listCommitsBetween(sha, input.headSha, 0))?.behind === true) ahead.add(sha)
       const next = recordMainPasses(store, run, criteria, input.ledger, (sha) => !ahead.has(sha))
-      kept = criteria.filter((id) => next.passes[id]?.sha !== input.headSha)
+      kept = criteria.filter((id) => mainPassOf(next, id)?.sha !== input.headSha)
       return serializeMainPasses(next)
     })
     return { passes: { criteria: criteria.filter((id) => !kept.includes(id)), recorded: true, kept } }
@@ -345,7 +357,7 @@ async function earlierPasses(client: GitHubClient, input: MainFindingsInput): Pr
   if (store === undefined) return undefined
   const failed = new Set(input.result.criteria.filter((criterion) => criterion.outcome === 'failed').map((criterion) => criterion.id))
   const earlier = new Map<string, boolean>()
-  const passes: MainPasses['passes'] = {}
+  const passes: Array<[string, MainPasses['passes'][string]]> = []
   for (const [id, pass] of Object.entries(store.passes)) {
     if (failed.has(id) && pass.sha !== input.headSha) {
       let known = earlier.get(pass.sha)
@@ -355,9 +367,10 @@ async function earlierPasses(client: GitHubClient, input: MainFindingsInput): Pr
       }
       if (!known) continue
     }
-    passes[id] = pass
+    passes.push([id, pass])
   }
-  return { passes }
+  // Built from pairs, so an id an object would take for its own machinery is a pass like any other.
+  return { passes: Object.fromEntries(passes) }
 }
 
 /**

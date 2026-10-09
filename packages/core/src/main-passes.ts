@@ -88,16 +88,34 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/
 
 function instant(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !INSTANT.test(value) || Number.isNaN(Date.parse(value)))
-    fail(field, `${JSON.stringify(value)} is not an instant like "2026-10-09T04:17:00Z"`)
+  const refuse = (): never => fail(field, `${JSON.stringify(value)} is not an instant like "2026-10-09T04:17:00Z"`)
+  if (typeof value !== 'string' || !INSTANT.test(value)) return refuse()
+  const parsed = new Date(value)
+  // A date the calendar does not have (the 31st of February) is read by the
+  // clock as another day: the moment must be the one that was written.
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 19) !== value.slice(0, 19)) return refuse()
   return value
 }
 
 function criterionId(id: string, field: string): string {
-  // `__proto__` is no key a plain object can hold as its own.
-  if (id === '' || id === '__proto__' || id.includes(':') || /[/\\]|\.\./.test(id) || /[\x00-\x1f\x7f]/.test(id))
+  if (id === '' || id.includes(':') || /[/\\]|\.\./.test(id) || /[\x00-\x1f\x7f]/.test(id))
     fail(field, `${JSON.stringify(id)} is not a ledger criterion id`)
   return id
+}
+
+/**
+ * The passes as a record, built from pairs. A criterion id is any id the
+ * ledger takes, `__proto__` and `constructor` among them, so a pass is
+ * always written as an own property and never by assignment, which an
+ * object would take for its own machinery.
+ */
+function passesOf(pairs: Iterable<readonly [string, MainPass]>): Record<string, MainPass> {
+  return Object.fromEntries(pairs)
+}
+
+/** The pass a record holds for a criterion: its own, never something an object inherits. */
+export function mainPassOf(store: MainPasses, criterion: string): MainPass | undefined {
+  return Object.hasOwn(store.passes, criterion) ? store.passes[criterion] : undefined
 }
 
 function parsePass(value: unknown, field: string): MainPass {
@@ -123,18 +141,20 @@ export function parseMainPasses(text: string): MainPasses {
   if (input.schemaVersion !== MAIN_PASSES_SCHEMA_VERSION)
     fail('document.schemaVersion', `unsupported schema version ${JSON.stringify(input.schemaVersion)} (expected "${MAIN_PASSES_SCHEMA_VERSION}")`)
   if (!isRecord(input.passes)) fail('document.passes', 'passes must be a JSON object keyed by criterion id')
-  const passes: Record<string, MainPass> = {}
-  for (const [id, value] of Object.entries(input.passes)) passes[criterionId(id, 'document.passes')] = parsePass(value, `passes[${JSON.stringify(id)}]`)
-  return { passes }
+  return {
+    passes: passesOf(
+      Object.entries(input.passes).map(([id, value]) => [criterionId(id, 'document.passes'), parsePass(value, `passes[${JSON.stringify(id)}]`)] as const),
+    ),
+  }
 }
 
 /** The record as it is written: criteria in order, so the same passes are the same bytes. */
 export function serializeMainPasses(store: MainPasses): string {
-  const passes: Record<string, MainPass> = {}
-  for (const id of Object.keys(store.passes).sort()) {
-    const pass = store.passes[id]
-    if (pass !== undefined) passes[id] = { sha: pass.sha, at: pass.at, run: pass.run, recordedAt: pass.recordedAt, entry: pass.entry }
-  }
+  const passes = passesOf(
+    Object.entries(store.passes)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([id, pass]) => [id, { sha: pass.sha, at: pass.at, run: pass.run, recordedAt: pass.recordedAt, entry: pass.entry }] as const),
+  )
   const text = `${JSON.stringify({ schemaVersion: MAIN_PASSES_SCHEMA_VERSION, passes }, null, 2)}\n`
   // What is written is what the strict reader takes, or it is not written.
   parseMainPasses(text)
@@ -194,16 +214,15 @@ export function recordMainPasses(
   // stand again (it has no entry to be a pass of), so it is not carried
   // forward: the record holds what the ledger holds, and does not only
   // grow. Only where this run's ledger is the later word.
-  const passes = Object.fromEntries(Object.entries(store.passes).filter(([id, pass]) => entries.has(id) || !mine(pass)))
+  const passes = new Map(Object.entries(store.passes).filter(([id, pass]) => entries.has(id) || !mine(pass)))
   for (const id of criteria) {
     const entry = entries.get(id)
     if (entry === undefined || entry.status !== 'active') continue
-    criterionId(id, 'criteria')
-    const had = passes[id]
+    const had = passes.get(id)
     if (had !== undefined && !mine(had)) continue
-    passes[id] = { sha: run.sha, at: run.at, run: run.run, recordedAt: run.recordedAt, entry: mainPassEntryDigest(entry) }
+    passes.set(id, { sha: run.sha, at: run.at, run: run.run, recordedAt: run.recordedAt, entry: mainPassEntryDigest(entry) })
   }
-  return parseMainPasses(serializeMainPasses({ passes }))
+  return parseMainPasses(serializeMainPasses({ passes: passesOf(passes) }))
 }
 
 /**
@@ -214,7 +233,7 @@ export function recordMainPasses(
 export function standingMainPasses(store: MainPasses, ledger: LedgerDocument): Map<string, MainPass> {
   const standing = new Map<string, MainPass>()
   for (const entry of ledger.entries) {
-    const pass = store.passes[entry.criterion]
+    const pass = mainPassOf(store, entry.criterion)
     if (pass !== undefined && pass.entry === mainPassEntryDigest(entry)) standing.set(entry.criterion, pass)
   }
   return standing

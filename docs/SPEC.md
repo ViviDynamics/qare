@@ -1083,11 +1083,14 @@ Lifecycle:
   by `qare-action ingest-deliver`, which opens the pull request a human applies
   and posts each comment at most once. Proposals arrive as a pull request,
   never as a silent edit.
-- **Verify.** Every run records its verdict against the criteria it covered, so
-  the ledger always knows when each statement was last proven and by what.
-  In the pipeline today the one place a pass is recorded is the main lane's
-  record of passes, kept beside the ledger on `qa-assets` (#295, "Findings
-  on main"); no pipeline job writes a `verify` change into the ledger itself.
+- **Verify.** When each statement was last proven, and by what run, is
+  recorded beside the ledger and not in it: a run on the default branch,
+  when the repository asks for it (`main-lane-record-passes`), records what
+  it proved on the `qa-assets` branch (#295, "Findings on main"). A
+  repository that has not asked has no such record, and a pull request's
+  run never writes one. The ledger's history can also carry a `verify`
+  change, and a pass in it is read where one is there, but no pipeline job
+  writes one: the ledger changes only through review.
 - **Contradict.** A change can put a new criterion at odds with an old one, or
   make an old one fail on purpose. QARE separates the two: a criterion the diff
   intends to replace is proposed as `superseded` with the replacement linked; a

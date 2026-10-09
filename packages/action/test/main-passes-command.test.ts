@@ -391,6 +391,35 @@ test('a range longer than what is read keeps its newest commits and says it was 
   expect(fake.calls.slice(before).filter((call) => call.path.includes('/compare/')).length).toBeLessThanOrEqual(4)
 })
 
+// A record that has lived a while holds passes of many revisions. A run
+// asks the history only about the ones it could write over or drop.
+test('a run asks the history about the recorded revisions it could write over or drop, not about every one on record', async () => {
+  const many: LedgerEntry[] = Array.from({ length: 30 }, (_unused, index) => ({
+    criterion: `OLD-${index}`,
+    status: 'active' as const,
+    source: ['suite:billing'],
+    proof: 'flow',
+    text: `Old ${index}.`,
+    checks: ['suite:billing'],
+  }))
+  await writeFile(join(dir, 'ledger.json'), serializeLedgerDocument([...ENTRIES, ...many], []))
+  // Thirty criteria, each last proven on a revision of its own.
+  for (let index = 0; index < 30; index += 1) {
+    const sha = (index + 1).toString(16).padStart(40, '8')
+    fake.commitLog.push({ sha, message: `r${index}`, date: '2026-10-08T13:00:00Z' })
+    expect(await run(await result('passed', { [`OLD-${index}`]: 'proven' }), sha, ['--record-passes', 'true'])).toBe(0)
+  }
+  fake.commitLog.push({ sha: FAILED_AT, message: 'Latest (#12)', date: '2026-10-09T09:00:00Z' })
+  const before = fake.calls.length
+  expect(await run(await result('passed', { 'OLD-3': 'proven', 'BIL-014': 'proven' }), FAILED_AT, ['--record-passes', 'true'])).toBe(0)
+  // One recorded revision is in play (OLD-3's); BIL-014 has no pass yet.
+  expect(fake.calls.slice(before).filter((call) => call.path.includes('/compare/')).length).toBe(1)
+  const store = await recorded()
+  expect(Object.keys(store?.passes ?? {})).toHaveLength(31)
+  expect(store?.passes['OLD-3']).toMatchObject({ sha: FAILED_AT })
+  expect(store?.passes['OLD-4']).toMatchObject({ sha: (5).toString(16).padStart(40, '8') })
+})
+
 test('a push that is refused for a reason that is not a race is not tried again', async () => {
   fake.failRefPatches = 0
   const pusher = new GitHubQaAssetsPusher(client(), PASSED_AT)
