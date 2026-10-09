@@ -1,8 +1,10 @@
-import { spawnSync } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:https'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import { expect, test } from 'vitest'
 import { parse } from 'yaml'
 
@@ -43,4 +45,36 @@ test('GitHub-hosted jobs need no safety snapshot or extra setup', () => {
   expect(step).toBeDefined()
   const result = spawnSync('bash', ['-e', '-c', step!.run!], { encoding: 'utf8', env: { PATH: process.env.PATH, RUNNER_ENVIRONMENT: 'github-hosted' } })
   expect(result.status, result.stderr).toBe(0)
+})
+
+test('the cluster reachability probe neither sends nor logs credentials from a runner curl configuration', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'qare-runner-curl-'))
+  const key = join(dir, 'key.pem')
+  const cert = join(dir, 'cert.pem')
+  const generated = spawnSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert, '-days', '1', '-subj', '/CN=localhost'], { encoding: 'utf8' })
+  expect(generated.status, generated.stderr).toBe(0)
+  writeFileSync(join(dir, '.curlrc'), 'header = "Authorization: Bearer private-curl-credential"\ntrace-ascii = "/dev/stderr"\n')
+  const headers: Array<string | undefined> = []
+  const server = createServer({ key: readFileSync(key), cert: readFileSync(cert) }, (request, response) => {
+    headers.push(request.headers.authorization)
+    response.writeHead(403)
+    response.end()
+  })
+  try {
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('missing test server address')
+    for (const job of ['execute', 'main_execute']) {
+      const step = workflow.jobs[job]!.steps.find(step => step.name === 'Inspect self-hosted runner checklist')!
+      const result = await promisify(execFile)('bash', ['-e', '-c', step.run!], { cwd: dir, env: {
+        PATH: process.env.PATH, HOME: dir, CURL_HOME: dir, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: join(dir, 'summary.md'), RUNNER_ENVIRONMENT: 'self-hosted', KUBERNETES_SERVICE_HOST: '127.0.0.1', KUBERNETES_SERVICE_PORT: String(address.port),
+      } })
+      expect(result.stdout + result.stderr).not.toContain('private-curl-credential')
+      expect(JSON.parse(readFileSync(join(dir, 'qare-runner-safety.json'), 'utf8')).clusterReachable).toBe(true)
+    }
+    expect(headers).toEqual([undefined, undefined])
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
