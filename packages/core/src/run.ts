@@ -7,6 +7,7 @@ import { parseDurationMs, shellCharacter } from './duration.js'
 import { prepareBaseCheckout, type BaseCheckout, type BaseCheckoutInput, type BaseCheckoutOutcome } from './base-checkout.js'
 import { collectCriterionFiles, criterionCacheKey, FileCheckCache, planFingerprint, profileFingerprint, resolveRefSha } from './cache.js'
 import { Artefacts, type ArtefactField } from './artefacts.js'
+import { inspectRunnerSafety, type RunnerSafetyProbes } from './runner-safety.js'
 import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
 import { bootApp, CANCEL_DOWN_TIMEOUT_MS, clientCellStarter, clientExecutablePath, inPlaceBuild, killActiveCompose, stopApp, type BootOpts, type BootedClient } from './boot.js'
 import { removeLiveInstalls } from './provision.js'
@@ -443,6 +444,8 @@ export type RunJobOpts = BootOpts & {
    * runner it is. The machine the run is on by default.
    */
   host?: HostProbes
+  /** Probes for the operational self-hosted checklist; observations do not set a verdict. */
+  runnerSafety?: RunnerSafetyProbes
   /**
    * How many workers the run shards its independent criteria across (#48).
    * One is the serial run: plan order against the one booted app, which is
@@ -490,6 +493,8 @@ export interface RunJobOutcome {
  */
 export async function runJob(job: Job, opts: RunJobOpts = {}): Promise<RunJobOutcome> {
   const { base: request, ...given } = opts
+  // Read the job's environment before any repository code can change it.
+  const runnerSafety = await inspectRunnerSafety(given.host?.env, given.runnerSafety)
   // One host for the whole run (#76): every app and both sides are held to
   // it, and it is asked each thing once. The cell and the display a client
   // profile implies are asked through the seams the boot already had.
@@ -502,10 +507,16 @@ export async function runJob(job: Job, opts: RunJobOpts = {}): Promise<RunJobOut
   // no base checkout, no build, no install and no boot happens on a host
   // the run then turns out not to be able to use.
   const placed = await placeRun(job, asked)
-  if ('refused' in placed) return placed.refused
-  const sideOpts = placed.opts
-  if (request === undefined || !(await hasSecondSide(job))) return runSide(job, sideOpts)
-  return runBothSides(job, sideOpts, request)
+  const outcome = 'refused' in placed
+    ? placed.refused
+    : request === undefined || !(await hasSecondSide(job))
+      ? await runSide(job, placed.opts)
+      : await runBothSides(job, placed.opts, request)
+  if (runnerSafety !== undefined && outcome.result.environment !== undefined) {
+    outcome.result.environment.runnerSafety = runnerSafety
+    await writeFile(join(job.evidenceDir, 'result.json'), `${JSON.stringify(outcome.result, null, 2)}\n`)
+  }
+  return outcome
 }
 
 /** What a result says about the profile it ran under: the target or the build, and what the profile required of the host. */

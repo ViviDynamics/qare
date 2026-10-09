@@ -1,4 +1,4 @@
-import { accessSync, constants } from 'node:fs'
+import { accessSync, constants, readFileSync } from 'node:fs'
 import { connect } from 'node:net'
 
 export const RUNNER_CHECKLIST_ITEMS = ['ephemeral', 'docker', 'execute-pool', 'network', 'credentials', 'image-digest'] as const
@@ -27,6 +27,28 @@ const UNKNOWN: Record<RunnerChecklistItem, string> = {
 
 /** Only names are recorded. Values and credential file contents never enter evidence. */
 const CREDENTIAL_NAME = /^(?:AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)|AZURE_(?:CLIENT_SECRET|CLIENT_CERTIFICATE_PASSWORD)|GOOGLE_(?:APPLICATION_CREDENTIALS|CREDENTIALS)|CLOUDSDK_AUTH_ACCESS_TOKEN|KUBE(?:CONFIG|_TOKEN)|(?:DOCKER|REGISTRY|GHCR|GITHUB|GH|OPENAI|ANTHROPIC)_(?:AUTH_CONFIG|PASSWORD|TOKEN|KEY|API_KEY))$/i
+const CREDENTIAL_FILES = ['service-account-token', 'AWS_WEB_IDENTITY_TOKEN_FILE', 'GOOGLE_APPLICATION_CREDENTIALS', 'KUBECONFIG', 'HOME/.docker/config.json', 'HOME/.aws/credentials', 'HOME/.kube/config', 'HOME/.config/gcloud/application_default_credentials.json']
+
+/** The host step forwards observations only, so a container cannot hide host credentials. */
+function snapshotFindings(path: string): RunnerSafetyFinding[] {
+  const value: unknown = JSON.parse(readFileSync(path, 'utf8'))
+  const invalid = (): never => { throw new Error('invalid runner safety snapshot: expected schema 1, known credential names and files, and boolean reachability observations') }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return invalid()
+  const data = value as Record<string, unknown>
+  if (data.schemaVersion !== '1' || !Array.isArray(data.credentialVariables) || !Array.isArray(data.credentialFiles) || typeof data.clusterReachable !== 'boolean' || typeof data.remoteDocker !== 'boolean') return invalid()
+  const findings: RunnerSafetyFinding[] = []
+  for (const name of data.credentialVariables) {
+    if (typeof name !== 'string' || !CREDENTIAL_NAME.test(name)) return invalid()
+    findings.push({ checklist: 'credentials', status: 'finding', detail: `credential environment variable ${name} is present on the runner; remove it from execute` })
+  }
+  for (const name of data.credentialFiles) {
+    if (typeof name !== 'string' || !CREDENTIAL_FILES.includes(name)) return invalid()
+    findings.push({ checklist: 'credentials', status: 'finding', detail: `credential file ${name} is readable on the runner; remove its mount or configuration from execute` })
+  }
+  if (data.clusterReachable) findings.push({ checklist: 'network', status: 'finding', detail: 'the cluster API is reachable from the runner; deny internal services from the execute pool' })
+  if (data.remoteDocker) findings.push({ checklist: 'docker', status: 'finding', detail: 'a remote Docker daemon is reachable from the runner; verify it belongs only to this job' })
+  return findings
+}
 
 export async function inspectRunnerSafety(env: NodeJS.ProcessEnv = process.env, probes: RunnerSafetyProbes = {}): Promise<RunnerSafetyFinding[] | undefined> {
   if ((env.QARE_RUNNER_ENVIRONMENT ?? env.RUNNER_ENVIRONMENT) !== 'self-hosted') return undefined
@@ -34,6 +56,7 @@ export async function inspectRunnerSafety(env: NodeJS.ProcessEnv = process.env, 
   const reachable = probes.reachable ?? canConnect
   const findings: RunnerSafetyFinding[] = RUNNER_CHECKLIST_ITEMS.map(checklist => ({ checklist, status: 'unobservable', detail: UNKNOWN[checklist] }))
   const warn = (checklist: RunnerChecklistItem, detail: string): void => { findings.push({ checklist, status: 'finding', detail }) }
+  if (env.QARE_RUNNER_SAFETY_FILE !== undefined) findings.push(...snapshotFindings(env.QARE_RUNNER_SAFETY_FILE))
 
   for (const name of Object.keys(env).sort()) {
     if (env[name] !== undefined && env[name] !== '' && CREDENTIAL_NAME.test(name)) warn('credentials', `credential environment variable ${name} is present; remove it from execute`)

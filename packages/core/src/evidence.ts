@@ -322,6 +322,16 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
     // Where the run executed and what it ran with (issue #91): a host run and
     // an image run are readable side by side.
     ...environment,
+    ...(result.environment?.runnerSafety === undefined ? [] : [
+      '### Self-hosted runner checklist',
+      '',
+      'These observations do not prove external isolation and do not change criterion verdicts. See the self-hosted runner checklist in docs/pipeline.md.',
+      '',
+      '| Checklist item | Observation | Detail |',
+      '| --- | --- | --- |',
+      ...result.environment.runnerSafety.map(finding => `| ${finding.checklist} | ${finding.status} | ${escapeCell(finding.detail)} |`),
+      '',
+    ]),
     // Several apps in one run (#55): one section per app, each with the
     // verdict it earned, because one app failing says nothing about another.
     ...(result.profiles === undefined

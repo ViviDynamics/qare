@@ -2322,6 +2322,8 @@ async function runCommand(
     if (workers !== undefined) runOpts.workers = workers
     const { result } = await runJob(job, runOpts)
     const code = exitCodeFor(result.verdict)
+    for (const finding of result.environment?.runnerSafety ?? [])
+      err.write(`self-hosted checklist ${finding.checklist}: ${finding.status}: ${finding.detail}\n`)
     // A base side that did not run is said out loud: the verdict is the
     // head's either way, but nobody should read it as a comparison.
     if (result.base?.status === 'not-executed') err.write(`base ${result.base.ref} not checked, so nothing was compared: ${result.base.reason ?? ''}\n`)

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import type { HostKind } from './placement.js'
+import type { RunnerSafetyFinding } from './runner-safety.js'
 import { NARE_CONTRACT } from './runner.js'
 import { VERSION } from './version.js'
 
@@ -49,6 +50,8 @@ export interface RunEnvironment {
    * the host was recorded.
    */
   host?: HostKind
+  /** Bounded observations captured before repository code runs on a self-hosted job. */
+  runnerSafety?: RunnerSafetyFinding[]
 }
 
 /**
