@@ -1,6 +1,6 @@
 {
   "name": "@qare/action",
-  "version": "2026.10.40",
+  "version": "2026.10.41",
   "description": "QARE GitHub Action adapter",
   "license": "Elastic-2.0",
   "type": "module",
