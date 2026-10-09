@@ -3,9 +3,9 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { resolve } from 'node:path'
-import { FileLedgerStore, loadProfile, loadResult, parseFleetConfig, redactionRules, RUN_VERDICTS, valueRules, VERSION } from '@qare/core'
+import { FileLedgerStore, loadProfile, loadResult, MAIN_PASSES_PATH, parseFleetConfig, parseMainPasses, redactionRules, RUN_VERDICTS, valueRules, VERSION, type MainPasses } from '@qare/core'
 import { GitHubClient, GitHubClientError } from './github.js'
-import { GitHubQaAssetsPusher } from './qa-assets.js'
+import { GitHubQaAssetsPusher, QA_ASSETS_BRANCH } from './qa-assets.js'
 import { fileRefusalStubs, GitHubStubIssuePoster } from './stub-issues.js'
 import { requeueUnblocked, stubDiffArgs, stubKeysFromDiffText } from './requeue.js'
 import { GitHubEvidencePoster, postEvidence } from './post-evidence.js'
@@ -299,6 +299,12 @@ async function advisoryRepliesCommand(argv: string[], out: Writer): Promise<numb
  * profile are read as data. `--dry-run true` reads and writes nothing, and
  * prints what a real run would do and whom it would mention, with the title,
  * the labels and the body of each issue it would open (#294).
+ *
+ * `--record-passes true` also records what the run proved (#295), on the
+ * `qa-assets` branch beside the screenshots and the metrics, never in the
+ * ledger: the next failure of a criterion is then a regression against that
+ * pass, traced to the changes since. It is off unless asked for, and a dry
+ * run records nothing.
  */
 async function mainFindingsCommand(argv: string[], out: Writer): Promise<number> {
   const flags = parseFlags(argv)
@@ -319,6 +325,8 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
   const runUrl = link('run-url')
   const artifactUrl = link('artifact-url')
   const dryRun = flags.string('dry-run') === 'true'
+  // Only the exact word records (#295): anything else, and nothing is written to qa-assets.
+  const record = flags.string('record-passes') === 'true'
   const result = loadResult(await readFile(resultPath, 'utf8'))
   const ledger = await new FileLedgerStore(resolve(ledgerDir)).loadDocument()
   // The profile names the fallback and the bots, and what must not be published.
@@ -333,6 +341,29 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
   })
   const author = flags.string('author') || (await client.identity.login())
   const evidenceDir = flags.string('evidence') || undefined
+  // What earlier runs on the default branch proved (#295), read whether or
+  // not this run records: it is what makes a failure a regression. No record
+  // yet is an ordinary no. One that cannot be read stops the step here, by
+  // name, before anything is filed and before anything is written over it.
+  const branch = flags.string('branch') || QA_ASSETS_BRANCH
+  const stored = await client.getContents(MAIN_PASSES_PATH, branch)
+  let passes: MainPasses | undefined
+  try {
+    passes = stored === undefined ? undefined : parseMainPasses(stored.toString('utf8'))
+  } catch (error) {
+    throw new GitHubClientError(
+      `the record of passes at ${MAIN_PASSES_PATH} on the ${branch} branch cannot be read, so nothing is filed and nothing is recorded (${error instanceof Error ? error.message : String(error)}); restore the file from the branch's history, or remove it to start the record again`,
+    )
+  }
+  // A pass is counted from when its revision was committed, so a revision
+  // GitHub cannot date gets no pass. A dry run writes nothing and asks nothing.
+  let committedAt = ''
+  if (record && !dryRun) {
+    const date = await client.getCommitDate(headSha)
+    if (date === undefined)
+      throw new GitHubClientError(`could not read when ${headSha} was committed, so no pass can be recorded for it and nothing is filed`)
+    committedAt = new Date(date).toISOString().replace('.000Z', 'Z')
+  }
   const outcome = await publishMainFindings(client, {
     result,
     ledger,
@@ -345,6 +376,14 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
     push: evidenceDir === undefined ? undefined : new GitHubQaAssetsPusher(client, headSha, { branch: flags.string('branch') }),
     evidenceDir,
     dryRun,
+    passes,
+    recordPasses: record
+      ? {
+          at: committedAt,
+          run: runUrl ?? `run ${process.env.GITHUB_RUN_ID ?? 'unidentified'}-${process.env.GITHUB_RUN_ATTEMPT ?? '1'}`,
+          write: async (text) => void (await new GitHubQaAssetsPusher(client, headSha, { branch }).pushMainPasses(text)),
+        }
+      : undefined,
   })
   if (dryRun) out.write('dry run: nothing is written\n')
   if (outcome.actions.length === 0) out.write('no finding on main to file, update or close\n')
@@ -360,6 +399,13 @@ async function mainFindingsCommand(argv: string[], out: Writer): Promise<number>
     }
   }
   for (const criterion of outcome.flaky) out.write(`${criterion} is held by a quarantined check: nothing is filed for a flake\n`)
+  if (outcome.passes !== undefined) {
+    const { criteria, recorded } = outcome.passes
+    const at = headSha.slice(0, 12)
+    if (criteria.length === 0) out.write('no pass to record: the run proved no criterion the ledger carries as active\n')
+    else if (recorded) out.write(`recorded a pass for ${criteria.length} criteria at ${at} on ${branch} (${MAIN_PASSES_PATH}): ${criteria.join(', ')}\n`)
+    else out.write(`would record a pass for ${criteria.length} criteria at ${at}: ${criteria.join(', ')}\n`)
+  }
   return 0
 }
 

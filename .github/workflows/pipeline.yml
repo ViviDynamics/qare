@@ -224,6 +224,16 @@ on:
           dry run and named `findings.fallback` in your profile.
         type: string
         default: 'true'
+      main-lane-record-passes:
+        description: >-
+          Set to 'true' to have the main lane record what each run proved, so
+          that a later failure is filed as a qa-regression against that pass
+          and traced to the changes since. The record is one file on the
+          orphan qa-assets branch (passes/main.json), written by the judge
+          side; the ledger and the default branch are never written. Anything
+          but 'true' records nothing, and so does a dry run.
+        type: string
+        default: ''
       qare-ref:
         description: >-
           The qare revision the pipeline runs: its source for the token-only
@@ -1475,8 +1485,12 @@ jobs:
   # prints the issues it would open and whom it would mention, and writes
   # nothing.
   #
-  # The ledger is read and never written (rule 5): a run on main records no
-  # pass and changes no criterion.
+  # The ledger is read and never written (rule 5): a run on main changes no
+  # criterion. What a run proved is a fact about the run, not a change to a
+  # criterion, and when the caller asks (main-lane-record-passes) main_judge
+  # records it beside the ledger, on the orphan qa-assets branch, where the
+  # run's metrics already go (#295). That record is what makes a later
+  # failure a regression. main_execute cannot write it: it holds no token.
 
   # label: main_collect (GitHub token only)
   main_collect:
@@ -1846,10 +1860,13 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     permissions:
       # issues: write files, comments on, reopens and closes qare's own
-      # issues; pull-requests: read and contents: read read the range a
-      # finding blames. Nothing is pushed: the lane links the evidence
-      # artifact and puts no screenshot on qa-assets.
-      contents: read
+      # issues; pull-requests: read reads the range a finding blames.
+      # contents: write is for one push, to the orphan qa-assets branch: the
+      # record of what the run proved (#295), and only when the caller asked
+      # for it with main-lane-record-passes. This job never checks out or
+      # runs the tree with a token, and nothing here writes the default
+      # branch or the ledger. No screenshot is pushed.
+      contents: write
       issues: write
       pull-requests: read
     steps:
@@ -1961,6 +1978,7 @@ jobs:
           QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
           QARE_GITHUB_TOKEN: ${{ secrets.personal-access-token }}
           MAIN_LANE_DRY_RUN: ${{ inputs.main-lane-dry-run }}
+          MAIN_LANE_RECORD_PASSES: ${{ inputs.main-lane-record-passes }}
           HEAD_SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EVIDENCE_URL: ${{ needs.main_execute.outputs.evidence-url }}
@@ -1970,6 +1988,14 @@ jobs:
           dry=true
           if [ "${MAIN_LANE_DRY_RUN:-}" = "false" ]; then
             dry=false
+          fi
+          # Recording what the run proved (#295) is asked for in one exact
+          # word too. The command decides what a pass is, from the judged
+          # result and the ledger, and on a dry run only says what it would
+          # record.
+          record=false
+          if [ "${MAIN_LANE_RECORD_PASSES:-}" = "true" ]; then
+            record=true
           fi
           # What the run amounted to is said first, with every criterion it
           # left unverified and why: "nothing to file" must never read as
@@ -1990,7 +2016,7 @@ jobs:
             "$IMAGE_REF" /opt/qare/lib/packages/action/dist/index.js main-findings \
             --result judged-result.json --ledger "$PROFILE" --profile "$PROFILE" \
             --sha "$HEAD_SHA" --run-url "$RUN_URL" --artifact-url "$EVIDENCE_URL" \
-            --dry-run "$dry" >> main-findings.txt
+            --dry-run "$dry" --record-passes "$record" >> main-findings.txt
           # The text quotes the run, the ledger and a model, so nothing in it
           # may be read as an instruction. In the log it sits between a
           # stop-commands marker and its one-time token, so no line of it is a

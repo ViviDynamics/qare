@@ -427,6 +427,13 @@ export function startFakeGithub(): Promise<FakeGithub> {
       respond(response, 200, listed.map((commit) => ({ sha: commit.sha, commit: { message: commit.message, committer: { date: commit.date } } })))
       return
     }
+    // One commit, as blame's record of passes reads it (#295): when it was committed.
+    if (parts[0] === 'repos' && parts[3] === 'commits' && parts.length === 5 && request.method === 'GET') {
+      const commit = commitLog.find((candidate) => candidate.sha === parts[4])
+      if (commit === undefined) return respond(response, 404, { message: 'commit not found' })
+      respond(response, 200, { sha: commit.sha, commit: { message: commit.message, committer: { date: commit.date } } })
+      return
+    }
     if (parts[0] === 'repos' && parts[3] === 'commits' && parts[5] === 'pulls' && parts.length === 6 && request.method === 'GET') {
       const numbers = commitPulls.get(parts[4] ?? '') ?? []
       respond(

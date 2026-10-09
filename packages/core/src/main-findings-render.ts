@@ -233,7 +233,10 @@ export function renderMainFindingIssue(
       ? regression
         ? "The run proved it at the base revision, and the ledger has no record of its last pass."
         : 'Nothing shows it ever passed: the ledger has no record of a pass.'
-      : `It last passed in run ${span(finding.lastProven.run)} at ${span(finding.lastProven.at)}.`
+      : finding.lastProven.sha === undefined
+        ? `It last passed in run ${span(finding.lastProven.run)} at ${span(finding.lastProven.at)}.`
+        : // A pass from the record of runs on the default branch (#295) names the revision too.
+          `It last passed in run ${span(finding.lastProven.run)}, on revision ${span(finding.lastProven.sha)}, committed at ${span(finding.lastProven.at)}.`
   const lines = [
     mainFindingMarker(finding.fingerprint),
     criterionMarker(finding.criterionId),

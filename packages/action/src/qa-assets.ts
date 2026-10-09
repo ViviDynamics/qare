@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
-import type { RunResult } from '@qare/core'
+import { MAIN_PASSES_PATH, type RunResult } from '@qare/core'
 import { GitHubClientError, type GitHubClient, type GithubTreeEntry } from './github.js'
 
 /**
@@ -102,6 +102,20 @@ export class GitHubQaAssetsPusher implements ScreenshotPusher {
       `qa-assets: metrics for run ${this.headSha.slice(0, 12)} on ${date}`,
     )
     return path
+  }
+
+  /**
+   * The record of what runs on the default branch proved (#295) rides the
+   * same branch, at one path: each push is a new commit that carries the
+   * whole record, so the branch's history is the record's history. The text
+   * is written as it is handed in; the caller serialises it strictly.
+   */
+  async pushMainPasses(text: string): Promise<string> {
+    await this.commitOntoBranch(
+      [{ path: MAIN_PASSES_PATH, content: Buffer.from(text, 'utf8') }],
+      `qa-assets: passes on the default branch at ${this.headSha.slice(0, 12)}`,
+    )
+    return MAIN_PASSES_PATH
   }
 
   /**

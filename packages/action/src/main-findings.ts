@@ -7,6 +7,9 @@ import {
   classifyMainRun,
   isBotAccount,
   mainCriterionKey,
+  mainPassesToRecord,
+  recordMainPasses,
+  serializeMainPasses,
   mainFindingMarker,
   readMainFindingMarkers,
   redactResult,
@@ -19,7 +22,7 @@ import {
   renderMainFindingUpdate,
   retireMainFindingMarkers,
 } from '@qare/core'
-import type { BlameConfig, BlameRange, LedgerDocument, MainFinding, MainRunContext, RangePull, RedactionRule, RunResult } from '@qare/core'
+import type { BlameConfig, BlameRange, LedgerDocument, MainFinding, MainPasses, MainRunContext, RangePull, RedactionRule, RunResult } from '@qare/core'
 import type { GitHubClient, GitHubIssue } from './github.js'
 import type { ScreenshotPusher } from './qa-assets.js'
 
@@ -69,6 +72,29 @@ export interface MainFindingsInput {
   evidenceDir?: string | undefined
   /** Read everything, write nothing, and report what would be done. */
   dryRun?: boolean | undefined
+  /**
+   * The record of what earlier runs on the default branch proved (#295), as
+   * it was read. A failed criterion with a pass in it that still stands is a
+   * regression, and the changes since that revision are who is named.
+   */
+  passes?: MainPasses | undefined
+  /**
+   * Set when this run records what it proved (#295): when the checked
+   * revision was committed, what the run is called, and how the record is
+   * written. The criteria come from the judged result and the ledger alone,
+   * decided in code. Absent, nothing is recorded.
+   */
+  recordPasses?:
+    | {
+        /** When the checked revision was committed. */
+        at: string
+        /** The run, as an issue will name it: a link or an id. */
+        run: string
+        /** Injected clock for the record; defaults to now. */
+        now?: string
+        write(text: string): Promise<void>
+      }
+    | undefined
 }
 
 export type MainFindingAction =
@@ -96,6 +122,12 @@ export interface MainFindingsOutcome {
   /** Criteria a quarantined check holds: they file nothing here (#50). */
   flaky: string[]
   dryRun: boolean
+  /**
+   * Set when the run was asked to record what it proved (#295): the criteria
+   * a pass is recorded for, and whether it was written (never on a dry run,
+   * and never when the run proved none).
+   */
+  passes?: { criteria: string[]; recorded: boolean }
 }
 
 interface OwnIssue {
@@ -109,8 +141,28 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
   const rules = input.rules ?? BUILTIN_REDACTION_RULES
   const dryRun = input.dryRun === true
   const result = redactResult(input.result, rules)
-  const classified = classifyMainRun(result, input.ledger)
+  const classified = classifyMainRun(result, input.ledger, input.passes)
   const actions: MainFindingAction[] = []
+
+  /**
+   * What the run proved, recorded after everything is filed (#295), so an
+   * issue never names a pass this same run wrote. A criterion that failed
+   * keeps the pass it had. A dry run writes nothing and says what it would.
+   */
+  const recordPasses = async (): Promise<{ passes?: { criteria: string[]; recorded: boolean } }> => {
+    const record = input.recordPasses
+    if (record === undefined) return {}
+    const criteria = mainPassesToRecord(input.result, input.ledger)
+    if (criteria.length === 0 || dryRun) return { passes: { criteria, recorded: false } }
+    const next = recordMainPasses(
+      input.passes ?? { passes: {} },
+      { sha: input.headSha, at: record.at, run: record.run, recordedAt: record.now ?? new Date().toISOString() },
+      criteria,
+      input.ledger,
+    )
+    await record.write(serializeMainPasses(next))
+    return { passes: { criteria, recorded: true } }
+  }
 
   const mine = (issue: GitHubIssue): boolean => issue.user?.login === input.author
   const own = (issue: GitHubIssue): OwnIssue => ({ number: issue.number, body: issue.body ?? '', ...readMainFindingMarkers(issue.body ?? '') })
@@ -181,7 +233,7 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
       }
     }
     // Nothing ran, so nothing failed and nothing recovered: the other issues stay as they are.
-    return { actions, flaky: classified.flaky, dryRun }
+    return { actions, flaky: classified.flaky, dryRun, ...(await recordPasses()) }
   }
 
   if (classified.environmentUp) {
@@ -199,7 +251,7 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
     const known = ranges.get(since)
     if (known !== undefined) return known
     // What GitHub says about the range is published, so it is redacted like the rest.
-    const range = redactValue(await readRange(client, input.headSha, since, input.findings), rules)
+    const range = redactValue(await readRange(client, input.headSha, since, input.findings, finding.lastProven?.sha), rules)
     ranges.set(since, range)
     return range
   }
@@ -251,7 +303,7 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
     actions.push({ action: 'closed', criterion, issue: issue.number })
   }
 
-  return { actions, flaky: classified.flaky, dryRun }
+  return { actions, flaky: classified.flaky, dryRun, ...(await recordPasses()) }
 }
 
 /**
@@ -259,8 +311,12 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
  * the pull requests that brought them. Reads are bounded: a long gap between
  * runs costs a fixed number of requests, and the range says it was cut.
  */
-async function readRange(client: GitHubClient, head: string, since: string, config: BlameConfig | undefined): Promise<BlameRange> {
-  const { commits, truncated } = await client.listCommitsSince(head, since, MAX_COMMITS)
+async function readRange(client: GitHubClient, head: string, since: string, config: BlameConfig | undefined, passed?: string): Promise<BlameRange> {
+  const listed = await client.listCommitsSince(head, since, MAX_COMMITS)
+  // The range is counted from when the passing revision was committed, and
+  // GitHub lists that commit too. It passed, so it is no change since (#295).
+  const commits = passed === undefined ? listed.commits : listed.commits.filter((commit) => commit.sha !== passed)
+  const truncated = listed.truncated
   const numbers: number[] = []
   let cut = truncated
   for (const commit of commits) {

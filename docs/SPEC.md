@@ -1085,6 +1085,9 @@ Lifecycle:
   never as a silent edit.
 - **Verify.** Every run records its verdict against the criteria it covered, so
   the ledger always knows when each statement was last proven and by what.
+  In the pipeline today the one place a pass is recorded is the main lane's
+  record of passes, kept beside the ledger on `qa-assets` (#295, "Findings
+  on main"); no pipeline job writes a `verify` change into the ledger itself.
 - **Contradict.** A change can put a new criterion at odds with an old one, or
   make an old one fail on purpose. QARE separates the two: a criterion the diff
   intends to replace is proposed as `superseded` with the replacement linked; a
@@ -1407,11 +1410,28 @@ The lane is off by default, and on it is a dry run by default: unless the
 caller passes `main-lane-dry-run` as the exact word `false`, the step reads,
 prints the title, the labels and the body of each issue it would open, and
 whom it would mention, and writes nothing. The lane reads the ledger and
-never writes it (rule 5): a run on main records no pass and changes no
-criterion. Nothing else records a pass in the ledger yet either (#295), so
-the "Blame" below has no last pass to start from: until that lands, a
-failure the lane files is a `qa-failure` for the fallback, never a
-regression. See "Findings on main" in [pipeline.md](./pipeline.md).
+never writes it (rule 5): a run on main changes no criterion.
+
+**Where a pass is recorded (#295,
+[ADR-0009](./decisions/adr-0009-passes-on-main-beside-the-ledger.md)).** That
+a criterion passed on a revision is a fact about a run, not a change to a
+criterion, so it is recorded beside the ledger and never in it: one file,
+`passes/main.json`, on the orphan `qa-assets` branch where a run's metrics
+and screenshots already go. A caller turns it on with
+`main-lane-record-passes`. The step that writes it is main_judge's filing
+step: it holds the GitHub identity, runs no repository code, and decides
+what a pass is in code, from the judged result and the ledger. main_execute
+holds no token and cannot write it (rule 7), no model output can add a pass
+(the verifier can only take one away, rule 3), and a pull request never
+reaches the lane. For each `active` criterion the run proved, the record
+keeps the revision, when it was committed, the run, and a digest of the
+ledger entry that was proven; a criterion whose text, proof or checks have
+changed since has no pass until a run proves it again. A criterion that
+failed keeps the pass it had. A dry run records nothing and says what it
+would record. A record that cannot be read stops the filing step by name
+before anything is filed (rule 6). Without a recorded pass a failure is a
+`qa-failure` for the fallback, never a regression. See "Findings on main" in
+[pipeline.md](./pipeline.md).
 
 What is a finding, of which kind, and who it names is decided in code from
 the executed result and the ledger. No model has a say in any of it.
@@ -1428,7 +1448,9 @@ the executed result and the ledger. No model has a say in any of it.
   in code spans, where nothing renders and nothing mentions, and is redacted
   (#52) before it is written. A screenshot is linked only when it was pushed
   to `qa-assets`; every other file is named.
-- **Blame.** The ledger records when each criterion last passed, so the
+- **Blame.** The record of passes on the default branch (or, where a
+  ledger carries one, its own `verify` history) says when each criterion
+  last passed and on which revision, so the
   issue lists the commits on the checked revision since then and the pull
   requests that brought them, and mentions each one's author. When the range
   holds several, the issue says which one the evidence points at most: the
@@ -2523,6 +2545,10 @@ generator, Argos for visual review, API before/after on Go services.
   evidence records that they ran uncontained. Decided by the owner on
   2026-10-09.
   ([ADR-0008](./decisions/adr-0008-command-checks-without-a-cell.md))
+- **Passes on main:** what a run on the default branch proved is recorded
+  beside the ledger, on the `qa-assets` branch, by the judge side, and never
+  in the ledger. Provisional, pending the owner's confirmation.
+  ([ADR-0009](./decisions/adr-0009-passes-on-main-beside-the-ledger.md))
 
 ## Open questions
 

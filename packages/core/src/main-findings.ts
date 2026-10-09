@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { LedgerDocument } from './ledger.js'
+import { standingMainPasses, type MainPasses } from './main-passes.js'
 import type { CriterionResult, RunResult } from './result.js'
 
 /**
@@ -23,10 +24,17 @@ export const QA_FAILURE_LABEL = 'qa-failure'
 
 export const ENVIRONMENT_FINGERPRINT = 'mf-environment'
 
-/** The ledger's last `verify` record naming a criterion: the run that proved it, and when. */
+/**
+ * When a criterion last passed: the run that proved it, and when. It comes
+ * from the ledger's last `verify` record naming the criterion, or from the
+ * record of passes on the default branch (#295), which also names the
+ * revision that passed.
+ */
 export interface LastProven {
   run: string
   at: string
+  /** The revision the passing run checked, when the record of passes names it. */
+  sha?: string
 }
 
 /** A criterion a run on `main` failed. */
@@ -113,11 +121,20 @@ export function mainFindingFingerprint(criterionId: string, outcome: 'failed', e
   return `mf-${digest.slice(0, 16)}`
 }
 
-function lastProvenOf(ledger: LedgerDocument): Map<string, LastProven> {
+function lastProvenOf(ledger: LedgerDocument, passes: MainPasses | undefined): Map<string, LastProven> {
   const last = new Map<string, LastProven>()
   for (const change of ledger.changes) {
     if (change.kind !== 'verify') continue
     for (const criterion of change.criteria) last.set(criterion, { run: change.actor, at: change.timestamp })
+  }
+  if (passes === undefined) return last
+  // The record of passes on the default branch (#295): a pass that still
+  // stands for the criterion as the ledger words it today. Where the ledger
+  // records one too, the later of the two is the last pass.
+  for (const [criterion, pass] of standingMainPasses(passes, ledger)) {
+    const recorded = last.get(criterion)
+    const later = recorded === undefined || !(Date.parse(recorded.at) > Date.parse(pass.at))
+    if (later) last.set(criterion, { run: pass.run, at: pass.at, sha: pass.sha })
   }
   return last
 }
@@ -128,15 +145,16 @@ function reasonOf(criterion: CriterionResult): string | undefined {
 
 /**
  * What a judged result of a run on `main` amounts to. A failed criterion is
- * a finding: a regression when the ledger recorded a pass or the run's own
- * base side proved it (#147), a plain failure otherwise. A proven criterion
+ * a finding: a regression when the ledger recorded a pass, the record of
+ * passes on the default branch holds one that still stands (#295), or the
+ * run's own base side proved it (#147), a plain failure otherwise. A proven criterion
  * recovers. A run in which no check executed and every criterion is
  * unverified for the environment's sake is one environment finding. A
  * quarantined check, a waiver, a held question and a refusal file nothing:
  * each has a place of its own.
  */
-export function classifyMainRun(result: RunResult, ledger: LedgerDocument): MainRunClassification {
-  const lastProven = lastProvenOf(ledger)
+export function classifyMainRun(result: RunResult, ledger: LedgerDocument, passes?: MainPasses): MainRunClassification {
+  const lastProven = lastProvenOf(ledger, passes)
   const entries = new Map(ledger.entries.map((entry) => [entry.criterion, entry]))
   const findings: MainFinding[] = []
   const recovered: string[] = []

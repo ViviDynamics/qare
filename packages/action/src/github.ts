@@ -179,6 +179,22 @@ export class GitHubClient {
     return { commits, truncated: false }
   }
 
+  /**
+   * When a commit was committed, as GitHub records it (#295): the moment the
+   * changes since a recorded pass are counted from. Undefined when GitHub
+   * does not know the commit or gives no date that can be read.
+   */
+  async getCommitDate(sha: string): Promise<string | undefined> {
+    try {
+      const commit = await this.request<{ commit?: { committer?: { date?: string } } }>('GET', `/repos/${this.repository}/commits/${sha}`)
+      const date = commit.commit?.committer?.date
+      return typeof date === 'string' && !Number.isNaN(Date.parse(date)) ? date : undefined
+    } catch (error) {
+      if (error instanceof GitHubApiError && (error.status === 404 || error.status === 422)) return undefined
+      throw error
+    }
+  }
+
   /** The numbers of the merged pull requests a commit came in by (#154); one never merged brought nothing. */
   async listMergedPullsForCommit(sha: string): Promise<number[]> {
     const pulls = await this.request<Array<{ number: number; merged_at?: string | null }>>(
