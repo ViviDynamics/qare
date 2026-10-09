@@ -42,6 +42,7 @@ your application boots and what its suites are. `qare init` writes both: this
 workflow, pinned to the release of the qare that ran it, and a starting
 profile, and it lists what is left for you to fill in. It adds the push
 trigger described under "Triggers" when the profile boots an application.
+On GitHub-hosted runners, no extra runner setup is needed.
 
 A repository with its own runners, a model behind an OpenAI-compatible
 endpoint, a profile somewhere other than `.qa`, and stubs that should
@@ -248,6 +249,54 @@ the work directory into both containers. Nothing else has to be shared:
 execute copies the docker client and its plugins under `RUNNER_TEMP` and
 mounts them into the run's container from there, because a daemon that does
 not see the runner's `/usr/bin` cannot mount the client from it.
+
+## Self-hosted runner checklist
+
+An operator of self-hosted runners verifies this checklist before allowing
+repository code onto them. These are requirements of the infrastructure,
+including the runner controller, its image and network, rather than settings
+inside the application profile. GitHub-hosted runners need no extra setup.
+
+| Item | Requirement and why | How to check it |
+| --- | --- | --- |
+| `ephemeral` | Each runner accepts one job and is then destroyed, so repository code cannot leave a process or file for a later job. | Inspect the controller's ephemeral or just-in-time registration and its destruction logs; submit two jobs and verify they get different runner instances and disks, with the first destroyed after its job. |
+| `docker` | Each job has a Docker daemon and storage no other job shares, because Docker access can control every container on that daemon and reach its files. | Inspect the daemon endpoint, controller mounts and volumes; each job needs its own daemon and storage, never the node's Docker socket or a daemon shared with another runner, and its containers must disappear with the job. |
+| `execute-pool` | The job that executes repository code runs in a pool of its own on a sandboxed runtime, so a breakout cannot reach machines used by jobs holding secrets. | Compare `execute-runs-on` with `runs-on` and runner group membership, then inspect the controller's runtime class or VM boundary and its enforcement; labels alone and a regular Docker container around a mounted daemon socket do not provide this boundary. |
+| `network` | The execute pool can reach the internet and its own services and nothing internal, so repository code cannot reach a cluster API, another workload or cloud metadata. | Inspect egress firewall or network policies and routing, then test from an execute job that an internet destination and its own services work while the cluster API, other internal subnets, node services and metadata endpoints are denied. |
+| `credentials` | No registry, cluster, cloud, model or GitHub credential is readable from the execute job's environment or mounts, because repository code inherits that machine's access. | Audit the runner's exported variable names, mounted volumes and HOME configuration; disable automatic service account token mounts and remove registry login files, kubeconfigs, cloud credentials and identity token files from the job, keeping image-pull credentials with the controller. |
+| `image-digest` | The runner image is pulled by an immutable digest, so an image tag cannot silently change the machine that receives repository code. | Inspect the controller's runner image specification for `@sha256:<digest>` and compare it with the actual image identifier of the launched pod or VM; a mutable tag or a digest of only the qare flavour image does not verify the runner image. |
+
+The checklist recommends both destruction after one job and a separate execute
+pool. The placement gate's recorded allowance for an explicitly declared
+ephemeral pool is an alternative admission rule; passing that gate does not
+verify the runtime, daemon, credentials or network items above.
+
+Run `qare doctor --json` inside a self-hosted job to see the observations it
+can make. Each finding names its `checklist` item and a `status` of `finding`
+or `unobservable`; ordinary text output uses those same words. The checks
+look for known credential variable names and readable credential paths,
+including Kubernetes service account tokens, Docker login configuration,
+AWS credentials, kubeconfigs and cloud identity files. They also check the
+cluster API address named by `KUBERNETES_SERVICE_HOST` and a remote Docker
+endpoint with bounded, unauthenticated probes. Credential values and file
+contents are never recorded. A remote daemon is a warning to verify
+ownership, since it may be dedicated or shared.
+
+Doctor says plainly that it cannot observe one-job destruction, exclusive
+daemon ownership, pool membership, sandbox enforcement, the complete network
+boundary, credentials outside its environment and known paths, or the runner
+controller's image pull. Containerized doctor has only the container's view;
+run it on the runner itself to inspect the runner's environment and mounts.
+Its readiness result describes whether qare can run, and these warnings do
+not certify that a runner is safe or change criterion verdicts.
+
+The pipeline inspects self-hosted execute and main execute runners before
+checkout and writes visible findings and these limitations straight to the
+job summary. It forwards a snapshot containing only credential names, known
+file labels and reachability observations into the run, where the same
+findings appear under `environment.runnerSafety` in `evidence/result.json`
+and in the evidence comment. This also exposes findings the run container
+would otherwise hide, without forwarding the credentials themselves.
 
 ## Which checks each flavour runs
 

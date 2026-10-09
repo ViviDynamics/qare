@@ -21,12 +21,12 @@ Out: provisioning runners or proving external isolation from inside a job.
 
 ## Tasks
 
-- [ ] 1. Add runner safety probes and doctor findings: tests for hosted no-op,
+- [x] 1. Add runner safety probes and doctor findings: tests for hosted no-op,
   service tokens, credential names, cluster connectivity, daemon access, and
   explicit unobservable checklist items.
-- [ ] 2. Capture diagnostics before code runs and preserve them through result
+- [x] 2. Capture diagnostics before code runs and preserve them through result
   loading: a real command run records the same findings in result.json and the
   evidence comment; malformed diagnostics are rejected.
-- [ ] 3. Publish the checklist and execute/main execute summaries: workflow
+- [x] 3. Publish the checklist and execute/main execute summaries: workflow
   tests hold both jobs to publishing their recorded diagnostics.
 - [ ] 4. Run preflight and full gates, review, CI, merge, and verify closure.

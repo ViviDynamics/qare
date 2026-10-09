@@ -650,6 +650,7 @@ jobs:
       # reaches the repository once, here, and never again. Two commits
       # deep, so the merge commit's parents, the base and the head the run
       # names with --base and --head, are in the object store without it.
+<<<<<<< HEAD
       # Require machine isolation before repository code reaches this host (#308).
       - name: Require a separate execute pool or ephemeral runners
         shell: bash
@@ -679,6 +680,60 @@ jobs:
             echo "::error::$reason"
             exit 1
           fi
+=======
+      - name: Inspect self-hosted runner checklist
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] || exit 0
+          # Inspect the runner before checkout, not the container that hides it.
+          # Only variable names, known file labels and booleans are forwarded.
+          variables='[]'
+          files='[]'
+          credential_name='^(AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)|AZURE_(CLIENT_SECRET|CLIENT_CERTIFICATE_PASSWORD)|GOOGLE_(APPLICATION_CREDENTIALS|CREDENTIALS)|CLOUDSDK_AUTH_ACCESS_TOKEN|KUBE(CONFIG|_TOKEN)|(DOCKER|REGISTRY|GHCR|GITHUB|GH|OPENAI|ANTHROPIC)_(AUTH_CONFIG|PASSWORD|TOKEN|KEY|API_KEY))$'
+          shopt -s nocasematch
+          while read -r name; do
+            if [[ "$name" =~ $credential_name ]] && [ -n "${!name:-}" ]; then
+              variables="$(jq -c --arg name "$name" '. + [$name]' <<< "$variables")"
+            fi
+          done < <(compgen -e | sort -u)
+          if [ -r /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
+            files="$(jq -c '. + ["service-account-token"]' <<< "$files")"
+          fi
+          for name in AWS_WEB_IDENTITY_TOKEN_FILE GOOGLE_APPLICATION_CREDENTIALS KUBECONFIG; do
+            if [ -n "${!name:-}" ] && [ -r "${!name}" ]; then
+              files="$(jq -c --arg name "$name" '. + [$name]' <<< "$files")"
+            fi
+          done
+          for path in .docker/config.json .aws/credentials .kube/config .config/gcloud/application_default_credentials.json; do
+            if [ -n "${HOME:-}" ] && [ -r "$HOME/$path" ]; then
+              files="$(jq -c --arg name "HOME/$path" '. + [$name]' <<< "$files")"
+            fi
+          done
+          cluster=false
+          port="${KUBERNETES_SERVICE_PORT:-443}"
+          if [ -n "${KUBERNETES_SERVICE_HOST:-}" ] && [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -gt 0 ] && [ "$port" -le 65535 ]; then
+            # No authentication, redirects, proxy or response body. Even 403
+            # proves the internal cluster API was reachable from this job.
+            if curl --noproxy '*' --connect-timeout 1 --max-time 2 --insecure --silent --output /dev/null "https://${KUBERNETES_SERVICE_HOST}:$port/"; then cluster=true; fi
+          fi
+          remote=false
+          endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
+          case "${DOCKER_HOST:-$endpoint}" in
+            tcp://*|http://*|https://*)
+              if timeout 2 docker info --format '{{.ID}}' >/dev/null 2>&1; then remote=true; fi ;;
+          esac
+          jq -n --argjson variables "$variables" --argjson files "$files" --argjson cluster "$cluster" --argjson remote "$remote" \
+            '{schemaVersion: "1", credentialVariables: $variables, credentialFiles: $files, clusterReachable: $cluster, remoteDocker: $remote}' > "$RUNNER_TEMP/qare-runner-safety.json"
+          {
+            echo '### Self-hosted runner checklist'
+            echo 'From this job qare cannot observe one-job destruction, exclusive daemon ownership, runner pool membership, sandbox enforcement, the complete network boundary, all credentials, or the runner image pull. Verify the checklist in docs/pipeline.md.'
+            jq -r '.credentialVariables[] | "- finding credentials: environment variable " + .' "$RUNNER_TEMP/qare-runner-safety.json"
+            jq -r '.credentialFiles[] | "- finding credentials: readable " + .' "$RUNNER_TEMP/qare-runner-safety.json"
+            if [ "$cluster" = true ]; then echo '- finding network: the cluster API is reachable'; fi
+            if [ "$remote" = true ]; then echo '- finding docker: a remote daemon is reachable; verify exclusive ownership'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+>>>>>>> b4d83f0 (feat: inspect self-hosted execute jobs before checkout and publish checklist)
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -862,10 +917,15 @@ jobs:
             echo "the base commit could not be checked out, so qare checks the head alone and reports every criterion as not compared" >> "$GITHUB_STEP_SUMMARY"
           fi
           mapfile -t docker_access < "$RUNNER_TEMP/qare-docker-access"
+          safety_mount=()
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ]; then
+            safety_mount=(-e QARE_RUNNER_SAFETY_FILE=/tmp/qare-runner-safety.json -v "$RUNNER_TEMP/qare-runner-safety.json:/tmp/qare-runner-safety.json:ro")
+          fi
           code=0
           docker run --rm \
             -u "$(id -u):$(id -g)" \
             -e HOME=/tmp \
+            "${safety_mount[@]}" \
             -e QARE_IMAGE_REF="$IMAGE_REF" \
             -e QARE_IMAGE_DIGEST="$IMAGE_DIGEST" \
             -e QARE_RUNNER_ENVIRONMENT="${RUNNER_ENVIRONMENT:-}" \
@@ -1670,6 +1730,7 @@ jobs:
       # The revision the run was started for, with no token left in
       # .git/config (rule 7): the run's container is handed this workspace
       # and executes the repository's code.
+<<<<<<< HEAD
       # Require machine isolation before repository code reaches this host (#308).
       - name: Require a separate execute pool or ephemeral runners
         shell: bash
@@ -1699,6 +1760,60 @@ jobs:
             echo "::error::$reason"
             exit 1
           fi
+=======
+      - name: Inspect self-hosted runner checklist
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ] || exit 0
+          # Inspect the runner before checkout, not the container that hides it.
+          # Only variable names, known file labels and booleans are forwarded.
+          variables='[]'
+          files='[]'
+          credential_name='^(AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)|AZURE_(CLIENT_SECRET|CLIENT_CERTIFICATE_PASSWORD)|GOOGLE_(APPLICATION_CREDENTIALS|CREDENTIALS)|CLOUDSDK_AUTH_ACCESS_TOKEN|KUBE(CONFIG|_TOKEN)|(DOCKER|REGISTRY|GHCR|GITHUB|GH|OPENAI|ANTHROPIC)_(AUTH_CONFIG|PASSWORD|TOKEN|KEY|API_KEY))$'
+          shopt -s nocasematch
+          while read -r name; do
+            if [[ "$name" =~ $credential_name ]] && [ -n "${!name:-}" ]; then
+              variables="$(jq -c --arg name "$name" '. + [$name]' <<< "$variables")"
+            fi
+          done < <(compgen -e | sort -u)
+          if [ -r /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
+            files="$(jq -c '. + ["service-account-token"]' <<< "$files")"
+          fi
+          for name in AWS_WEB_IDENTITY_TOKEN_FILE GOOGLE_APPLICATION_CREDENTIALS KUBECONFIG; do
+            if [ -n "${!name:-}" ] && [ -r "${!name}" ]; then
+              files="$(jq -c --arg name "$name" '. + [$name]' <<< "$files")"
+            fi
+          done
+          for path in .docker/config.json .aws/credentials .kube/config .config/gcloud/application_default_credentials.json; do
+            if [ -n "${HOME:-}" ] && [ -r "$HOME/$path" ]; then
+              files="$(jq -c --arg name "HOME/$path" '. + [$name]' <<< "$files")"
+            fi
+          done
+          cluster=false
+          port="${KUBERNETES_SERVICE_PORT:-443}"
+          if [ -n "${KUBERNETES_SERVICE_HOST:-}" ] && [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -gt 0 ] && [ "$port" -le 65535 ]; then
+            # No authentication, redirects, proxy or response body. Even 403
+            # proves the internal cluster API was reachable from this job.
+            if curl --noproxy '*' --connect-timeout 1 --max-time 2 --insecure --silent --output /dev/null "https://${KUBERNETES_SERVICE_HOST}:$port/"; then cluster=true; fi
+          fi
+          remote=false
+          endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
+          case "${DOCKER_HOST:-$endpoint}" in
+            tcp://*|http://*|https://*)
+              if timeout 2 docker info --format '{{.ID}}' >/dev/null 2>&1; then remote=true; fi ;;
+          esac
+          jq -n --argjson variables "$variables" --argjson files "$files" --argjson cluster "$cluster" --argjson remote "$remote" \
+            '{schemaVersion: "1", credentialVariables: $variables, credentialFiles: $files, clusterReachable: $cluster, remoteDocker: $remote}' > "$RUNNER_TEMP/qare-runner-safety.json"
+          {
+            echo '### Self-hosted runner checklist'
+            echo 'From this job qare cannot observe one-job destruction, exclusive daemon ownership, runner pool membership, sandbox enforcement, the complete network boundary, all credentials, or the runner image pull. Verify the checklist in docs/pipeline.md.'
+            jq -r '.credentialVariables[] | "- finding credentials: environment variable " + .' "$RUNNER_TEMP/qare-runner-safety.json"
+            jq -r '.credentialFiles[] | "- finding credentials: readable " + .' "$RUNNER_TEMP/qare-runner-safety.json"
+            if [ "$cluster" = true ]; then echo '- finding network: the cluster API is reachable'; fi
+            if [ "$remote" = true ]; then echo '- finding docker: a remote daemon is reachable; verify exclusive ownership'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+>>>>>>> b4d83f0 (feat: inspect self-hosted execute jobs before checkout and publish checklist)
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -1805,10 +1920,15 @@ jobs:
           # second boot's. The run is named for the workflow run, so two
           # runs on one runner never share a compose project.
           mapfile -t docker_access < "$RUNNER_TEMP/qare-docker-access"
+          safety_mount=()
+          if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ]; then
+            safety_mount=(-e QARE_RUNNER_SAFETY_FILE=/tmp/qare-runner-safety.json -v "$RUNNER_TEMP/qare-runner-safety.json:/tmp/qare-runner-safety.json:ro")
+          fi
           code=0
           docker run --rm \
             -u "$(id -u):$(id -g)" \
             -e HOME=/tmp \
+            "${safety_mount[@]}" \
             -e QARE_IMAGE_REF="$IMAGE_REF" \
             -e QARE_IMAGE_DIGEST="$IMAGE_DIGEST" \
             -e QARE_RUNNER_ENVIRONMENT="${RUNNER_ENVIRONMENT:-}" \
