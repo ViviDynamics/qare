@@ -133,6 +133,10 @@ export interface FakeGithub {
    * make exactly one push attempt fail, more to exhaust a retry budget.
    */
   failRefPatches: number
+  /** Commits rewritten out of the branch: compared with anything else, GitHub calls the two diverged. */
+  diverged: Set<string>
+  /** Refuse every ref update with 403, as GitHub does for an identity that may not write contents. */
+  forbidRefWrites: boolean
   close(): Promise<void>
 }
 
@@ -164,6 +168,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
   const issues = new Map<number, FakeIssue>()
   const issueMeta = new Map<number, FakeIssueMeta>()
   const commitLog: Array<{ sha: string; message: string; date: string }> = []
+  const diverged = new Set<string>()
   const commitPulls = new Map<string, number[]>()
   const pullRecords = new Map<number, FakePullRecord>()
   /** An issue as the API answers with it: its text, and what GitHub keeps beside it when the fake knows it. */
@@ -194,6 +199,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
   const state = {
     status: undefined as number | undefined,
     failRefPatches: 0,
+    forbidRefWrites: false,
     app: undefined as FakeApp | undefined,
     nowMs: undefined as number | undefined,
   }
@@ -427,6 +433,36 @@ export function startFakeGithub(): Promise<FakeGithub> {
       respond(response, 200, listed.map((commit) => ({ sha: commit.sha, commit: { message: commit.message, committer: { date: commit.date } } })))
       return
     }
+    // The commits one revision has that another does not (#295), on the
+    // fake's one line of history: `commitLog` in the order they landed.
+    if (parts[0] === 'repos' && parts[3] === 'compare' && parts.length === 5 && request.method === 'GET') {
+      const [base, head] = (parts[4] ?? '').split('...')
+      const from = commitLog.findIndex((commit) => commit.sha === base)
+      const to = commitLog.findIndex((commit) => commit.sha === head)
+      if (from === -1 || to === -1) return respond(response, 404, { message: 'no common ancestor' })
+      // A commit rewritten out of the branch still compares: each side has what the other has not.
+      if (base !== head && (diverged.has(base ?? '') || diverged.has(head ?? '')))
+        return respond(response, 200, { status: 'diverged', ahead_by: 1, behind_by: 1, total_commits: 1, commits: [{ sha: head, commit: { message: 'diverged' } }] })
+      // On one line of history the head is ahead of the base, behind it, or the same commit.
+      const between = commitLog.slice(from + 1, to + 1)
+      const perPage = Number(url.searchParams.get('per_page') ?? '30')
+      const page = Number(url.searchParams.get('page') ?? '1')
+      respond(response, 200, {
+        status: to > from ? 'ahead' : to < from ? 'behind' : 'identical',
+        ahead_by: between.length,
+        behind_by: Math.max(0, from - to),
+        total_commits: between.length,
+        commits: between.slice((page - 1) * perPage, page * perPage).map((commit) => ({ sha: commit.sha, commit: { message: commit.message } })),
+      })
+      return
+    }
+    // One commit, as blame's record of passes reads it (#295): when it was committed.
+    if (parts[0] === 'repos' && parts[3] === 'commits' && parts.length === 5 && request.method === 'GET') {
+      const commit = commitLog.find((candidate) => candidate.sha === parts[4])
+      if (commit === undefined) return respond(response, 404, { message: 'commit not found' })
+      respond(response, 200, { sha: commit.sha, commit: { message: commit.message, committer: { date: commit.date } } })
+      return
+    }
     if (parts[0] === 'repos' && parts[3] === 'commits' && parts[5] === 'pulls' && parts.length === 6 && request.method === 'GET') {
       const numbers = commitPulls.get(parts[4] ?? '') ?? []
       respond(
@@ -477,7 +513,10 @@ export function startFakeGithub(): Promise<FakeGithub> {
     if (parts[0] === 'repos' && parts[3] === 'git' && parts[4] === 'trees' && parts.length === 5) {
       if (request.method !== 'POST') return respond(response, 404, { message: 'no such tree route' })
       const sha = objectSha('tree')
-      trees.set(sha, (body as { tree: FakeTreeEntry[] }).tree)
+      // As GitHub builds one: the entries given, laid over the base tree's when one is named.
+      const payload = body as { tree: FakeTreeEntry[]; base_tree?: string }
+      const base = payload.base_tree === undefined ? [] : (trees.get(payload.base_tree) ?? [])
+      trees.set(sha, [...base.filter((kept) => !payload.tree.some((entry) => entry.path === kept.path)), ...payload.tree])
       respond(response, 201, { sha })
       return
     }
@@ -515,6 +554,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
         if (request.method === 'PATCH') {
           const sha = refs.get(branch)
           if (sha === undefined) return respond(response, 404, { message: 'branch not found' })
+          if (state.forbidRefWrites) return respond(response, 403, { message: 'Resource not accessible by integration' })
           if (state.failRefPatches > 0) {
             state.failRefPatches -= 1
             return respond(response, 422, { message: 'Update is not a fast forward' })
@@ -551,7 +591,8 @@ export function startFakeGithub(): Promise<FakeGithub> {
     if (parts[0] === 'repos' && parts[3] === 'contents' && parts.length >= 5 && request.method === 'GET') {
       const path = parts.slice(4).join('/')
       const ref = url.searchParams.get('ref') ?? ''
-      const head = refs.get(`refs/heads/${ref}`)
+      // A branch, or a commit named by its sha.
+      const head = refs.get(`refs/heads/${ref}`) ?? (commits.has(ref) ? ref : undefined)
       const tree = head === undefined ? undefined : trees.get(commits.get(head)?.tree ?? '')
       const entry = tree?.find((candidate) => candidate.path === path)
       const content = entry === undefined ? undefined : blobs.get(entry.sha)
@@ -596,6 +637,7 @@ export function startFakeGithub(): Promise<FakeGithub> {
         issues,
         issueMeta,
         commitLog,
+        diverged,
         commitPulls,
         pullRecords,
         commentRecords,
@@ -638,6 +680,12 @@ export function startFakeGithub(): Promise<FakeGithub> {
         },
         set failRefPatches(value: number) {
           state.failRefPatches = value
+        },
+        get forbidRefWrites(): boolean {
+          return state.forbidRefWrites
+        },
+        set forbidRefWrites(value: boolean) {
+          state.forbidRefWrites = value
         },
         close: () =>
           new Promise((resolveClose) => {

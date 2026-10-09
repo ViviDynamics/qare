@@ -138,8 +138,57 @@ test('in main_judge no step holds both the model key and a GitHub identity, and 
   const checkouts = (judge.steps ?? []).filter((candidate) => candidate.uses?.startsWith('actions/checkout@'))
   expect(checkouts).toHaveLength(1)
   expect(checkouts[0]?.with?.['persist-credentials']).toBe(false)
-  // What filing needs and no more: nothing is pushed, so contents stays read.
-  expect(judge.permissions).toEqual({ contents: 'read', issues: 'write', 'pull-requests': 'read' })
+  // What filing needs, and what recording a pass needs (#295): contents: write
+  // is for the push to the qa-assets branch, which is where a pass is
+  // recorded. The lane never writes the default branch.
+  expect(judge.permissions).toEqual({ contents: 'write', issues: 'write', 'pull-requests': 'read' })
+})
+
+// #295: a run on the default branch records what it proved, so the next
+// failure is a regression against that pass. Off unless the caller asks, and
+// written by the judge side alone.
+test('recording a pass is off by default, only the exact word true turns it on, and only the filing step can do it', () => {
+  expect(inputs['main-lane-record-passes']?.type).toBe('string')
+  expect(inputs['main-lane-record-passes']?.default).toBe('')
+  expect(inputs['main-lane-record-passes']?.description).toMatch(/qa-assets/)
+  const file = step('main_judge', 'File what the run on main found')
+  expect(file.env?.MAIN_LANE_RECORD_PASSES).toBe('${{ inputs.main-lane-record-passes }}')
+  // No other step of the lane reads the input, and the job that runs the
+  // repository's code has no token to write anything with.
+  for (const id of MAIN_JOBS)
+    for (const candidate of job(id).steps ?? [])
+      if (candidate.name !== 'File what the run on main found') expect(JSON.stringify(candidate), `${id}: ${candidate.name ?? ''}`).not.toContain('record-passes')
+  expect(JSON.stringify(job('main_execute'))).not.toMatch(/secrets\.|github\.token|GITHUB_TOKEN|GH_TOKEN/)
+  expect(job('main_execute').permissions).toBeUndefined()
+  expect(job('main_collect').permissions).toEqual({ contents: 'read' })
+
+  const dir = mkdtempSync(join(tmpdir(), 'qare-main-record-'))
+  const bin = join(dir, 'bin')
+  mkdirSync(bin)
+  writeFileSync(join(bin, 'docker'), '#!/bin/sh\necho "docker $*"\n')
+  chmodSync(join(bin, 'docker'), 0o755)
+  writeFileSync(join(dir, 'judged-result.json'), JSON.stringify({ schemaVersion: '1', verdict: 'passed', criteria: [{ id: 'sign-in', outcome: 'proven', evidence: [] }] }))
+  const asked = (value: string | undefined, dryRun: string): { record: string; dry: string } => {
+    const env: Record<string, string> = {
+      PATH: `${bin}:${process.env.PATH ?? ''}`,
+      IMAGE_REF: 'image',
+      HEAD_SHA: 'c0ffee0123456789c0ffee0123456789c0ffee01',
+      RUN_URL: 'run',
+      EVIDENCE_URL: 'evidence',
+      PROFILE: '.qa',
+      MAIN_LANE_DRY_RUN: dryRun,
+      GITHUB_STEP_SUMMARY: join(dir, 'summary.md'),
+    }
+    if (value !== undefined) env.MAIN_LANE_RECORD_PASSES = value
+    const outcome = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', file.run ?? ''], { cwd: dir, env, encoding: 'utf8' })
+    expect(outcome.status, outcome.stderr).toBe(0)
+    const printed = readFileSync(join(dir, 'main-findings.txt'), 'utf8')
+    return { record: /--record-passes (\S+)/.exec(printed)?.[1] ?? '', dry: /--dry-run (\S+)/.exec(printed)?.[1] ?? '' }
+  }
+  for (const value of [undefined, '', 'false', 'TRUE', 'True', ' true', 'true ', 'yes', '1', 'on']) expect(asked(value, 'false').record, JSON.stringify(value)).toBe('false')
+  expect(asked('true', 'false')).toEqual({ record: 'true', dry: 'false' })
+  // On a dry run the command is still told, so it can say what it would record; it writes nothing (held in the action's tests).
+  expect(asked('true', 'true')).toEqual({ record: 'true', dry: 'true' })
 })
 
 test('the placement guard is the first step of the two main jobs that check the tree out, and it is the one guard', () => {
@@ -192,8 +241,11 @@ test('main_judge asks the verifier with no diff, and files from the judged resul
   expect(judged.run).toContain('--env-file "$key_file"')
   expect(judged.run).not.toMatch(/-e "?\$MODEL_KEY/)
   const file = step('main_judge', 'File what the run on main found')
-  expect(oneLine(file.run)).toContain('main-findings --result judged-result.json --ledger "$PROFILE" --profile "$PROFILE" --sha "$HEAD_SHA" --run-url "$RUN_URL" --artifact-url "$EVIDENCE_URL" --dry-run "$dry"')
+  expect(oneLine(file.run)).toContain('main-findings --result judged-result.json --ledger "$PROFILE" --profile "$PROFILE" --sha "$HEAD_SHA" --run-url "$RUN_URL" --artifact-url "$EVIDENCE_URL" --dry-run "$dry" --record-passes "$record" --passes-profile "$PROFILE"')
   expect(file.env?.HEAD_SHA).toBe('${{ github.sha }}')
+  // The run is named with its attempt: a pass recorded by one attempt and a
+  // failure filed by the next are told apart in the issue.
+  expect(file.env?.RUN_URL).toBe('${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}')
   expect(file.env?.EVIDENCE_URL).toBe('${{ needs.main_execute.outputs.evidence-url }}')
   expect(file.run).not.toContain('${{')
 })
@@ -361,6 +413,10 @@ test('the documentation shows a caller that turns the lane on as a dry run, and 
   expect(docs).toContain("main-lane: 'true'")
   expect(docs).toMatch(/\| `main-lane` \| empty \|/)
   expect(docs).toMatch(/\| `main-lane-dry-run` \| `true` \|/)
+  // #295: what a repository sets to get regressions, and where a pass is kept.
+  expect(docs).toMatch(/\| `main-lane-record-passes` \| empty \|/)
+  expect(docs).toContain("main-lane-record-passes: 'true'")
+  expect(docs).toContain('passes/main.json')
   // What a repository's ledger must hold for the lane to have something to run.
   expect(docs).toContain('ledger.json')
   expect(docs).toMatch(/`active`/)

@@ -109,6 +109,8 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
     // #294: the main lane, off by default, and a dry run unless told otherwise.
     'main-lane',
     'main-lane-dry-run',
+    // #295: recording what a run on main proved, off by default.
+    'main-lane-record-passes',
     'max-output-tokens',
     'model-key-env',
     'nare-base-url',
@@ -138,6 +140,7 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
   expect(call.inputs['model-key-env']?.default).toBe('OPENAI_API_KEY')
   expect(call.inputs['main-lane']?.default).toBe('')
   expect(call.inputs['main-lane-dry-run']?.default).toBe('true')
+  expect(call.inputs['main-lane-record-passes']?.default).toBe('')
   // A JSON string, because an input cannot be a list: one label or several.
   expect(JSON.parse(String(call.inputs['runs-on']?.default))).toBe('ubuntu-latest')
   // The model key and the identity (#61), each by name. A fork pull request

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { LedgerDocument } from './ledger.js'
+import { standingMainPasses, type MainPasses } from './main-passes.js'
 import type { CriterionResult, RunResult } from './result.js'
 
 /**
@@ -18,15 +19,24 @@ import type { CriterionResult, RunResult } from './result.js'
 export const QA_REGRESSION_LABEL = 'qa-regression'
 /** The label of the one issue a run files when nothing could boot or be reached. */
 export const QA_ENVIRONMENT_LABEL = 'qa-environment'
-/** The label of a failure nothing shows ever passed: not a regression, so never handed off as one. */
+/** The label of a failure no earlier revision is shown to have passed: not a regression, so never handed off as one. */
 export const QA_FAILURE_LABEL = 'qa-failure'
 
 export const ENVIRONMENT_FINGERPRINT = 'mf-environment'
 
-/** The ledger's last `verify` record naming a criterion: the run that proved it, and when. */
+/**
+ * When a criterion last passed: the run that proved it, and when. It comes
+ * from the ledger's last `verify` record naming the criterion, or from the
+ * record of passes on the default branch (#295), which also names the
+ * revision that passed.
+ */
 export interface LastProven {
   run: string
   at: string
+  /** The revision the passing run checked, when the record of passes names it. */
+  sha?: string
+  /** When the pass was recorded, which is when the run that proved it finished, when the record of passes says. */
+  recordedAt?: string
 }
 
 /** A criterion a run on `main` failed. */
@@ -36,6 +46,14 @@ export interface MainFinding {
   criterionId: string
   /** The criterion in plain words, when the ledger carries them. */
   text?: string
+  /**
+   * Set when the record of passes holds a pass of the very revision this
+   * run checked (#295): the criterion passed here, in that run, and fails
+   * here now. Nothing landed in between, so it is a failure of the revision
+   * and not a regression from an earlier one, and no older pass is its
+   * last pass.
+   */
+  passedHere?: { run: string; recordedAt?: string }
   outcome: 'failed'
   /** Why, when something other than the check itself decided it failed. */
   reason?: string
@@ -113,11 +131,23 @@ export function mainFindingFingerprint(criterionId: string, outcome: 'failed', e
   return `mf-${digest.slice(0, 16)}`
 }
 
-function lastProvenOf(ledger: LedgerDocument): Map<string, LastProven> {
+function lastProvenOf(ledger: LedgerDocument, passes: MainPasses | undefined, headSha: string | undefined): Map<string, LastProven> {
   const last = new Map<string, LastProven>()
   for (const change of ledger.changes) {
     if (change.kind !== 'verify') continue
     for (const criterion of change.criteria) last.set(criterion, { run: change.actor, at: change.timestamp })
+  }
+  if (passes === undefined) return last
+  // The record of passes on the default branch (#295): a pass that still
+  // stands for the criterion as the ledger words it today. Where the ledger
+  // records one too, the later of the two is the last pass.
+  for (const [criterion, pass] of standingMainPasses(passes, ledger)) {
+    // A pass of the revision being checked is never a last pass to count
+    // changes from: there is none since it. `classifyMainRun` reads those.
+    if (pass.sha === headSha) continue
+    const recorded = last.get(criterion)
+    const later = recorded === undefined || !(Date.parse(recorded.at) > Date.parse(pass.at))
+    if (later) last.set(criterion, { run: pass.run, at: pass.at, sha: pass.sha, recordedAt: pass.recordedAt })
   }
   return last
 }
@@ -128,15 +158,22 @@ function reasonOf(criterion: CriterionResult): string | undefined {
 
 /**
  * What a judged result of a run on `main` amounts to. A failed criterion is
- * a finding: a regression when the ledger recorded a pass or the run's own
- * base side proved it (#147), a plain failure otherwise. A proven criterion
+ * a finding: a regression when the ledger recorded a pass, the record of
+ * passes on the default branch holds one that still stands (#295), or the
+ * run's own base side proved it (#147), a plain failure otherwise, one that
+ * fails on the very revision a pass is recorded for among them. A proven criterion
  * recovers. A run in which no check executed and every criterion is
  * unverified for the environment's sake is one environment finding. A
  * quarantined check, a waiver, a held question and a refusal file nothing:
  * each has a place of its own.
  */
-export function classifyMainRun(result: RunResult, ledger: LedgerDocument): MainRunClassification {
-  const lastProven = lastProvenOf(ledger)
+export function classifyMainRun(result: RunResult, ledger: LedgerDocument, passes?: MainPasses, headSha?: string): MainRunClassification {
+  const lastProven = lastProvenOf(ledger, passes, headSha)
+  // The passes of the revision this run checked: a criterion that fails
+  // where it passed has no earlier revision to have regressed from.
+  const here = new Map(
+    passes === undefined || headSha === undefined ? [] : [...standingMainPasses(passes, ledger)].filter(([, pass]) => pass.sha === headSha),
+  )
   const entries = new Map(ledger.entries.map((entry) => [entry.criterion, entry]))
   const findings: MainFinding[] = []
   const recovered: string[] = []
@@ -156,7 +193,14 @@ export function classifyMainRun(result: RunResult, ledger: LedgerDocument): Main
       continue
     }
     const entry = entries.get(criterion.id)
-    const proven = lastProven.get(criterion.id)
+    // Where the run's own base side proved it (#147), that is this run's
+    // evidence of a regression and is what the finding says: a pass of this
+    // revision on record does not talk over it.
+    const passedHere = criterion.regression === true ? undefined : here.get(criterion.id)
+    // A pass of this revision stands in the way of any older one: it is the
+    // last pass there is, and it is not one to count changes from. Where the
+    // base side decides instead, an older pass, if there is one, is the last.
+    const proven = passedHere === undefined ? lastProven.get(criterion.id) : undefined
     const reason = reasonOf(criterion)
     findings.push({
       kind: proven !== undefined || criterion.regression === true ? 'regression' : 'failure',
@@ -168,6 +212,7 @@ export function classifyMainRun(result: RunResult, ledger: LedgerDocument): Main
       evidence: [...criterion.evidence],
       checks: [...(entry?.checks ?? [])],
       ...(proven === undefined ? {} : { lastProven: proven }),
+      ...(passedHere === undefined ? {} : { passedHere: { run: passedHere.run, recordedAt: passedHere.recordedAt } }),
     })
   }
   const environmentUp = recovered.length > 0 || findings.length > 0

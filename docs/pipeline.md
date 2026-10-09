@@ -30,7 +30,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.40
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.42
     with:
       nare-model: gpt-4.1-mini
     secrets:
@@ -67,7 +67,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.40
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.42
     with:
       runs-on: '["self-hosted", "linux", "x64"]'
       profile: services/web/qa
@@ -105,6 +105,7 @@ UX review".
 | `artefacts` | empty | The name of a workflow artifact that holds the builds a client profile installs, uploaded by an earlier job of your workflow. execute downloads it into `qare-artefacts/` at the repository root before the run. See "Profiles that install a build". |
 | `main-lane` | empty | `true` runs the main lane: on a push to your default branch, on a schedule or on a manual run, the pipeline boots the app, runs the suites the ledger records for its active criteria, judges them, and hands the result to `main-findings`. Empty, none of it runs. See "Findings on main". |
 | `main-lane-dry-run` | `true` | Whether the main lane only says what it would file. Anything but `false` is a dry run: it reads, prints the issues it would open and whom it would mention, and writes nothing. |
+| `main-lane-record-passes` | empty | `true` has the main lane record what each run proved, in `passes/main.json` on the `qa-assets` branch, so that a later failure is a `qa-regression` traced to the changes since. Anything else records nothing, and so does a dry run. See "Regressions" under "Findings on main". |
 | `qare-ref` | the release | The qare revision the pipeline runs. It defaults to the release the workflow file ships in. Leave it alone and pin the release in `uses:`. |
 
 ## Secrets
@@ -216,7 +217,7 @@ it needs under it:
 | `checks: write` | judge and report, for the check run on the head commit. |
 | `pull-requests: write`, `issues: write` | judge, report, advisory and requeue, for the comment, the stub issues and the replies to advisory findings. collect reads issues. |
 | `actions: read` | report, to name the job and step that failed when no verdict was published. |
-| `issues: write`, `pull-requests: read`, `contents: read` | main_judge, when the main lane is on: to file what a run on the default branch found, and to read the changes a finding blames. |
+| `issues: write`, `pull-requests: read`, `contents: write` | main_judge, when the main lane is on: to file what a run on the default branch found, to read the changes a finding blames, and, with `main-lane-record-passes`, to push the record of passes to the `qa-assets` branch. |
 
 These are the permissions of the run's own token. A GitHub App or a personal
 access token carries its own (see "GitHub identity"), and the calling job
@@ -383,7 +384,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.40
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.42
     with:
       nare-model: gpt-4.1-mini
       artefacts: qare-artefacts
@@ -709,7 +710,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.40
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.42
     with:
       nare-model: gpt-4.1-mini
       main-lane: 'true'
@@ -770,12 +771,86 @@ something to run:
 A ledger with no `active` entry, or no ledger, is not an error: main_collect
 says there is nothing to run and the other two jobs skip.
 
-The lane never writes the ledger. So that an issue can say when a criterion
-last passed and blame the changes since, the ledger's history needs a
-`verify` record for it; without one a failure is filed as `qa-failure`, for
-the profile's fallback, and never called a regression. No command writes
-that record yet (#295), so today every failure the lane files is a
-`qa-failure`: nobody is blamed, and only the fallback is mentioned.
+The lane never writes the ledger. For an issue to say when a criterion last
+passed and blame the changes since, a pass has to be recorded somewhere: see
+"Regressions" below. Without a recorded pass a failure is filed as
+`qa-failure`, for the profile's fallback, and never called a regression.
+
+### Regressions: recording what a run proved
+
+Pass `main-lane-record-passes: 'true'` and each run of the lane records what
+it proved. From then on a failure of a criterion that has a recorded pass is
+a `qa-regression` issue: it names the run, the revision and the time the
+criterion last passed, lists the commits and pull requests since, and
+mentions their authors.
+
+```yaml
+    with:
+      main-lane: 'true'
+      main-lane-dry-run: 'false'
+      main-lane-record-passes: 'true'
+```
+
+What is recorded, where, and by what:
+
+- **Where.** One file, `passes/main.json`, on the orphan `qa-assets` branch,
+  beside the screenshots and the run metrics. A repository with several
+  profiles has one record for each, so one profile's run never drops
+  another's passes: a profile other than `.qa` keeps its own at
+  `passes/profiles/<its directory>/main.json`. Each run that proves something
+  adds one commit carrying the whole record, so the branch's history is the
+  record's history. The ledger and your default branch are never written,
+  and nothing lands as a commit your build would react to: filter your
+  `push` triggers to your default branch, as "Triggers" says.
+- **What.** For each `active` criterion the judged result proved: the
+  revision, when it was committed, the run, and a digest of the ledger entry
+  that was proven. A criterion that failed keeps the pass it had, which is
+  the revision the changes are counted from: the commits your default
+  branch has that the passing revision does not, as the history has them,
+  whatever their dates. Runs do not always finish in the order their
+  revisions landed, so both sides ask the history. A run leaves untouched
+  every recorded pass of a revision that is ahead of its own (it neither
+  replaces nor drops it, and says so), and a failure is a regression only
+  against a pass of an earlier revision. A pass recorded for a later
+  revision, for the very revision that now fails (the same revision run
+  again: nothing landed in between to blame), or for one rewritten out of
+  the branch, is no last pass for that run; the next run that proves the criterion replaces a pass of a
+  rewritten revision. A pass of a criterion the ledger no longer carries is
+  dropped by the next run that is not behind it. The order a criterion's
+  checks are listed in is no part of its wording. The issue also says when
+  the pass was recorded. If a criterion's text, proof or
+  checks change in the ledger, its pass no longer stands until a run proves
+  the new wording.
+- **By what.** main_judge's filing step, after everything is filed. It holds
+  the identity, runs nothing from your repository, and decides a pass in
+  code from the judged result and the ledger. main_execute holds no token
+  and cannot write it. The verifier can only take a pass away. A pull
+  request cannot reach it: the lane does not run on one.
+- **On a dry run** nothing is recorded. The dry run says which criteria it
+  would record a pass for, and which it would leave because a later
+  revision already holds their pass: it asks the history what a real run
+  would, and like a real run it stops when GitHub cannot say when the
+  checked revision was committed.
+- **Permissions.** main_judge declares `contents: write` for this one push.
+  The calling job already grants it in the ceiling above, so a caller adds
+  nothing. A caller that had narrowed its ceiling to `contents: read` must
+  grant `contents: write` again, or no run of the workflow starts.
+- **If the record cannot be read** the filing step stops by name before it
+  files or writes anything. Restore the file from the branch's history, or
+  remove it to start the record again. The same holds when no record is
+  found and the identity qare posts as cannot read the revision the run
+  checked: GitHub answers alike for a file that is not there and for
+  contents an identity may not read, so "no record" is believed only from an
+  identity that can read the repository. An App or a token you pass needs
+  read access to Contents (see "GitHub identity").
+
+The record is as trustworthy as the `qa-assets` branch: whoever can push to
+it can write a pass. A false pass cannot make a criterion pass or close an
+issue; it can make a failure read as a regression and name the authors of
+the changes since. Protect the branch if that matters to you.
+
+The first failure after you turn this on is a regression only if a run
+recorded a pass before it. Turn it on while the lane is green.
 
 ### Filing for real
 
@@ -799,6 +874,9 @@ When you have read a dry run:
 
 2. Pass `main-lane-dry-run: 'false'`. Only that exact word files; anything
    else is a dry run.
+
+3. Pass `main-lane-record-passes: 'true'` if a failure should be traced to
+   the change that caused it: see "Regressions" above.
 
 The labels `qa-regression`, `qa-environment` and `qa-failure` are created by
 GitHub the first time an issue carries one.
@@ -841,10 +919,20 @@ your own that already has a judged result of a run on your default branch:
 | `--evidence` | The run's evidence directory. Given, the failing criteria's screenshots are pushed to `qa-assets` and linked. |
 | `--run-url`, `--artifact-url` | Links the issue carries. Each must be an https URL. |
 | `--dry-run true` | Reads, writes nothing, and prints what a real run would open, comment on, reopen or close, and whom it would mention, with the title, the labels and the body of each issue it would open. Run it first. |
+| `--record-passes true` | Records what the run proved, in `passes/main.json` on the `qa-assets` branch, after filing: see "Regressions" above. Only the exact word records, and a dry run only says what it would record. |
+| `--branch` | The branch the record of passes is read from and written to, and screenshots are pushed to. `qa-assets` when left out. |
+| `--passes-profile` | The profile directory whose record of passes this is, for a repository with several profiles. Left out, or `.qa`, it is `passes/main.json`; any other is `passes/profiles/<directory>/main.json`. |
+
+The command reads the record of passes on every run, whether or not it
+records, because that record is what makes a failure a regression. So the
+identity it runs as must be able to read the repository's contents: when no
+record is found and the identity cannot read the checked revision either,
+the command stops rather than file a regression as a plain failure.
 
 The job needs `issues: write` to file, `pull-requests: read` and `contents:
-read` to read the range, and `contents: write` only when `--evidence` pushes
-screenshots. It is a judge-side step: give it the identity and nothing that
+read` to read the record and the range, and `contents: write` only when
+`--record-passes` writes the record or `--evidence` pushes screenshots. It
+is a judge-side step: give it the identity and nothing that
 runs repository code (rule 7).
 
 ## Fleet report

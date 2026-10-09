@@ -229,11 +229,20 @@ export function renderMainFindingIssue(
   const span = spanner(rules)
   const regression = finding.kind === 'regression'
   const passed =
-    finding.lastProven === undefined
+    finding.lastProven === undefined && finding.passedHere !== undefined
+      ? `It passed on this same revision in run ${span(finding.passedHere.run)}${
+          finding.passedHere.recordedAt === undefined ? '' : `, recorded at ${span(finding.passedHere.recordedAt)}`
+        }, and nothing landed in between: this is a failure of the revision, not of a change since.`
+      : finding.lastProven === undefined
       ? regression
         ? "The run proved it at the base revision, and the ledger has no record of its last pass."
         : 'Nothing shows it ever passed: the ledger has no record of a pass.'
-      : `It last passed in run ${span(finding.lastProven.run)} at ${span(finding.lastProven.at)}.`
+      : finding.lastProven.sha === undefined
+        ? `It last passed in run ${span(finding.lastProven.run)} at ${span(finding.lastProven.at)}.`
+        : // A pass from the record of runs on the default branch (#295) names the revision too.
+          `It last passed in run ${span(finding.lastProven.run)}, on revision ${span(finding.lastProven.sha)}, committed at ${span(finding.lastProven.at)}${
+            finding.lastProven.recordedAt === undefined ? '' : `; that pass was recorded at ${span(finding.lastProven.recordedAt)}`
+          }.`
   const lines = [
     mainFindingMarker(finding.fingerprint),
     criterionMarker(finding.criterionId),

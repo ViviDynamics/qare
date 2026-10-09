@@ -179,6 +179,81 @@ export class GitHubClient {
     return { commits, truncated: false }
   }
 
+  /**
+   * The commits `head` has that `base` does not, newest first (#295): what
+   * landed after a revision, as the history has it and whatever the commits'
+   * dates. `ahead` says whether `base` is an earlier revision of `head`,
+   * and `behind` whether it is a later one; neither, when they are the same
+   * commit or have diverged.
+   * Undefined when GitHub cannot relate the two (a base that is no
+   * longer in the history), so the caller can say so rather than guess.
+   */
+  async listCommitsBetween(
+    base: string,
+    head: string,
+    limit: number,
+  ): Promise<{ commits: Array<{ sha: string; subject: string }>; truncated: boolean; ahead: boolean; behind: boolean } | undefined> {
+    interface Compared {
+      status?: string
+      ahead_by?: number
+      behind_by?: number
+      total_commits?: number
+      commits?: Array<{ sha: string; commit?: { message?: string } }>
+    }
+    const size = 100
+    const page = (number: number): Promise<Compared> =>
+      this.request<Compared>('GET', `/repos/${this.repository}/compare/${base}...${head}`, new URLSearchParams({ per_page: String(size), page: String(number) }))
+    const subjects = (compared: Compared): Array<{ sha: string; subject: string }> =>
+      (Array.isArray(compared.commits) ? compared.commits : []).map((entry) => ({ sha: entry.sha, subject: (entry.commit?.message ?? '').split('\n')[0] ?? '' }))
+    try {
+      const first = await page(1)
+      const total = typeof first.total_commits === 'number' ? first.total_commits : subjects(first).length
+      // Whether the base is an earlier revision of the head: the head has
+      // commits the base has not, and the base has none the head has not. A
+      // base that is the head, is ahead of it, or has diverged from it (a
+      // commit rewritten out of the branch) is not.
+      const ahead =
+        typeof first.status === 'string'
+          ? first.status === 'ahead'
+          : (typeof first.ahead_by === 'number' ? first.ahead_by : total) > 0 && (first.behind_by ?? 0) === 0
+      // GitHub lists them oldest first, a page at a time. The newest are the
+      // ones kept, so a long range is read from its last pages and never
+      // whole: the reads are bounded however long the range is.
+      let oldestFirst = subjects(first)
+      // A caller that asks for no commits wants only to know which is ahead.
+      if (total > size && limit > 0) {
+        const last = Math.ceil(total / size)
+        const tail = subjects(await page(last))
+        const before = tail.length < Math.min(limit, total) && last - 1 > 1 ? subjects(await page(last - 1)) : last - 1 === 1 ? oldestFirst : []
+        oldestFirst = [...before, ...tail]
+      }
+      const newest = oldestFirst.reverse().slice(0, limit)
+      // Whether the head is an earlier revision of the base: the other way round.
+      const behind =
+        typeof first.status === 'string' ? first.status === 'behind' : (first.behind_by ?? 0) > 0 && (first.ahead_by ?? total) === 0
+      return { commits: newest, truncated: limit > 0 && total > newest.length, ahead, behind }
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) return undefined
+      throw error
+    }
+  }
+
+  /**
+   * When a commit was committed, as GitHub records it (#295): the moment the
+   * changes since a recorded pass are counted from. Undefined when GitHub
+   * does not know the commit or gives no date that can be read.
+   */
+  async getCommitDate(sha: string): Promise<string | undefined> {
+    try {
+      const commit = await this.request<{ commit?: { committer?: { date?: string } } }>('GET', `/repos/${this.repository}/commits/${sha}`)
+      const date = commit.commit?.committer?.date
+      return typeof date === 'string' && !Number.isNaN(Date.parse(date)) ? date : undefined
+    } catch (error) {
+      if (error instanceof GitHubApiError && (error.status === 404 || error.status === 422)) return undefined
+      throw error
+    }
+  }
+
   /** The numbers of the merged pull requests a commit came in by (#154); one never merged brought nothing. */
   async listMergedPullsForCommit(sha: string): Promise<number[]> {
     const pulls = await this.request<Array<{ number: number; merged_at?: string | null }>>(
