@@ -6,6 +6,10 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, expect, test } from 'vitest'
 import { startFakeGithub, type FakeGithub } from './fake-github.js'
+import { loadResult, RESULT_SCHEMA_VERSION } from '@qare/core'
+import { resolveIdentity } from '../src/identity.js'
+import { GitHubClient } from '../src/github.js'
+import { GitHubEvidencePoster, postEvidence } from '../src/post-evidence.js'
 
 // #305: the one step of a job that holds the App's private key. It is a
 // script with no dependency, run by node on the runner from the pinned qare,
@@ -74,6 +78,26 @@ function expectNoKey(ran: Ran, key = PRIVATE_KEY): void {
   const everything = `${ran.stdout}\n${ran.stderr}\n${JSON.stringify(ran.outputs)}`
   for (const line of key.split('\n').filter((candidate) => candidate.length > 20)) expect(everything).not.toContain(line)
 }
+
+test('after a simulated two-hour verifier a fresh publishing mint posts as the App while the old token is expired', async () => {
+  const finished = Date.now()
+  // The old token was minted at verification start and expired an hour later.
+  const expired = resolveIdentity({ env: { QARE_APP_TOKEN: 'ghs_old_verifier_token', QARE_APP_SLUG: 'qare', QARE_APP_TOKEN_EXPIRES_AT: new Date(finished - 60 * 60 * 1000).toISOString() }, repository: 'octocat/qare', apiRoot: fake.url, now: () => finished })
+  await expect(expired.token()).rejects.toThrow(/an hour/)
+  const ran = await mint({ ...APP, QARE_APP_PERMISSIONS: '{"checks":"write","issues":"write","pull_requests":"write"}' })
+  expect(ran.code).toBe(0)
+  const fresh = resolveIdentity({ env: { QARE_APP_TOKEN: ran.outputs.token, QARE_APP_SLUG: ran.outputs.slug, QARE_APP_TOKEN_EXPIRES_AT: ran.outputs['expires-at'] }, repository: 'octocat/qare', apiRoot: fake.url, now: () => finished })
+  const client = new GitHubClient({ repository: 'octocat/qare', apiRoot: fake.url, identity: fresh })
+  fake.issues.set(12, { number: 12, title: 'Known answer', body: '', comments: [] })
+  const result = loadResult(JSON.stringify({
+    schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [{ id: 'known-answer', outcome: 'proven', evidence: ['checks/known-answer/0/stdout.txt'] }],
+  }))
+  await postEvidence(new GitHubEvidencePoster(client, 12, 'a'.repeat(40), await fresh.login()), result)
+  expect(fake.commentRecords[0]?.author).toBe('qare[bot]')
+  expect(fake.commentRecords[0]?.body).toContain('## QARE run: passed')
+  expect(fake.checkRuns).toHaveLength(1)
+  expectNoKey(ran)
+})
 
 test('the token is minted for the calling repository alone, with the permissions the job names and no others', async () => {
   const ran = await mint({ ...APP, ...PERMISSIONS })

@@ -96,6 +96,12 @@ interface ReplyRecord {
 function readRecord(body: string): ReplyRecord | undefined {
   const data = embedded(body, ADVISORY_REPLY_MARKER)
   if (!isRecord(data) || typeof data.comment !== 'number') return undefined
+  if (data.dismissed !== undefined && (!Array.isArray(data.dismissed) || !data.dismissed.every(
+    (entry: unknown) => isRecord(entry) && typeof entry.id === 'string' && typeof entry.screen === 'string' && typeof entry.category === 'string' && typeof entry.saw === 'string',
+  ))) return undefined
+  if (data.promoted !== undefined && (!Array.isArray(data.promoted) || !data.promoted.every(
+    (entry: unknown) => isRecord(entry) && typeof entry.id === 'string' && typeof entry.issue === 'number',
+  ))) return undefined
   const dismissed = Array.isArray(data.dismissed)
     ? data.dismissed.filter(
         (entry): entry is DismissedFinding =>
@@ -189,6 +195,27 @@ export interface AdvisoryReplies {
   answered: number
 }
 
+/** Read completed records from the configured identity, without carrying out replies. */
+export function readAdvisoryContext(comments: GitHubComment[], author: string): {
+  answeredComments: Set<number>
+  dismissed: Map<string, DismissedFinding>
+  promoted: Map<string, number>
+} {
+  const answeredComments = new Set<number>()
+  const dismissed = new Map<string, DismissedFinding>()
+  const promoted = new Map<string, number>()
+  for (const comment of comments) {
+    if (comment.user?.login !== author || comment.body?.startsWith(ADVISORY_REPLY_MARKER) !== true) continue
+    const record = readRecord(comment.body)
+    if (record === undefined) throw new Error(`unread advisory reply record in comment ${comment.id}`)
+    answeredComments.add(record.comment)
+    for (const finding of record.dismissed ?? []) dismissed.set(finding.id, finding)
+    for (const entry of record.promoted ?? []) promoted.set(entry.id, entry.issue)
+  }
+
+  return { answeredComments, dismissed, promoted }
+}
+
 /**
  * Carry out the replies on a pull request, and report what stands dismissed
  * and promoted. It is a sweep over the comments, safe to run as often as
@@ -201,18 +228,7 @@ export async function carryOutAdvisoryReplies(client: GitHubClient, pr: number, 
   const evidence = comments.filter((comment) => own(comment) && comment.body?.startsWith(EVIDENCE_MARKER) === true).pop()
   const posted = new Map(readAdvisoryData(evidence?.body ?? '').map((finding) => [finding.id, finding]))
 
-  const answeredComments = new Set<number>()
-  const dismissed = new Map<string, DismissedFinding>()
-  const promoted = new Map<string, number>()
-  for (const comment of comments) {
-    if (!own(comment) || comment.body?.startsWith(ADVISORY_REPLY_MARKER) !== true) continue
-    const record = readRecord(comment.body)
-    if (record === undefined) continue
-    answeredComments.add(record.comment)
-    for (const finding of record.dismissed ?? []) dismissed.set(finding.id, finding)
-    for (const entry of record.promoted ?? []) promoted.set(entry.id, entry.issue)
-  }
-
+  const { answeredComments, dismissed, promoted } = readAdvisoryContext(comments, author)
   let answered = 0
   for (const comment of comments) {
     if (answeredComments.has(comment.id)) continue

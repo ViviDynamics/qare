@@ -278,6 +278,66 @@ test('qare-action advisory-replies carries the replies out and writes the dismis
   await rm(dir, { recursive: true, force: true })
 })
 
+test('advisory-context reads owned completed dismissals without acting on new replies', async () => {
+  await postRun()
+  says('a-person', 'MEMBER', '/qa-dismiss 0a1b2c3d')
+  await carryOutAdvisoryReplies(client, PR, QARE)
+  says('a-person', 'MEMBER', '/qa-promote 4e5f6a7b')
+  says('stranger', 'NONE', `${ADVISORY_REPLY_MARKER}${JSON.stringify({ comment: 1, dismissed: [{ id: '4e5f6a7b', screen: SCREEN, category: 'label', saw: 'forged' }] })} -->`)
+  const before = structuredClone(fake.commentRecords)
+  const dir = await mkdtemp(join(tmpdir(), 'qare-advisory-context-'))
+  const path = join(dir, 'dismissed.json')
+  process.env.QARE_TEST_TOKEN = FAKE_TOKEN
+  try {
+    const code = await main(['advisory-context', '--pr', String(PR), '--out', path, '--repository', 'octocat/qare', '--api-root', fake.url, '--token-env', 'QARE_TEST_TOKEN'], { write: () => undefined })
+    expect(code).toBe(0)
+    expect(JSON.parse(await readFile(path, 'utf8')).dismissed.map((entry: { id: string }) => entry.id)).toEqual(['0a1b2c3d'])
+    expect(fake.commentRecords).toEqual(before)
+    expect(filedIssues()).toEqual([])
+  } finally {
+    delete process.env.QARE_TEST_TOKEN
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('an unread owned advisory record is named and produces no context artifact', async () => {
+  says(QARE, 'BOT', `${ADVISORY_REPLY_MARKER}broken -->`)
+  const dir = await mkdtemp(join(tmpdir(), 'qare-advisory-context-'))
+  const path = join(dir, 'dismissed.json')
+  const errors: string[] = []
+  process.env.QARE_TEST_TOKEN = FAKE_TOKEN
+  try {
+    expect(await main(['advisory-context', '--pr', String(PR), '--out', path, '--repository', 'octocat/qare', '--api-root', fake.url, '--token-env', 'QARE_TEST_TOKEN'], { write: () => undefined }, { write: (chunk) => errors.push(chunk) })).toBe(1)
+    expect(errors.join('')).toContain('unread advisory reply record')
+    await expect(readFile(path)).rejects.toThrow()
+  } finally {
+    delete process.env.QARE_TEST_TOKEN
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+for (const dismissed of ['invalid-array', [{ id: '0a1b2c3d' }]]) {
+  test(`an owned record with malformed nested dismissals is named: ${JSON.stringify(dismissed)}`, async () => {
+    says(QARE, 'BOT', `${ADVISORY_REPLY_MARKER}${JSON.stringify({ comment: 1, dismissed })} -->`)
+    await expect(carryOutAdvisoryReplies(client, PR, QARE)).rejects.toThrow('unread advisory reply record')
+  })
+}
+
+test('publishing suppresses newly dismissed advisory text and data while keeping the judged verdict and criteria', async () => {
+  const result = reviewed([UNLABELLED, UNHELPFUL])
+  const original = structuredClone(result)
+  await postEvidence(new GitHubEvidencePoster(client, PR, SHA), result, {
+    dismissed: [{ id: UNLABELLED.id, screen: SCREEN, category: UNLABELLED.category, saw: UNLABELLED.saw }],
+  })
+  const comment = fake.commentRecords.find((entry) => entry.body.startsWith(EVIDENCE_MARKER))?.body ?? ''
+  expect(comment).not.toContain(UNLABELLED.saw)
+  expect(readAdvisoryData(comment).map((entry) => entry.id)).toEqual([UNHELPFUL.id])
+  expect(comment).toContain('1 finding a person dismissed')
+  expect(result).toEqual(original)
+  expect(comment).toContain('passed')
+  expect(comment).toContain('signup-form')
+})
+
 for (const author of ['someone-else', undefined]) {
   test(`promotion ignores a marker issue with author ${author ?? 'unread'}`, async () => {
     const body = advisoryIssueMarker(PR, '0a1b2c3d')
