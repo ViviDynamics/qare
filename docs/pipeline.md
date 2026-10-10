@@ -31,7 +31,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.52
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.53
     with:
       nare-model: gpt-4.1-mini
     secrets:
@@ -69,7 +69,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.52
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.53
     with:
       runs-on: '["self-hosted", "linux", "x64"]'
       profile: services/web/qa
@@ -519,7 +519,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.52
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.53
     with:
       nare-model: gpt-4.1-mini
       artefacts: qare-artefacts
@@ -886,7 +886,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.52
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.53
     with:
       nare-model: gpt-4.1-mini
       main-lane: 'true'
@@ -1165,7 +1165,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ViviDynamics/qare
-          ref: 2026.10.52
+          ref: 2026.10.53
           path: qare
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
