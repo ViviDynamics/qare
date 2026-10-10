@@ -39,7 +39,7 @@ export async function requeueUnblocked(
   mergedKeys: string[],
   comment: string = REQUEUE_COMMENT,
 ): Promise<number[]> {
-  const issues = await client.searchIssues(`repo:${client.repository} in:body is:issue "qare-stub:"`)
+  const issues = await client.searchOwnIssues('qare-stub:')
   const refused: StubIssueRefusedEntry[] = []
   for (const issue of issues) {
     const keys = parseStubIssueMarkers(issue.body ?? '')

@@ -277,3 +277,16 @@ test('qare-action advisory-replies carries the replies out and writes the dismis
   expect(lines.join('')).toContain(`filed advisory finding 4e5f6a7b as #${filedIssues()[0]?.number}`)
   await rm(dir, { recursive: true, force: true })
 })
+
+for (const author of ['someone-else', undefined]) {
+  test(`promotion ignores a marker issue with author ${author ?? 'unread'}`, async () => {
+    const body = advisoryIssueMarker(PR, '0a1b2c3d')
+    fake.issues.set(7, { number: 7, title: 'a marker', body, comments: [] })
+    if (author !== undefined) fake.issueMeta.set(7, { state: 'open', labels: [], author })
+    await postRun()
+    says('a-person', 'MEMBER', '/qa-promote 0a1b2c3d')
+    expect((await carryOutAdvisoryReplies(client, PR, QARE)).promoted).toEqual([{ id: '0a1b2c3d', issue: 100 }])
+    expect(fake.issues.get(7)?.body).toBe(body)
+    expect(fake.issueMeta.get(100)?.author).toBe(QARE)
+  })
+}

@@ -147,6 +147,13 @@ export class GitHubClient {
     return items
   }
 
+  /** Marker records belong only to the identity that opened them, even if search returns other hits. */
+  async searchOwnIssues(marker: string): Promise<GitHubIssue[]> {
+    const author = await this.identity.login()
+    const hits = await this.searchIssues(`repo:${this.repository} in:body is:issue author:${author} ${JSON.stringify(marker)}`)
+    return hits.filter((issue) => issue.user?.login === author && typeof issue.body === 'string' && issue.body.includes(marker))
+  }
+
   async getIssue(number: number): Promise<GitHubIssue> {
     return this.request('GET', `/repos/${this.repository}/issues/${number}`)
   }

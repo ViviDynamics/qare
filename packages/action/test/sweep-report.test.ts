@@ -36,6 +36,7 @@ test('publishSweep creates the standing report when none exists', async () => {
 test('publishSweep updates the standing report in place instead of opening a new one', async () => {
   const fake = await startFakeGithub()
   try {
+    fake.issueMeta.set(7, { state: 'open', labels: [], author: 'github-actions[bot]' })
     fake.issues.set(7, {
       number: 7,
       title: 'QARE standing report',
@@ -53,6 +54,7 @@ test('publishSweep updates the standing report in place instead of opening a new
 test('upsert patches the body of the issue the marker finds', async () => {
   const fake = await startFakeGithub()
   try {
+    fake.issueMeta.set(7, { state: 'open', labels: [], author: 'github-actions[bot]' })
     fake.issues.set(7, { number: 7, title: 'QARE standing report', body: statusReportMarker(), comments: [] })
     const updater = new GitHubStatusReportUpdater(makeClient(fake))
     const issue = await updater.upsert({ title: 'QARE standing report', body: `${statusReportMarker()}\n\nfresh` })
@@ -86,6 +88,7 @@ test('publishSweep files one issue per finding, mentioning the actor', async () 
 test('a finding already filed is updated in place, not duplicated', async () => {
   const fake = await startFakeGithub()
   try {
+    fake.issueMeta.set(9, { state: 'open', labels: [], author: 'github-actions[bot]' })
     fake.issues.set(9, {
       number: 9,
       title: 'QARE sweep finding: sweep:config-invalid',
@@ -132,3 +135,34 @@ test('parseSweepPayload validates the payload the CLI wrote', () => {
   expect(parseSweepPayload(payload({ lastActor: undefined })).lastActor).toBeUndefined()
   expect(parseSweepPayload(payload({ lastActor: 'x' })).lastActor).toBe('x')
 })
+
+for (const author of ['someone-else', undefined]) {
+  test(`sweep leaves a standing report with author ${author ?? 'unread'} untouched`, async () => {
+    const fake = await startFakeGithub()
+    try {
+      const body = statusReportMarker()
+      fake.issues.set(7, { number: 7, title: 'report', body, comments: [] })
+      if (author !== undefined) fake.issueMeta.set(7, { state: 'open', labels: [], author })
+      expect((await publishSweep(makeClient(fake), payload())).status).toBe(100)
+      expect(fake.issues.get(7)?.body).toBe(body)
+      expect(fake.calls.filter((call) => call.method === 'PATCH')).toEqual([])
+    } finally {
+      await fake.close()
+    }
+  })
+
+  test(`sweep leaves a finding with author ${author ?? 'unread'} untouched`, async () => {
+    const fake = await startFakeGithub()
+    try {
+      const fingerprint = 'sweep:config-invalid'
+      const body = sweepFindingMarker(fingerprint)
+      fake.issues.set(9, { number: 9, title: 'finding', body, comments: [] })
+      if (author !== undefined) fake.issueMeta.set(9, { state: 'open', labels: [], author })
+      expect(await fileSweepFinding(makeClient(fake), { fingerprint, reason: 'invalid', actor: 'unknown' })).toBe(100)
+      expect(fake.issues.get(9)?.body).toBe(body)
+      expect(fake.calls.filter((call) => call.method === 'PATCH')).toEqual([])
+    } finally {
+      await fake.close()
+    }
+  })
+}

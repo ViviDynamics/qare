@@ -104,3 +104,34 @@ test('missing credentials surface as a named, actionable error', async () => {
     await fake.close()
   }
 })
+
+test('owned marker search uses the configured token login and verifies every returned author and body', async () => {
+  const fake = await startFakeGithub()
+  try {
+    fake.tokens.set('personal-token', { login: 'qare-poster', kind: 'user' })
+    for (const [number, author, inBody] of [[7, 'someone-else', true], [8, 'qare-poster', false], [9, 'qare-poster', true]] as const) {
+      fake.issues.set(number, { number, title: 'qare:test', body: inBody ? 'qare:test' : 'unrelated', comments: [] })
+      fake.issueMeta.set(number, { state: 'open', labels: [], author })
+    }
+    fake.issues.set(10, { number: 10, title: 'qare:test', body: 'qare:test', comments: [] })
+    const client = new GitHubClient({ repository: 'octocat/qare', apiRoot: fake.url, token: 'personal-token' })
+    expect((await client.searchOwnIssues('qare:test')).map((issue) => issue.number)).toEqual([9])
+    const query = new URLSearchParams(fake.calls.find((call) => call.path === '/search/issues')?.query).get('q')
+    expect(query).toContain('author:qare-poster')
+    expect(query).toContain('in:body is:issue')
+  } finally {
+    await fake.close()
+  }
+})
+
+test('owned marker search stops if the identity cannot be read', async () => {
+  const fake = await startFakeGithub()
+  try {
+    fake.tokens.set('limited-token', { login: 'qare-poster', kind: 'user', rateLimited: true })
+    const client = new GitHubClient({ repository: 'octocat/qare', apiRoot: fake.url, token: 'limited-token' })
+    await expect(client.searchOwnIssues('qare:test')).rejects.toThrow(GitHubApiError)
+    expect(fake.calls.some((call) => call.path === '/search/issues' || call.method !== 'GET')).toBe(false)
+  } finally {
+    await fake.close()
+  }
+})

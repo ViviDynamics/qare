@@ -6,7 +6,7 @@ import {
   stubIssueMarker,
 } from '@qare/core'
 import type { RunResult, StubIssueDraft, StubIssuePoster } from '@qare/core'
-import type { GitHubClient } from './github.js'
+import { GitHubClientError, type GitHubClient } from './github.js'
 
 export class GitHubStubIssuePoster implements StubIssuePoster {
   private readonly client: GitHubClient
@@ -22,7 +22,7 @@ export class GitHubStubIssuePoster implements StubIssuePoster {
     // the issue body — a duplicate still carries the registry and each refused
     // PR is re-queued exactly once per registry entry.
     const marker = stubIssueMarker(draft.key)
-    const hits = await this.client.searchIssues(`repo:${this.client.repository} in:body is:issue "${marker}"`)
+    const hits = await this.client.searchOwnIssues(marker)
     const existing = hits[0]
     if (existing !== undefined) return existing.number
     const created = await this.client.createIssue(draft.title, draft.body)
@@ -31,6 +31,8 @@ export class GitHubStubIssuePoster implements StubIssuePoster {
 
   async addToRegistry(issue: number, pr: number): Promise<void> {
     const current = await this.client.getIssue(issue)
+    const author = await this.client.identity.login()
+    if (current.user?.login !== author) throw new GitHubClientError(`issue #${issue} is not owned by ${author}; refused registry was not changed`)
     if (parseRefusedRegistry(current.body ?? '').includes(pr)) return
     await this.client.patchIssueBody(issue, appendRegistryLine(current.body ?? '', pr))
   }
