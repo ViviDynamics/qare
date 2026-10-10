@@ -8,14 +8,14 @@
 # gid 1000, and the writable paths /opt/qare/cache and /work.
 #
 # The base is python 3.12 because the pinned nare requires it, with node 22
-# beside it: one python, one node, both pinned by this recipe. The build is
+# beside it: Python is digest-pinned; node stays on its declared major. The build is
 # two stages: the workspace compiles in the builder with its full dev tree,
 # and the runtime stage receives only the compiled output and the production
 # dependencies — no typescript, no eslint, no test runners, no npm, no pnpm.
 # A layer never deletes what an earlier layer wrote, so every byte the
 # runtime stage keeps has to be written there only once, which is why the
 # workspace lands as a single COPY that is already owned by the qare user.
-FROM python:3.12-slim-bookworm AS builder
+FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS builder
 
 ARG NODE_MAJOR=22
 
@@ -27,8 +27,7 @@ RUN apt-get update \
  && apt-get update \
  && apt-get install -y --no-install-recommends nodejs \
  && strip --strip-unneeded /usr/bin/node \
- && rm -rf /var/lib/apt/lists* \
- && npm install --global pnpm@12.5.1
+ && rm -rf /var/lib/apt/lists*
 
 # QARE itself: the workspace is copied unbuilt and built here, so the image
 # never ships a stale dist and every architecture compiles its own native
@@ -38,7 +37,8 @@ RUN apt-get update \
 WORKDIR /opt/qare/lib
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages ./packages
-RUN pnpm install --frozen-lockfile \
+RUN corepack enable \
+ && pnpm install --frozen-lockfile \
  && pnpm build \
  && pnpm install --frozen-lockfile --prod \
  && pnpm prune --prod \
@@ -47,9 +47,10 @@ RUN pnpm install --frozen-lockfile \
 # The runtime stage. The image runs on the builder's node, copied over as a
 # bare binary: the slim base already carries the runtime libraries node
 # needs, so no package toolchain is installed into the final image at all.
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
 
 ARG NARE_WHEEL=https://github.com/ViviDynamics/nare/releases/download/2026.10.6/nare-2026.10.6-py3-none-any.whl
+ARG NARE_SHA256=4928ca85abe1859b58791f59510b50d090d7c1bff7eab75de3c44f7ac54ccd36
 ARG IMAGE_NAME=qare-core
 
 LABEL org.opencontainers.image.title=$IMAGE_NAME \
@@ -71,10 +72,14 @@ RUN groupadd --gid 1000 qare \
 
 COPY --from=builder --chown=qare:qare /opt/qare/lib /opt/qare/lib
 
-# The pinned nare: the same wheel the pipeline's plan and judge steps pin, so
+# The hash-verified nare: the same wheel the pipeline's plan and judge steps pin, so
 # a container run and a host run speak one nare contract. Bytecode is not
 # precompiled: the first run in a container writes its own cache.
-RUN python3 -m pip install --no-compile --no-cache-dir --break-system-packages "$NARE_WHEEL"
+RUN mkdir -p /tmp/qare-nare \
+ && python3 -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "$NARE_WHEEL" /tmp/qare-nare/nare-2026.10.6-py3-none-any.whl \
+ && printf '%s  %s\n' "$NARE_SHA256" /tmp/qare-nare/nare-2026.10.6-py3-none-any.whl | sha256sum --check --strict - \
+ && python3 -m pip install --no-compile --no-cache-dir --break-system-packages /tmp/qare-nare/nare-2026.10.6-py3-none-any.whl \
+ && rm -rf /tmp/qare-nare
 
 # The image's own record: what a run reads into its evidence. Every version
 # the image ships is pinned and named here, so evidence names the versions

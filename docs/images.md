@@ -44,15 +44,21 @@ The base images are published to the GitHub container registry under
 
 | Tag | Meaning |
 | --- | --- |
-| `2026.9.0` | One exact release. Reproducible builds pin this. |
+| `2026.9.0` | One named release. Resolve its digest to pin its bytes. |
 | `2026.9` | The newest release on a line. Follows the line. |
 | `latest` | The newest release. Convenient, never pinned. |
 
-A derived image that must not move pins the exact release tag. One that
-prefers staying current pins the release line and rebuilds on release. The
-worked example defaults to `latest` so it builds anywhere, and pins its base
-through the same `--build-arg`: the release guard builds it against the exact
-release.
+A derived image that must not move uses `image@sha256:<digest>`. The shipped
+flavour recipes default to a verified published core digest. Release builds
+override that default with the digest returned by their own core build, so
+all flavours inherit the core that this release actually produced. Explicit
+local build arguments remain available for CI's local core image.
+
+The core recipe pins both Python stages by digest and verifies the nare
+wheel's SHA-256 before pip installs it. Its builder reads the hashed
+`packageManager` declaration through Corepack. These checks verify the named
+inputs; apt packages and pip's transitive dependencies are not fully locked.
+Updating nare requires updating both its release URL and wheel hash.
 
 ## The shipped family
 
@@ -99,7 +105,7 @@ against any contract-conformant image:
 
 ```sh
 docker build -f images/web/Dockerfile \
-  --build-arg QARE_IMAGE=ghcr.io/vividynamics/qare-core:2026.9.0 .
+  --build-arg QARE_IMAGE=ghcr.io/vividynamics/qare-core@sha256:dde359505efbdc6336f776f068b5805c7164fd593083c4850ed1f5f83dfc67ef .
 ```
 
 The base argument is the whole inheritance. A flavour recipe installs only
