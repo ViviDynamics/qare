@@ -89,6 +89,9 @@ steps of judge, report and requeue. Decisions taken while building it:
 
 ## Where the key is used (2026-10-09, issue #305)
 
+The renewal limitation described here is superseded for the pipeline by
+[Fresh publishing jobs (#306)](#fresh-publishing-jobs-306) below.
+
 This section supersedes two statements above for the pipeline and the sweep:
 there are now four implementations, and the posting steps are no longer
 handed the App's id and key.

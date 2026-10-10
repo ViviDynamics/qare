@@ -293,7 +293,7 @@ on:
       app-private-key:
         description: >-
           A private key of that App, the whole .pem file. It reaches one step
-          of each job that posts, which runs on the runner and mints a token
+          of collect and each job that posts, which runs on the runner and mints a token
           for this repository alone, with that job's permissions, that
           expires within the hour. The steps that post hold only that token.
         required: false
@@ -529,7 +529,6 @@ jobs:
             advisory-dismissed.json
           if-no-files-found: error
 
-  # label: plan (model key only)
       - name: Revoke the App token this job minted
         if: always() && steps.app.outputs.token != ''
         shell: bash
@@ -542,7 +541,7 @@ jobs:
             "$GITHUB_API_URL/installation/token" \
             -H @- <<< "Authorization: Bearer $QARE_APP_TOKEN" || echo "::warning::the App token this job minted could not be revoked; it expires within the hour"
 
-  # label: report (GitHub token only)
+  # label: plan (model key only)
   plan:
     name: plan (model key only)
     needs: collect
@@ -1198,7 +1197,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
-  # label: judge (model key + GitHub token only)
+  # label: judge (model key only)
   judge:
     name: judge (model key only)
     needs: [collect, plan, execute]
@@ -1603,7 +1602,7 @@ jobs:
   # label: report (GitHub token only)
   # A pipeline that failed without publishing a verdict evaluated no
   # criterion: a tool that would not install, an image that would not pull, a
-  # planner that would not answer, or judge failing to post. On the pull
+  # planner that would not answer, or publishing failing to post. On the pull
   # request that is only a red job, which reads like the project failing
   # (#203). This job names the job and step that failed, and posts the
   # sticky comment and a failing check run saying no criterion was evaluated
@@ -1963,7 +1962,7 @@ jobs:
   # on main have a judged result to be filed from (#154). It is the pull
   # request lane's shape with the pull request taken out:
   #
-  #   main_collect -> main_execute -> main_judge
+  #   main_collect -> main_execute -> main_judge -> main_publish
   #
   # There is no main_plan, and no model plans anything here. The ledger
   # already records which suite proves each active criterion, so
@@ -1976,9 +1975,8 @@ jobs:
   # Secret-hygiene map (rule 7), the same as above:
   #   - main_collect: holds the GitHub token only (the checkout; no model key)
   #   - main_execute: holds no secrets at all     (it runs the repository's code)
-  #   - main_judge:   holds the model key + GitHub identity only, in separate
-  #     steps (the verifier reads evidence and runs nothing; the identity is
-  #     for the step that files)
+  #   - main_judge: holds the model key only (the verifier reads evidence)
+  #   - main_publish: holds a fresh GitHub identity token (files findings)
   #
   # Off unless the caller passes `main-lane: 'true'`, and then only on a push,
   # a schedule or a manual run whose ref is the default branch: a pull
@@ -1989,7 +1987,7 @@ jobs:
   #
   # The ledger is read and never written (rule 5): a run on main changes no
   # criterion. What a run proved is a fact about the run, not a change to a
-  # criterion, and when the caller asks (main-lane-record-passes) main_judge
+  # criterion, and when the caller asks (main-lane-record-passes) main_publish
   # records it beside the ledger, on the orphan qa-assets branch, where the
   # run's metrics already go (#295). That record is what makes a later
   # failure a regression. main_execute cannot write it: it holds no token.
@@ -2466,7 +2464,7 @@ jobs:
           path: evidence/
           if-no-files-found: ignore
 
-  # label: main_judge (model key + GitHub token only)
+  # label: main_judge (model key only)
   main_judge:
     name: main judge (model key only)
     needs: [main_collect, main_execute]
