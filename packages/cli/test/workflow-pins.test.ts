@@ -92,9 +92,11 @@ test('pnpm is the one package.json names, by version and hash, and no action ins
   const manifest = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as { packageManager?: string }
   // The hash is what corepack checks the download against.
   expect(manifest.packageManager).toMatch(/^pnpm@\d+\.\d+\.\d+\+sha512\.[0-9a-f]{128}$/)
-  const version = manifest.packageManager?.replace(/^pnpm@/, '').replace(/\+.*$/, '')
-  // The image installs the same pnpm by the same number.
-  expect(readFileSync(join(repoRoot, 'images', 'core', 'Dockerfile'), 'utf8')).toContain(`pnpm@${version}`)
+  // The image reads the same manifest through Corepack, including its hash.
+  const recipe = readFileSync(join(repoRoot, 'images', 'core', 'Dockerfile'), 'utf8')
+  expect(recipe).toContain('COPY package.json')
+  expect(recipe).toContain('corepack enable')
+  expect(recipe).not.toContain('npm install --global pnpm')
   for (const name of files) {
     expect(text(name), name).not.toMatch(/pnpm\/action-setup/)
     for (const [id, job] of Object.entries(load(name).jobs)) {

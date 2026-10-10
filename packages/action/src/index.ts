@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { resolve } from 'node:path'
-import { FileLedgerStore, loadProfile, loadResult, mainPassesPath, parseFleetConfig, parseMainPasses, redactionRules, RUN_VERDICTS, valueRules, VERSION, type MainPasses } from '@qare/core'
+import { FileLedgerStore, loadProfile, loadResult, mainPassesPath, parseFleetConfig, parseMainPasses, redactionRules, RUN_VERDICTS, valueRules, VERSION, type DismissedFinding, type MainPasses } from '@qare/core'
 import { GitHubClient, GitHubClientError } from './github.js'
 import { GitHubQaAssetsPusher, QA_ASSETS_BRANCH } from './qa-assets.js'
 import { fileRefusalStubs, GitHubStubIssuePoster } from './stub-issues.js'
@@ -13,7 +13,7 @@ import { deliverIngest, IngestDeliveryError } from './ingest-deliver.js'
 import { loadQuestions, postQuestions } from './post-questions.js'
 import { parseSweepPayload, publishSweep } from './sweep-report.js'
 import { reportPipelineFailure } from './report-failure.js'
-import { carryOutAdvisoryReplies } from './advisory-replies.js'
+import { carryOutAdvisoryReplies, readAdvisoryContext } from './advisory-replies.js'
 import { MAX_NEW_ISSUES, publishMainFindings, type MainFindingAction } from './main-findings.js'
 import { buildFleetReport, publishFleetReport } from './fleet-report.js'
 // The GitHub client and the stub issue poster, for `qare init --file-issues`
@@ -59,6 +59,7 @@ export async function main(argv: string[], out: Writer = process.stdout, err: Wr
     if (command === 'post-questions') return await postQuestionsCommand(rest, out)
     if (command === 'sweep-report') return await sweepReportCommand(rest, out)
     if (command === 'report-failure') return await reportFailureCommand(rest, out)
+    if (command === 'advisory-context') return await advisoryContextCommand(rest, out)
     if (command === 'advisory-replies') return await advisoryRepliesCommand(rest, out)
     if (command === 'main-findings') return await mainFindingsCommand(rest, out)
     if (command === 'fleet-report') return await fleetReportCommand(rest, out)
@@ -68,7 +69,7 @@ export async function main(argv: string[], out: Writer = process.stdout, err: Wr
   }
   entry(out)
   if (command !== undefined) {
-    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence", "ingest-deliver", "post-questions", "sweep-report", "report-failure", "advisory-replies", "main-findings" and "fleet-report"\n`)
+    err.write(`unknown command ${JSON.stringify(command)}: qare-action understands "stub-issues", "requeue", "post-evidence", "ingest-deliver", "post-questions", "sweep-report", "report-failure", "advisory-context", "advisory-replies", "main-findings" and "fleet-report"\n`)
     return 1
   }
   return 0
@@ -190,11 +191,22 @@ async function postEvidenceCommand(argv: string[], out: Writer): Promise<number>
   const questionsPath = flags.string('questions') || undefined
   const questions = questionsPath === undefined ? [] : loadQuestions(await readFile(questionsPath, 'utf8'))
   const riding = questions.filter((question) => question.source.kind === 'pull-request')
+  const dismissedPath = flags.string('dismissed')
+  let dismissed: DismissedFinding[] = []
+  if (dismissedPath) {
+    const data: unknown = JSON.parse(await readFile(dismissedPath, 'utf8'))
+    if (typeof data !== 'object' || data === null || !('dismissed' in data) || !Array.isArray(data.dismissed) ||
+        !data.dismissed.every((entry: unknown) => typeof entry === 'object' && entry !== null && ['id', 'screen', 'category', 'saw'].every((key) => typeof (entry as Record<string, unknown>)[key] === 'string'))) {
+      throw new GitHubClientError('unread advisory dismissal context for publishing')
+    }
+    dismissed = data.dismissed as DismissedFinding[]
+  }
   await postEvidence(new GitHubEvidencePoster(client, pr, headSha, author), result, {
     artifactUrl,
     push,
     evidenceDir,
     questions: riding,
+    dismissed,
   })
   out.write(`posted verdict ${result.verdict} on pull request #${pr} at ${headSha.slice(0, 12)}\n`)
   if (riding.length > 0) out.write(`asked ${riding.length} question(s) in the evidence comment\n`)
@@ -260,6 +272,20 @@ async function reportFailureCommand(argv: string[], out: Writer): Promise<number
   const where = failure.step === undefined ? failure.job : `${failure.job} failing at ${failure.step}`
   const side = recordedVerdict === undefined ? 'not evaluated' : `verdict ${recordedVerdict} not published`
   out.write(`reported ${where} on pull request #${pr} at ${headSha.slice(0, 12)}: ${side}, qare or environment failure\n`)
+  return 0
+}
+
+/** Read previously recorded dismissals using the configured posting identity. GET only. */
+async function advisoryContextCommand(argv: string[], out: Writer): Promise<number> {
+  const flags = parseFlags(argv)
+  const pr = flags.number('pr')
+  const outPath = flags.string('out')
+  if (pr === undefined || pr <= 0 || !outPath) throw new GitHubClientError('qare-action advisory-context needs --pr <pull request number> and --out <path>')
+  const client = new GitHubClient({ repository: flags.string('repository'), apiRoot: flags.string('api-root'), tokenEnv: flags.string('token-env') })
+  const author = await client.identity.login()
+  const context = readAdvisoryContext(await client.listIssueComments(pr), author)
+  await writeFile(outPath, `${JSON.stringify({ dismissed: [...context.dismissed.values()] }, null, 2)}\n`, 'utf8')
+  out.write(`read ${context.dismissed.size} recorded advisory dismissal(s) on pull request #${pr}\n`)
   return 0
 }
 

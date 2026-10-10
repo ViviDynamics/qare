@@ -1,5 +1,5 @@
 import { redactResult, renderCheckRun, renderComment, renderQuestion } from '@qare/core'
-import type { CheckRunPayload, EvidencePoster, ResolutionQuestion, RunResult } from '@qare/core'
+import type { CheckRunPayload, DismissedFinding, EvidencePoster, ResolutionQuestion, RunResult } from '@qare/core'
 import { advisoryData } from './advisory-replies.js'
 import { GitHubApiError, GitHubClientError, type GitHubClient } from './github.js'
 import type { ScreenshotPusher } from './qa-assets.js'
@@ -82,11 +82,22 @@ export async function postEvidence(
     push?: ScreenshotPusher
     evidenceDir?: string
     questions?: ResolutionQuestion[]
+    dismissed?: DismissedFinding[]
   } = {},
 ): Promise<void> {
   const screenshots =
     opts.push === undefined || opts.evidenceDir === undefined ? undefined : await opts.push.push(result, opts.evidenceDir)
-  const redacted = redactResult(result)
+  const dismissed = new Set(opts.dismissed?.map((finding) => finding.id) ?? [])
+  const advisory = result.advisory
+  const presentation = advisory === undefined ? result : {
+    ...result,
+    advisory: {
+      ...advisory,
+      findings: advisory.findings.filter((finding) => !dismissed.has(finding.id)),
+      dismissed: [...new Set([...(advisory.dismissed ?? []), ...advisory.findings.filter((finding) => dismissed.has(finding.id)).map((finding) => finding.id)])],
+    },
+  }
+  const redacted = redactResult(presentation)
   const comment =
     renderComment(redacted, { kind: 'artifact', url: opts.artifactUrl, screenshots }) +
     renderQuestionSection(opts.questions ?? []) +

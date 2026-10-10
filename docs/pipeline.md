@@ -30,7 +30,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.51
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.52
     with:
       nare-model: gpt-4.1-mini
     secrets:
@@ -68,7 +68,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.51
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.52
     with:
       runs-on: '["self-hosted", "linux", "x64"]'
       profile: services/web/qa
@@ -290,8 +290,8 @@ a test holds every workflow file to that. pnpm is the one qare's
 `package.json` names, by version and hash, enabled with corepack: no action
 installs it. Each job uses a fresh corepack directory, carried to later
 steps, so a previous job's cached pnpm cannot replace the hash-checked
-download. This covers workflow installs; the container's pnpm bootstrap
-currently installs by version and is tracked separately. No job restores a
+download. The core container builder uses the same hashed declaration through
+Corepack. No job restores a
 dependency cache.
 
 The examples in this guide name actions the same way. Name the actions of
@@ -513,7 +513,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.51
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.52
     with:
       nare-model: gpt-4.1-mini
       artefacts: qare-artefacts
@@ -873,7 +873,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.51
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.52
     with:
       nare-model: gpt-4.1-mini
       main-lane: 'true'
@@ -1151,7 +1151,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ViviDynamics/qare
-          ref: 2026.10.51
+          ref: 2026.10.52
           path: qare
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
