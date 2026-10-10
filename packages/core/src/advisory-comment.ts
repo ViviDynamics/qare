@@ -1,5 +1,5 @@
 import type { AdvisoryFinding, RunAdvisory } from './advisory.js'
-import { codeSpan, type EvidenceLinks } from './evidence.js'
+import { codeSpan, uploadedScreenshotLink, type EvidenceLinks } from './evidence.js'
 
 /** The replies a person acts on a finding with (#150). Each names the finding by id. */
 export const ADVISORY_DISMISS_COMMAND = '/qa-dismiss'
@@ -22,7 +22,7 @@ function screenshotLine(path: string, links: EvidenceLinks): string {
   const name = basename(path).replace(/[\[\]]/g, ' ')
   if (links.kind === 'relative') return `[${name}](<${path}>)`
   const url = links.screenshots?.[path]
-  return url === undefined ? codeSpan(path) : `[${name}](<${url}>)`
+  return url === undefined ? codeSpan(path) : uploadedScreenshotLink(path, url)
 }
 
 function findingLines(finding: AdvisoryFinding, links: EvidenceLinks): string[] {

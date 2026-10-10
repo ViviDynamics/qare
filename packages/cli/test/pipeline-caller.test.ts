@@ -278,6 +278,10 @@ test('the pipeline pins the release it ships in, so a caller pins one tag', () =
   expect(call.inputs['qare-ref']?.default).toBe(version)
   const sync = readFileSync(join(repoRoot, 'scripts', 'sync-version.mjs'), 'utf8')
   expect(sync).toContain(PIPELINE)
+  const docs = readFileSync(join(repoRoot, 'docs', 'pipeline.md'), 'utf8')
+  const checkoutPins = [...docs.matchAll(/repository: ViviDynamics\/qare\n\s+ref: (20\d{2}\.\d+\.\d+)/g)]
+  expect(checkoutPins.length).toBeGreaterThan(0)
+  for (const pin of checkoutPins) expect(pin[1]).toBe(version)
 })
 
 test('the model key reaches the planner and the verifier steps, and nothing else', () => {

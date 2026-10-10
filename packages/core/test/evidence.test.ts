@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest'
 import {
   RESULT_SCHEMA_VERSION,
+  parseResult,
   type FailedCriterionResult,
   type RunResult,
   type UnverifiedCriterionResult,
@@ -250,8 +251,8 @@ test('a pushed screenshot links to the branch; a file that was not pushed does n
     screenshots: { 'checks/payout-1099-notice/2/page.png': screenshot },
   })
 
-  expect(body).toContain(`[page.png](<${screenshot}>)`)
-  expect(body).toContain('`checks/payout-1099-notice/1/stdout.txt`, [page.png](')
+  expect(body).toContain(`[\`page.png\`](<${screenshot}>)`)
+  expect(body).toContain('`checks/payout-1099-notice/1/stdout.txt`, [\`page.png\`](')
   expect(body).not.toContain('`checks/payout-1099-notice/2/page.png`')
   expect(body.match(/\]\(/g)).toHaveLength(2)
 })
@@ -263,7 +264,7 @@ test('a screenshot link text is escaped like the other link texts', () => {
     { kind: 'artifact', screenshots: { 'checks/c1/0/pa[ge].png': screenshot } },
   )
 
-  expect(body).toContain(`[pa ge .png](<${screenshot}>)`)
+  expect(body).toContain(`[\`pa[ge].png\`](<${screenshot}>)`)
 })
 
 test('the comment names where the run executed', () => {
@@ -487,4 +488,77 @@ test('how a message was delivered sits beside it in the comment, in a column onl
 
 test('a run that read no mail renders no mail section (#65)', () => {
   expect(renderComment(allProven)).not.toContain('## Mail')
+})
+
+// Run metadata is result data, so a public comment must keep it inside text spans.
+for (const field of ['qare', 'node', 'flavour', 'driver-name', 'driver-version', 'runner-detail'] as const) {
+  test(`a posted comment keeps ${field} metadata inert`, () => {
+    const text = ['v`1\n## extra @a-team [link](https:', '//example.test) <b>text</b> | tail'].join('')
+    const run: RunResult = {
+      ...allProven,
+      environment: {
+        execution: 'containerised',
+        versions: { qare: field === 'qare' ? text : '1', node: field === 'node' ? text : '22', nareContract: 1 },
+        image: {
+          name: 'qare-web', ref: 'image:1', digest: 'image@sha256:abc',
+          flavour: field === 'flavour' ? text : 'web',
+          drivers: { [field === 'driver-name' ? text : 'chromium']: field === 'driver-version' ? text : '1' },
+          versions: { qare: '1', node: '22', nare: '1' },
+        },
+        ...(field === 'runner-detail' ? { runnerSafety: [{ checklist: 'docker' as const, status: 'finding' as const, detail: text }] } : {}),
+      },
+    }
+    // The loader accepts this free-form metadata: rendering must still be safe.
+    const loaded = parseResult(run)
+    const body = renderComment(loaded, { kind: 'artifact' })
+    const expected = ['``v`1 ## extra @a-team [link](https:', '//example.test) <b>text</b> | tail``'].join('')
+    expect(body).toContain(field === 'runner-detail' ? expected.replace('|', '\\|') : expected)
+    expect(body).not.toContain('\n## extra')
+    expect(body).toContain('## QARE run: passed')
+  })
+}
+
+test('a posted profile name cannot render a mention or HTML', () => {
+  const loaded = parseResult({ ...allProven, profiles: [{ name: 'profile` @a-team <b>text', verdict: 'passed', criteria: ['payout-1099-notice'] }] })
+  expect(renderComment(loaded, { kind: 'artifact' })).toContain('### ``profile` @a-team <b>text``')
+})
+
+for (const provision of ['launched', 'installed', 'stopped'] as const) {
+  test(`a posted ${provision} client driver cannot add markup`, () => {
+    const run = parseResult({
+      ...allProven,
+      ...(provision === 'stopped' ? { verdict: 'blocked', criteria: [unverified('c1', 'build failed', ['provision.log'])] } : {}),
+      client: {
+        driver: 'driver`\n## extra @a-team <b>', executable: 'app', comparison: 'none',
+        ...(provision === 'launched' ? {} : { artefact: { path: 'app.zip', source: 'prebuilt', kind: 'zip' } }),
+      },
+    })
+    const body = renderComment(run, { kind: 'artifact' })
+    expect(body).toContain('``driver` ## extra @a-team <b>`` build')
+    expect(body).not.toContain('\n## extra')
+  })
+}
+
+test('an empty driver name cannot consume the version code span fence', () => {
+  const run = parseResult({ ...allProven, environment: {
+    execution: 'containerised', versions: { qare: '1', node: '22', nareContract: 1 },
+    image: { name: 'qare', ref: 'image:1', digest: 'image@sha256:abc', drivers: { '': 'v`1 @a-team <b>' }, versions: { qare: '1', node: '22', nare: '1' } },
+  } })
+  expect(renderComment(run, { kind: 'artifact' })).toContain('Drivers it ships:  ``v`1 @a-team <b>``.')
+})
+
+test('an uploaded screenshot filename remains text in both evidence and advisory links', () => {
+  const path = 'checks/c1/0/pic` @a-team <b>\n.png'
+  const url = ['https:', `//example.test/raw/${path}`].join('')
+  const run = parseResult({
+    ...allProven,
+    criteria: [{ id: 'c1', outcome: 'proven', evidence: [path] }],
+    advisory: { status: 'reviewed', screens: ['checks/c1/0'], findings: [{
+      id: 'deadbeef', criterionId: 'c1', screen: 'checks/c1/0', category: 'label', severity: 'high', saw: 'a label', why: 'unclear', screenshot: path,
+    }] },
+  })
+  const body = renderComment(run, { kind: 'artifact', screenshots: { [path]: url } })
+  expect(body.split('[``pic` @a-team <b> .png``]')).toHaveLength(3)
+  expect(body).toContain(['(<https:', '//example.test/raw/checks/c1/0/pic`%20@a-team%20%3Cb%3E%0A.png>)'].join(''))
+  expect(body).not.toContain('<b>\n.png>')
 })
