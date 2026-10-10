@@ -231,6 +231,7 @@ function escapeHeading(text: string): string {
 export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 'relative' }): string {
   const posted = links.kind === 'artifact'
   const cell = posted ? cellSpan : escapeCell
+  const text = posted ? codeSpan : (value: string): string => value
   const baseRan = result.base?.status === 'executed'
   const table = (criteria: CriterionResult[]): string[] => [
     '| criterion | outcome | reason |',
@@ -258,10 +259,10 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
     image === undefined
       ? []
       : [
-          `Produced by image ${codeSpan(image.ref)} at digest ${codeSpan(image.digest)}${image.flavour === undefined ? '' : ` (flavour ${image.flavour})`}.`,
+          `Produced by image ${codeSpan(image.ref)} at digest ${codeSpan(image.digest)}${image.flavour === undefined ? '' : ` (flavour ${text(image.flavour)})`}.`,
           ...(image.drivers === undefined
             ? []
-            : [`Drivers it ships: ${Object.entries(image.drivers).map(([name, version]) => `${name} ${version}`).join(', ')}.`]),
+            : [`Drivers it ships: ${Object.entries(image.drivers).map(([name, version]) => `${text(name)} ${text(version)}`).join(', ')}.`]),
         ]
   // The host kind that produced the result (#76), when the run recorded it:
   // a verdict from a hosted Linux runner and one from somebody's own macOS
@@ -276,7 +277,7 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
   const environment = result.environment === undefined
     ? []
     : [
-        `Executed ${where} with qare ${result.environment.versions.qare}, node ${result.environment.versions.node}, nare contract ${result.environment.versions.nareContract}.`,
+        `Executed ${where} with qare ${text(result.environment.versions.qare)}, node ${text(result.environment.versions.node)}, nare contract ${result.environment.versions.nareContract}.`,
         ...(host?.ephemeralRunners === true ? ["The caller declared ephemeral-runners: 'true': each job gets a fresh machine and docker daemon destroyed afterwards, with no volume or cache shared between jobs. qare has not verified that declaration."] : []),
         ...(result.environment.image === undefined ? [] : imageLines(result.environment.image)),
         // What the profile required of that host (#76), met or not.
@@ -329,7 +330,7 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
       '',
       '| Checklist item | Observation | Detail |',
       '| --- | --- | --- |',
-      ...result.environment.runnerSafety.map(finding => `| ${finding.checklist} | ${finding.status} | ${escapeCell(finding.detail)} |`),
+      ...result.environment.runnerSafety.map(finding => `| ${finding.checklist} | ${finding.status} | ${cell(finding.detail)} |`),
       '',
     ]),
     // Several apps in one run (#55): one section per app, each with the
@@ -340,7 +341,7 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
           `This run checked ${result.profiles.length} apps, each under a profile of its own; each verdict is that app's alone.`,
           '',
           ...result.profiles.flatMap(summary => [
-            `### ${escapeHeading(summary.name)} — verdict ${summary.verdict}`,
+            `### ${posted ? codeSpan(summary.name) : escapeHeading(summary.name)} — verdict ${summary.verdict}`,
             '',
             // What this app's own profile required of the host (#76).
             ...(summary.requirements === undefined ? [] : requirementLines(summary.requirements, codeSpan(summary.name), host).flatMap((line) => [line, ''])),

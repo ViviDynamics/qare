@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest'
 import {
   RESULT_SCHEMA_VERSION,
+  parseResult,
   type FailedCriterionResult,
   type RunResult,
   type UnverifiedCriterionResult,
@@ -487,4 +488,37 @@ test('how a message was delivered sits beside it in the comment, in a column onl
 
 test('a run that read no mail renders no mail section (#65)', () => {
   expect(renderComment(allProven)).not.toContain('## Mail')
+})
+
+// Run metadata is result data, so a public comment must keep it inside text spans.
+for (const field of ['qare', 'node', 'flavour', 'driver-name', 'driver-version', 'runner-detail'] as const) {
+  test(`a posted comment keeps ${field} metadata inert`, () => {
+    const text = 'v`1\n## extra @a-team [link](https://example.test) <b>text</b> | tail'
+    const run: RunResult = {
+      ...allProven,
+      environment: {
+        execution: 'containerised',
+        versions: { qare: field === 'qare' ? text : '1', node: field === 'node' ? text : '22', nareContract: 1 },
+        image: {
+          name: 'qare-web', ref: 'image:1', digest: 'image@sha256:abc',
+          flavour: field === 'flavour' ? text : 'web',
+          drivers: { [field === 'driver-name' ? text : 'chromium']: field === 'driver-version' ? text : '1' },
+          versions: { qare: '1', node: '22', nare: '1' },
+        },
+        ...(field === 'runner-detail' ? { runnerSafety: [{ checklist: 'docker' as const, status: 'finding' as const, detail: text }] } : {}),
+      },
+    }
+    // The loader accepts this free-form metadata: rendering must still be safe.
+    const loaded = parseResult(run)
+    const body = renderComment(loaded, { kind: 'artifact' })
+    const expected = '``v`1 ## extra @a-team [link](https://example.test) <b>text</b> | tail``'
+    expect(body).toContain(field === 'runner-detail' ? expected.replace('|', '\\|') : expected)
+    expect(body).not.toContain('\n## extra')
+    expect(body).toContain('## QARE run: passed')
+  })
+}
+
+test('a posted profile name cannot render a mention or HTML', () => {
+  const loaded = parseResult({ ...allProven, profiles: [{ name: 'profile` @a-team <b>text', verdict: 'passed', criteria: ['payout-1099-notice'] }] })
+  expect(renderComment(loaded, { kind: 'artifact' })).toContain('### ``profile` @a-team <b>text``')
 })
