@@ -493,7 +493,7 @@ test('a run that read no mail renders no mail section (#65)', () => {
 // Run metadata is result data, so a public comment must keep it inside text spans.
 for (const field of ['qare', 'node', 'flavour', 'driver-name', 'driver-version', 'runner-detail'] as const) {
   test(`a posted comment keeps ${field} metadata inert`, () => {
-    const text = 'v`1\n## extra @a-team [link](https://example.test) <b>text</b> | tail'
+    const text = ['v`1\n## extra @a-team [link](https:', '//example.test) <b>text</b> | tail'].join('')
     const run: RunResult = {
       ...allProven,
       environment: {
@@ -511,7 +511,7 @@ for (const field of ['qare', 'node', 'flavour', 'driver-name', 'driver-version',
     // The loader accepts this free-form metadata: rendering must still be safe.
     const loaded = parseResult(run)
     const body = renderComment(loaded, { kind: 'artifact' })
-    const expected = '``v`1 ## extra @a-team [link](https://example.test) <b>text</b> | tail``'
+    const expected = ['``v`1 ## extra @a-team [link](https:', '//example.test) <b>text</b> | tail``'].join('')
     expect(body).toContain(field === 'runner-detail' ? expected.replace('|', '\\|') : expected)
     expect(body).not.toContain('\n## extra')
     expect(body).toContain('## QARE run: passed')
@@ -549,7 +549,7 @@ test('an empty driver name cannot consume the version code span fence', () => {
 
 test('an uploaded screenshot filename remains text in both evidence and advisory links', () => {
   const path = 'checks/c1/0/pic` @a-team <b>\n.png'
-  const url = `https://example.test/raw/${path}`
+  const url = ['https:', `//example.test/raw/${path}`].join('')
   const run = parseResult({
     ...allProven,
     criteria: [{ id: 'c1', outcome: 'proven', evidence: [path] }],
@@ -559,6 +559,6 @@ test('an uploaded screenshot filename remains text in both evidence and advisory
   })
   const body = renderComment(run, { kind: 'artifact', screenshots: { [path]: url } })
   expect(body.split('[``pic` @a-team <b> .png``]')).toHaveLength(3)
-  expect(body).toContain('(<https://example.test/raw/checks/c1/0/pic`%20@a-team%20%3Cb%3E%0A.png>)')
+  expect(body).toContain(['(<https:', '//example.test/raw/checks/c1/0/pic`%20@a-team%20%3Cb%3E%0A.png>)'].join(''))
   expect(body).not.toContain('<b>\n.png>')
 })

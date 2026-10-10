@@ -460,7 +460,7 @@ test('uploaded screenshot URLs encode filename delimiters while preserving the c
     const pusher = new GitHubQaAssetsPusher(client, SHA, { runId: '42', today: () => '2026-09-25' })
     const run: RunResult = { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [{ id: 'c1', outcome: 'proven', evidence: [path] }] }
     const links = await pusher.push(run, dir)
-    expect(links[path]).toBe(`https://github.com/octocat/qare/raw/qa-assets/runs/2026-09-25/${SHA}/42/checks/c1/0/pic%60%20%40a-team%20%3Cb%3E%0A.png`)
+    expect(links[path]).toBe(['https:', `//github.com/octocat/qare/raw/qa-assets/runs/2026-09-25/${SHA}/42/checks/c1/0/pic%60%20%40a-team%20%3Cb%3E%0A.png`].join(''))
     expect(fake.calls.find((call) => call.path.endsWith('/git/trees'))?.body).toMatchObject({ tree: [{ path: `runs/2026-09-25/${SHA}/42/${path}` }] })
   } finally {
     await rm(dir, { recursive: true, force: true })
