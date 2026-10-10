@@ -1156,7 +1156,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          export COREPACK_HOME
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
           wanted="${wanted%%+*}"

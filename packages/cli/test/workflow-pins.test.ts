@@ -125,11 +125,12 @@ test('pnpm is the one package.json names, by version and hash, and no action ins
 test('the enabling step stops when the pnpm that resolved is not the one package.json names', () => {
   const runs = new Set(files.flatMap((name) => Object.values(load(name).jobs).flatMap((job) =>
     (job.steps ?? []).filter((step) => step.name === ENABLE).map((step) => step.run ?? 'exit 99'))))
-  const attempt = (run: string, resolved: string, packageManager: string | undefined, corepackExit = 0) => {
+  const attempt = (run: string, resolved: string, packageManager: string | undefined, corepackExit = 0, allocationExit?: number) => {
     const cwd = temporaryDirectory('qare-pnpm-')
     const bin = temporaryDirectory('qare-pnpm-bin-')
     writeFileSync(join(cwd, 'package.json'), JSON.stringify({ name: 'x', ...(packageManager === undefined ? {} : { packageManager }) }))
     writeFileSync(join(bin, 'corepack'), `#!/bin/sh\nexit ${corepackExit}\n`, { mode: 0o755 })
+    if (allocationExit !== undefined) writeFileSync(join(bin, 'mktemp'), `#!/bin/sh\nexit ${allocationExit}\n`, { mode: 0o755 })
     writeFileSync(join(cwd, 'github-env'), '')
     writeFileSync(join(bin, 'pnpm'), `#!/bin/sh\necho ${resolved}\n`, { mode: 0o755 })
     return spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', run], {
@@ -147,6 +148,7 @@ test('the enabling step stops when the pnpm that resolved is not the one package
     expect(other.stdout).toMatch(/^::error::.*pnpm@9\.0\.0.*pnpm@12\.5\.1/m)
     expect(attempt(run, '12.5.1', undefined).status).toBe(1)
     expect(attempt(run, '12.5.1', 'pnpm@12.5.1', 17).status).toBe(17)
+    expect(attempt(run, '12.5.1', 'pnpm@12.5.1', 0, 23).status).toBe(23)
   }
 })
 

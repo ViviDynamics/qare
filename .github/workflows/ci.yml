@@ -32,7 +32,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          export COREPACK_HOME
           printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
@@ -73,7 +74,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          export COREPACK_HOME
           printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
@@ -119,7 +121,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          export COREPACK_HOME
           printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
@@ -173,7 +176,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          export COREPACK_HOME
           printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
@@ -216,7 +220,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          export COREPACK_HOME
           printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
