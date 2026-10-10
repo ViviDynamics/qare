@@ -99,3 +99,30 @@ test('execution records the release tag separately from the immutable container 
     expect(step.run).toContain('QARE_IMAGE_DIGEST="$IMAGE_DIGEST"')
   }
 })
+
+
+for (const job of ['execute', 'main_execute']) {
+  test(`${job} passes an immutable operational image to nested cells and a separate evidence tag`, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qare-execution-image-'))
+    dirs.push(dir)
+    const calls = join(dir, 'calls')
+    writeFileSync(join(dir, 'qare-docker-access'), '')
+    writeFileSync(join(dir, 'docker'), '#!/bin/bash\nprintf \'%s\\n\' "$@" > "$CALLS"\n', { mode: 0o755 })
+    // PR preparation needs a base checkout; it is independent of image propagation.
+    writeFileSync(join(dir, 'git'), '#!/bin/bash\nexit 0\n', { mode: 0o755 })
+    const step = pipeline.jobs[job]!.steps.find((step) => step.name?.startsWith('Run the plan'))!
+    const digest = `ghcr.io/vividynamics/qare-web@${hash}`
+    const tag = 'ghcr.io/vividynamics/qare-web:2026.10.51'
+    const result = spawnSync('bash', ['-c', step.run!], { cwd: dir, encoding: 'utf8', env: {
+      PATH: `${dir}:${process.env.PATH ?? ''}`, CALLS: calls, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: join(dir, 'summary'),
+      IMAGE_REF: digest, IMAGE_DIGEST: digest, IMAGE_TAG_REF: tag, BASE_SHA: 'a'.repeat(40), HEAD_SHA: 'b'.repeat(40), PR_NUMBER: '1', PROFILE: '.qa', RUN_ID: '1', RUN_ATTEMPT: '1',
+    } })
+    expect(result.status, result.stderr).toBe(0)
+    const args = readFileSync(calls, 'utf8').split('\n')
+    expect(args).toContain(`QARE_IMAGE_REF=${digest}`)
+    expect(args).toContain(`QARE_IMAGE_DIGEST=${digest}`)
+    expect(args).toContain(`QARE_IMAGE_TAG=${tag}`)
+    expect(args).not.toContain(`QARE_IMAGE_REF=${tag}`)
+    expect(args).toContain(digest)
+  })
+}

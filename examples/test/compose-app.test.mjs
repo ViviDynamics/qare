@@ -63,7 +63,7 @@ test('the execute steps CI runs are scripts the pipeline carries', () => {
   assert.deepEqual(find.env, [])
   const run = pipelineStep('execute', 'Run the plan')
   assert.match(run.run, /qare run --plan plan\.json/)
-  assert.deepEqual(run.env, ['IMAGE_REF', 'IMAGE_DIGEST', 'BASE_SHA', 'HEAD_SHA', 'PR_NUMBER', 'PROFILE'])
+  assert.deepEqual(run.env, ['IMAGE_REF', 'IMAGE_TAG_REF', 'IMAGE_DIGEST', 'BASE_SHA', 'HEAD_SHA', 'PR_NUMBER', 'PROFILE'])
   const down = pipelineStep('execute', 'Tear down what the run booted')
   assert.match(down.run, /qare reap/)
 })
