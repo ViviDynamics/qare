@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import { GitHubClient, GitHubApiError, GitHubClientError } from '../src/github.js'
 import { FAKE_TOKEN, startFakeGithub, type FakeGithub } from './fake-github.js'
 
@@ -132,6 +132,31 @@ test('owned marker search stops if the identity cannot be read', async () => {
     await expect(client.searchOwnIssues('qare:test')).rejects.toThrow(GitHubApiError)
     expect(fake.calls.some((call) => call.path === '/search/issues' || call.method !== 'GET')).toBe(false)
   } finally {
+    await fake.close()
+  }
+})
+
+test('owned marker search follows the minted public App while personal and Actions credentials coexist', async () => {
+  const fake = await startFakeGithub()
+  try {
+    fake.tokens.set('minted-public-token', { login: 'qare-public[bot]', kind: 'installation' })
+    fake.tokens.set('fallback-personal-token', { login: 'someone-else', kind: 'user' })
+    vi.stubEnv('QARE_APP_TOKEN', 'minted-public-token')
+    vi.stubEnv('QARE_APP_SLUG', 'qare-public')
+    vi.stubEnv('QARE_APP_TOKEN_EXPIRES_AT', '')
+    vi.stubEnv('QARE_GITHUB_TOKEN', 'fallback-personal-token')
+    vi.stubEnv('GITHUB_TOKEN', FAKE_TOKEN)
+    for (const [number, author] of [[7, 'github-actions[bot]'], [8, 'someone-else'], [9, 'qare-public[bot]'], [10, 'vivi-qare[bot]']] as const) {
+      fake.issues.set(number, { number, title: 'marker', body: 'qare:test', comments: [] })
+      fake.issueMeta.set(number, { state: 'open', labels: [], author })
+    }
+    const client = new GitHubClient({ repository: 'octocat/qare', apiRoot: fake.url })
+    expect((await client.searchOwnIssues('qare:test')).map((issue) => issue.number)).toEqual([9])
+    const query = new URLSearchParams(fake.calls.find((call) => call.path === '/search/issues')?.query).get('q')
+    expect(query).toContain('author:qare-public[bot]')
+    expect(fake.calls.some((call) => call.path === '/user')).toBe(false)
+  } finally {
+    vi.unstubAllEnvs()
     await fake.close()
   }
 })

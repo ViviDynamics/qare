@@ -36,3 +36,8 @@ hits, so these cases exercise local checks independently of the search qualifier
 Rebased unpublished work onto #326's squash merge 944dff4 with no conflicts.
 Reserved 2026.10.48 above the remote tags and the pending 2026.10.47 release.
 No existing remote branch was rewritten.
+
+Independent review found no Critical or Important defects. Its Minor App
+coverage gap is closed: a minted public App token takes precedence over
+coexisting PAT and Actions credentials, accepts only its own marker issue,
+and rejects records from the shared App. The focused test passed.
