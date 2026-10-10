@@ -26,3 +26,12 @@ transitive dependency or replace release immutability settings.
 - [x] Build core and web locally and inspect their runtime records.
 - [ ] Final rebase/stamp, full preflight, independent review, Copilot and QA.
 - [ ] Verify main CI, exact tag and core/web publication.
+
+
+## Publishing API preparation
+
+The already reviewed #306 advisory-context command and dismissal presentation
+API ship in this runtime release before the following workflow release uses
+them. qare tests its workflow against trusted base code and previous images;
+this ordering keeps that supported pre-release path compatible. The job split
+remains #306's next release, and its issue remains open here.
