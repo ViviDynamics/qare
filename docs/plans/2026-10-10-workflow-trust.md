@@ -27,5 +27,6 @@ Container image dependencies and image digests remain separate audit work.
 - [x] Narrow release permissions, remove credential persistence and caches.
 - [x] Refuse non-main manual tagging and validate CalVer before environment writes.
 - [x] Correct dependency, fleet example and image publication documentation.
-- [ ] Rebase onto merged #307, preserve #323/#325, stamp the release and preflight.
+- [x] Rebase onto merged #307, preserve #323/#325, stamp release 2026.10.47.
+- [ ] Preflight the final release commit.
 - [ ] Independent final review, Copilot review, CI, merge and image read-back.
