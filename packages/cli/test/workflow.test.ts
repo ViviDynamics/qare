@@ -145,7 +145,7 @@ test('the step that talks to the verifier model holds no GitHub token', () => {
 
 test('judge runs the verifier with the criteria text, the diff and the evidence', () => {
   const judge = section('judge')
-  for (const flag of ['--plan plan.json', '--diff change-planner.diff', '--result evidence/result.json', '--nare'])
+  for (const flag of ['--plan qa-plan/plan.json', '--diff qa-inputs/change-planner.diff', '--result evidence/result.json', '--nare'])
     expect(judge).toContain(flag)
   expect(judge).not.toContain('--runner none')
   // The evidence directory is the verifier's file root, so it must be its own.
@@ -191,7 +191,9 @@ test('the pipeline needs no GitHub CLI on the runner: collect reads a linked iss
 test('a release tag passed as qare-ref names the images, and any other revision is named by the version it carries (#242)', () => {
   const collect = section('collect')
   expect(collect).toContain('QARE_REF: ${{ inputs.qare-ref }}')
-  expect(collect).toMatch(/if \[\[ "\$QARE_REF" =~ \^20\[0-9\]\{2\}\\\.\[0-9\]\+\\\.\[0-9\]\+\$ \]\]; then\n\s+version="\$QARE_REF"\n\s+else\n\s+version="\$\(jq -r '\.version \/\/ empty' \.qare-pipeline\/package\.json\)"/)
+  expect(collect).toContain('version="$QARE_REF"')
+  expect(collect).toContain("jq -ser 'select(length == 1) | .[0].version | select")
+  // Both branches are executed by workflow-boundaries.test.ts, including rejected fields.
 })
 
 test('nothing runs when the change states no criteria', () => {
@@ -358,7 +360,7 @@ test('secret-holding jobs run qare from the base commit, not the pull request tr
   expect(collect).not.toMatch(/node packages\//)
   // The version every image job pulls is read from that same checkout.
   expect(collect).toContain('qare-version: ${{ steps.qare.outputs.version }}')
-  expect(collect).toMatch(/jq -r '\.version \/\/ empty' \.qare-pipeline\/package\.json/)
+  expect(collect).toMatch(/jq -ser 'select\(length == 1\) \| \.\[0\]\.version \| select.*' \.qare-pipeline\/package\.json/)
 })
 
 test('no job runs a qare that the repository under test carries', () => {
@@ -478,7 +480,7 @@ test('the model-facing diff copies are scrubbed of the values the change adds (#
   expect(collect).toContain("sed -E '/^\\+.*(secret[[:space:]]*:|value[[:space:]]*:)/ s/.*/+ [redacted]/'")
   expect(collect).toContain("mv change-planner.scrubbed change-planner.diff")
   const judge = section('judge')
-  expect(judge).toContain('--diff change-planner.diff')
+  expect(judge).toContain('--diff qa-inputs/change-planner.diff')
   expect(judge).not.toContain('--diff change.diff')
 })
 
@@ -747,7 +749,7 @@ test('judge runs whenever execute recorded a verdict, not only when execute pass
   expect(step).toContain('evidence/result.json')
   // Rule 6: a run that recorded no readable verdict never falls through to a
   // green pipeline with nothing posted. The step fails, and report says why.
-  expect(step).toMatch(/if \[ -z "\$verdict" \]; then\n(?:.*\n)*?\s+exit 1\n/)
+  expect(step).toMatch(/if ! verdict=.*; then\n(?:.*\n)*?\s+exit 1\n/)
   expect(section('judge')).toContain("if: always() && needs.execute.outputs.verdict != ''")
   expect(section('judge')).not.toContain("needs.execute.result == 'success'")
 })
