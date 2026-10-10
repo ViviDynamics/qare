@@ -153,10 +153,26 @@ test('owned marker search follows the minted public App while personal and Actio
     const client = new GitHubClient({ repository: 'octocat/qare', apiRoot: fake.url })
     expect((await client.searchOwnIssues('qare:test')).map((issue) => issue.number)).toEqual([9])
     const query = new URLSearchParams(fake.calls.find((call) => call.path === '/search/issues')?.query).get('q')
-    expect(query).toContain('author:qare-public[bot]')
+    expect(query).toContain('author:app/qare-public')
     expect(fake.calls.some((call) => call.path === '/user')).toBe(false)
   } finally {
     vi.unstubAllEnvs()
+    await fake.close()
+  }
+})
+
+test('owned marker search uses the App qualifier for Actions and keeps the bot login for ownership', async () => {
+  const fake = await startFakeGithub()
+  try {
+    fake.issues.set(7, { number: 7, title: 'marker', body: 'qare:test', comments: [] })
+    fake.issueMeta.set(7, { state: 'open', labels: [], author: 'github-actions[bot]' })
+    fake.issues.set(8, { number: 8, title: 'marker', body: 'qare:test', comments: [] })
+    fake.issueMeta.set(8, { state: 'open', labels: [], author: 'github-actions' })
+    const client = new GitHubClient({ repository: 'octocat/qare', apiRoot: fake.url, token: FAKE_TOKEN })
+    expect((await client.searchOwnIssues('qare:test')).map((issue) => issue.number)).toEqual([7])
+    const query = new URLSearchParams(fake.calls.find((call) => call.path === '/search/issues')?.query).get('q')
+    expect(query).toContain('author:app/github-actions')
+  } finally {
     await fake.close()
   }
 })

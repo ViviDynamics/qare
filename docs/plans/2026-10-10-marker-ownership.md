@@ -21,7 +21,7 @@ identity. Search restrictions are followed by local author and marker checks.
 - [x] Add a shared owned-issue search with an author qualifier and local checks.
 - [x] Check ownership again before writing a refused-PR registry.
 - [x] Update existing fixtures to record the authorship real GitHub returns.
-- [ ] Run affected action tests and full preflight.
+- [x] Run affected action tests and full preflight.
 - [ ] Rebase after #310, stamp release, own review and Copilot review.
 - [ ] Merge after CI and one QA run, verify main CI, tag and images.
 
@@ -41,3 +41,11 @@ Independent review found no Critical or Important defects. Its Minor App
 coverage gap is closed: a minted public App token takes precedence over
 coexisting PAT and Actions credentials, accepts only its own marker issue,
 and rejects records from the shared App. The focused test passed.
+
+Copilot's App qualifier suggestion is adopted using GitHub's documented
+`author:app/<slug>` syntax. Live read-only searches with both
+`author:github-actions[bot]` and `author:app/github-actions` returned the same
+owned issue (#187), so the claimed zero-hit failure was not reproduced.
+New App and Actions query assertions failed before the change. Local ownership
+checks still compare the complete bot login, and personal tokens retain the
+ordinary author qualifier. The full preflight passed before the first push.
