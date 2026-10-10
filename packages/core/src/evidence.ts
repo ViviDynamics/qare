@@ -125,7 +125,7 @@ function detailNames(criteria: CriterionResult[], screenshots: Record<string, st
         const url = screenshots?.[path]
         // A pushed screenshot keeps resolving after the artifact expires; the
         // link is written only for the file that was pushed (rule 4).
-        return url === undefined ? codeSpan(path) : `[${escapeLinkText(basename(path))}](<${url}>)`
+        return url === undefined ? codeSpan(path) : uploadedScreenshotLink(path, url)
       })
     if (names.length > 0) lines.push(`- ${codeSpan(criterion.id)}: ${names.join(', ')}`)
     // Base evidence is named, never linked: only head screenshots are pushed.
@@ -135,11 +135,18 @@ function detailNames(criteria: CriterionResult[], screenshots: Record<string, st
   return lines
 }
 
+/** A link only for a screenshot that was uploaded, with its filename kept as text. */
+export function uploadedScreenshotLink(path: string, url: string): string {
+  const destination = url.replace(/[<>\s\\]/g, (character) => encodeURIComponent(character))
+  return `[${codeSpan(basename(path))}](<${destination}>)`
+}
+
 // Text shown on a pull request goes in a code span, where nothing renders: a
 // link, raw HTML, a bare URL or an @mention in a reason or a path stays text.
 // The fence is longer than any backtick run inside, so the text is shown
 // exactly (a path can still be found in the artifact) and cannot end the span.
 export function codeSpan(text: string): string {
+  if (text === '') return ''
   const flat = text.replaceAll('\r', ' ').replaceAll('\n', ' ')
   const longest = Math.max(0, ...(flat.match(/`+/g) ?? []).map(run => run.length))
   const fence = '`'.repeat(longest + 1)
@@ -300,15 +307,15 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
     ...(result.client === undefined
       ? []
       : result.client.artefact === undefined
-        ? [`Checked against the ${result.client.driver} build ${codeSpan(result.client.executable)}, launched by the run. Nothing ran at a base revision, so there is no base comparison and no regression was looked for.${clientEgressNote(result.client.egress)}`, '']
+        ? [`Checked against the ${text(result.client.driver)} build ${codeSpan(result.client.executable)}, launched by the run. Nothing ran at a base revision, so there is no base comparison and no regression was looked for.${clientEgressNote(result.client.egress)}`, '']
         : provisioningStopped(result)
           ? [
               // Nothing was installed, so nothing was checked against it.
-              `The ${result.client.driver} build ${codeSpan(result.client.executable)} was to be installed from ${artefactSpan(result.client.artefact)}, and provisioning stopped before any check ran: the log is listed with each criterion.`,
+              `The ${text(result.client.driver)} build ${codeSpan(result.client.executable)} was to be installed from ${artefactSpan(result.client.artefact)}, and provisioning stopped before any check ran: the log is listed with each criterion.`,
               '',
             ]
           : [
-            `Checked against the ${result.client.driver} build ${codeSpan(result.client.executable)}, installed by the run from ${artefactSpan(result.client.artefact)}${removalNote(result.client.artefact, posted, result.base === undefined ? 'provision.log' : 'head/provision.log')}${
+            `Checked against the ${text(result.client.driver)} build ${codeSpan(result.client.executable)}, installed by the run from ${artefactSpan(result.client.artefact)}${removalNote(result.client.artefact, posted, result.base === undefined ? 'provision.log' : 'head/provision.log')}${
               result.base === undefined ? ' Nothing ran at a base revision, so there is no base comparison and no regression was looked for.' : ''
             }${
               result.client.base === undefined

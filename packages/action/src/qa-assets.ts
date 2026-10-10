@@ -168,7 +168,9 @@ export class GitHubQaAssetsPusher implements ScreenshotPusher {
   }
 
   private branchUrl(evidencePath: string, date: string): string {
-    return `https://github.com/${this.client.repository}/raw/${this.branch}/${this.runPath(evidencePath, date)}`
+    const repository = this.client.repository.split('/').map(encodeURIComponent).join('/')
+    const path = this.runPath(evidencePath, date).split('/').map(encodeURIComponent).join('/')
+    return `https://github.com/${repository}/raw/${encodeURIComponent(this.branch)}/${path}`
   }
 }
 

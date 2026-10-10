@@ -63,7 +63,7 @@ test('findings appear in a section of their own, marked advisory, under the verd
   expect(text).toContain('- **high** `0a1b2c3d` (label) on `checks/signup-form/0`, element `textbox (required)`')
   expect(text).toContain('  - Saw: `A required text field has no accessible name.`')
   expect(text).toContain('  - Why it matters: `Nobody can tell what to type into it.`')
-  expect(text).toContain(`  - Screenshot: [final.png](<${WEB}example.test/raw/final.png>)`)
+  expect(text).toContain(`  - Screenshot: [\`final.png\`](<${WEB}example.test/raw/final.png>)`)
   expect(text).toContain('- **medium** `4e5f6a7b` (error-message) on `checks/signup-form/0`')
   // A finding the harness saved no screenshot for names none.
   expect(text.slice(text.indexOf('4e5f6a7b'))).not.toContain('Screenshot')
