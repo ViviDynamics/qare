@@ -135,8 +135,9 @@ pipeline and in the sweep:
 - **What GitHub answers is checked.** A token whose answer names a
   permission that was not asked for, a higher level, or any repository but
   the calling one is given back and never handed on. The script reads the
-  `repositories` and `permissions` of GitHub's documented answer; until an
-  App exists this has met only the fake.
+  `repositories` and `permissions` of GitHub's documented answer. The
+  [first live QARE run](https://github.com/ViviDynamics/qare/actions/runs/37941939128)
+  exercised this check against GitHub and posted as `vivi-qare[bot]`.
 - **An image that cannot read a minted token stops the job.** judge and
   main_judge check the image they pulled before they post with it, so a
   version skew between the pipeline and its image is a named failure and
@@ -156,9 +157,12 @@ The same change removed the dependency cache from every pipeline job and
 from the sweep: a job that holds a token installs by the lockfile from the
 registry, and not from a cache another job could have written.
 
-The App path is built against GitHub's documented REST API and tested
-against a fake of it. Until the App exists (#155) it has not been exercised
-against GitHub itself.
+The App path is tested against a fake of GitHub's REST API and has also
+been exercised against GitHub in the live run above. Its evidence comment
+was posted as `vivi-qare[bot]`; the QA verdict was blocked by unverified
+harness-internal criteria. This observes minting and posting, not the App's
+installation permissions or key custody. Those checks, and whether a
+criteria proposal triggers workflows, remain open in #155 and #61.
 
 ## References
 
