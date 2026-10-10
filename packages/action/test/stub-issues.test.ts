@@ -46,6 +46,25 @@ test('fileIfMissing creates the issue when no stub issue exists yet', async () =
   }
 })
 
+for (const exactIssue of [undefined, 8]) {
+  test(`fileIfMissing ignores a longer stub host and ${exactIssue === undefined ? 'creates the exact host' : 'finds the exact host later'}`, async () => {
+    const fake = await startFakeGithub()
+    try {
+      fake.issueMeta.set(7, { state: 'open', labels: [], author: 'github-actions[bot]' })
+      fake.issues.set(7, { number: 7, title: 'Longer host', body: stubIssueMarker(`${HOST}.au`), comments: [] })
+      if (exactIssue !== undefined) {
+        fake.issueMeta.set(exactIssue, { state: 'open', labels: [], author: 'github-actions[bot]' })
+        fake.issues.set(exactIssue, { number: exactIssue, title: 'Exact host', body: stubIssueMarker(HOST), comments: [] })
+      }
+      const poster = new GitHubStubIssuePoster(makeClient(fake))
+      expect(await poster.fileIfMissing(stubIssueDraft({ host: HOST, port: '443', protocol: 'https', count: 1 }))).toBe(exactIssue ?? 100)
+      expect(fake.issues.get(7)?.body).toBe(stubIssueMarker(`${HOST}.au`))
+    } finally {
+      await fake.close()
+    }
+  })
+}
+
 test('addToRegistry appends the qare-refused line exactly once', async () => {
   const fake = await startFakeGithub()
   try {

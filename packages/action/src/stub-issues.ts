@@ -1,6 +1,7 @@
 import {
   missingStubsFromResult,
   parseRefusedRegistry,
+  parseStubIssueMarkers,
   refusedRegistryLine,
   stubIssueDraft,
   stubIssueMarker,
@@ -23,7 +24,7 @@ export class GitHubStubIssuePoster implements StubIssuePoster {
     // PR is re-queued exactly once per registry entry.
     const marker = stubIssueMarker(draft.key)
     const hits = await this.client.searchOwnIssues(marker)
-    const existing = hits[0]
+    const existing = hits.find((issue) => parseStubIssueMarkers(issue.body ?? '').includes(draft.key))
     if (existing !== undefined) return existing.number
     const created = await this.client.createIssue(draft.title, draft.body)
     return created.number

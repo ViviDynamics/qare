@@ -49,3 +49,9 @@ owned issue (#187), so the claimed zero-hit failure was not reproduced.
 New App and Actions query assertions failed before the change. Local ownership
 checks still compare the complete bot login, and personal tokens retain the
 ordinary author qualifier. The full preflight passed before the first push.
+
+The second Copilot review identified a pre-existing stub-host prefix collision.
+Stub reuse now requires the exact key from the existing marker parser, after
+the ownership check. Two cases failed before the fix: creating the requested
+host when only a longer one exists, and selecting an exact match after a longer
+one. Both preserve the longer host's issue.
