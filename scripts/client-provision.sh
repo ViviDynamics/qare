@@ -99,6 +99,7 @@ run() {
   cp "$head" "$artefacts/head.tar"
   cp "$example/plan.json" plan.json
   IMAGE_REF="$image" \
+  IMAGE_TAG_REF="$image" \
   IMAGE_DIGEST="${image}@local" \
   BASE_SHA="$(git rev-parse 'HEAD^1')" \
   HEAD_SHA="$(git rev-parse HEAD)" \

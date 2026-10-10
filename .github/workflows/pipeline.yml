@@ -275,7 +275,7 @@ on:
           workflow ships in, so pin the release in `uses:` and leave this
           alone.
         type: string
-        default: '2026.10.50'
+        default: '2026.10.51'
     secrets:
       model-key:
         description: >-
@@ -536,12 +536,25 @@ jobs:
         run: |
           set -euo pipefail
           ref="ghcr.io/vividynamics/qare-core:$QARE_VERSION"
-          if ! docker pull "$ref"; then
+          if ! docker buildx version > /dev/null 2>&1; then
+            echo "::error::qare image inspection needs Docker buildx with imagetools: install the buildx plugin alongside this runner's Docker client"
+            exit 1
+          fi
+          if ! digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')"; then
+            echo "::error::qare could not resolve the published image $ref to its registry digest; nothing was pulled"
+            exit 1
+          fi
+          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::qare registry inspection returned no valid SHA-256 digest for $ref; nothing was pulled"
+            exit 1
+          fi
+          immutable="${ref%:*}@$digest"
+          if ! docker pull "$immutable"; then
             echo "no published qare-core image for version $QARE_VERSION ($ref): the image family publishes when a release is tagged, so tag a release and the images job in qare's .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
+          echo "digest=$immutable" >> "$GITHUB_OUTPUT"
       - name: Download the QA inputs
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -550,7 +563,7 @@ jobs:
       - name: Plan the QA run
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
           MODEL_KEY: ${{ secrets.model-key }}
           MODEL_KEY_ENV: ${{ inputs.model-key-env }}
           NARE_PROVIDER: ${{ inputs.nare-provider }}
@@ -814,12 +827,25 @@ jobs:
           # exists, and the release lands after the merge, from the default
           # branch's history (#194).
           ref="ghcr.io/vividynamics/qare-$FLAVOUR:$QARE_VERSION"
-          if ! docker pull "$ref"; then
+          if ! docker buildx version > /dev/null 2>&1; then
+            echo "::error::qare image inspection needs Docker buildx with imagetools: install the buildx plugin alongside this runner's Docker client"
+            exit 1
+          fi
+          if ! digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')"; then
+            echo "::error::qare could not resolve the published image $ref to its registry digest; nothing was pulled"
+            exit 1
+          fi
+          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::qare registry inspection returned no valid SHA-256 digest for $ref; nothing was pulled"
+            exit 1
+          fi
+          immutable="${ref%:*}@$digest"
+          if ! docker pull "$immutable"; then
             echo "no published qare-$FLAVOUR image for version $QARE_VERSION ($ref): the image family publishes when a release is tagged, so tag a release and the images job in qare's .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
+          echo "digest=$immutable" >> "$GITHUB_OUTPUT"
       # The builds a client profile installs (#75): a build of the head and,
       # for a comparison, a build of the base, produced by a job of the
       # calling workflow and uploaded as one artifact. They are pull request
@@ -913,7 +939,8 @@ jobs:
       - name: Run the plan
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
+          IMAGE_TAG_REF: ${{ steps.image.outputs.ref }}
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -970,6 +997,7 @@ jobs:
             -e HOME=/tmp \
             "${safety_mount[@]}" \
             -e QARE_IMAGE_REF="$IMAGE_REF" \
+            -e QARE_IMAGE_TAG="$IMAGE_TAG_REF" \
             -e QARE_IMAGE_DIGEST="$IMAGE_DIGEST" \
             -e QARE_RUNNER_ENVIRONMENT="${RUNNER_ENVIRONMENT:-}" \
             -e QARE_REPOSITORY_VISIBILITY="${QARE_REPOSITORY_VISIBILITY:-}" \
@@ -1057,7 +1085,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
         run: |
           set -euo pipefail
           if [ ! -d evidence ] || [ ! -f "$RUNNER_TEMP/qare-docker-access" ]; then
@@ -1085,7 +1113,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
           PROFILE: ${{ inputs.profile }}
         run: |
           set -euo pipefail
@@ -1209,12 +1237,25 @@ jobs:
         run: |
           set -euo pipefail
           ref="ghcr.io/vividynamics/qare-core:$QARE_VERSION"
-          if ! docker pull "$ref"; then
+          if ! docker buildx version > /dev/null 2>&1; then
+            echo "::error::qare image inspection needs Docker buildx with imagetools: install the buildx plugin alongside this runner's Docker client"
+            exit 1
+          fi
+          if ! digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')"; then
+            echo "::error::qare could not resolve the published image $ref to its registry digest; nothing was pulled"
+            exit 1
+          fi
+          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::qare registry inspection returned no valid SHA-256 digest for $ref; nothing was pulled"
+            exit 1
+          fi
+          immutable="${ref%:*}@$digest"
+          if ! docker pull "$immutable"; then
             echo "no published qare-core image for version $QARE_VERSION ($ref): the image family publishes when a release is tagged, so tag a release and the images job in qare's .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
+          echo "digest=$immutable" >> "$GITHUB_OUTPUT"
       # A minted token is only the App's to an image that reads it (#305).
       # An image that predates it would find no App in its environment and
       # post as something weaker without a word, so this stops by name
@@ -1223,7 +1264,7 @@ jobs:
         if: steps.app.outputs.token != ''
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
         run: |
           set -euo pipefail
           # grep's own answer: 0 found, 1 not found. Anything else is a
@@ -1292,7 +1333,7 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
           QARE_APP_SLUG: ${{ steps.app.outputs.slug }}
@@ -1318,7 +1359,7 @@ jobs:
       - name: Judge the result
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
           # The planner's key and model: the verifier's prompt is planning
           # size, so it asks the model the planner asked (nare#27).
           MODEL_KEY: ${{ secrets.model-key }}
@@ -1416,13 +1457,13 @@ jobs:
             echo "::warning::qare metrics record failed: this run's numbers are not recorded, the verdict is unaffected"
           fi
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
       - name: File stub issues (refused runs only)
         if: github.event_name == 'pull_request'
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
           QARE_APP_SLUG: ${{ steps.app.outputs.slug }}
@@ -1458,7 +1499,7 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
           QARE_APP_SLUG: ${{ steps.app.outputs.slug }}
@@ -2170,12 +2211,25 @@ jobs:
           # exists, and the release lands after the merge, from the default
           # branch's history (#194).
           ref="ghcr.io/vividynamics/qare-$FLAVOUR:$QARE_VERSION"
-          if ! docker pull "$ref"; then
+          if ! docker buildx version > /dev/null 2>&1; then
+            echo "::error::qare image inspection needs Docker buildx with imagetools: install the buildx plugin alongside this runner's Docker client"
+            exit 1
+          fi
+          if ! digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')"; then
+            echo "::error::qare could not resolve the published image $ref to its registry digest; nothing was pulled"
+            exit 1
+          fi
+          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::qare registry inspection returned no valid SHA-256 digest for $ref; nothing was pulled"
+            exit 1
+          fi
+          immutable="${ref%:*}@$digest"
+          if ! docker pull "$immutable"; then
             echo "no published qare-$FLAVOUR image for version $QARE_VERSION ($ref): the image family publishes when a release is tagged, so tag a release and the images job in qare's .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
+          echo "digest=$immutable" >> "$GITHUB_OUTPUT"
       - name: Download the plan
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -2230,7 +2284,8 @@ jobs:
       - name: Run the plan on main
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
+          IMAGE_TAG_REF: ${{ steps.image.outputs.ref }}
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
           HEAD_SHA: ${{ github.sha }}
           RUN_ID: ${{ github.run_id }}
@@ -2254,6 +2309,7 @@ jobs:
             -e HOME=/tmp \
             "${safety_mount[@]}" \
             -e QARE_IMAGE_REF="$IMAGE_REF" \
+            -e QARE_IMAGE_TAG="$IMAGE_TAG_REF" \
             -e QARE_IMAGE_DIGEST="$IMAGE_DIGEST" \
             -e QARE_RUNNER_ENVIRONMENT="${RUNNER_ENVIRONMENT:-}" \
             -e QARE_REPOSITORY_VISIBILITY="${QARE_REPOSITORY_VISIBILITY:-}" \
@@ -2315,7 +2371,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
         run: |
           set -euo pipefail
           if [ ! -d evidence ] || [ ! -f "$RUNNER_TEMP/qare-docker-access" ]; then
@@ -2341,7 +2397,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
           PROFILE: ${{ inputs.profile }}
         run: |
           set -euo pipefail
@@ -2441,12 +2497,25 @@ jobs:
         run: |
           set -euo pipefail
           ref="ghcr.io/vividynamics/qare-core:$QARE_VERSION"
-          if ! docker pull "$ref"; then
+          if ! docker buildx version > /dev/null 2>&1; then
+            echo "::error::qare image inspection needs Docker buildx with imagetools: install the buildx plugin alongside this runner's Docker client"
+            exit 1
+          fi
+          if ! digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')"; then
+            echo "::error::qare could not resolve the published image $ref to its registry digest; nothing was pulled"
+            exit 1
+          fi
+          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::qare registry inspection returned no valid SHA-256 digest for $ref; nothing was pulled"
+            exit 1
+          fi
+          immutable="${ref%:*}@$digest"
+          if ! docker pull "$immutable"; then
             echo "no published qare-core image for version $QARE_VERSION ($ref): the image family publishes when a release is tagged, so tag a release and the images job in qare's .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
+          echo "digest=$immutable" >> "$GITHUB_OUTPUT"
       # A minted token is only the App's to an image that reads it (#305).
       # An image that predates it would find no App in its environment and
       # post as something weaker without a word, so this stops by name
@@ -2455,7 +2524,7 @@ jobs:
         if: steps.app.outputs.token != ''
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
         run: |
           set -euo pipefail
           # grep's own answer: 0 found, 1 not found. Anything else is a
@@ -2503,7 +2572,7 @@ jobs:
       - name: Judge the result on main
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
           MODEL_KEY: ${{ secrets.model-key }}
           MODEL_KEY_ENV: ${{ inputs.model-key-env }}
           NARE_PROVIDER: ${{ inputs.nare-provider }}
@@ -2557,7 +2626,7 @@ jobs:
       - name: File what the run on main found
         shell: bash
         env:
-          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
           QARE_APP_SLUG: ${{ steps.app.outputs.slug }}

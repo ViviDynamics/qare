@@ -37,6 +37,7 @@ step() {
 step "Find the runner's docker"
 code=0
 IMAGE_REF="$image" \
+IMAGE_TAG_REF="$image" \
 IMAGE_DIGEST="${image}@local" \
 BASE_SHA="$(git rev-parse 'HEAD^1')" \
 HEAD_SHA="$(git rev-parse HEAD)" \
@@ -114,6 +115,7 @@ cp examples/compose-app/plan.json plan.json
 git worktree remove --force "$RUNNER_TEMP/qare-base" 2>/dev/null || true
 code=0
 IMAGE_REF="$image" \
+IMAGE_TAG_REF="$image" \
 IMAGE_DIGEST="${image}@local" \
 BASE_SHA="$(git rev-parse 'HEAD^1')" \
 HEAD_SHA="$(git rev-parse HEAD)" \

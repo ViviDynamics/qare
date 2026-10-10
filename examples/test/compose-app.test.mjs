@@ -4,8 +4,9 @@
 // as plain scripts. The boot itself is CI's compose-boot job, which needs a
 // docker daemon this suite must not.
 import { test } from 'node:test'
+import { spawnSync } from 'node:child_process'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -63,7 +64,7 @@ test('the execute steps CI runs are scripts the pipeline carries', () => {
   assert.deepEqual(find.env, [])
   const run = pipelineStep('execute', 'Run the plan')
   assert.match(run.run, /qare run --plan plan\.json/)
-  assert.deepEqual(run.env, ['IMAGE_REF', 'IMAGE_DIGEST', 'BASE_SHA', 'HEAD_SHA', 'PR_NUMBER', 'PROFILE'])
+  assert.deepEqual(run.env, ['IMAGE_REF', 'IMAGE_TAG_REF', 'IMAGE_DIGEST', 'BASE_SHA', 'HEAD_SHA', 'PR_NUMBER', 'PROFILE'])
   const down = pipelineStep('execute', 'Tear down what the run booted')
   assert.match(down.run, /qare reap/)
 })
@@ -76,4 +77,23 @@ test('a step that cannot run outside a workflow is refused by name', async () =>
   const path = join(dir, 'workflow.yml')
   await writeFile(path, 'jobs:\n  a:\n    steps:\n      - name: b\n        run: echo ${{ github.sha }}\n')
   assert.throws(() => pipelineStep('a', 'b', path), /carries a workflow expression/)
+})
+
+
+test('every CI fixture invocation supplies the execute step environment', async () => {
+  const root = fileURLToPath(new URL('../../', import.meta.url))
+  const required = pipelineStep('execute', 'Run the plan').env
+  let invocations = 0
+  for (const file of (await readdir(join(root, 'scripts'))).filter((name) => name.endsWith('.sh'))) {
+    const source = await readFile(join(root, 'scripts', file), 'utf8')
+    for (const match of source.matchAll(/(^([ \t]*[A-Z_]+=.*\\\n)+)[ \t]*step 'Run the plan'/gm)) {
+      invocations++
+      // Execute the caller's actual assignments; the stand-in step validates
+      // the real workflow interface without starting Docker or the app.
+      const script = `image=qare:test; profile=.qa\nstep() { '${process.execPath}' -e 'const missing=JSON.parse(process.env.REQUIRED).filter(n=>process.env[n]===undefined); if(missing.length){console.error(missing.join(", "));process.exit(1)}'; }\n${match[0]}`
+      const run = spawnSync('bash', ['--noprofile', '--norc', '-eu', '-c', script], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH, REQUIRED: JSON.stringify(required) } })
+      assert.equal(run.status, 0, `${file}: ${run.stderr}`)
+    }
+  }
+  assert.ok(invocations >= 7, 'all fixture invocations were checked')
 })

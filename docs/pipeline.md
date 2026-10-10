@@ -30,7 +30,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.50
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.51
     with:
       nare-model: gpt-4.1-mini
     secrets:
@@ -68,7 +68,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.50
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.51
     with:
       runs-on: '["self-hosted", "linux", "x64"]'
       profile: services/web/qa
@@ -300,13 +300,20 @@ actions' tags point at on the day.
 
 ## What the runner needs
 
-A GitHub-hosted runner has all of it. Your own runner needs `docker`, `git`,
+A GitHub-hosted runner has all of it. Your own runner needs `docker` with the
+buildx plugin and its `imagetools inspect` command, `git`,
 `curl` and `jq`. It does not need the GitHub CLI, nor node, pnpm or Python set up by hand:
 plan, execute and judge run qare and nare inside the published images
 (`ghcr.io/vividynamics/qare-core` and the flavour the profile names), and
 the jobs that run anything outside an image (collect, main_collect, report,
 advisory, requeue, and the one step of judge and main_judge that mints the
 App's token) set up node themselves with `actions/setup-node`.
+
+Each image job resolves the selected release tag to its registry digest before
+pulling. Every container in that job uses the resolved digest, while evidence
+records both the release tag and digest. A missing buildx plugin, an unreadable
+registry response or a malformed digest stops the job with a named error.
+Later jobs resolve their own image; this does not replace release immutability.
 
 A profile that boots its application (`app.boot`) also needs, on the runner
 execute lands on, the docker compose v2 plugin, and the buildx plugin if the
@@ -506,7 +513,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.50
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.51
     with:
       nare-model: gpt-4.1-mini
       artefacts: qare-artefacts
@@ -866,7 +873,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.50
+    uses: ViviDynamics/qare/.github/workflows/pipeline.yml@2026.10.51
     with:
       nare-model: gpt-4.1-mini
       main-lane: 'true'
@@ -1144,7 +1151,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ViviDynamics/qare
-          ref: 2026.10.50
+          ref: 2026.10.51
           path: qare
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

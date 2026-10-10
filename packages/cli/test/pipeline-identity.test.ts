@@ -270,7 +270,7 @@ test('judge and main_judge stop by name when the image they pulled cannot read a
     const step = steps[index] as Step
     expect(step.if, id).toBe("steps.app.outputs.token != ''")
     // It holds no token and no secret: only the name of the image.
-    expect(step.env, id).toEqual({ IMAGE_REF: '${{ steps.image.outputs.ref }}' })
+    expect(step.env, id).toEqual({ IMAGE_REF: '${{ steps.image.outputs.digest }}' })
     const run = (step.run ?? '').replace(/\\\n/g, ' ').replace(/\s+/g, ' ')
     expect(run, id).toContain('docker run --rm --network none --entrypoint grep "$IMAGE_REF" -q QARE_APP_TOKEN /opt/qare/lib/packages/action/dist/identity.js || status=$?')
     // The step's own script, run with a docker that answers as grep would:

@@ -314,7 +314,7 @@ test('the identity reaches the steps that post, and nothing else', () => {
       if (!IDENTITY.test(text)) continue
       if (step.name === MINT || step.name === REVOKE) continue
       if (step.name === IMAGE_CHECK) {
-        expect(step.env, `${id}: ${step.name}`).toEqual({ IMAGE_REF: '${{ steps.image.outputs.ref }}' })
+        expect(step.env, `${id}: ${step.name}`).toEqual({ IMAGE_REF: '${{ steps.image.outputs.digest }}' })
         continue
       }
       holders.push(`${id}: ${step.name ?? ''}`)
