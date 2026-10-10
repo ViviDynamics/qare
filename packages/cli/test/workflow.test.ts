@@ -129,10 +129,10 @@ test('secret hygiene: the job that runs pull request code holds nothing', () => 
   expect(section('execute')).not.toContain('secrets.')
 })
 
-test('judge holds the model key and the token, and nothing else does', () => {
+test('judge holds the model key without the posting identity', () => {
   const judge = section('judge')
   expect(judge).toContain('${{ secrets.model-key }}')
-  expect(judge).toContain('${{ secrets.GITHUB_TOKEN }}')
+  expect(judge).not.toContain('${{ secrets.GITHUB_TOKEN }}')
 })
 
 test('the step that talks to the verifier model holds no GitHub token', () => {
@@ -253,11 +253,11 @@ test('the qare the pipeline runs is built from the repository own workspace (#88
 })
 
 test('judge posts the evidence with the token alone, linking only to the uploaded artifact', () => {
-  const judge = section('judge')
+  const judge = section('publish')
   const start = judge.indexOf('- name: Post the evidence')
   const step = judge.slice(start, judge.indexOf('- name:', start + 1))
   expect(step).toContain('post-evidence')
-  expect(step).toContain('--result judged-result.json')
+  expect(step).toContain('--result judged/judged-result.json')
   expect(step).toContain('--evidence evidence')
   expect(step).toContain('secrets.GITHUB_TOKEN')
   expect(step).not.toContain('model-key')
@@ -272,7 +272,7 @@ test('judge posts the evidence with the token alone, linking only to the uploade
 // artifact. The push happens in the judge step, which holds the identity and
 // already runs on the base commit, never on the pull request tree.
 test('judge can push qa-assets: contents write on the token-holding job only', () => {
-  const judge = section('judge')
+  const judge = section('publish')
   expect(judge).toContain('contents: write')
   for (const job of ['collect', 'plan', 'execute']) expect(section(job)).not.toContain('contents: write')
   expect(section('requeue')).not.toContain('contents: write')
@@ -299,7 +299,7 @@ test('judge leaves no token in the checkout for the model step to find', () => {
 })
 
 test('stub issues are filed before posting, so a posting failure cannot stop them', () => {
-  const judge = section('judge')
+  const judge = section('publish')
   expect(judge.indexOf('- name: File stub issues')).toBeLessThan(judge.indexOf('- name: Post the evidence'))
 })
 
@@ -689,7 +689,7 @@ test('release refuses to publish a tag that is not on the default branch (#194)'
 // says so where the verdict would have been.
 test('a report job explains a pipeline that published no verdict', () => {
   const report = section('report')
-  expect(report).toContain('needs: [collect, plan, execute, judge]')
+  expect(report).toContain('needs: [collect, plan, execute, judge, publish]')
   // Only when something failed and judge did not publish a verdict, and only
   // on a pull request from this repository: a fork's token cannot comment.
   expect(report).toContain('always()')
@@ -697,9 +697,9 @@ test('a report job explains a pipeline that published no verdict', () => {
   expect(report).toContain('github.event.pull_request.head.repo.full_name == github.repository')
   // Gated on the verdict reaching the pull request, not on judge's result: a
   // step failing after the post must not replace a verdict with "not evaluated".
-  expect(report).toContain("needs.judge.outputs.posted != 'true'")
+  expect(report).toContain("needs.publish.outputs.posted != 'true'")
   expect(report).not.toContain('needs.judge.result')
-  const judge = section('judge')
+  const judge = section('publish')
   expect(judge).toContain('posted: ${{ steps.posted.outputs.posted }}')
   const post = judge.indexOf('- name: Post the evidence')
   const postStep = judge.slice(post, judge.indexOf('- name:', post + 1))
@@ -710,12 +710,12 @@ test('a report job explains a pipeline that published no verdict', () => {
   for (const flag of ['--run-id "$RUN_ID"', '--attempt "$RUN_ATTEMPT"', '--pr "$PR_NUMBER"', '--sha "$HEAD_SHA"', '--run-url "$RUN_URL"', '--recorded-verdict "$RECORDED_VERDICT"'])
     expect(report).toContain(flag)
   // requeue (push only) and report itself are not the pipeline it describes.
-  expect(report).toContain('--pipeline collect,plan,execute,judge')
+  expect(report).toContain('--pipeline collect,plan,execute,judge,publish')
   // The pipeline is the one this report job sits in, whatever else the
   // caller's workflow runs under the same job names (#145).
   expect(report).toContain('--reporter report')
   // Checked but unpublished is told apart from never evaluated.
-  expect(report).toContain('RECORDED_VERDICT: ${{ needs.execute.outputs.verdict }}')
+  expect(report).toContain('RECORDED_VERDICT: ${{ needs.judge.outputs.verdict || needs.execute.outputs.verdict }}')
 })
 
 test('the report job holds the GitHub token only and runs qare from the pinned revision', () => {

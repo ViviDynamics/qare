@@ -82,7 +82,7 @@ for (const job of jobs) {
 
 test('all later pipeline containers receive the immutable digest reference', () => {
   let containers = 0
-  for (const job of jobs) for (const step of pipeline.jobs[job]!.steps) {
+  for (const job of [...jobs, 'publish', 'main_publish']) for (const step of pipeline.jobs[job]!.steps) {
     if (!step.run?.includes('docker run')) continue
     containers += 1
     expect(step.env?.IMAGE_REF, `${job}: ${step.name}`).toBe('${{ steps.image.outputs.digest }}')
