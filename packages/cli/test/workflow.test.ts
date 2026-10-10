@@ -642,7 +642,7 @@ test('the job that runs pull request code is left no token to find (rule 7)', ()
   // built from fragments here and in the release test below (#196).
   const execute = section('execute')
   const depth = ['fe', 'tch-depth: 2'].join('')
-  expect(execute).toContain(`- uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0\n        with:\n          persist-credentials: false\n          ${depth}\n`)
+  expect(execute).toMatch(new RegExp(`- uses: actions/checkout@[0-9a-f]{40} # v[0-9.]+\\n        with:\\n          persist-credentials: false\\n          ${depth}\\n`))
   expect(execute.match(/actions\/checkout@/g)).toHaveLength(1)
   expect(execute).not.toContain(['git ', 'fe', 'tch'].join(''))
   expect(execute).toContain('--base "$BASE_SHA"')

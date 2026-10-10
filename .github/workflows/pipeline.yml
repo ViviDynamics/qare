@@ -65,7 +65,7 @@ name: QARE pipeline
 # What this does not change: the key is still a secret of the job. GitHub
 # hands a job's runner every secret the job's steps name, so the steps that
 # run on the runner after the minting step (the build of the pinned qare in
-# report, advisory and requeue, and the action that sets pnpm up for it) run
+# report, advisory and requeue, and the step that enables pnpm with corepack) run
 # on a machine that was given it, though never in their own environment. A
 # container is not that machine. And "before anything else of the run" is a
 # statement about one job: a runner that outlives its jobs keeps what
@@ -372,6 +372,8 @@ jobs:
         working-directory: .qare-pipeline
         run: |
           set -euo pipefail
+          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
           wanted="${wanted%%+*}"
@@ -1582,6 +1584,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
           wanted="${wanted%%+*}"
@@ -1710,6 +1714,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
           wanted="${wanted%%+*}"
@@ -1809,6 +1815,8 @@ jobs:
         working-directory: .qare-pipeline
         run: |
           set -euo pipefail
+          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
           wanted="${wanted%%+*}"
@@ -1941,6 +1949,8 @@ jobs:
         working-directory: .qare-pipeline
         run: |
           set -euo pipefail
+          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
           wanted="${wanted%%+*}"

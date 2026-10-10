@@ -18,7 +18,8 @@ permissions:
 
 concurrency:
   # A global group orders releases through completion: the image steps push
-  # shared aliases (latest and the month line), and per-ref groups would let
+  # version tags before the final job updates shared aliases (latest and
+  # the month line), and per-ref groups would let
   # two close releases build concurrently and let the older one finish last,
   # rolling the aliases backward. One running and one pending run survive,
   # so a burst supersedes a pending release; rerunning the release's
@@ -28,11 +29,11 @@ concurrency:
 
 jobs:
   # The image family's publication (#88): a release tag is what the registry
-  # sees. The core image builds first, the web flavour builds FROM it, and
-  # both go to the GitHub container registry as the version tag and latest,
-  # for amd64 and arm64. The pipeline's image pulls resolve through these
-  # tags, so a release is what makes the image exist; until the first release
-  # that publishes one, the pipeline's pulls fail naming exactly this.
+  # sees. The core image builds first; web, android and desktop-linux build
+  # FROM it. Each is published under the version tag, for amd64 and arm64
+  # where supported. After the release guards succeed, the alias job moves
+  # latest and the month line to the newest published version. The pipeline
+  # pulls version tags, so a missing release image fails by name.
   images:
     name: images (the family)
     runs-on: ubuntu-latest
@@ -228,6 +229,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
           wanted="${wanted%%+*}"

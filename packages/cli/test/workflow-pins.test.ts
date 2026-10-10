@@ -1,9 +1,9 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { expect, test } from 'vitest'
+import { afterEach, expect, test } from 'vitest'
 import { parse } from 'yaml'
 
 // #310: what the workflows trust, and what they are allowed to do. An action
@@ -78,6 +78,15 @@ test('one action is one commit everywhere: no two workflows run different code u
 })
 
 const ENABLE = 'Enable the pnpm package.json names'
+const temporaryDirectories: string[] = []
+const temporaryDirectory = (prefix: string): string => {
+  const path = mkdtempSync(join(tmpdir(), prefix))
+  temporaryDirectories.push(path)
+  return path
+}
+afterEach(() => {
+  for (const path of temporaryDirectories.splice(0)) rmSync(path, { recursive: true, force: true })
+})
 
 test('pnpm is the one package.json names, by version and hash, and no action installs it', () => {
   const manifest = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as { packageManager?: string }
@@ -96,7 +105,9 @@ test('pnpm is the one package.json names, by version and hash, and no action ins
       expect(enable, `${name} ${id} runs pnpm and never enables it`).toBeGreaterThan(-1)
       expect(enable, `${name} ${id}`).toBeLessThan(first)
       // corepack ships with node, so node is set up first.
-      expect(steps.findIndex((step) => step.uses?.startsWith('actions/setup-node@')), `${name} ${id}`).toBeLessThan(enable)
+      const setup = steps.findIndex((step) => step.uses?.startsWith('actions/setup-node@'))
+      expect(setup, `${name} ${id} must set up node`).toBeGreaterThan(-1)
+      expect(setup, `${name} ${id}`).toBeLessThan(enable)
       const run = steps[enable]?.run ?? ''
       expect(run, `${name} ${id}`).toContain('corepack enable')
       // The version that resolved is held to the one package.json names.
@@ -112,25 +123,60 @@ test('pnpm is the one package.json names, by version and hash, and no action ins
 })
 
 test('the enabling step stops when the pnpm that resolved is not the one package.json names', () => {
-  const step = load('ci.yml').jobs.verify?.steps?.find((candidate) => candidate.name === ENABLE)
-  const attempt = (resolved: string, packageManager: string | undefined) => {
-    const cwd = mkdtempSync(join(tmpdir(), 'qare-pnpm-'))
-    const bin = mkdtempSync(join(tmpdir(), 'qare-pnpm-bin-'))
+  const runs = new Set(files.flatMap((name) => Object.values(load(name).jobs).flatMap((job) =>
+    (job.steps ?? []).filter((step) => step.name === ENABLE).map((step) => step.run ?? 'exit 99'))))
+  const attempt = (run: string, resolved: string, packageManager: string | undefined, corepackExit = 0) => {
+    const cwd = temporaryDirectory('qare-pnpm-')
+    const bin = temporaryDirectory('qare-pnpm-bin-')
     writeFileSync(join(cwd, 'package.json'), JSON.stringify({ name: 'x', ...(packageManager === undefined ? {} : { packageManager }) }))
-    writeFileSync(join(bin, 'corepack'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    writeFileSync(join(bin, 'corepack'), `#!/bin/sh\nexit ${corepackExit}\n`, { mode: 0o755 })
+    writeFileSync(join(cwd, 'github-env'), '')
     writeFileSync(join(bin, 'pnpm'), `#!/bin/sh\necho ${resolved}\n`, { mode: 0o755 })
-    return spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', step?.run ?? 'exit 99'], {
+    return spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', run], {
       cwd,
-      env: { PATH: `${bin}:${process.env.PATH ?? ''}` },
+      env: { PATH: `${bin}:${process.env.PATH ?? ''}`, RUNNER_TEMP: cwd, GITHUB_ENV: join(cwd, 'github-env') },
       encoding: 'utf8',
     })
   }
-  expect(attempt('12.5.1', `pnpm@12.5.1+sha512.${'a'.repeat(128)}`).status).toBe(0)
-  expect(attempt('12.5.1', 'pnpm@12.5.1').status).toBe(0)
-  const other = attempt('9.0.0', `pnpm@12.5.1+sha512.${'a'.repeat(128)}`)
-  expect(other.status).toBe(1)
-  expect(other.stdout).toMatch(/^::error::.*pnpm@9\.0\.0.*pnpm@12\.5\.1/m)
-  expect(attempt('12.5.1', undefined).status).toBe(1)
+  expect(runs.size).toBeGreaterThan(0)
+  for (const run of runs) {
+    expect(attempt(run, '12.5.1', `pnpm@12.5.1+sha512.${'a'.repeat(128)}`).status).toBe(0)
+    expect(attempt(run, '12.5.1', 'pnpm@12.5.1').status).toBe(0)
+    const other = attempt(run, '9.0.0', `pnpm@12.5.1+sha512.${'a'.repeat(128)}`)
+    expect(other.status).toBe(1)
+    expect(other.stdout).toMatch(/^::error::.*pnpm@9\.0\.0.*pnpm@12\.5\.1/m)
+    expect(attempt(run, '12.5.1', undefined).status).toBe(1)
+    expect(attempt(run, '12.5.1', 'pnpm@12.5.1', 17).status).toBe(17)
+  }
+})
+
+test('each pnpm job uses a fresh corepack directory and hands it to later steps', () => {
+  for (const name of files)
+    for (const [id, job] of Object.entries(load(name).jobs)) {
+      const step = job.steps?.find((candidate) => candidate.name === ENABLE)
+      if (step === undefined) continue
+      const cwd = temporaryDirectory('qare-corepack-')
+      const bin = temporaryDirectory('qare-corepack-bin-')
+      const envFile = join(cwd, 'github-env')
+      writeFileSync(envFile, '')
+      writeFileSync(join(cwd, 'package.json'), JSON.stringify({ packageManager: 'pnpm@12.5.1' }))
+      writeFileSync(join(bin, 'corepack'), '#!/bin/sh\n[ -d "$COREPACK_HOME" ] && [ "$COREPACK_HOME" != "$RUNNER_TEMP/old-cache" ]\n', { mode: 0o755 })
+      writeFileSync(join(bin, 'pnpm'), '#!/bin/sh\necho 12.5.1\n', { mode: 0o755 })
+      const homes: string[] = []
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        writeFileSync(envFile, '')
+        const ran = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', step.run ?? 'exit 99'], {
+          cwd,
+          env: { PATH: `${bin}:${process.env.PATH ?? ''}`, RUNNER_TEMP: cwd, GITHUB_ENV: envFile, COREPACK_HOME: join(cwd, 'old-cache') },
+          encoding: 'utf8',
+        })
+        expect(ran.status, `${name} ${id}: ${ran.stderr}`).toBe(0)
+        const home = /^COREPACK_HOME=(.+)$/m.exec(readFileSync(envFile, 'utf8'))?.[1]
+        expect(home, `${name} ${id}`).toMatch(new RegExp(`^${cwd}/qare-corepack\\.`))
+        homes.push(home ?? '')
+      }
+      expect(homes[0], `${name} ${id}`).not.toBe(homes[1])
+    }
 })
 
 const WRITES = /secrets\.|github\.token/
@@ -182,7 +228,7 @@ test('a manual run of auto-tag starts the tagging job for main alone', () => {
 test('auto-tag holds the version it read to CalVer before anything is written to the job\'s environment', () => {
   const step = load('auto-tag.yml').jobs.tag?.steps?.find((candidate) => candidate.name === 'Read the version package.json carries')
   const attempt = (version: unknown) => {
-    const cwd = mkdtempSync(join(tmpdir(), 'qare-auto-tag-'))
+    const cwd = temporaryDirectory('qare-auto-tag-')
     const env = join(cwd, 'github-env')
     writeFileSync(env, '')
     writeFileSync(join(cwd, 'package.json'), JSON.stringify({ name: 'x', version }))

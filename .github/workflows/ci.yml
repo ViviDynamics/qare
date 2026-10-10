@@ -32,6 +32,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
           wanted="${wanted%%+*}"
@@ -71,6 +73,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
           wanted="${wanted%%+*}"
@@ -115,6 +119,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
           wanted="${wanted%%+*}"
@@ -167,6 +173,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
           wanted="${wanted%%+*}"
@@ -208,6 +216,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
           corepack enable
           wanted="$(jq -r '.packageManager // empty' package.json)"
           wanted="${wanted%%+*}"

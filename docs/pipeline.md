@@ -200,8 +200,8 @@ either way).
 What this does not change: the key is still a secret of the job. GitHub
 hands a job's runner every secret the job's steps name, so what runs on the
 runner later in the same job (the build of the pinned qare in report,
-advisory and requeue, by its lockfile and with no cache, and the action that
-sets pnpm up for it) runs on a machine that was given the key, though never
+advisory and requeue, by its lockfile and with no cache, and the step that
+enables pnpm with corepack) runs on a machine that was given the key, though never
 in its own environment. A container is not that machine. And "before
 anything else of the run" is a statement about one job: a runner that
 outlives its jobs keeps what earlier jobs left on it, so on your own runners
@@ -288,7 +288,11 @@ Every action the pipeline uses is named by its full commit, with the version
 beside it as a comment, so a tag that moves changes nothing a run executes;
 a test holds every workflow file to that. pnpm is the one qare's
 `package.json` names, by version and hash, enabled with corepack: no action
-installs it. No job restores a dependency cache.
+installs it. Each job uses a fresh corepack directory, carried to later
+steps, so a previous job's cached pnpm cannot replace the hash-checked
+download. This covers workflow installs; the container's pnpm bootstrap
+currently installs by version and is tracked separately. No job restores a
+dependency cache.
 
 The examples in this guide name actions the same way. Name the actions of
 your own jobs by commit too: a job that holds a secret runs whatever its
@@ -1140,15 +1144,29 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ViviDynamics/qare
-          ref: 2026.10.36
+          ref: 2026.10.47
           path: qare
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: qare/.nvmrc
       # corepack reads the pnpm qare's package.json names, by version and hash.
-      - run: corepack enable && pnpm install --frozen-lockfile && pnpm build
+      - name: Enable and build the pinned qare
         working-directory: qare
+        shell: bash
+        run: |
+          set -euo pipefail
+          export COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          corepack enable
+          wanted="$(jq -r '.packageManager // empty' package.json)"
+          wanted="${wanted%%+*}"
+          found="pnpm@$(pnpm --version)"
+          if [ "$found" != "$wanted" ]; then
+            echo "::error::corepack resolved $found, expected $wanted"
+            exit 1
+          fi
+          pnpm install --frozen-lockfile
+          pnpm build
       - name: Report on the fleet
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
