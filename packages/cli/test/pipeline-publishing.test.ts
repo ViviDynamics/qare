@@ -46,13 +46,28 @@ for (const [judgeId, publishId] of [['judge', 'publish'], ['main_judge', 'main_p
       const cwd = mkdtempSync(join(tmpdir(), 'qare-judged-ready-'))
       writeFileSync(join(cwd, 'judged-result.json'), JSON.stringify({ verdict }))
       writeFileSync(join(cwd, 'output'), '')
-      const result = spawnSync('bash', ['-eo', 'pipefail', '-c', step?.run ?? 'exit 99'], { cwd, env: { PATH: process.env.PATH, GITHUB_OUTPUT: join(cwd, 'output') }, encoding: 'utf8' })
+      const result = spawnSync('bash', ['-eo', 'pipefail', '-c', step?.run ?? 'exit 99'], { cwd, env: { PATH: process.env.PATH, GITHUB_OUTPUT: join(cwd, 'output'), JUDGE_OUTPUT: cwd }, encoding: 'utf8' })
       expect(result.status, result.stderr).toBe(0)
       expect(readFileSync(join(cwd, 'output'), 'utf8')).toBe(`verdict=${verdict}\nready=true\n`)
       const upload = jobs[judgeId]?.steps.find((entry) => entry.with?.name === (judgeId === 'judge' ? 'judge-artifacts' : 'main-judge-artifacts'))
-      expect(upload?.if).toBe('always()')
+      expect(upload?.if).toBe("always() && steps.workspace.outputs.path != ''")
     })
   }
+
+  test(`${judgeId} refuses a stale tracked result when judging failed before producing output`, () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'qare-stale-judged-'))
+    const fresh = mkdtempSync(join(tmpdir(), 'qare-fresh-judged-'))
+    writeFileSync(join(cwd, 'judged-result.json'), JSON.stringify({ verdict: 'passed' }))
+    writeFileSync(join(cwd, 'output'), '')
+    const step = jobs[judgeId]?.steps.find((entry) => entry.name === 'Read the judged verdict')
+    const result = spawnSync('bash', ['-eo', 'pipefail', '-c', step?.run ?? 'exit 99'], { cwd, env: { PATH: process.env.PATH, JUDGE_OUTPUT: fresh, GITHUB_OUTPUT: join(cwd, 'output') }, encoding: 'utf8' })
+    expect(result.status).not.toBe(0)
+    expect(readFileSync(join(cwd, 'output'), 'utf8')).toBe('')
+    const setup = jobs[judgeId]?.steps.find((entry) => entry.name === 'Create a fresh judge output directory')
+    expect(setup?.run).toContain('mktemp -d "$RUNNER_TEMP/qare-judge.XXXXXX"')
+    const judge = jobs[judgeId]?.steps.find((entry) => entry.name?.startsWith('Judge the result'))
+    expect(judge?.run).toContain('--outDir "$JUDGE_OUTPUT"')
+  })
 
   for (const data of ['', '{}', '{"verdict":"passed\\nready=true"}', '{"verdict":"passed"}\n{"verdict":"failed"}']) {
     test(`${judgeId} never authorizes publishing with unread or malformed result ${JSON.stringify(data)}`, () => {
@@ -60,7 +75,7 @@ for (const [judgeId, publishId] of [['judge', 'publish'], ['main_judge', 'main_p
       const cwd = mkdtempSync(join(tmpdir(), 'qare-judged-invalid-'))
       writeFileSync(join(cwd, 'judged-result.json'), data)
       writeFileSync(join(cwd, 'output'), '')
-      const result = spawnSync('bash', ['-eo', 'pipefail', '-c', step?.run ?? 'exit 99'], { cwd, env: { PATH: process.env.PATH, GITHUB_OUTPUT: join(cwd, 'output') }, encoding: 'utf8' })
+      const result = spawnSync('bash', ['-eo', 'pipefail', '-c', step?.run ?? 'exit 99'], { cwd, env: { PATH: process.env.PATH, GITHUB_OUTPUT: join(cwd, 'output'), JUDGE_OUTPUT: cwd }, encoding: 'utf8' })
       expect(result.status).not.toBe(0)
       expect(readFileSync(join(cwd, 'output'), 'utf8')).toBe('')
       expect(result.stdout + result.stderr).toContain('no readable supported verdict')

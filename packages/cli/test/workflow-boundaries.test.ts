@@ -139,7 +139,7 @@ done
       PATH: `${bin}:${process.env.PATH ?? ''}`, RUNNER_TEMP: dir, IMAGE_REF: 'fixture-image',
       MODEL_KEY: 'test-only', MODEL_KEY_ENV: 'MODEL_TEST_KEY', NARE_PROVIDER: '', NARE_MODEL: '',
       NARE_STREAM: '', NARE_BASE_URL: '', QARE_MAX_OUTPUT_TOKENS: '', QARE_VERIFY_BATCH_SIZE: '',
-      PROFILE: '.qa', QARE_ARGS_FILE: argsFile,
+      PROFILE: '.qa', QARE_ARGS_FILE: argsFile, JUDGE_OUTPUT: mkdtempSync(join(tmpdir(), 'qare-judge-output-')),
     })
     expect(result.status).toBe(0)
     const args = readFileSync(argsFile, 'utf8').split('\0')

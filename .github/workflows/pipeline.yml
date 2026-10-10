@@ -40,8 +40,9 @@ name: QARE pipeline
 # app-private-key), else a personal access token (personal-access-token),
 # else the Actions token of the run, which every job already has. qare picks
 # in that order, so switching is a change of secrets and of nothing in this
-# file. collect only reads, so it keeps the Actions token and never holds a
-# key that can post. plan and execute hold none of it: the identity exists
+# file. collect reads completed advisory records with a scoped read-only App
+# token. Its mint step still receives the full private key; a PAT fallback
+# retains the caller's PAT capabilities. plan and execute hold none of it: the identity exists
 # where qare posts, never beside the planner and never where pull request
 # code runs. The Actions token stays beside the identity because GitHub lets
 # only an App write a check run, so a personal access token leaves that one
@@ -49,7 +50,7 @@ name: QARE pipeline
 # nothing else.
 #
 # The App's private key is the credential of the whole App, so it is used in
-# one step of each job that posts and nowhere else (#305): "Mint the App
+# one step of collect and each job that posts (#305): "Mint the App
 # token for this job" runs scripts/mint-app-token.mjs of the pinned qare with
 # node on the runner, before any dependency is installed, any artifact
 # downloaded or any container run, and mints a token for the calling
@@ -64,7 +65,7 @@ name: QARE pipeline
 # What this does not change: the key is still a secret of the job. GitHub
 # hands a job's runner every secret the job's steps name, so the steps that
 # run on the runner after the minting step (the build of the pinned qare in
-# report, advisory and requeue, and the step that enables pnpm with corepack) run
+# collect, report, advisory and requeue, and the step that enables pnpm with corepack) run
 # on a machine that was given it, though never in their own environment. A
 # container is not that machine. And "before anything else of the run" is a
 # statement about one job: a runner that outlives its jobs keeps what
@@ -542,14 +543,6 @@ jobs:
             -H @- <<< "Authorization: Bearer $QARE_APP_TOKEN" || echo "::warning::the App token this job minted could not be revoked; it expires within the hour"
 
   # label: report (GitHub token only)
-  # A pipeline that failed without publishing a verdict evaluated no
-  # criterion: a tool that would not install, an image that would not pull, a
-  # planner that would not answer, or judge failing to post. On the pull
-  # request that is only a red job, which reads like the project failing
-  # (#203). This job names the job and step that failed, and posts the
-  # sticky comment and a failing check run saying no criterion was evaluated
-  # and the failure is qare's side or the runner's, not the project's.
-
   plan:
     name: plan (model key only)
     needs: collect
@@ -1218,6 +1211,13 @@ jobs:
       verdict: ${{ steps.recorded.outputs.verdict }}
       image-digest: ${{ steps.image.outputs.digest }}
     steps:
+      - name: Create a fresh judge output directory
+        id: workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          directory="$(mktemp -d "$RUNNER_TEMP/qare-judge.XXXXXX")"
+          printf 'path=%s\n' "$directory" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
@@ -1284,6 +1284,7 @@ jobs:
         shell: bash
         env:
           IMAGE_REF: ${{ steps.image.outputs.digest }}
+          JUDGE_OUTPUT: ${{ steps.workspace.outputs.path }}
           # The planner's key and model: the verifier's prompt is planning
           # size, so it asks the model the planner asked (nare#27).
           MODEL_KEY: ${{ secrets.model-key }}
@@ -1341,18 +1342,24 @@ jobs:
           fi
           docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
             "${model_env[@]}" \
-            -v "$PWD:$PWD" -w "$PWD" \
+            -v "$PWD:$PWD" -v "$JUDGE_OUTPUT:$JUDGE_OUTPUT" -w "$PWD" \
             "$IMAGE_REF" qare judge \
-            --result evidence/result.json --outDir . \
+            --result evidence/result.json --outDir "$JUDGE_OUTPUT" \
             --plan qa-plan/plan.json --diff qa-inputs/change-planner.diff \
             --nare /usr/local/bin/nare --profile profile "${flow_actions[@]}" "${dismissed[@]}"
       - name: Read the judged verdict
         id: recorded
         if: always()
         shell: bash
+        env:
+          JUDGE_OUTPUT: ${{ steps.workspace.outputs.path }}
         run: |
           set -euo pipefail
-          if ! verdict="$(jq -ser 'select(length == 1) | .[0].verdict | select(type == "string" and IN("passed", "failed", "blocked", "refused", "waived"))' judged-result.json)"; then
+          if [ -z "$JUDGE_OUTPUT" ]; then
+            echo "::error::judge output directory missing; no readable supported verdict"
+            exit 1
+          fi
+          if ! verdict="$(jq -ser 'select(length == 1) | .[0].verdict | select(type == "string" and IN("passed", "failed", "blocked", "refused", "waived"))' "$JUDGE_OUTPUT/judged-result.json")"; then
             echo "::error::judged-result.json has no readable supported verdict; publishing is not authorized" >&2
             exit 1
           fi
@@ -1362,7 +1369,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f judged-result.json ]; then
+          if [ -z "$JUDGE_OUTPUT" ] || [ ! -f "$JUDGE_OUTPUT/judged-result.json" ]; then
             echo "judged-result.json missing: judge did not produce an artifact, no metrics to record"
             exit 0
           fi
@@ -1379,25 +1386,26 @@ jobs:
           # image's qare records them: this job builds nothing, and a
           # caller's repository carries no qare to run.
           if ! docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
-              -v "$PWD:$PWD" -w "$PWD" \
+              -v "$PWD:$PWD" -v "$JUDGE_OUTPUT:$JUDGE_OUTPUT" -w "$PWD" \
               "$IMAGE_REF" qare metrics record \
-              --result judged-result.json "${args[@]}" \
-              --store qa-metrics --out metrics.json; then
+              --result "$JUDGE_OUTPUT/judged-result.json" "${args[@]}" \
+              --store qa-metrics --out "$JUDGE_OUTPUT/metrics.json"; then
             echo "::warning::qare metrics record failed: this run's numbers are not recorded, the verdict is unaffected"
           fi
         env:
           IMAGE_REF: ${{ steps.image.outputs.digest }}
+          JUDGE_OUTPUT: ${{ steps.workspace.outputs.path }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
       - name: Upload judge artifacts (comment.md, checkrun.json, judged-result.json, metrics.json)
-        if: always()
+        if: always() && steps.workspace.outputs.path != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: judge-artifacts
           path: |
-            comment.md
-            checkrun.json
-            judged-result.json
-            metrics.json
+            ${{ steps.workspace.outputs.path }}/comment.md
+            ${{ steps.workspace.outputs.path }}/checkrun.json
+            ${{ steps.workspace.outputs.path }}/judged-result.json
+            ${{ steps.workspace.outputs.path }}/metrics.json
           if-no-files-found: ignore
 
   publish:
@@ -2471,6 +2479,13 @@ jobs:
       verdict: ${{ steps.recorded.outputs.verdict }}
       image-digest: ${{ steps.image.outputs.digest }}
     steps:
+      - name: Create a fresh judge output directory
+        id: workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          directory="$(mktemp -d "$RUNNER_TEMP/qare-judge.XXXXXX")"
+          printf 'path=%s\n' "$directory" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
@@ -2526,6 +2541,7 @@ jobs:
         shell: bash
         env:
           IMAGE_REF: ${{ steps.image.outputs.digest }}
+          JUDGE_OUTPUT: ${{ steps.workspace.outputs.path }}
           MODEL_KEY: ${{ secrets.model-key }}
           MODEL_KEY_ENV: ${{ inputs.model-key-env }}
           NARE_PROVIDER: ${{ inputs.nare-provider }}
@@ -2566,30 +2582,35 @@ jobs:
           fi
           docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
             "${model_env[@]}" \
-            -v "$PWD:$PWD" -w "$PWD" \
+            -v "$PWD:$PWD" -v "$JUDGE_OUTPUT:$JUDGE_OUTPUT" -w "$PWD" \
             "$IMAGE_REF" qare judge \
-            --result evidence/result.json --outDir . \
+            --result evidence/result.json --outDir "$JUDGE_OUTPUT" \
             --plan qa-inputs/plan.json --no-diff --no-advisory \
             --nare /usr/local/bin/nare --profile "$PROFILE"
       - name: Read the judged verdict
         id: recorded
         if: always()
         shell: bash
+        env:
+          JUDGE_OUTPUT: ${{ steps.workspace.outputs.path }}
         run: |
           set -euo pipefail
-          if ! verdict="$(jq -ser 'select(length == 1) | .[0].verdict | select(type == "string" and IN("passed", "failed", "blocked", "refused", "waived"))' judged-result.json)"; then
+          if [ -z "$JUDGE_OUTPUT" ]; then
+            echo "::error::judge output directory missing; no readable supported verdict"
+            exit 1
+          fi
+          if ! verdict="$(jq -ser 'select(length == 1) | .[0].verdict | select(type == "string" and IN("passed", "failed", "blocked", "refused", "waived"))' "$JUDGE_OUTPUT/judged-result.json")"; then
             echo "::error::judged-result.json has no readable supported verdict; publishing is not authorized" >&2
             exit 1
           fi
           printf 'verdict=%s\nready=true\n' "$verdict" >> "$GITHUB_OUTPUT"
       - name: Upload main judge artifacts (judged-result.json, main-findings.txt)
-        if: always()
+        if: always() && steps.workspace.outputs.path != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: main-judge-artifacts
           path: |
-            judged-result.json
-            main-findings.txt
+            ${{ steps.workspace.outputs.path }}/judged-result.json
           if-no-files-found: ignore
 
   main_publish:

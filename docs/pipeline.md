@@ -129,7 +129,9 @@ in judge, and neither holds a GitHub token or the identity. The advisory UX
 review is asked in that same judge step, after the verdict is computed, so it
 adds no holder of the key. The identity reaches only the steps that write to
 GitHub, in publish, main_publish, report, advisory and requeue. collect uses
-a read-only scoped identity to read previously recorded advisory dismissals.
+a scoped read-only App token to read previously recorded advisory dismissals.
+Its mint step still holds the full App key; the optional PAT fallback retains
+the permissions of the caller's PAT.
 execute, the job that runs the pull request's code, holds no secret at all.
 That map is at the top of `pipeline.yml` and a test holds the file to it.
 
@@ -185,8 +187,8 @@ that calls the pipeline:
 
 It needs no webhook, no organisation permission and no account permission.
 
-Where the private key goes: one step of each job that posts, and nowhere
-else. That step, "Mint the App token for this job", runs
+Where the private key goes: one step of each job that posts, and the
+read-only context step's mint in collect. It reaches no other step. That step, "Mint the App token for this job", runs
 `scripts/mint-app-token.mjs` of the pinned qare with node on the runner,
 before any dependency is installed, any artifact downloaded or any container
 run. The script imports node's own modules alone. It signs in as the App with the private
@@ -201,7 +203,7 @@ either way).
 
 What this does not change: the key is still a secret of the job. GitHub
 hands a job's runner every secret the job's steps name, so what runs on the
-runner later in the same job (the build of the pinned qare in report,
+runner later in the same job (the build of the pinned qare in collect, report,
 advisory and requeue, by its lockfile and with no cache, and the step that
 enables pnpm with corepack) runs on a machine that was given the key, though never
 in its own environment. A container is not that machine. And "before
@@ -226,7 +228,9 @@ Three things follow from that:
 - **Publishing gets a fresh token after judging.** judge and main_judge hold
   the model key and no App key. They upload their recorded results even when
   the verifier exits nonzero, and publish/main_publish start only when that
-  result has a readable supported verdict. Their first steps mint a token;
+  result has a readable supported verdict. Generated judge output uses a fresh
+  directory outside the checkout, so an old tracked result cannot authorize
+  publishing after an early failure. Their first steps mint a token;
   an hour spent verifying cannot age that token. Publishing itself must finish
   within its token's hour. If it cannot post, report mints its own token and
   names the unpublished verdict and failed step. Missing judged results never

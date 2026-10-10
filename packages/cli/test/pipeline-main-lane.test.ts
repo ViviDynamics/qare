@@ -245,7 +245,7 @@ test('main_execute runs the plan the ledger wrote, against the one revision the 
 
 test('main_judge asks the verifier with no diff, and files from the judged result, the ledger and the profile', () => {
   const judged = step('main_judge', 'Judge the result on main')
-  expect(oneLine(judged.run)).toContain('qare judge --result evidence/result.json --outDir . --plan qa-inputs/plan.json --no-diff --no-advisory --nare /usr/local/bin/nare --profile "$PROFILE"')
+  expect(oneLine(judged.run)).toContain('qare judge --result evidence/result.json --outDir "$JUDGE_OUTPUT" --plan qa-inputs/plan.json --no-diff --no-advisory --nare /usr/local/bin/nare --profile "$PROFILE"')
   // Fail closed without a key, and the key travels in a file, as in judge.
   expect(judged.run).toMatch(/if \[ -z "\$MODEL_KEY" \]; then\n(?:.*\n)*?\s*exit 1\n/)
   expect(judged.run).toContain('--env-file "$key_file"')
