@@ -300,13 +300,20 @@ actions' tags point at on the day.
 
 ## What the runner needs
 
-A GitHub-hosted runner has all of it. Your own runner needs `docker`, `git`,
+A GitHub-hosted runner has all of it. Your own runner needs `docker` with the
+buildx plugin and its `imagetools inspect` command, `git`,
 `curl` and `jq`. It does not need the GitHub CLI, nor node, pnpm or Python set up by hand:
 plan, execute and judge run qare and nare inside the published images
 (`ghcr.io/vividynamics/qare-core` and the flavour the profile names), and
 the jobs that run anything outside an image (collect, main_collect, report,
 advisory, requeue, and the one step of judge and main_judge that mints the
 App's token) set up node themselves with `actions/setup-node`.
+
+Each image job resolves the selected release tag to its registry digest before
+pulling. Every container in that job uses the resolved digest, while evidence
+records both the release tag and digest. A missing buildx plugin, an unreadable
+registry response or a malformed digest stops the job with a named error.
+Later jobs resolve their own image; this does not replace release immutability.
 
 A profile that boots its application (`app.boot`) also needs, on the runner
 execute lands on, the docker compose v2 plugin, and the buildx plugin if the
