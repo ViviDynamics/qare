@@ -39,15 +39,41 @@ name: QARE pipeline
 # The GitHub identity (#61, ADR-0003) is who qare posts as, and it is the
 # caller's choice, made by which secrets it passes: a GitHub App (app-id and
 # app-private-key), else a personal access token (personal-access-token),
-# else the Actions token of the run, which every job already has. The steps
-# that write to GitHub are handed all of it and qare picks in that order, so
-# switching is a change of secrets and of nothing in this file. collect only
-# reads, so it keeps the Actions token and never holds a key that can post.
-# plan and execute hold none of it: the identity exists where qare posts,
-# never beside the planner and never where pull request code runs. The
-# Actions token stays beside the identity because GitHub lets only an App
-# write a check run, so a personal access token leaves that one write to it,
-# and because a pinned qare older than the identity reads nothing else.
+# else the Actions token of the run, which every job already has. qare picks
+# in that order, so switching is a change of secrets and of nothing in this
+# file. collect only reads, so it keeps the Actions token and never holds a
+# key that can post. plan and execute hold none of it: the identity exists
+# where qare posts, never beside the planner and never where pull request
+# code runs. The Actions token stays beside the identity because GitHub lets
+# only an App write a check run, so a personal access token leaves that one
+# write to it, and because a pinned qare older than the identity reads
+# nothing else.
+#
+# The App's private key is the credential of the whole App, so it is used in
+# one step of each job that posts and nowhere else (#305): "Mint the App
+# token for this job" runs scripts/mint-app-token.mjs of the pinned qare with
+# node on the runner, before any dependency is installed, any artifact
+# downloaded or any container run, and mints a token for the calling
+# repository alone, with the permissions that job declares, that expires
+# within the hour. The steps that post are handed that token and the App's
+# slug. The key never enters a container and never shares a step with
+# anything the run produced. A job tries to give its token back when it
+# ends. The token cannot be renewed without the key, so the steps of a job
+# that post must all run within an hour of its first step; one that runs
+# later is told so by name and posts nothing.
+#
+# What this does not change: the key is still a secret of the job. GitHub
+# hands a job's runner every secret the job's steps name, so the steps that
+# run on the runner after the minting step (the build of the pinned qare in
+# report, advisory and requeue, and the action that sets pnpm up for it) run
+# on a machine that was given it, though never in their own environment. A
+# container is not that machine. And "before anything else of the run" is a
+# statement about one job: a runner that outlives its jobs keeps what
+# earlier jobs left on it, which is what execute-runs-on is for.
+#
+# No job here restores a dependency cache (#305): the jobs that build qare
+# from the pinned revision hold a token, and install by the lockfile from
+# the registry, never from a cache another job could have written.
 #
 # Which qare runs: the revision `qare-ref` names. It defaults to the release
 # this file ships in (a called workflow cannot learn its own ref, so the
@@ -249,7 +275,7 @@ on:
           workflow ships in, so pin the release in `uses:` and leave this
           alone.
         type: string
-        default: '2026.10.43'
+        default: '2026.10.46'
     secrets:
       model-key:
         description: >-
@@ -266,9 +292,10 @@ on:
         required: false
       app-private-key:
         description: >-
-          A private key of that App, the whole .pem file. It reaches only the
-          steps that write to GitHub, which mint a token for this repository
-          alone that expires within the hour.
+          A private key of that App, the whole .pem file. It reaches one step
+          of each job that posts, which runs on the runner and mints a token
+          for this repository alone, with that job's permissions, that
+          expires within the hour. The steps that post hold only that token.
         required: false
       personal-access-token:
         description: >-
@@ -338,8 +365,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .qare-pipeline/.nvmrc
-          cache: pnpm
-          cache-dependency-path: .qare-pipeline/pnpm-lock.yaml
       - run: pnpm --dir .qare-pipeline install --frozen-lockfile
       - run: pnpm --dir .qare-pipeline build
       - name: Read the version of the pinned qare
@@ -1116,6 +1141,50 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.base.sha }}
+      # The pinned qare's scripts, for the one that mints the App's token: a
+      # revision the change under review cannot alter, checked out before
+      # anything of the run is on the machine, with node to run it.
+      - name: Check out the pinned qare's scripts
+        uses: actions/checkout@v4
+        with:
+          repository: ViviDynamics/qare
+          ref: ${{ inputs.qare-ref }}
+          path: .qare-pipeline
+          sparse-checkout: scripts
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .qare-pipeline/.nvmrc
+      # The App's private key is used here and nowhere else in this job (#305):
+      # a script of the pinned qare that imports node's own modules alone,
+      # run on the runner before any dependency is installed, any artifact
+      # downloaded or any container run. It mints a token for this
+      # repository alone, with the permissions this job declares, that
+      # expires within the hour, and the steps that post are handed that
+      # token. With no App passed it mints nothing and they post with the
+      # personal access token or the Actions token; with half an App it
+      # stops by name. A pinned qare that predates the script predates the
+      # image that reads the token too, so with an App passed it stops here
+      # and never posts as something weaker.
+      - name: Mint the App token for this job
+        id: app
+        shell: bash
+        env:
+          QARE_APP_ID: ${{ secrets.app-id }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_APP_PERMISSIONS: '{"contents":"write","checks":"write","issues":"write","pull_requests":"write"}'
+        run: |
+          set -euo pipefail
+          script=.qare-pipeline/scripts/mint-app-token.mjs
+          if [ ! -f "$script" ]; then
+            if [ -z "$QARE_APP_ID" ] && [ -z "$QARE_APP_PRIVATE_KEY" ]; then
+              echo "the qare this pipeline pinned is older than the minting step and carries no script for it; no GitHub App was passed, so there is nothing to mint"
+              exit 0
+            fi
+            echo "::error::the qare this pipeline pinned is older than the minting step and carries no script for it, so it cannot post as the GitHub App that was passed: run a qare that carries the script, or pass no App"
+            exit 1
+          fi
+          node "$script"
       - name: Pull the core image
         id: image
         shell: bash
@@ -1130,6 +1199,30 @@ jobs:
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
+      # A minted token is only the App's to an image that reads it (#305).
+      # An image that predates it would find no App in its environment and
+      # post as something weaker without a word, so this stops by name
+      # first. It holds no token: only the name of the image.
+      - name: Check that the image reads the minted token
+        if: steps.app.outputs.token != ''
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: |
+          set -euo pipefail
+          # grep's own answer: 0 found, 1 not found. Anything else is a
+          # docker or an image that could not be asked, and is said as that.
+          status=0
+          docker run --rm --network none --entrypoint grep "$IMAGE_REF" \
+            -q QARE_APP_TOKEN /opt/qare/lib/packages/action/dist/identity.js || status=$?
+          if [ "$status" -eq 1 ]; then
+            echo "::error::the qare image this run pulled ($IMAGE_REF) is older than the minted token and would not post as the GitHub App that was passed: run a qare whose image reads it, or pass no App"
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the qare image this run pulled ($IMAGE_REF) could not be inspected (status $status), so it is not known to read the minted token: nothing is posted with it"
+            exit 1
+          fi
       - name: Download the QA inputs
         uses: actions/download-artifact@v4
         with:
@@ -1179,16 +1272,18 @@ jobs:
         env:
           IMAGE_REF: ${{ steps.image.outputs.ref }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          QARE_APP_ID: ${{ secrets.app-id }}
-          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
+          QARE_APP_SLUG: ${{ steps.app.outputs.slug }}
+          QARE_APP_TOKEN_EXPIRES_AT: ${{ steps.app.outputs.expires-at }}
           QARE_GITHUB_TOKEN: ${{ secrets.personal-access-token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           if ! docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
               -e GITHUB_TOKEN \
-              -e QARE_APP_ID \
-              -e QARE_APP_PRIVATE_KEY \
+              -e QARE_APP_TOKEN \
+              -e QARE_APP_SLUG \
+              -e QARE_APP_TOKEN_EXPIRES_AT \
               -e QARE_GITHUB_TOKEN \
               -e GITHUB_REPOSITORY \
               -v "$PWD:$PWD" -w "$PWD" \
@@ -1307,8 +1402,9 @@ jobs:
         env:
           IMAGE_REF: ${{ steps.image.outputs.ref }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          QARE_APP_ID: ${{ secrets.app-id }}
-          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
+          QARE_APP_SLUG: ${{ steps.app.outputs.slug }}
+          QARE_APP_TOKEN_EXPIRES_AT: ${{ steps.app.outputs.expires-at }}
           QARE_GITHUB_TOKEN: ${{ secrets.personal-access-token }}
         run: |
           if [ ! -f judged-result.json ]; then
@@ -1316,8 +1412,9 @@ jobs:
           elif jq -e '.verdict == "refused"' judged-result.json > /dev/null; then
             docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
               -e GITHUB_TOKEN \
-              -e QARE_APP_ID \
-              -e QARE_APP_PRIVATE_KEY \
+              -e QARE_APP_TOKEN \
+              -e QARE_APP_SLUG \
+              -e QARE_APP_TOKEN_EXPIRES_AT \
               -e QARE_GITHUB_TOKEN \
               -e GITHUB_REPOSITORY \
               -v "$PWD:$PWD" -w "$PWD" \
@@ -1341,8 +1438,9 @@ jobs:
         env:
           IMAGE_REF: ${{ steps.image.outputs.ref }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          QARE_APP_ID: ${{ secrets.app-id }}
-          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
+          QARE_APP_SLUG: ${{ steps.app.outputs.slug }}
+          QARE_APP_TOKEN_EXPIRES_AT: ${{ steps.app.outputs.expires-at }}
           QARE_GITHUB_TOKEN: ${{ secrets.personal-access-token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -1351,8 +1449,9 @@ jobs:
           set -euo pipefail
           docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
             -e GITHUB_TOKEN \
-            -e QARE_APP_ID \
-            -e QARE_APP_PRIVATE_KEY \
+            -e QARE_APP_TOKEN \
+            -e QARE_APP_SLUG \
+            -e QARE_APP_TOKEN_EXPIRES_AT \
             -e QARE_GITHUB_TOKEN \
             -e GITHUB_REPOSITORY \
             -v "$PWD:$PWD" -w "$PWD" \
@@ -1375,6 +1474,20 @@ jobs:
             judged-result.json
             metrics.json
           if-no-files-found: ignore
+      # The job tries to give the token back when it ends, however it ends,
+      # so it does not outlive the work it was minted for. It expires within
+      # the hour regardless, so a revocation that fails is a warning.
+      - name: Revoke the App token this job minted
+        if: always() && steps.app.outputs.token != ''
+        shell: bash
+        env:
+          QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          # On curl's standard input, never its command line.
+          curl --fail --silent --show-error -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/installation/token" \
+            -H @- <<< "Authorization: Bearer $QARE_APP_TOKEN" || echo "::warning::the App token this job minted could not be revoked; it expires within the hour"
 
   # label: report (GitHub token only)
   # A pipeline that failed without publishing a verdict evaluated no
@@ -1412,19 +1525,52 @@ jobs:
           repository: ViviDynamics/qare
           ref: ${{ inputs.qare-ref }}
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+      # The App's private key is used here and nowhere else in this job (#305):
+      # a script of the pinned qare that imports node's own modules alone,
+      # run on the runner before any dependency is installed, any artifact
+      # downloaded or any container run. It mints a token for this
+      # repository alone, with the permissions this job declares, that
+      # expires within the hour, and the steps that post are handed that
+      # token. With no App passed it mints nothing and they post with the
+      # personal access token or the Actions token; with half an App it
+      # stops by name. A pinned qare that predates the script predates the
+      # image that reads the token too, so with an App passed it stops here
+      # and never posts as something weaker.
+      - name: Mint the App token for this job
+        id: app
+        shell: bash
+        env:
+          QARE_APP_ID: ${{ secrets.app-id }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_APP_PERMISSIONS: '{"checks":"write","contents":"read","issues":"write","pull_requests":"write"}'
+        run: |
+          set -euo pipefail
+          script=scripts/mint-app-token.mjs
+          if [ ! -f "$script" ]; then
+            if [ -z "$QARE_APP_ID" ] && [ -z "$QARE_APP_PRIVATE_KEY" ]; then
+              echo "the qare this pipeline pinned is older than the minting step and carries no script for it; no GitHub App was passed, so there is nothing to mint"
+              exit 0
+            fi
+            echo "::error::the qare this pipeline pinned is older than the minting step and carries no script for it, so it cannot post as the GitHub App that was passed: run a qare that carries the script, or pass no App"
+            exit 1
+          fi
+          node "$script"
+      # No dependency cache (#305): this job holds the identity, so what it
+      # installs comes from the registry by the lockfile of the pinned qare,
+      # never from a cache another job could have written.
+      - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Report the failure on the pull request
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          QARE_APP_ID: ${{ secrets.app-id }}
-          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
+          QARE_APP_SLUG: ${{ steps.app.outputs.slug }}
+          QARE_APP_TOKEN_EXPIRES_AT: ${{ steps.app.outputs.expires-at }}
           QARE_GITHUB_TOKEN: ${{ secrets.personal-access-token }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -1442,6 +1588,20 @@ jobs:
             --recorded-verdict "$RECORDED_VERDICT" \
             --pipeline collect,plan,execute,judge --reporter report \
             | tee -a "$GITHUB_STEP_SUMMARY"
+      # The job tries to give the token back when it ends, however it ends,
+      # so it does not outlive the work it was minted for. It expires within
+      # the hour regardless, so a revocation that fails is a warning.
+      - name: Revoke the App token this job minted
+        if: always() && steps.app.outputs.token != ''
+        shell: bash
+        env:
+          QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          # On curl's standard input, never its command line.
+          curl --fail --silent --show-error -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/installation/token" \
+            -H @- <<< "Authorization: Bearer $QARE_APP_TOKEN" || echo "::warning::the App token this job minted could not be revoked; it expires within the hour"
 
   # label: advisory (GitHub token only)
   # A reply to an advisory finding (#150), acted on the moment it is made:
@@ -1484,24 +1644,69 @@ jobs:
           repository: ViviDynamics/qare
           ref: ${{ inputs.qare-ref }}
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+      # The App's private key is used here and nowhere else in this job (#305):
+      # a script of the pinned qare that imports node's own modules alone,
+      # run on the runner before any dependency is installed, any artifact
+      # downloaded or any container run. It mints a token for this
+      # repository alone, with the permissions this job declares, that
+      # expires within the hour, and the steps that post are handed that
+      # token. With no App passed it mints nothing and they post with the
+      # personal access token or the Actions token; with half an App it
+      # stops by name. A pinned qare that predates the script predates the
+      # image that reads the token too, so with an App passed it stops here
+      # and never posts as something weaker.
+      - name: Mint the App token for this job
+        id: app
+        shell: bash
+        env:
+          QARE_APP_ID: ${{ secrets.app-id }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_APP_PERMISSIONS: '{"contents":"read","issues":"write","pull_requests":"write"}'
+        run: |
+          set -euo pipefail
+          script=scripts/mint-app-token.mjs
+          if [ ! -f "$script" ]; then
+            if [ -z "$QARE_APP_ID" ] && [ -z "$QARE_APP_PRIVATE_KEY" ]; then
+              echo "the qare this pipeline pinned is older than the minting step and carries no script for it; no GitHub App was passed, so there is nothing to mint"
+              exit 0
+            fi
+            echo "::error::the qare this pipeline pinned is older than the minting step and carries no script for it, so it cannot post as the GitHub App that was passed: run a qare that carries the script, or pass no App"
+            exit 1
+          fi
+          node "$script"
+      # No dependency cache, as in report (#305).
+      - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Carry out the advisory replies
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          QARE_APP_ID: ${{ secrets.app-id }}
-          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
+          QARE_APP_SLUG: ${{ steps.app.outputs.slug }}
+          QARE_APP_TOKEN_EXPIRES_AT: ${{ steps.app.outputs.expires-at }}
           QARE_GITHUB_TOKEN: ${{ secrets.personal-access-token }}
           PR_NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
           node packages/action/dist/index.js advisory-replies --pr "$PR_NUMBER" | tee -a "$GITHUB_STEP_SUMMARY"
+      # The job tries to give the token back when it ends, however it ends,
+      # so it does not outlive the work it was minted for. It expires within
+      # the hour regardless, so a revocation that fails is a warning.
+      - name: Revoke the App token this job minted
+        if: always() && steps.app.outputs.token != ''
+        shell: bash
+        env:
+          QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          # On curl's standard input, never its command line.
+          curl --fail --silent --show-error -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/installation/token" \
+            -H @- <<< "Authorization: Bearer $QARE_APP_TOKEN" || echo "::warning::the App token this job minted could not be revoked; it expires within the hour"
 
   # label: requeue (GitHub token only)
   requeue:
@@ -1526,22 +1731,52 @@ jobs:
           ref: ${{ inputs.qare-ref }}
           path: .qare-pipeline
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
-        with:
-          package_json_file: .qare-pipeline/package.json
       - uses: actions/setup-node@v4
         with:
           node-version-file: .qare-pipeline/.nvmrc
-          cache: pnpm
-          cache-dependency-path: .qare-pipeline/pnpm-lock.yaml
+      # The App's private key is used here and nowhere else in this job (#305):
+      # a script of the pinned qare that imports node's own modules alone,
+      # run on the runner before any dependency is installed, any artifact
+      # downloaded or any container run. It mints a token for this
+      # repository alone, with the permissions this job declares, that
+      # expires within the hour, and the steps that post are handed that
+      # token. With no App passed it mints nothing and they post with the
+      # personal access token or the Actions token; with half an App it
+      # stops by name. A pinned qare that predates the script predates the
+      # image that reads the token too, so with an App passed it stops here
+      # and never posts as something weaker.
+      - name: Mint the App token for this job
+        id: app
+        shell: bash
+        env:
+          QARE_APP_ID: ${{ secrets.app-id }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_APP_PERMISSIONS: '{"contents":"read","issues":"write","pull_requests":"write"}'
+        run: |
+          set -euo pipefail
+          script=.qare-pipeline/scripts/mint-app-token.mjs
+          if [ ! -f "$script" ]; then
+            if [ -z "$QARE_APP_ID" ] && [ -z "$QARE_APP_PRIVATE_KEY" ]; then
+              echo "the qare this pipeline pinned is older than the minting step and carries no script for it; no GitHub App was passed, so there is nothing to mint"
+              exit 0
+            fi
+            echo "::error::the qare this pipeline pinned is older than the minting step and carries no script for it, so it cannot post as the GitHub App that was passed: run a qare that carries the script, or pass no App"
+            exit 1
+          fi
+          node "$script"
+      # No dependency cache, as in report (#305).
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: .qare-pipeline/package.json
       - run: pnpm --dir .qare-pipeline install --frozen-lockfile
       - run: pnpm --dir .qare-pipeline build
       - name: Re-queue refused PRs unblocked by the merged stubs
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          QARE_APP_ID: ${{ secrets.app-id }}
-          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
+          QARE_APP_SLUG: ${{ steps.app.outputs.slug }}
+          QARE_APP_TOKEN_EXPIRES_AT: ${{ steps.app.outputs.expires-at }}
           QARE_GITHUB_TOKEN: ${{ secrets.personal-access-token }}
           BEFORE: ${{ github.event.before }}
           PUSHED: ${{ github.sha }}
@@ -1554,6 +1789,20 @@ jobs:
             echo "first push to main: diffing from the empty tree"
           fi
           node .qare-pipeline/packages/action/dist/index.js requeue --keys-from-diff "$before...$PUSHED" --profile "$PROFILE"
+      # The job tries to give the token back when it ends, however it ends,
+      # so it does not outlive the work it was minted for. It expires within
+      # the hour regardless, so a revocation that fails is a warning.
+      - name: Revoke the App token this job minted
+        if: always() && steps.app.outputs.token != ''
+        shell: bash
+        env:
+          QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          # On curl's standard input, never its command line.
+          curl --fail --silent --show-error -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/installation/token" \
+            -H @- <<< "Authorization: Bearer $QARE_APP_TOKEN" || echo "::warning::the App token this job minted could not be revoked; it expires within the hour"
 
   # The main lane (#294): a run against the default branch, so that findings
   # on main have a judged result to be filed from (#154). It is the pull
@@ -1639,8 +1888,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .qare-pipeline/.nvmrc
-          cache: pnpm
-          cache-dependency-path: .qare-pipeline/pnpm-lock.yaml
       - run: pnpm --dir .qare-pipeline install --frozen-lockfile
       - run: pnpm --dir .qare-pipeline build
       - name: Read the version of the pinned qare
@@ -2066,6 +2313,50 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      # The pinned qare's scripts, for the one that mints the App's token: a
+      # revision the change under review cannot alter, checked out before
+      # anything of the run is on the machine, with node to run it.
+      - name: Check out the pinned qare's scripts
+        uses: actions/checkout@v4
+        with:
+          repository: ViviDynamics/qare
+          ref: ${{ inputs.qare-ref }}
+          path: .qare-pipeline
+          sparse-checkout: scripts
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .qare-pipeline/.nvmrc
+      # The App's private key is used here and nowhere else in this job (#305):
+      # a script of the pinned qare that imports node's own modules alone,
+      # run on the runner before any dependency is installed, any artifact
+      # downloaded or any container run. It mints a token for this
+      # repository alone, with the permissions this job declares, that
+      # expires within the hour, and the steps that post are handed that
+      # token. With no App passed it mints nothing and they post with the
+      # personal access token or the Actions token; with half an App it
+      # stops by name. A pinned qare that predates the script predates the
+      # image that reads the token too, so with an App passed it stops here
+      # and never posts as something weaker.
+      - name: Mint the App token for this job
+        id: app
+        shell: bash
+        env:
+          QARE_APP_ID: ${{ secrets.app-id }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_APP_PERMISSIONS: '{"contents":"write","issues":"write","pull_requests":"read"}'
+        run: |
+          set -euo pipefail
+          script=.qare-pipeline/scripts/mint-app-token.mjs
+          if [ ! -f "$script" ]; then
+            if [ -z "$QARE_APP_ID" ] && [ -z "$QARE_APP_PRIVATE_KEY" ]; then
+              echo "the qare this pipeline pinned is older than the minting step and carries no script for it; no GitHub App was passed, so there is nothing to mint"
+              exit 0
+            fi
+            echo "::error::the qare this pipeline pinned is older than the minting step and carries no script for it, so it cannot post as the GitHub App that was passed: run a qare that carries the script, or pass no App"
+            exit 1
+          fi
+          node "$script"
       - name: Pull the core image
         id: image
         shell: bash
@@ -2080,6 +2371,30 @@ jobs:
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
+      # A minted token is only the App's to an image that reads it (#305).
+      # An image that predates it would find no App in its environment and
+      # post as something weaker without a word, so this stops by name
+      # first. It holds no token: only the name of the image.
+      - name: Check that the image reads the minted token
+        if: steps.app.outputs.token != ''
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: |
+          set -euo pipefail
+          # grep's own answer: 0 found, 1 not found. Anything else is a
+          # docker or an image that could not be asked, and is said as that.
+          status=0
+          docker run --rm --network none --entrypoint grep "$IMAGE_REF" \
+            -q QARE_APP_TOKEN /opt/qare/lib/packages/action/dist/identity.js || status=$?
+          if [ "$status" -eq 1 ]; then
+            echo "::error::the qare image this run pulled ($IMAGE_REF) is older than the minted token and would not post as the GitHub App that was passed: run a qare whose image reads it, or pass no App"
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the qare image this run pulled ($IMAGE_REF) could not be inspected (status $status), so it is not known to read the minted token: nothing is posted with it"
+            exit 1
+          fi
       - name: Download the plan
         uses: actions/download-artifact@v4
         with:
@@ -2162,8 +2477,9 @@ jobs:
         env:
           IMAGE_REF: ${{ steps.image.outputs.ref }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          QARE_APP_ID: ${{ secrets.app-id }}
-          QARE_APP_PRIVATE_KEY: ${{ secrets.app-private-key }}
+          QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
+          QARE_APP_SLUG: ${{ steps.app.outputs.slug }}
+          QARE_APP_TOKEN_EXPIRES_AT: ${{ steps.app.outputs.expires-at }}
           QARE_GITHUB_TOKEN: ${{ secrets.personal-access-token }}
           MAIN_LANE_DRY_RUN: ${{ inputs.main-lane-dry-run }}
           MAIN_LANE_RECORD_PASSES: ${{ inputs.main-lane-record-passes }}
@@ -2195,8 +2511,9 @@ jobs:
           ' judged-result.json > main-findings.txt
           docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
             -e GITHUB_TOKEN \
-            -e QARE_APP_ID \
-            -e QARE_APP_PRIVATE_KEY \
+            -e QARE_APP_TOKEN \
+            -e QARE_APP_SLUG \
+            -e QARE_APP_TOKEN_EXPIRES_AT \
             -e QARE_GITHUB_TOKEN \
             -e GITHUB_REPOSITORY \
             -v "$PWD:$PWD" -w "$PWD" \
@@ -2234,3 +2551,17 @@ jobs:
             judged-result.json
             main-findings.txt
           if-no-files-found: ignore
+      # The job tries to give the token back when it ends, however it ends,
+      # so it does not outlive the work it was minted for. It expires within
+      # the hour regardless, so a revocation that fails is a warning.
+      - name: Revoke the App token this job minted
+        if: always() && steps.app.outputs.token != ''
+        shell: bash
+        env:
+          QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          # On curl's standard input, never its command line.
+          curl --fail --silent --show-error -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/installation/token" \
+            -H @- <<< "Authorization: Bearer $QARE_APP_TOKEN" || echo "::warning::the App token this job minted could not be revoked; it expires within the hour"

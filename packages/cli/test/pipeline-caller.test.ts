@@ -52,14 +52,29 @@ const version = (JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')
 
 const LEVEL: Record<string, number> = { none: 0, read: 1, write: 2 }
 
-// #61: who qare posts as. The caller hands the identity over by name, and
-// each secret reaches a posting step under the variable qare-action reads.
+// #61: who qare posts as. The caller hands the identity over by name, as
+// these secrets, which qare's own caller reads from secrets of these names.
 const IDENTITY_SECRETS: Record<string, string> = {
   'app-id': 'QARE_APP_ID',
   'app-private-key': 'QARE_APP_PRIVATE_KEY',
   'personal-access-token': 'QARE_GITHUB_TOKEN',
 }
-const IDENTITY = /secrets\.(app-id|app-private-key|personal-access-token)|QARE_APP_ID|QARE_APP_PRIVATE_KEY|QARE_GITHUB_TOKEN/
+// #305: what a step that posts is handed. The App arrives as the token the
+// job's minting step minted, and its slug, never as its private key; the
+// personal access token and the Actions token arrive as they always did.
+const POSTING_ENV: Record<string, string> = {
+  QARE_APP_TOKEN: '${{ steps.app.outputs.token }}',
+  QARE_APP_SLUG: '${{ steps.app.outputs.slug }}',
+  QARE_GITHUB_TOKEN: '${{ secrets.personal-access-token }}',
+}
+// The two steps of a posting job that are not posting steps: the one that
+// uses the App's private key to mint the token, and the one that gives the
+// token back. pipeline-identity.test.ts holds both to their shape.
+const MINT = 'Mint the App token for this job'
+const REVOKE = 'Revoke the App token this job minted'
+// Asks whether a token was minted and names its variable to look for it in the image; it holds no token.
+const IMAGE_CHECK = 'Check that the image reads the minted token'
+const IDENTITY = /secrets\.(app-id|app-private-key|personal-access-token)|QARE_APP_ID|QARE_APP_PRIVATE_KEY|QARE_APP_TOKEN|QARE_APP_SLUG|steps\.app\.outputs|QARE_GITHUB_TOKEN/
 
 /** Every permission a called job declares must be covered by what the calling job grants. */
 function expectCeilingCovers(ceiling: Permissions | undefined, where: string): void {
@@ -293,11 +308,18 @@ test('the identity reaches the steps that post, and nothing else', () => {
     for (const step of job.steps ?? []) {
       const text = JSON.stringify(step)
       if (!IDENTITY.test(text)) continue
+      if (step.name === MINT || step.name === REVOKE) continue
+      if (step.name === IMAGE_CHECK) {
+        expect(step.env, `${id}: ${step.name}`).toEqual({ IMAGE_REF: '${{ steps.image.outputs.ref }}' })
+        continue
+      }
       holders.push(`${id}: ${step.name ?? ''}`)
       // All of it or none: the choice between the App and a token is made by
       // which of the caller's secrets are set, never by which step runs.
-      for (const [secret, variable] of Object.entries(IDENTITY_SECRETS))
-        expect(step.env?.[variable], `${id}: ${step.name ?? ''} must read ${secret} as ${variable}`).toBe(`\${{ secrets.${secret} }}`)
+      for (const [variable, value] of Object.entries(POSTING_ENV))
+        expect(step.env?.[variable], `${id}: ${step.name ?? ''} must read ${variable}`).toBe(value)
+      // The App's private key and its id stop at the minting step (#305).
+      expect(text, `${id}: ${step.name ?? ''}`).not.toMatch(/QARE_APP_ID|QARE_APP_PRIVATE_KEY|secrets\.app-/)
       // The Actions token stays beside it: it is the identity when the caller
       // configured none, and the one token that may write a check run when
       // the caller's identity is a personal access token.
@@ -306,8 +328,8 @@ test('the identity reaches the steps that post, and nothing else', () => {
       // Its value is never written on a command line.
       const run = step.run ?? ''
       if (run.includes('docker run'))
-        for (const variable of Object.values(IDENTITY_SECRETS)) expect(run, `${id}: ${step.name ?? ''}`).toContain(`-e ${variable} `)
-      expect(run, `${id}: ${step.name ?? ''}`).not.toMatch(/\$\{?QARE_(APP_ID|APP_PRIVATE_KEY|GITHUB_TOKEN)/)
+        for (const variable of Object.keys(POSTING_ENV)) expect(run, `${id}: ${step.name ?? ''}`).toContain(`-e ${variable} `)
+      expect(run, `${id}: ${step.name ?? ''}`).not.toMatch(/\$\{?QARE_(APP_ID|APP_PRIVATE_KEY|APP_TOKEN|APP_SLUG|GITHUB_TOKEN)/)
     }
   }
   // The steps that write to GitHub: the replies to advisory findings (#150),
@@ -334,9 +356,13 @@ test('the sweep posts as the same identity, in its publishing step alone', () =>
   const sweep = load('.github/workflows/sweep.yml')
   const holders: string[] = []
   for (const step of sweep.jobs.sweep?.steps ?? []) {
-    if (!/QARE_APP_ID|QARE_APP_PRIVATE_KEY|QARE_GITHUB_TOKEN/.test(JSON.stringify(step))) continue
+    if (!IDENTITY.test(JSON.stringify(step))) continue
+    if (step.name === MINT || step.name === REVOKE) continue
     holders.push(step.name ?? '')
-    for (const variable of Object.values(IDENTITY_SECRETS)) expect(step.env?.[variable]).toBe(`\${{ secrets.${variable} }}`)
+    // The App by the token minted for this job (#305), and the personal
+    // access token by the name qare's own secrets carry it under.
+    expect(step.env).toMatchObject({ ...POSTING_ENV, QARE_GITHUB_TOKEN: '${{ secrets.QARE_GITHUB_TOKEN }}' })
+    expect(JSON.stringify(step)).not.toMatch(/QARE_APP_ID|QARE_APP_PRIVATE_KEY/)
     expect(step.env?.GITHUB_TOKEN).toBe('${{ secrets.GITHUB_TOKEN }}')
   }
   expect(holders).toEqual(['Publish the standing report and file findings'])

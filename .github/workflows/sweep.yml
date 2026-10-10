@@ -7,7 +7,11 @@ name: Sweep
 # There is no pull request in this picture: the checkout is main, so the
 # secret-hygiene map (constitution rule 7) holds trivially. The
 # classification step holds no secrets at all; the publish step holds the
-# GitHub identity (#61) and runs nothing but code from main.
+# GitHub identity (#61) and runs nothing but code from main. The App's
+# private key is used in one step alone, which mints a token for this
+# repository with this job's permissions before anything is installed
+# (#305); the publish step is handed that token. No dependency cache is
+# restored.
 #
 # A sweep failure is a finding, not a broken build: the classification step
 # exits clean even when the ledger is unreadable, and the publish step files
@@ -32,14 +36,39 @@ concurrency:
 jobs:
   sweep:
     name: sweep (GitHub token only)
+    # Its schedule, which only ever runs the default branch's copy of this
+    # file, and otherwise the default branch alone (#305): a manual run from
+    # another branch would hand the identity to that branch's copy of the
+    # code. This stops the accident. It is a line of this file, so it does
+    # not stop a branch that removes it: whoever can push a branch here can
+    # already change what a workflow does with the secrets it is handed.
+    if: github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+      # The App's private key is used here and nowhere else in this job (#305):
+      # a script of this checkout that imports node's own modules alone, run
+      # on the runner before any dependency is installed. It mints a token
+      # for this repository alone, with the permissions this job declares,
+      # that expires within the hour, and the publishing step is handed that
+      # token. With no App stored it mints nothing and qare posts with the
+      # personal access token or the Actions token; with half an App it
+      # stops by name.
+      - name: Mint the App token for this job
+        id: app
+        shell: bash
+        env:
+          QARE_APP_ID: ${{ secrets.QARE_APP_ID }}
+          QARE_APP_PRIVATE_KEY: ${{ secrets.QARE_APP_PRIVATE_KEY }}
+          QARE_APP_PERMISSIONS: '{"contents":"read","issues":"write"}'
+        run: node scripts/mint-app-token.mjs
+      # No dependency cache (#305): this job holds the identity, so what it
+      # installs comes from the registry by the lockfile, never from a cache
+      # another workflow could have written.
+      - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       # What the runs amount to over time (#51): every run's metrics record
@@ -66,13 +95,29 @@ jobs:
         run: node packages/cli/dist/index.js sweep --ledger .qa --out sweep-payload.json
       - name: Publish the standing report and file findings
         # The identity the pull request pipeline posts as (#61): the App,
-        # else a personal access token, else the workflow run. An unset
-        # secret is empty, and qare then posts with the Actions token.
+        # by the token minted above, else a personal access token, else the
+        # workflow run. An unset secret is empty, and qare then posts with
+        # the Actions token.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          QARE_APP_ID: ${{ secrets.QARE_APP_ID }}
-          QARE_APP_PRIVATE_KEY: ${{ secrets.QARE_APP_PRIVATE_KEY }}
+          QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
+          QARE_APP_SLUG: ${{ steps.app.outputs.slug }}
+          QARE_APP_TOKEN_EXPIRES_AT: ${{ steps.app.outputs.expires-at }}
           QARE_GITHUB_TOKEN: ${{ secrets.QARE_GITHUB_TOKEN }}
         run: |
           node packages/action/dist/index.js sweep-report --from sweep-payload.json \
             --repository "${{ github.repository }}"
+      # The job tries to give the token back when it ends, however it ends,
+      # so it does not outlive the work it was minted for. It expires within
+      # the hour regardless, so a revocation that fails is a warning.
+      - name: Revoke the App token this job minted
+        if: always() && steps.app.outputs.token != ''
+        shell: bash
+        env:
+          QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          # On curl's standard input, never its command line.
+          curl --fail --silent --show-error -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/installation/token" \
+            -H @- <<< "Authorization: Bearer $QARE_APP_TOKEN" || echo "::warning::the App token this job minted could not be revoked; it expires within the hour"
