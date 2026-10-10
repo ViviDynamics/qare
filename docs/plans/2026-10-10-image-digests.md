@@ -25,5 +25,5 @@ Dockerfile base and package hashes are separate audit work.
   missing tools, immutable container references and evidence tag recording.
 - [x] Resolve and validate a digest before each pull, update container readers.
 - [x] Document the runner inspection requirement and its named refusal.
-- [ ] Run affected tests, rebase after the preceding fixes and stamp release.
+- [x] Run affected tests, rebase after the preceding fixes and stamp release.
 - [ ] Own review, Copilot review, one QA evaluation, CI and verified publication.
