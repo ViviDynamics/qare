@@ -75,10 +75,11 @@ COPY --from=builder --chown=qare:qare /opt/qare/lib /opt/qare/lib
 # The hash-verified nare: the same wheel the pipeline's plan and judge steps pin, so
 # a container run and a host run speak one nare contract. Bytecode is not
 # precompiled: the first run in a container writes its own cache.
-RUN mkdir -p /tmp/qare-nare \
- && python3 -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "$NARE_WHEEL" /tmp/qare-nare/nare-2026.10.6-py3-none-any.whl \
- && printf '%s  %s\n' "$NARE_SHA256" /tmp/qare-nare/nare-2026.10.6-py3-none-any.whl | sha256sum --check --strict - \
- && python3 -m pip install --no-compile --no-cache-dir --break-system-packages /tmp/qare-nare/nare-2026.10.6-py3-none-any.whl \
+RUN wheel="$(basename "${NARE_WHEEL%%\?*}")" \
+ && mkdir -p /tmp/qare-nare \
+ && python3 -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "$NARE_WHEEL" "/tmp/qare-nare/$wheel" \
+ && printf '%s  %s\n' "$NARE_SHA256" "/tmp/qare-nare/$wheel" | sha256sum --check --strict - \
+ && python3 -m pip install --no-compile --no-cache-dir --break-system-packages "/tmp/qare-nare/$wheel" \
  && rm -rf /tmp/qare-nare
 
 # The image's own record: what a run reads into its evidence. Every version

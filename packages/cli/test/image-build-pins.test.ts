@@ -1,15 +1,19 @@
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { parse } from 'yaml'
-import { expect, test } from 'vitest'
+import { afterEach, expect, test } from 'vitest'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../../..')
 const core = readFileSync(join(root, 'images/core/Dockerfile'), 'utf8')
 const recipes = ['core', 'web', 'android', 'desktop-linux']
+const scratch: string[] = []
+afterEach(() => {
+  for (const path of scratch.splice(0)) rmSync(path, { recursive: true, force: true })
+})
 
 test('each default Docker base resolves to a digest, including both core stages', () => {
   for (const image of recipes) {
@@ -34,19 +38,21 @@ for (const matching of [true, false]) {
     const block = core.match(/^RUN .*\n(?:.*\\\n)*.*$/gm)?.find((run) => run.includes('"$NARE_WHEEL"')) ?? ''
     expect(block).toContain('sha256sum')
     const cwd = mkdtempSync(join(tmpdir(), 'qare-wheel-hash-'))
+    scratch.push(cwd)
     const bin = join(cwd, 'bin')
     mkdirSync(bin)
     const bytes = 'fixture wheel bytes'
-    const fixture = join(cwd, 'fixture.whl')
+    const fixture = join(cwd, 'nare-2026.10.99-py3-none-any.whl')
     writeFileSync(fixture, bytes)
     // Download is a local fixture; the checksum command is the real one.
     // pip is a sentinel so this test never installs into its Python environment.
-    writeFileSync(join(bin, 'python3'), `#!/bin/bash\nset -euo pipefail\nif [[ "$1" == -c ]]; then\n  cp "$QARE_WHEEL_FIXTURE" "\${@: -1}"\nelse\n  touch "$QARE_INSTALL_SENTINEL"\nfi\n`, { mode: 0o755 })
+    writeFileSync(join(bin, 'python3'), `#!/bin/bash\nset -euo pipefail\nif [[ "$1" == -c ]]; then\n  cp "$QARE_WHEEL_FIXTURE" "\${@: -1}"\nelse\n  printf '%s\\n' "\${@: -1}" > "$QARE_INSTALL_SENTINEL"\nfi\n`, { mode: 0o755 })
     const sentinel = join(cwd, 'installed')
     const script = block.replace(/^RUN /, '').replace(/\\\n/g, ' ').replaceAll('/tmp/qare-nare', join(cwd, 'download'))
-    const result = spawnSync('bash', ['-eo', 'pipefail', '-c', script], { cwd, env: { PATH: `${bin}:${process.env.PATH ?? ''}`, NARE_WHEEL: fixture, NARE_SHA256: createHash('sha256').update(matching ? bytes : 'different bytes').digest('hex'), QARE_WHEEL_FIXTURE: fixture, QARE_INSTALL_SENTINEL: sentinel }, encoding: 'utf8' })
+    const result = spawnSync('bash', ['-eo', 'pipefail', '-c', script], { cwd, env: { PATH: `${bin}:${process.env.PATH ?? ''}`, NARE_WHEEL: `${fixture}?download=1`, NARE_SHA256: createHash('sha256').update(matching ? bytes : 'different bytes').digest('hex'), QARE_WHEEL_FIXTURE: fixture, QARE_INSTALL_SENTINEL: sentinel }, encoding: 'utf8' })
     expect(result.status, result.stderr).toBe(matching ? 0 : 1)
     expect(existsSync(sentinel)).toBe(matching)
+    if (matching) expect(readFileSync(sentinel, 'utf8').trim()).toBe(join(cwd, 'download', 'nare-2026.10.99-py3-none-any.whl'))
     if (!matching) expect(result.stdout + result.stderr).toContain('FAILED')
   })
 }

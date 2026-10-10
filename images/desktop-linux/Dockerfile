@@ -6,7 +6,7 @@
 # the CI check (images/check-derived.sh) enforces.
 #
 # The base is an ARG, so a build pins it (docs/images.md):
-#   docker build --build-arg QARE_IMAGE=ghcr.io/vividynamics/qare-core:2026.9.1 .
+#   docker build --build-arg QARE_IMAGE=ghcr.io/vividynamics/qare-core@sha256:dde359505efbdc6336f776f068b5805c7164fd593083c4850ed1f5f83dfc67ef .
 ARG QARE_IMAGE=ghcr.io/vividynamics/qare-core@sha256:dde359505efbdc6336f776f068b5805c7164fd593083c4850ed1f5f83dfc67ef
 
 FROM $QARE_IMAGE

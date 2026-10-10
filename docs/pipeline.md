@@ -290,8 +290,8 @@ a test holds every workflow file to that. pnpm is the one qare's
 `package.json` names, by version and hash, enabled with corepack: no action
 installs it. Each job uses a fresh corepack directory, carried to later
 steps, so a previous job's cached pnpm cannot replace the hash-checked
-download. This covers workflow installs; the container's pnpm bootstrap
-currently installs by version and is tracked separately. No job restores a
+download. The core container builder uses the same hashed declaration through
+Corepack. No job restores a
 dependency cache.
 
 The examples in this guide name actions the same way. Name the actions of
