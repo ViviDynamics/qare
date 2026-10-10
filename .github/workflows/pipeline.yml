@@ -401,11 +401,10 @@ jobs:
           if [[ "$QARE_REF" =~ ^20[0-9]{2}\.[0-9]+\.[0-9]+$ ]]; then
             version="$QARE_REF"
           else
-            version="$(jq -r '.version // empty' .qare-pipeline/package.json)"
-          fi
-          if [ -z "$version" ]; then
-            echo "the qare revision this pipeline pinned carries no version in its package.json, so no image can be named for it" >&2
-            exit 1
+            if ! version="$(jq -ser 'select(length == 1) | .[0].version | select(type == "string" and test("^20[0-9]{2}\\.[0-9]+\\.[0-9]+\\z"))' .qare-pipeline/package.json)"; then
+              echo "::error::the pinned qare manifest has no readable CalVer version, so no version output or image is named" >&2
+              exit 1
+            fi
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Say why a fork gets no QA
@@ -1039,15 +1038,12 @@ jobs:
         # run that recorded nothing must not leave the pipeline green with
         # nothing posted. The report job names the failure instead.
         run: |
-          verdict=""
-          if [ -f evidence/result.json ]; then
-            verdict="$(jq -r '.verdict // empty' evidence/result.json 2>/dev/null || true)"
-          fi
-          if [ -z "$verdict" ]; then
-            echo "no readable verdict in evidence/result.json: the run recorded none, so nothing was evaluated" >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          if ! verdict="$(jq -ser 'select(length == 1) | .[0].verdict | select(type == "string" and IN("passed", "failed", "blocked", "refused", "waived"))' evidence/result.json)"; then
+            echo "::error::evidence/result.json has no readable supported verdict, so no verdict output is written" >&2
             exit 1
           fi
-          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+          printf 'verdict=%s\n' "$verdict" >> "$GITHUB_OUTPUT"
       # The run leaves the head's stack up, because teardown is its caller's
       # job (#53), and this pipeline is the caller: the compose projects the
       # run named in its evidence are taken down, volumes and all. The run
@@ -1247,12 +1243,12 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: qa-inputs
-          path: .
+          path: qa-inputs
       - name: Download plan.json
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: plan.json
-          path: .
+          path: qa-plan
       # Evidence gets a directory of its own: it is the verifier's file root,
       # so its read tool reaches the evidence and nothing else.
       - name: Download execute evidence
@@ -1267,7 +1263,13 @@ jobs:
       - name: Read the executed verdict
         id: executed
         shell: bash
-        run: echo "verdict=$(jq -r '.verdict' evidence/result.json)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          if ! verdict="$(jq -ser 'select(length == 1) | .[0].verdict | select(type == "string" and IN("passed", "failed", "blocked", "refused", "waived"))' evidence/result.json)"; then
+            echo "::error::evidence/result.json has no readable supported verdict, so no verdict output is written" >&2
+            exit 1
+          fi
+          printf 'verdict=%s\n' "$verdict" >> "$GITHUB_OUTPUT"
       # The profile arrives as an artifact: it is pull-request data, and this
       # job must not check out the pull request tree. Only a run that actually
       # executed has one; a refused run skipped the verifier.
@@ -1359,7 +1361,7 @@ jobs:
           # The same flow action kinds the plan job handed the planner (#64):
           # the judge loads the plan with the base revision's loader, which
           # needs them to accept checks written in the change's vocabulary.
-          kinds=$(grep '^+.*FLOW_ACTION_KINDS' change.diff | grep -oE "'[A-Za-z][A-Za-z0-9]{0,30}'" | tr -d "'" | sort -u | head -12 | paste -sd, - || true)
+          kinds=$(grep '^+.*FLOW_ACTION_KINDS' qa-inputs/change.diff | grep -oE "'[A-Za-z][A-Za-z0-9]{0,30}'" | tr -d "'" | sort -u | head -12 | paste -sd, - || true)
           flow_actions=()
           if [ -n "$kinds" ]; then
             flow_actions=(--flow-actions "$kinds")
@@ -1377,7 +1379,7 @@ jobs:
             -v "$PWD:$PWD" -w "$PWD" \
             "$IMAGE_REF" qare judge \
             --result evidence/result.json --outDir . \
-            --plan plan.json --diff change-planner.diff \
+            --plan qa-plan/plan.json --diff qa-inputs/change-planner.diff \
             --nare /usr/local/bin/nare --profile profile "${flow_actions[@]}" "${dismissed[@]}"
       # What the run cost and decided (#51): its wall clock, the plan's and
       # the verifier's model spend, the criteria it selected and the verdict.
@@ -1395,8 +1397,8 @@ jobs:
             exit 0
           fi
           args=()
-          if [ -f plan.json ]; then
-            args+=(--plan plan.json)
+          if [ -f qa-plan/plan.json ]; then
+            args+=(--plan qa-plan/plan.json)
           fi
           if [ -n "${PR_NUMBER:-}" ]; then
             args+=(--pr "$PR_NUMBER")
@@ -1982,11 +1984,10 @@ jobs:
           if [[ "$QARE_REF" =~ ^20[0-9]{2}\.[0-9]+\.[0-9]+$ ]]; then
             version="$QARE_REF"
           else
-            version="$(jq -r '.version // empty' .qare-pipeline/package.json)"
-          fi
-          if [ -z "$version" ]; then
-            echo "the qare revision this pipeline pinned carries no version in its package.json, so no image can be named for it" >&2
-            exit 1
+            if ! version="$(jq -ser 'select(length == 1) | .[0].version | select(type == "string" and test("^20[0-9]{2}\\.[0-9]+\\.[0-9]+\\z"))' .qare-pipeline/package.json)"; then
+              echo "::error::the pinned qare manifest has no readable CalVer version, so no version output or image is named" >&2
+              exit 1
+            fi
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
       # The plan, read out of the ledger by code: every active criterion,
@@ -2303,15 +2304,12 @@ jobs:
         # run that recorded nothing must not leave the pipeline green with
         # nothing posted. The report job names the failure instead.
         run: |
-          verdict=""
-          if [ -f evidence/result.json ]; then
-            verdict="$(jq -r '.verdict // empty' evidence/result.json 2>/dev/null || true)"
-          fi
-          if [ -z "$verdict" ]; then
-            echo "no readable verdict in evidence/result.json: the run recorded none, so nothing was evaluated" >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          if ! verdict="$(jq -ser 'select(length == 1) | .[0].verdict | select(type == "string" and IN("passed", "failed", "blocked", "refused", "waived"))' evidence/result.json)"; then
+            echo "::error::evidence/result.json has no readable supported verdict, so no verdict output is written" >&2
             exit 1
           fi
-          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+          printf 'verdict=%s\n' "$verdict" >> "$GITHUB_OUTPUT"
       # Teardown is the caller's job (#53), and this pipeline is the caller.
       - name: Tear down what the run booted
         if: always()
@@ -2477,7 +2475,7 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: main-inputs
-          path: .
+          path: qa-inputs
       # Evidence gets a directory of its own: it is the verifier's file root.
       - name: Download the evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -2487,7 +2485,13 @@ jobs:
       - name: Read the executed verdict
         id: executed
         shell: bash
-        run: echo "verdict=$(jq -r '.verdict' evidence/result.json)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          if ! verdict="$(jq -ser 'select(length == 1) | .[0].verdict | select(type == "string" and IN("passed", "failed", "blocked", "refused", "waived"))' evidence/result.json)"; then
+            echo "::error::evidence/result.json has no readable supported verdict, so no verdict output is written" >&2
+            exit 1
+          fi
+          printf 'verdict=%s\n' "$verdict" >> "$GITHUB_OUTPUT"
       # The verifier, as for a pull request: it reads the evidence of each
       # proven criterion and may overturn it, so a suite that exited 0
       # without showing its criterion does not close an issue. It is told
@@ -2543,7 +2547,7 @@ jobs:
             -v "$PWD:$PWD" -w "$PWD" \
             "$IMAGE_REF" qare judge \
             --result evidence/result.json --outDir . \
-            --plan plan.json --no-diff --no-advisory \
+            --plan qa-inputs/plan.json --no-diff --no-advisory \
             --nare /usr/local/bin/nare --profile "$PROFILE"
       # What the run found, filed as issues (#154), or on a dry run only
       # printed. This step holds the identity and no model key, and runs
