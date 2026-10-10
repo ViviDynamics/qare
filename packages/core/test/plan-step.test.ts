@@ -1049,7 +1049,7 @@ test('the standard tools the prompt names are the ones the image contract ships 
   const markers: Array<{ tool: string; pattern: RegExp }> = [
     { tool: 'node', pattern: /COPY --from=builder \/usr\/bin\/node/ },
     { tool: 'python3', pattern: /FROM python:3\.12-slim/ },
-    { tool: 'nare', pattern: /pip install .*\$NARE_WHEEL/ },
+    { tool: 'nare', pattern: /python3 -m pip install .*"\/tmp\/qare-nare\/\$wheel"/ },
   ]
   // The allowlist equals the image contract exactly: a tool that joins or
   // leaves the list has to change this test, which is the point.
