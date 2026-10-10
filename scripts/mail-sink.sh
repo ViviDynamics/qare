@@ -47,6 +47,7 @@ step() {
 step "Find the runner's docker"
 code=0
 IMAGE_REF="$image" \
+IMAGE_TAG_REF="$image" \
 IMAGE_DIGEST="${image}@local" \
 BASE_SHA="$(git rev-parse 'HEAD^1')" \
 HEAD_SHA="$(git rev-parse HEAD)" \
