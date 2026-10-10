@@ -10,9 +10,13 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 interface Step { name?: string; run?: string; id?: string; uses?: string; with?: { name?: string; path?: string } }
 const pipeline = parse(readFileSync(join(root, '.github/workflows/pipeline.yml'), 'utf8')) as { jobs: Record<string, { steps: Step[] }> }
 const dirs: string[] = []
-function fixture(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'qare-workflow-boundary-'))
+function temporary(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
   dirs.push(dir)
+  return dir
+}
+function fixture(): string {
+  const dir = temporary('qare-workflow-boundary-')
   mkdirSync(join(dir, '.qare-pipeline'), { recursive: true })
   mkdirSync(join(dir, 'evidence'), { recursive: true })
   return dir
@@ -139,7 +143,7 @@ done
       PATH: `${bin}:${process.env.PATH ?? ''}`, RUNNER_TEMP: dir, IMAGE_REF: 'fixture-image',
       MODEL_KEY: 'test-only', MODEL_KEY_ENV: 'MODEL_TEST_KEY', NARE_PROVIDER: '', NARE_MODEL: '',
       NARE_STREAM: '', NARE_BASE_URL: '', QARE_MAX_OUTPUT_TOKENS: '', QARE_VERIFY_BATCH_SIZE: '',
-      PROFILE: '.qa', QARE_ARGS_FILE: argsFile, JUDGE_OUTPUT: mkdtempSync(join(tmpdir(), 'qare-judge-output-')),
+      PROFILE: '.qa', QARE_ARGS_FILE: argsFile, JUDGE_OUTPUT: temporary('qare-judge-output-'),
     })
     expect(result.status).toBe(0)
     const args = readFileSync(argsFile, 'utf8').split('\0')

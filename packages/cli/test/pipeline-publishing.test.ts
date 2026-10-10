@@ -1,15 +1,23 @@
-import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { parse } from 'yaml'
-import { expect, test } from 'vitest'
+import { afterEach, expect, test } from 'vitest'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../../..')
 interface Step { name?: string; id?: string; if?: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown>; uses?: string }
 interface Job { needs?: string[]; if?: string; permissions?: Record<string, string>; outputs?: Record<string, string>; steps: Step[] }
 const jobs = (parse(readFileSync(join(root, '.github/workflows/pipeline.yml'), 'utf8')) as { jobs: Record<string, Job> }).jobs
+
+const dirs: string[] = []
+function fixture(prefix: string): string {
+  const directory = mkdtempSync(join(tmpdir(), prefix))
+  dirs.push(directory)
+  return directory
+}
+afterEach(() => { for (const directory of dirs.splice(0)) rmSync(directory, { recursive: true, force: true }) })
 
 for (const [judgeId, publishId] of [['judge', 'publish'], ['main_judge', 'main_publish']] as const) {
   test(`${judgeId} holds the model key without an App key or write permission`, () => {
@@ -43,7 +51,7 @@ for (const [judgeId, publishId] of [['judge', 'publish'], ['main_judge', 'main_p
     test(`${judgeId} exposes recorded ${verdict} even when judging exits nonzero`, () => {
       const step = jobs[judgeId]?.steps.find((entry) => entry.name === 'Read the judged verdict')
       expect(step?.if).toBe('always()')
-      const cwd = mkdtempSync(join(tmpdir(), 'qare-judged-ready-'))
+      const cwd = fixture('qare-judged-ready-')
       writeFileSync(join(cwd, 'judged-result.json'), JSON.stringify({ verdict }))
       writeFileSync(join(cwd, 'output'), '')
       const result = spawnSync('bash', ['-eo', 'pipefail', '-c', step?.run ?? 'exit 99'], { cwd, env: { PATH: process.env.PATH, GITHUB_OUTPUT: join(cwd, 'output'), JUDGE_OUTPUT: cwd }, encoding: 'utf8' })
@@ -55,8 +63,8 @@ for (const [judgeId, publishId] of [['judge', 'publish'], ['main_judge', 'main_p
   }
 
   test(`${judgeId} refuses a stale tracked result when judging failed before producing output`, () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'qare-stale-judged-'))
-    const fresh = mkdtempSync(join(tmpdir(), 'qare-fresh-judged-'))
+    const cwd = fixture('qare-stale-judged-')
+    const fresh = fixture('qare-fresh-judged-')
     writeFileSync(join(cwd, 'judged-result.json'), JSON.stringify({ verdict: 'passed' }))
     writeFileSync(join(cwd, 'output'), '')
     const step = jobs[judgeId]?.steps.find((entry) => entry.name === 'Read the judged verdict')
@@ -72,7 +80,7 @@ for (const [judgeId, publishId] of [['judge', 'publish'], ['main_judge', 'main_p
   for (const data of ['', '{}', '{"verdict":"passed\\nready=true"}', '{"verdict":"passed"}\n{"verdict":"failed"}']) {
     test(`${judgeId} never authorizes publishing with unread or malformed result ${JSON.stringify(data)}`, () => {
       const step = jobs[judgeId]?.steps.find((entry) => entry.name === 'Read the judged verdict')
-      const cwd = mkdtempSync(join(tmpdir(), 'qare-judged-invalid-'))
+      const cwd = fixture('qare-judged-invalid-')
       writeFileSync(join(cwd, 'judged-result.json'), data)
       writeFileSync(join(cwd, 'output'), '')
       const result = spawnSync('bash', ['-eo', 'pipefail', '-c', step?.run ?? 'exit 99'], { cwd, env: { PATH: process.env.PATH, GITHUB_OUTPUT: join(cwd, 'output'), JUDGE_OUTPUT: cwd }, encoding: 'utf8' })

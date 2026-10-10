@@ -2602,7 +2602,7 @@ jobs:
             exit 1
           fi
           printf 'verdict=%s\nready=true\n' "$verdict" >> "$GITHUB_OUTPUT"
-      - name: Upload main judge artifacts (judged-result.json, main-findings.txt)
+      - name: Upload main judged result (judged-result.json)
         if: always() && steps.workspace.outputs.path != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

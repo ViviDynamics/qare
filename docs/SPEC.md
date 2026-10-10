@@ -89,39 +89,44 @@ A run against a target (#122) has one side by definition and says so, and so
 does `qare check`, which checks the app as it runs.
 
 Not evaluated (#203). A pipeline that fails before it records a verdict
-(a tool that will not install, an image that will not pull, a planner that
-will not answer, or judge failing to post) evaluated no criterion, so it has
+(a tool that will not install, an image that will not pull, or a planner
+that will not answer) evaluated no criterion, so it has
 no verdict above. The report job posts the sticky comment headed `QARE run:
 not evaluated (qare or its environment failed)` and a failing check run
 titled `QARE: not evaluated (qare or environment failure)`. Both name the job
 and step that failed and say the failure is on qare's side or the runner's,
 not the project's. The check fails closed: not reaching a verdict never
 passes. A failed or blocked verdict is never reported this way. It is in
-`result.json`, and judge publishes it even though it left execute red. When
-execute recorded a verdict and judge then failed before posting it, the report
+`result.json`, and publish posts the judged result even though it left execute
+red. When execute recorded a verdict and judging or publishing then failed
+before posting it, the report
 says so instead: the comment is headed `QARE run: verdict not published (qare
 failed after checking)`, names the recorded verdict and the step that kept it
 from the pull request, and points to the evidence artifact that holds it. A
-verdict already in the sticky comment for the same head (judge posted it, then
+verdict already in the sticky comment for the same head (publish posted it, then
 failed creating its check run) is never replaced by a report. A run
 whose execute step recorded no readable verdict fails execute, so it can never
 leave the pipeline green with nothing posted.
 
 ## Pipeline
 
-Four jobs, so the model and the GitHub token never share a machine with PR
-code, plus a report job for a run that reached no verdict. Every secret-holding job builds and runs qare from the base commit, a
-revision the pull request cannot change; the pull request contributes data
+Five jobs separate planning, execution, judging and publishing, plus a report
+job for a run whose verdict was not published. The model key and App private
+key never share a job, and neither shares a machine with PR code. Secret-holding
+jobs use the pinned qare source or images. In qare's own PR checks that
+source is the trusted base commit, which the pull request cannot change.
+The pull request contributes data
 only: its body, the linked issues, the diff, its `.qa/` profile read as YAML,
 and the artifacts execute uploaded.
 
 | Job | Secrets | Network | Does |
 | --- | --- | --- | --- |
-| **collect** | GitHub token | yes | Reads the pull request body, linked issues and diff from the base commit's checkout; writes `criteria.json`. Never executes PR code. |
+| **collect** | App key in minting step, read-scoped App token or caller GitHub token | yes | Reads the pull request body, linked issues and diff from the base commit's checkout; writes `criteria.json` and reads prior completed advisory records. Never executes PR code. |
 | **plan** | model key | yes | Reads the criteria, the diff and `.qa/`; writes `plan.json` mapping each criterion to checks tagged `command`, `flow` or `visual`. The planner is also told any flow action kinds the change itself introduces, read from the diff as data. The planner is told the run's declared inputs — the profile directory and every path the diff touches — and a command check reading anything else, the plan file itself included, is corrected against them (#162, #156). The planner is also told that the executing job runs no model, so a criterion whose evidence can only come from a model-driven session is marked unplannable instead of planned as a check for an artifact the pipeline never produces (#168). It is also told the profile's QA.md instructions, redacted and size capped, and the commands the profile declares as known to work; a plan whose command check runs a program that is neither the program of a declared command nor one of the standard tools the runner carries is corrected, naming the program, then refused (#156). A plan the loader still rejects after its correction round comes out with every criterion marked `unplannable` naming why (#64), so the pipeline reports the planning gap instead of failing red. Never executes PR code. |
 | **execute** | none | stub containers only | Boots the app at the merge base and at the head with stubs, runs the plan on both sides, saves artifacts and raw results. The run image carries no git, so the step checks the base commit out on the runner, outside the head's checkout, and hands it to `qare run --base-repo`; both sides run in this one job, which holds nothing (#147). |
-| **judge** | model key, GitHub token | yes | Computes verdicts in code from raw results, runs the verifier model on the evidence, posts the comment and check. The plan is loaded with the same flow action kinds the plan step was given. Runs whenever execute recorded a verdict, including a failed or blocked one that left execute red (#203). |
-| **report** | GitHub token | yes | Runs only when the pipeline failed and no verdict reached the pull request. Reads the run's jobs from the Actions API and posts the not-evaluated comment and check naming the job and step that failed (#203). Builds qare from the base commit. Never executes PR code. |
+| **judge** | model key | yes | Computes verdicts in code from raw results, runs the verifier model on the evidence and uploads a fresh judged result. The plan is loaded with the same flow action kinds the plan step was given. Runs whenever execute recorded a verdict, including a failed or blocked one that left execute red (#203). |
+| **publish** | App key in minting step, GitHub token | yes | Mints a fresh repository-scoped token before downloading artifacts or running containers, acts on advisory replies after judging, then posts the judged comment and check using the exact judge image digest. |
+| **report** | App key in minting step, GitHub token | yes | Runs only when the pipeline failed and no verdict reached the pull request. Reads the run's jobs from the Actions API and posts the not-evaluated comment and check naming the job and step that failed (#203). Builds qare from the base commit. Never executes PR code. |
 
 Before either side starts, the run settles whether it may execute where it landed (#76): a host that lacks what the profile requires, or a self-hosted runner a public repository did not opt in to, ends the run `refused`, by name, with nothing provisioned. See [Requirements and placement](#requirements-and-placement).
 
@@ -1406,8 +1411,10 @@ it does what the pull request lane does with the pull request taken out:
   (rule 7). It is the only job of the lane that runs the repository's code.
 - **main_judge** asks the verifier about the evidence of each proven
   criterion, told that no change is under review (`qare judge --no-diff`), in
-  the step that holds the model key, and then calls `main-findings` in the
-  step that holds the GitHub identity. No step holds both.
+  the job that holds only the model key, and uploads the judged result.
+- **main_publish** mints a fresh GitHub identity before downloading artifacts
+  or running containers, then calls `main-findings` with that judged result.
+  No job holds both the model key and the App private key.
 
 The lane is off by default, and on it is a dry run by default: unless the
 caller passes `main-lane-dry-run` as the exact word `false`, the step reads,
@@ -1421,7 +1428,7 @@ a criterion passed on a revision is a fact about a run, not a change to a
 criterion, so it is recorded beside the ledger and never in it: one file,
 `passes/main.json`, on the orphan `qa-assets` branch where a run's metrics
 and screenshots already go. A caller turns it on with
-`main-lane-record-passes`. The step that writes it is main_judge's filing
+`main-lane-record-passes`. The step that writes it is main_publish's filing
 step: it holds the GitHub identity, runs no repository code, and decides
 what a pass is in code, from the judged result and the ledger. main_execute
 holds no token and cannot write it (rule 7), no model output can add a pass
@@ -1496,7 +1503,7 @@ the executed result and the ledger. No model has a say in any of it.
 - **Hand-off.** The `qa-regression` label is the signal an orchestrator
   picks an issue up by. qare itself never fixes and never merges.
 
-Only the judge side files: the step holds the GitHub identity and runs
+Only main_publish files: the step holds the GitHub identity and runs
 nothing from the repository (rule 7). The step that runs code holds no
 token, so it cannot.
 
