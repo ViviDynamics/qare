@@ -52,7 +52,7 @@ const TOKEN = /QARE_APP_TOKEN|steps\.app\.outputs/
 
 /** Every job that posts, with the secrets its workflow names the App by and where its checkout of qare is. */
 const MINTING: { where: string; job: Job; workflow: Workflow; id: string; key: string; script: string }[] = [
-  ...['judge', 'report', 'advisory', 'requeue', 'main_judge'].map((id) => ({
+  ...['collect', 'publish', 'report', 'advisory', 'requeue', 'main_publish'].map((id) => ({
     where: `pipeline.yml ${id}`,
     job: pipeline.jobs[id] as Job,
     workflow: pipeline,
@@ -181,6 +181,10 @@ test('the key is used before anything else of the run is on the machine: no arti
       const label = `${where}: ${earlier.name ?? earlier.uses ?? ''} runs before the key is used`
       // A checkout and node itself are all the script needs, and all that
       // may come first: no script of any kind runs before the key is used.
+      if (where === 'pipeline.yml collect' && earlier.name === "Keep a public repository's run off a self-hosted runner") {
+        expect(earlier.run, label).not.toMatch(/secrets\.|pnpm|docker/)
+        continue
+      }
       expect(earlier.run, label).toBeUndefined()
       expect(earlier.uses ?? '', label).toMatch(/^actions\/(checkout|setup-node)@/)
       expect(Object.keys(earlier.with ?? {}), label).not.toContain('cache')
@@ -196,7 +200,7 @@ test('the key is used before anything else of the run is on the machine: no arti
       expect(pinned[0]?.with?.['persist-credentials'], where).toBe(false)
     }
     // judge's other checkout is the base commit: nothing of the pull request's tree is on the machine.
-    if (where === 'pipeline.yml judge') {
+    if (where === 'pipeline.yml publish') {
       const others = checkouts.filter((checkout) => checkout.with?.repository === undefined)
       expect(others.map((checkout) => checkout.with?.ref), where).toEqual(['${{ github.event.pull_request.base.sha }}'])
     }
@@ -243,13 +247,14 @@ test('the steps that post are handed the minted token and the App\'s slug, and a
     expect(JSON.stringify(step), `${where}: ${step.name ?? ''}`).not.toMatch(/model-key|MODEL_KEY|QARE_PLANNER_KEY/)
   }
   expect(holders).toEqual([
-    'pipeline.yml judge: Carry out the advisory replies',
-    'pipeline.yml judge: File stub issues (refused runs only)',
-    'pipeline.yml judge: Post the evidence on the pull request',
+    'pipeline.yml collect: Read recorded advisory context',
+    'pipeline.yml publish: Carry out the advisory replies',
+    'pipeline.yml publish: File stub issues (refused runs only)',
+    'pipeline.yml publish: Post the evidence on the pull request',
     'pipeline.yml report: Report the failure on the pull request',
     'pipeline.yml advisory: Carry out the advisory replies',
     'pipeline.yml requeue: Re-queue refused PRs unblocked by the merged stubs',
-    'pipeline.yml main_judge: File what the run on main found',
+    'pipeline.yml main_publish: File what the run on main found',
     'sweep.yml sweep: Publish the standing report and file findings',
   ])
   // No container is handed the key or the App's id, under any name.
@@ -261,7 +266,7 @@ test('the steps that post are handed the minted token and the App\'s slug, and a
 // weaker without a word (rule 6), so the two jobs that post from the image
 // check the image first, and stop by name.
 test('judge and main_judge stop by name when the image they pulled cannot read a minted token', () => {
-  for (const id of ['judge', 'main_judge']) {
+  for (const id of ['publish', 'main_publish']) {
     const steps = pipeline.jobs[id]?.steps ?? []
     const index = steps.findIndex((candidate) => candidate.name === IMAGE_CHECK)
     expect(index, id).toBeGreaterThan(steps.findIndex((candidate) => candidate.name === 'Pull the core image'))

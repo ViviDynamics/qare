@@ -103,7 +103,7 @@ function expectCallFits(job: Job, where: string): void {
 
 test('the pipeline is a reusable workflow and nothing else triggers it', () => {
   expect(Object.keys(pipeline.on)).toEqual(['workflow_call'])
-  for (const job of ['collect', 'plan', 'execute', 'judge', 'report', 'advisory', 'requeue', 'main_collect', 'main_execute', 'main_judge'])
+  for (const job of ['collect', 'plan', 'execute', 'judge', 'publish', 'report', 'advisory', 'requeue', 'main_collect', 'main_execute', 'main_judge', 'main_publish'])
     expect(Object.keys(pipeline.jobs)).toContain(job)
 })
 
@@ -342,18 +342,19 @@ test('the identity reaches the steps that post, and nothing else', () => {
   // only reads, so it keeps the Actions token and never holds a key that can
   // post.
   expect(holders).toEqual([
-    'judge: Carry out the advisory replies',
-    'judge: File stub issues (refused runs only)',
-    'judge: Post the evidence on the pull request',
+    'collect: Read recorded advisory context',
+    'publish: Carry out the advisory replies',
+    'publish: File stub issues (refused runs only)',
+    'publish: Post the evidence on the pull request',
     'report: Report the failure on the pull request',
     'advisory: Carry out the advisory replies',
     'requeue: Re-queue refused PRs unblocked by the merged stubs',
     // #294: the one step of the main lane that writes to GitHub, or on a dry run only reads.
-    'main_judge: File what the run on main found',
+    'main_publish: File what the run on main found',
   ])
   // Rule 7: the identity exists where qare posts, never where the pull
   // request's code runs, and never beside the planner.
-  for (const id of ['collect', 'plan', 'execute', 'main_collect', 'main_execute']) expect(JSON.stringify(pipeline.jobs[id]), id).not.toMatch(IDENTITY)
+  for (const id of ['plan', 'execute', 'judge', 'main_collect', 'main_execute', 'main_judge']) expect(JSON.stringify(pipeline.jobs[id]), id).not.toMatch(IDENTITY)
 })
 
 test('the sweep posts as the same identity, in its publishing step alone', () => {

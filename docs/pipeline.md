@@ -7,11 +7,12 @@ release tag. There is nothing to copy and nothing to keep in step by hand:
 qare's own pull requests run through the same file
 ([`qare.yml`](../.github/workflows/qare.yml) is a caller like yours).
 
-The pipeline is collect, plan, execute, judge. collect reads the acceptance
+The pipeline is collect, plan, execute, judge, publish. collect reads the acceptance
 criteria from the issue the pull request promises to close, plan asks a model
 for a check plan, execute runs the plan against the pull request with no
-secrets on the machine, and judge posts the verdict as one comment and a
-check run. A pull request that closes no issue, or an issue that states no
+secrets on the machine. judge verifies the evidence with the model key alone;
+publish starts afterwards and posts the recorded verdict as one comment and
+a check run with a fresh identity token. A pull request that closes no issue, or an issue that states no
 criteria, has nothing to check and stays green.
 
 ## The caller workflow
@@ -127,7 +128,8 @@ Only two steps ever see the model key, the planner in plan and the verifier
 in judge, and neither holds a GitHub token or the identity. The advisory UX
 review is asked in that same judge step, after the verdict is computed, so it
 adds no holder of the key. The identity reaches only the steps that write to
-GitHub, in judge, report, advisory and requeue.
+GitHub, in publish, main_publish, report, advisory and requeue. collect uses
+a read-only scoped identity to read previously recorded advisory dismissals.
 execute, the job that runs the pull request's code, holds no secret at all.
 That map is at the top of `pipeline.yml` and a test holds the file to it.
 
@@ -207,29 +209,29 @@ anything else of the run" is a statement about one job: a runner that
 outlives its jobs keeps what earlier jobs left on it, so on your own runners
 give execute a pool of its own with `execute-runs-on`.
 
-Before judge and main_judge post from the image with a minted token, they
+Before publish and main_publish post from the image with a minted token, they
 check that the image reads one, and stop by name if it does not: an image
 older than this would otherwise find no App and post as something weaker.
 
 Three things follow from that:
 
 - **The App must hold each permission in the table.** A job asks for exactly
-  what it declares (judge: Contents, Checks, Issues and Pull requests at
+  what it declares (publish: Contents, Checks, Issues and Pull requests at
   write; report: Checks, Issues and Pull requests at write and Contents at
   read; advisory and requeue: Issues and Pull requests at write and Contents
-  at read; main_judge: Contents and Issues at write and Pull requests at
+  at read; main_publish: Contents and Issues at write and Pull requests at
   read). An App that lacks one is refused the token, and the minting step
   fails with a message that names what was asked for. report mints the same
   way, so nothing is posted on the pull request: the red job is the notice.
-- **A token cannot be renewed without the key, so it lasts an hour.** The
-  steps of a job that post must all run within an hour of the job's first
-  steps. In judge and main_judge the verifier's model turns sit between the
-  minting step and the posting steps, so a verifier that takes most of an
-  hour leaves a verdict the job cannot post. The posting step then stops
-  with a message that names the expiry, having sent nothing, and the report
-  job, which mints a token of its own, says on the pull request that the
-  verdict went unpublished. A larger `verify-batch-size` asks the model
-  fewer times.
+- **Publishing gets a fresh token after judging.** judge and main_judge hold
+  the model key and no App key. They upload their recorded results even when
+  the verifier exits nonzero, and publish/main_publish start only when that
+  result has a readable supported verdict. Their first steps mint a token;
+  an hour spent verifying cannot age that token. Publishing itself must finish
+  within its token's hour. If it cannot post, report mints its own token and
+  names the unpublished verdict and failed step. Missing judged results never
+  fall back to posting the executed input as verified. The extra publishing
+  runner starts are the owner-approved timing and cost choice in #306.
 - **The run's own jobs are read with the run's own token.** report lists the
   jobs of the run to name the one that failed, with `actions: read` of the
   Actions token, so the App needs no Actions permission. Only when that
@@ -269,11 +271,11 @@ it needs under it:
 
 | Permission | Which job uses it |
 | --- | --- |
-| `contents: write` | judge, to push the run's screenshots to the `qa-assets` branch. Every other job reads. |
-| `checks: write` | judge and report, for the check run on the head commit. |
-| `pull-requests: write`, `issues: write` | judge, report, advisory and requeue, for the comment, the stub issues and the replies to advisory findings. collect reads issues. |
+| `contents: write` | publish, to push the run's screenshots to the `qa-assets` branch. Every other job reads. |
+| `checks: write` | publish and report, for the check run on the head commit. |
+| `pull-requests: write`, `issues: write` | publish, report, advisory and requeue, for the comment, the stub issues and the replies to advisory findings. collect reads issues. |
 | `actions: read` | report, to name the job and step that failed when no verdict was published. |
-| `issues: write`, `pull-requests: read`, `contents: write` | main_judge, when the main lane is on: to file what a run on the default branch found, to read the changes a finding blames, and, with `main-lane-record-passes`, to push the record of passes to the `qa-assets` branch. |
+| `issues: write`, `pull-requests: read`, `contents: write` | main_publish, when the main lane is on: to file what a run on the default branch found, to read the changes a finding blames, and, with `main-lane-record-passes`, to push the record of passes to the `qa-assets` branch. |
 
 These are the permissions of the run's own token. A GitHub App or a personal
 access token carries its own (see "GitHub identity"), and the calling job
@@ -303,14 +305,14 @@ actions' tags point at on the day.
 A GitHub-hosted runner has all of it. Your own runner needs `docker` with the
 buildx plugin and its `imagetools inspect` command, `git`,
 `curl` and `jq`. It does not need the GitHub CLI, nor node, pnpm or Python set up by hand:
-plan, execute and judge run qare and nare inside the published images
+plan, execute, judge and publishing run qare and nare inside the published images
 (`ghcr.io/vividynamics/qare-core` and the flavour the profile names), and
 the jobs that run anything outside an image (collect, main_collect, report,
-advisory, requeue, and the one step of judge and main_judge that mints the
+advisory, requeue, and the one step of publish and main_publish that mints the
 App's token) set up node themselves with `actions/setup-node`.
 
-Each image job resolves the selected release tag to its registry digest before
-pulling. Every container in that job uses the resolved digest, while evidence
+Planning, execution and judging resolve the selected release tag to its registry
+digest before pulling. Publishing uses the exact digest recorded by judging. Every container in that job uses the resolved digest, while evidence
 records both the release tag and digest. A missing buildx plugin, an unreadable
 registry response or a malformed digest stops the job with a named error.
 Later jobs resolve their own image; this does not replace release immutability.
@@ -826,7 +828,14 @@ qare answers each reply once, in a comment that is also its record. It acts
 only on a reply from an owner, a member or a collaborator of the repository,
 and reads findings only from its own comment.
 
-A reply is carried out by the next run of the pipeline on that pull request.
+Already recorded dismissals are read with collect's configured identity and
+handed to the reviewer. New replies are carried out after judging, in publish,
+before it replaces the previous evidence comment. Newly dismissed findings
+are suppressed in both the visible advisory section and its embedded data;
+criteria and the verdict stay as judged. Unread records or a failed reply
+sweep are named; they never become an invented successful empty context.
+
+A reply is carried out after judging by the next run on that pull request.
 To have it carried out at once, let the caller listen for comments:
 
 ```yaml
@@ -896,16 +905,17 @@ of the first; the newer revision is the one worth checking.
 | --- | --- | --- |
 | main_collect | the GitHub token | Reads the ledger at the revision and writes the plan from the checks the ledger records. No model is asked. |
 | main_execute | nothing | Boots the app and runs the plan, as execute does. It is the only job that runs your repository's code. |
-| main_judge | the model key, then the identity, in separate steps | The verifier reads the evidence, told that no change is under review. Then `main-findings` files, or on a dry run prints. |
+| main_judge | the model key | The verifier reads the evidence, told that no change is under review, and uploads its recorded result. |
+| main_publish | a fresh GitHub identity token | `main-findings` files from the judged result, or on a dry run prints. |
 
 There is no planning step and no model plans on main. The ledger already
 says which suite proves each criterion, so the plan is read out of it by
 `qare ledger plan`, and what ran on Tuesday is what runs on Wednesday.
 
 A failed verdict leaves main_execute red, as it does on a pull request, and
-main_judge still reports it. What a dry run would have filed is in
-main_judge's job summary and in `main-findings.txt` in the
-`main-judge-artifacts` artifact: for each issue it would open, the title, the
+main_judge still verifies it and main_publish reports it. What a dry run would
+have filed is in main_publish's job summary and in `main-findings.txt` in the
+`main-publish-artifacts` artifact: for each issue it would open, the title, the
 labels and the body, mentions and all. It opens with what the run amounted
 to (the verdict, and how many criteria were proven, failed and left
 unverified) and names each unverified criterion with its reason, so "nothing
@@ -984,7 +994,7 @@ What is recorded, where, and by what:
   the pass was recorded. If a criterion's text, proof or
   checks change in the ledger, its pass no longer stands until a run proves
   the new wording.
-- **By what.** main_judge's filing step, after everything is filed. It holds
+- **By what.** main_publish's filing step, after everything is filed. It holds
   the identity, runs nothing from your repository, and decides a pass in
   code from the judged result and the ledger. main_execute holds no token
   and cannot write it. The verifier can only take a pass away. A pull
@@ -994,7 +1004,7 @@ What is recorded, where, and by what:
   revision already holds their pass: it asks the history what a real run
   would, and like a real run it stops when GitHub cannot say when the
   checked revision was committed.
-- **Permissions.** main_judge declares `contents: write` for this one push.
+- **Permissions.** main_publish declares `contents: write` for this one push.
   The calling job already grants it in the ceiling above, so a caller adds
   nothing. A caller that had narrowed its ceiling to `contents: read` must
   grant `contents: write` again, or no run of the workflow starts.

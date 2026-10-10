@@ -138,8 +138,8 @@ pipeline and in the sweep:
   `repositories` and `permissions` of GitHub's documented answer. The
   [first live QARE run](https://github.com/ViviDynamics/qare/actions/runs/37941939128)
   exercised this check against GitHub and posted as `vivi-qare[bot]`.
-- **An image that cannot read a minted token stops the job.** judge and
-  main_judge check the image they pulled before they post with it, so a
+- **An image that cannot read a minted token stops the job.** publish and
+  main_publish check the image they pulled before they post with it, so a
   version skew between the pipeline and its image is a named failure and
   never a quiet fall to a weaker identity.
 - **The sweep runs on its schedule, and otherwise for the default branch
@@ -170,3 +170,16 @@ criteria proposal triggers workflows, remain open in #155 and #61.
 - [docs/SPEC.md](../SPEC.md) — "GitHub identity", "Decisions made", "Pipeline", "Triggers".
 - [CONSTITUTION.md](../../CONSTITUTION.md) — rules 1 and 7.
 - [ADR-0002](adr-0002-screenshot-storage.md) — a consumer of the identity: the judge step pushes `qa-assets`.
+
+## Fresh publishing jobs (#306)
+
+The owner approved splitting judging from publishing, including the extra
+runner starts. PR and main judging hold the model key without an App key;
+publishing starts afterwards and mints a fresh repository-scoped token before
+any artifact or container reaches that job. A long verifier cannot expire the
+posting token. The validated recorded judged result and captured image digest
+cross the job boundary; a missing result authorizes no publication.
+
+Collection reads previously completed advisory dismissals with a narrow
+read-only token. New replies are carried out in publishing before replacing
+the evidence comment, after judging. They change advisory presentation alone.

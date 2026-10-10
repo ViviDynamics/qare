@@ -43,7 +43,7 @@ interface Input {
 const text = readFileSync(PIPELINE, 'utf8')
 const pipeline = parse(text) as { on: { workflow_call: { inputs: Record<string, Input> } }; jobs: Record<string, Job> }
 const inputs = pipeline.on.workflow_call.inputs
-const MAIN_JOBS = ['main_collect', 'main_execute', 'main_judge']
+const MAIN_JOBS = ['main_collect', 'main_execute', 'main_judge', 'main_publish']
 const IDENTITY = /secrets\.(app-id|app-private-key|personal-access-token)|QARE_APP_ID|QARE_APP_PRIVATE_KEY|QARE_APP_TOKEN|steps\.app\.outputs|QARE_GITHUB_TOKEN|GITHUB_TOKEN|GH_TOKEN|github\.token/
 
 function job(id: string): Job {
@@ -62,12 +62,13 @@ const needsOf = (id: string): string[] => [job(id).needs ?? []].flat()
 // A script as one line: its line continuations folded away, so a command reads as it runs.
 const oneLine = (value: string | undefined): string => (value ?? '').replace(/\\\n/g, ' ').replace(/\s+/g, ' ').trim()
 
-test('the lane is three jobs in the shape of the pull request lane, named so the job sections stay readable', () => {
+test('the lane is four jobs in the shape of the pull request lane, named so the job sections stay readable', () => {
   for (const id of MAIN_JOBS) expect(Object.keys(pipeline.jobs)).toContain(id)
   // No model plans on main: the plan is read out of the ledger in main_collect.
   expect(Object.keys(pipeline.jobs).filter((id) => id.startsWith('main'))).toEqual(MAIN_JOBS)
   expect(needsOf('main_execute')).toEqual(['main_collect'])
   expect(needsOf('main_judge')).toEqual(['main_collect', 'main_execute'])
+  expect(needsOf('main_publish')).toEqual(['main_collect', 'main_execute', 'main_judge'])
 })
 
 test('the lane is off by default: main-lane is an input with an empty default, and every main job hangs on it', () => {
@@ -139,16 +140,17 @@ test('in main_judge no step holds both the model key and a GitHub identity, and 
   // The step that mints the App's token from its private key, before
   // anything of the run is on the machine (#305); the one step that posts
   // with it; and the step that gives the token back.
-  expect(identityHolders).toEqual(['Mint the App token for this job', 'File what the run on main found', 'Revoke the App token this job minted'])
+  expect(identityHolders).toEqual([])
   // The revision the run checked, and the pinned qare's scripts for the
   // minting step: neither leaves a token behind.
   const checkouts = (judge.steps ?? []).filter((candidate) => candidate.uses?.startsWith('actions/checkout@'))
-  expect(checkouts).toHaveLength(2)
+  expect(checkouts).toHaveLength(1)
   for (const checkout of checkouts) expect(checkout.with?.['persist-credentials']).toBe(false)
   // What filing needs, and what recording a pass needs (#295): contents: write
   // is for the push to the qa-assets branch, which is where a pass is
   // recorded. The lane never writes the default branch.
-  expect(judge.permissions).toEqual({ contents: 'write', issues: 'write', 'pull-requests': 'read' })
+  expect(judge.permissions).toEqual({ contents: 'read' })
+  expect(job('main_publish').permissions).toEqual({ contents: 'write', issues: 'write', 'pull-requests': 'read' })
 })
 
 // #295: a run on the default branch records what it proved, so the next
@@ -158,7 +160,7 @@ test('recording a pass is off by default, only the exact word true turns it on, 
   expect(inputs['main-lane-record-passes']?.type).toBe('string')
   expect(inputs['main-lane-record-passes']?.default).toBe('')
   expect(inputs['main-lane-record-passes']?.description).toMatch(/qa-assets/)
-  const file = step('main_judge', 'File what the run on main found')
+  const file = step('main_publish', 'File what the run on main found')
   expect(file.env?.MAIN_LANE_RECORD_PASSES).toBe('${{ inputs.main-lane-record-passes }}')
   // No other step of the lane reads the input, and the job that runs the
   // repository's code has no token to write anything with.
@@ -170,11 +172,12 @@ test('recording a pass is off by default, only the exact word true turns it on, 
   expect(job('main_collect').permissions).toEqual({ contents: 'read' })
 
   const dir = mkdtempSync(join(tmpdir(), 'qare-main-record-'))
+  mkdirSync(join(dir, 'judged'))
   const bin = join(dir, 'bin')
   mkdirSync(bin)
   writeFileSync(join(bin, 'docker'), '#!/bin/sh\necho "docker $*"\n')
   chmodSync(join(bin, 'docker'), 0o755)
-  writeFileSync(join(dir, 'judged-result.json'), JSON.stringify({ schemaVersion: '1', verdict: 'passed', criteria: [{ id: 'sign-in', outcome: 'proven', evidence: [] }] }))
+  writeFileSync(join(dir, 'judged/judged-result.json'), JSON.stringify({ schemaVersion: '1', verdict: 'passed', criteria: [{ id: 'sign-in', outcome: 'proven', evidence: [] }] }))
   const asked = (value: string | undefined, dryRun: string): { record: string; dry: string } => {
     const env: Record<string, string> = {
       PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -247,8 +250,8 @@ test('main_judge asks the verifier with no diff, and files from the judged resul
   expect(judged.run).toMatch(/if \[ -z "\$MODEL_KEY" \]; then\n(?:.*\n)*?\s*exit 1\n/)
   expect(judged.run).toContain('--env-file "$key_file"')
   expect(judged.run).not.toMatch(/-e "?\$MODEL_KEY/)
-  const file = step('main_judge', 'File what the run on main found')
-  expect(oneLine(file.run)).toContain('main-findings --result judged-result.json --ledger "$PROFILE" --profile "$PROFILE" --sha "$HEAD_SHA" --run-url "$RUN_URL" --artifact-url "$EVIDENCE_URL" --dry-run "$dry" --record-passes "$record" --passes-profile "$PROFILE"')
+  const file = step('main_publish', 'File what the run on main found')
+  expect(oneLine(file.run)).toContain('main-findings --result judged/judged-result.json --ledger "$PROFILE" --profile "$PROFILE" --sha "$HEAD_SHA" --run-url "$RUN_URL" --artifact-url "$EVIDENCE_URL" --dry-run "$dry" --record-passes "$record" --passes-profile "$PROFILE"')
   expect(file.env?.HEAD_SHA).toBe('${{ github.sha }}')
   // The run is named with its attempt: a pass recorded by one attempt and a
   // failure filed by the next are told apart in the issue.
@@ -260,16 +263,17 @@ test('main_judge asks the verifier with no diff, and files from the judged resul
 test('a dry run is the default, and only the exact word false turns filing on', () => {
   expect(inputs['main-lane-dry-run']?.type).toBe('string')
   expect(inputs['main-lane-dry-run']?.default).toBe('true')
-  const file = step('main_judge', 'File what the run on main found')
+  const file = step('main_publish', 'File what the run on main found')
   expect(file.env?.MAIN_LANE_DRY_RUN).toBe('${{ inputs.main-lane-dry-run }}')
   // The step is run for real, with a docker that prints what it was asked
   // to run: what reaches main-findings is what the shell decided.
   const dir = mkdtempSync(join(tmpdir(), 'qare-main-dry-'))
+  mkdirSync(join(dir, 'judged'))
   const bin = join(dir, 'bin')
   mkdirSync(bin)
   writeFileSync(join(bin, 'docker'), '#!/bin/sh\necho "docker $*"\n')
   chmodSync(join(bin, 'docker'), 0o755)
-  writeFileSync(join(dir, 'judged-result.json'), JSON.stringify({ schemaVersion: '1', verdict: 'passed', criteria: [{ id: 'sign-in', outcome: 'proven', evidence: [] }] }))
+  writeFileSync(join(dir, 'judged/judged-result.json'), JSON.stringify({ schemaVersion: '1', verdict: 'passed', criteria: [{ id: 'sign-in', outcome: 'proven', evidence: [] }] }))
   const asked = (value: string | undefined): string => {
     const summary = join(dir, `summary-${String(value)}.md`)
     const env: Record<string, string> = {
@@ -296,8 +300,9 @@ test('a dry run is the default, and only the exact word false turns filing on', 
 })
 
 test('the filing step says what the run amounted to before it says what it files, so nothing to file never reads as all passed', () => {
-  const file = step('main_judge', 'File what the run on main found')
+  const file = step('main_publish', 'File what the run on main found')
   const dir = mkdtempSync(join(tmpdir(), 'qare-main-amount-'))
+  mkdirSync(join(dir, 'judged'))
   const bin = join(dir, 'bin')
   mkdirSync(bin)
   // main-findings, for a run in which nothing failed: it has nothing to file.
@@ -305,7 +310,7 @@ test('the filing step says what the run amounted to before it says what it files
   writeFileSync(join(bin, 'docker'), '#!/bin/sh\necho "dry run: nothing is written"\necho "no finding on main to file, update or close"\necho \'````\'\necho "::warning::from an issue body"\n')
   chmodSync(join(bin, 'docker'), 0o755)
   writeFileSync(
-    join(dir, 'judged-result.json'),
+    join(dir, 'judged/judged-result.json'),
     JSON.stringify({
       schemaVersion: '1',
       verdict: 'blocked',
@@ -349,7 +354,7 @@ test('the filing step says what the run amounted to before it says what it files
   expect(written.split('\n').filter((line) => line.startsWith('`'))).toEqual([])
 
   // A judged result that cannot be read stops the step: nothing is filed from a guess.
-  writeFileSync(join(dir, 'judged-result.json'), '{"verdict":')
+  writeFileSync(join(dir, 'judged/judged-result.json'), '{"verdict":')
   const broken = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', file.run ?? ''], {
     cwd: dir,
     env: { PATH: `${bin}:${process.env.PATH ?? ''}`, IMAGE_REF: 'image', HEAD_SHA: 'c0ffee0123456789c0ffee0123456789c0ffee01', RUN_URL: 'run', EVIDENCE_URL: '', PROFILE: '.qa', GITHUB_STEP_SUMMARY: summary },

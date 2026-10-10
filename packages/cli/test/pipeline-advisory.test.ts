@@ -42,6 +42,7 @@ function load(path: string): Workflow {
 
 const pipeline = load('.github/workflows/pipeline.yml')
 const judge = pipeline.jobs.judge?.steps ?? []
+const publish = pipeline.jobs.publish?.steps ?? []
 const stepNamed = (steps: Step[], name: string): Step => {
   const step = steps.find((candidate) => candidate.name === name)
   expect(step, `no step named ${JSON.stringify(name)}`).toBeDefined()
@@ -56,10 +57,10 @@ const IDENTITY_ENV = {
   QARE_GITHUB_TOKEN: '${{ secrets.personal-access-token }}',
 }
 
-test('judge carries out the advisory replies before it asks the model, with the identity and no model key', () => {
-  const replies = stepNamed(judge, 'Carry out the advisory replies')
-  const names = judge.map((step) => step.name)
-  expect(names.indexOf('Carry out the advisory replies')).toBeLessThan(names.indexOf('Judge the result'))
+test('publish carries out advisory replies after judging and before posting, with the identity and no model key', () => {
+  const replies = stepNamed(publish, 'Carry out the advisory replies')
+  const names = publish.map((step) => step.name)
+  expect(names.indexOf('Carry out the advisory replies')).toBeLessThan(names.indexOf('Post the evidence on the pull request'))
   // After the evidence is downloaded: the checkout cleaned the workspace, so
   // the list judge reads is this run's or none.
   expect(names.indexOf('Carry out the advisory replies')).toBeGreaterThan(names.indexOf('Download execute evidence'))
@@ -77,8 +78,8 @@ test('judge carries out the advisory replies before it asks the model, with the 
   expect(replies.env?.QARE_APP_PRIVATE_KEY).toBeUndefined()
 })
 
-test('advisory work gates nothing: a failed sweep is a warning, and judge then treats nothing as dismissed', () => {
-  const run = stepNamed(judge, 'Carry out the advisory replies').run ?? ''
+test('advisory work gates nothing: a failed sweep warns and suppresses no new findings', () => {
+  const run = stepNamed(publish, 'Carry out the advisory replies').run ?? ''
   // A pinned qare older than the command answers "unknown command": that is
   // "no dismissals", said, and never a red run. The step still may not be
   // marked allowed to fail (rule 6): the shell handles the one case.
@@ -89,7 +90,7 @@ test('advisory work gates nothing: a failed sweep is a warning, and judge then t
 test('judge hands the reviewer the dismissed list when there is one, and the model step still holds no token', () => {
   const step = stepNamed(judge, 'Judge the result')
   const run = step.run ?? ''
-  expect(run).toMatch(/if \[ -f advisory-dismissed\.json \]; then\n\s+dismissed=\(--dismissed advisory-dismissed\.json\)\n\s*fi/)
+  expect(run).toMatch(/if \[ -f qa-inputs\/advisory-dismissed\.json \]; then\n\s+dismissed=\(--dismissed qa-inputs\/advisory-dismissed\.json\)\n\s*fi/)
   expect(run).toContain('"${dismissed[@]}"')
   expect(JSON.stringify(step)).not.toMatch(/GITHUB_TOKEN|GH_TOKEN|github\.token|QARE_APP_ID|QARE_APP_PRIVATE_KEY|QARE_APP_TOKEN|steps\.app\.|QARE_GITHUB_TOKEN/)
 })
