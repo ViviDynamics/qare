@@ -32,3 +32,7 @@ marker paths. The two helper cases also failed before implementation. After
 the fix, all 219 action tests passed, along with action typecheck and changed
 file lint. The fake intentionally returns matching foreign-author and title-only
 hits, so these cases exercise local checks independently of the search qualifier.
+
+Rebased unpublished work onto #326's squash merge 944dff4 with no conflicts.
+Reserved 2026.10.48 above the remote tags and the pending 2026.10.47 release.
+No existing remote branch was rewritten.
