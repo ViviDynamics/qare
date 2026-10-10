@@ -127,7 +127,7 @@ pipeline and in the sweep:
 - **The key is still a secret of the job.** GitHub hands a job's runner
   every secret the job's steps name. The steps that run on the runner after
   the minting step, the build of the pinned qare in report, advisory,
-  requeue and the sweep and the action that sets pnpm up for it, run on a
+  requeue and the sweep and the step that enables pnpm with corepack, run on a
   machine that was given the key, though
   never in their own environment. Actions has no way to hand a token from
   one job to another as a secret, so the key cannot be moved to a job that

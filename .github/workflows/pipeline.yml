@@ -65,7 +65,7 @@ name: QARE pipeline
 # What this does not change: the key is still a secret of the job. GitHub
 # hands a job's runner every secret the job's steps name, so the steps that
 # run on the runner after the minting step (the build of the pinned qare in
-# report, advisory and requeue, and the action that sets pnpm up for it) run
+# report, advisory and requeue, and the step that enables pnpm with corepack) run
 # on a machine that was given it, though never in their own environment. A
 # container is not that machine. And "before anything else of the run" is a
 # statement about one job: a runner that outlives its jobs keeps what
@@ -275,7 +275,7 @@ on:
           workflow ships in, so pin the release in `uses:` and leave this
           alone.
         type: string
-        default: '2026.10.46'
+        default: '2026.10.47'
     secrets:
       model-key:
         description: >-
@@ -344,7 +344,7 @@ jobs:
           fi
       # The base commit: the pull request contributes data only, and the head
       # arrives below as an object, never as a working tree.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
@@ -353,20 +353,40 @@ jobs:
       # a release for a repository that calls this workflow, the base commit
       # for qare itself.
       - name: Check out qare at the pinned revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ViviDynamics/qare
           ref: ${{ inputs.qare-ref }}
           path: .qare-pipeline
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
-        with:
-          package_json_file: .qare-pipeline/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .qare-pipeline/.nvmrc
-      - run: pnpm --dir .qare-pipeline install --frozen-lockfile
-      - run: pnpm --dir .qare-pipeline build
+      # pnpm as package.json names it (#310): corepack, which ships with node,
+      # reads `packageManager`, which carries the version and the hash the
+      # download is checked against. No action installs it. The version that
+      # resolved is then held to the one named, so a runner that answers with
+      # another pnpm stops here.
+      - name: Enable the pnpm package.json names
+        shell: bash
+        working-directory: .qare-pipeline
+        run: |
+          set -euo pipefail
+          COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          export COREPACK_HOME
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
+          corepack enable
+          wanted="$(jq -r '.packageManager // empty' package.json)"
+          wanted="${wanted%%+*}"
+          found="pnpm@$(pnpm --version)"
+          if [ "$found" != "$wanted" ]; then
+            echo "::error::corepack resolved $found, and package.json names ${wanted:-no package manager}"
+            exit 1
+          fi
+      - run: pnpm install --frozen-lockfile
+        working-directory: .qare-pipeline
+      - run: pnpm build
+        working-directory: .qare-pipeline
       - name: Read the version of the pinned qare
         id: qare
         shell: bash
@@ -465,7 +485,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the QA inputs
         if: steps.inputs.outputs.criteria == 'present'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: qa-inputs
           path: |
@@ -505,7 +525,7 @@ jobs:
       # (#88), so nothing here builds qare from source. No token is left in
       # .git/config: the planner's container is handed this workspace, and
       # the job that holds the model key must hold no GitHub token.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.base.sha }}
@@ -524,7 +544,7 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
       - name: Download the QA inputs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: qa-inputs
           path: .
@@ -606,13 +626,13 @@ jobs:
             exit 4
           fi
       - name: Upload plan.json
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: plan.json
           path: plan.json
           if-no-files-found: error
       - name: Upload mcp calls
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           # The planner's look through the profile's registered host MCP
           # servers (#93), as the plan step served it. Written only when a
@@ -758,7 +778,7 @@ jobs:
             if [ "$cluster" = true ]; then echo '- finding network: the cluster API is reachable'; fi
             if [ "$remote" = true ]; then echo '- finding docker: a remote daemon is reachable; verify exclusive ownership'; fi
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
           fetch-depth: 2
@@ -820,12 +840,12 @@ jobs:
           fi
       - name: Download the client artefacts
         if: inputs.artefacts != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ inputs.artefacts }}
           path: qare-artefacts
       - name: Download plan.json
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: plan.json
           path: .
@@ -1083,7 +1103,7 @@ jobs:
       - name: Upload evidence (raw results + result.json)
         id: evidence
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: execute-evidence
           path: evidence/
@@ -1094,7 +1114,7 @@ jobs:
       # to upload, and judge skips the verifier for it anyway.
       - name: Upload the profile the run used
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: qa-profile
           path: ${{ inputs.profile }}
@@ -1137,7 +1157,7 @@ jobs:
       # runs the pull request's tree. The checkout also gives a runner that
       # outlives its jobs a clean workspace, so nothing an earlier run left
       # behind can be read as this run's result.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.base.sha }}
@@ -1145,14 +1165,14 @@ jobs:
       # revision the change under review cannot alter, checked out before
       # anything of the run is on the machine, with node to run it.
       - name: Check out the pinned qare's scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ViviDynamics/qare
           ref: ${{ inputs.qare-ref }}
           path: .qare-pipeline
           sparse-checkout: scripts
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .qare-pipeline/.nvmrc
       # The App's private key is used here and nowhere else in this job (#305):
@@ -1224,19 +1244,19 @@ jobs:
             exit 1
           fi
       - name: Download the QA inputs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: qa-inputs
           path: .
       - name: Download plan.json
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: plan.json
           path: .
       # Evidence gets a directory of its own: it is the verifier's file root,
       # so its read tool reaches the evidence and nothing else.
       - name: Download execute evidence
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: execute-evidence
           path: evidence
@@ -1253,7 +1273,7 @@ jobs:
       # executed has one; a refused run skipped the verifier.
       - name: Download the profile the run used
         if: steps.executed.outputs.verdict != 'refused'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: qa-profile
           path: profile
@@ -1465,7 +1485,7 @@ jobs:
           echo "posted=true" >> "$GITHUB_OUTPUT"
       - name: Upload judge artifacts (comment.md, checkrun.json, judged-result.json, metrics.json)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: judge-artifacts
           path: |
@@ -1520,12 +1540,12 @@ jobs:
       # job reads the run through the API and needs nothing of the caller's
       # tree, so qare is the whole workspace.
       - name: Check out qare at the pinned revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ViviDynamics/qare
           ref: ${{ inputs.qare-ref }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
       # The App's private key is used here and nowhere else in this job (#305):
@@ -1561,7 +1581,21 @@ jobs:
       # No dependency cache (#305): this job holds the identity, so what it
       # installs comes from the registry by the lockfile of the pinned qare,
       # never from a cache another job could have written.
-      - uses: pnpm/action-setup@v4
+      - name: Enable the pnpm package.json names
+        shell: bash
+        run: |
+          set -euo pipefail
+          COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          export COREPACK_HOME
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
+          corepack enable
+          wanted="$(jq -r '.packageManager // empty' package.json)"
+          wanted="${wanted%%+*}"
+          found="pnpm@$(pnpm --version)"
+          if [ "$found" != "$wanted" ]; then
+            echo "::error::corepack resolved $found, and package.json names ${wanted:-no package manager}"
+            exit 1
+          fi
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Report the failure on the pull request
@@ -1639,12 +1673,12 @@ jobs:
       # The pinned qare, like every job holding the token (rule 7), and the
       # whole workspace: nothing of the pull request is checked out or run.
       - name: Check out qare at the pinned revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ViviDynamics/qare
           ref: ${{ inputs.qare-ref }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
       # The App's private key is used here and nowhere else in this job (#305):
@@ -1678,7 +1712,21 @@ jobs:
           fi
           node "$script"
       # No dependency cache, as in report (#305).
-      - uses: pnpm/action-setup@v4
+      - name: Enable the pnpm package.json names
+        shell: bash
+        run: |
+          set -euo pipefail
+          COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          export COREPACK_HOME
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
+          corepack enable
+          wanted="$(jq -r '.packageManager // empty' package.json)"
+          wanted="${wanted%%+*}"
+          found="pnpm@$(pnpm --version)"
+          if [ "$found" != "$wanted" ]; then
+            echo "::error::corepack resolved $found, and package.json names ${wanted:-no package manager}"
+            exit 1
+          fi
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Carry out the advisory replies
@@ -1720,18 +1768,18 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       # The pinned qare, beside the pushed tree whose stub diff it reads.
       - name: Check out qare at the pinned revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ViviDynamics/qare
           ref: ${{ inputs.qare-ref }}
           path: .qare-pipeline
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .qare-pipeline/.nvmrc
       # The App's private key is used here and nowhere else in this job (#305):
@@ -1765,11 +1813,26 @@ jobs:
           fi
           node "$script"
       # No dependency cache, as in report (#305).
-      - uses: pnpm/action-setup@v4
-        with:
-          package_json_file: .qare-pipeline/package.json
-      - run: pnpm --dir .qare-pipeline install --frozen-lockfile
-      - run: pnpm --dir .qare-pipeline build
+      - name: Enable the pnpm package.json names
+        shell: bash
+        working-directory: .qare-pipeline
+        run: |
+          set -euo pipefail
+          COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          export COREPACK_HOME
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
+          corepack enable
+          wanted="$(jq -r '.packageManager // empty' package.json)"
+          wanted="${wanted%%+*}"
+          found="pnpm@$(pnpm --version)"
+          if [ "$found" != "$wanted" ]; then
+            echo "::error::corepack resolved $found, and package.json names ${wanted:-no package manager}"
+            exit 1
+          fi
+      - run: pnpm install --frozen-lockfile
+        working-directory: .qare-pipeline
+      - run: pnpm build
+        working-directory: .qare-pipeline
       - name: Re-queue refused PRs unblocked by the merged stubs
         shell: bash
         env:
@@ -1871,25 +1934,40 @@ jobs:
           fi
       # The revision the run was started for. Its tree supplies the ledger
       # and nothing here runs it. No token is left in .git/config.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       # The pinned qare, like every job that holds the token (rule 7).
       - name: Check out qare at the pinned revision
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ViviDynamics/qare
           ref: ${{ inputs.qare-ref }}
           path: .qare-pipeline
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
-        with:
-          package_json_file: .qare-pipeline/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .qare-pipeline/.nvmrc
-      - run: pnpm --dir .qare-pipeline install --frozen-lockfile
-      - run: pnpm --dir .qare-pipeline build
+      - name: Enable the pnpm package.json names
+        shell: bash
+        working-directory: .qare-pipeline
+        run: |
+          set -euo pipefail
+          COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
+          export COREPACK_HOME
+          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
+          corepack enable
+          wanted="$(jq -r '.packageManager // empty' package.json)"
+          wanted="${wanted%%+*}"
+          found="pnpm@$(pnpm --version)"
+          if [ "$found" != "$wanted" ]; then
+            echo "::error::corepack resolved $found, and package.json names ${wanted:-no package manager}"
+            exit 1
+          fi
+      - run: pnpm install --frozen-lockfile
+        working-directory: .qare-pipeline
+      - run: pnpm build
+        working-directory: .qare-pipeline
       - name: Read the version of the pinned qare
         id: qare
         shell: bash
@@ -1933,7 +2011,7 @@ jobs:
           echo "criteria=present" >> "$GITHUB_OUTPUT"
       - name: Upload the plan
         if: steps.inputs.outputs.criteria == 'present'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: main-inputs
           path: plan.json
@@ -2059,7 +2137,7 @@ jobs:
             if [ "$cluster" = true ]; then echo '- finding network: the cluster API is reachable'; fi
             if [ "$remote" = true ]; then echo '- finding docker: a remote daemon is reachable; verify exclusive ownership'; fi
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       - name: Read the profile's flavour
@@ -2098,7 +2176,7 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")" >> "$GITHUB_OUTPUT"
       - name: Download the plan
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: main-inputs
           path: .
@@ -2279,7 +2357,7 @@ jobs:
       - name: Upload evidence (raw results + result.json)
         id: evidence
         if: always() && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: main-evidence
           path: evidence/
@@ -2310,21 +2388,21 @@ jobs:
       # runs the tree, and no token is left in .git/config: the verifier
       # step holds the model key and must not find one. The checkout also
       # gives a runner that outlives its jobs a clean workspace.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
       # The pinned qare's scripts, for the one that mints the App's token: a
       # revision the change under review cannot alter, checked out before
       # anything of the run is on the machine, with node to run it.
       - name: Check out the pinned qare's scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ViviDynamics/qare
           ref: ${{ inputs.qare-ref }}
           path: .qare-pipeline
           sparse-checkout: scripts
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .qare-pipeline/.nvmrc
       # The App's private key is used here and nowhere else in this job (#305):
@@ -2396,13 +2474,13 @@ jobs:
             exit 1
           fi
       - name: Download the plan
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: main-inputs
           path: .
       # Evidence gets a directory of its own: it is the verifier's file root.
       - name: Download the evidence
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: main-evidence
           path: evidence
@@ -2544,7 +2622,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload main judge artifacts (judged-result.json, main-findings.txt)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: main-judge-artifacts
           path: |

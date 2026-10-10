@@ -293,7 +293,7 @@ test('repository CI ignores pushes to qa-assets', () => {
 })
 
 test('judge leaves no token in the checkout for the model step to find', () => {
-  expect(section('judge')).toMatch(/actions\/checkout@v4\n\s+with:\n\s+persist-credentials: false/)
+  expect(section('judge')).toMatch(/actions\/checkout@[0-9a-f]{40} # v[\d.]+\n\s+with:\n\s+persist-credentials: false/)
 })
 
 test('stub issues are filed before posting, so a posting failure cannot stop them', () => {
@@ -334,7 +334,7 @@ test('secret-holding jobs run qare from the base commit, not the pull request tr
   // (#88), which collect read from it.
   for (const job of ['collect', 'plan', 'judge']) {
     const jobSection = section(job)
-    const checkout = jobSection.indexOf('actions/checkout@v4')
+    const checkout = jobSection.indexOf('actions/checkout@')
     const ref = jobSection.indexOf('ref: ${{ github.event.pull_request.base.sha }}')
     expect(ref, `${job} must check out the base commit`).toBeGreaterThan(checkout)
     expect(jobSection, `${job} must never check out the pull request's head`).not.toMatch(/ref: \$\{\{ github\.event\.pull_request\.head/)
@@ -351,7 +351,7 @@ test('secret-holding jobs run qare from the base commit, not the pull request tr
   const collect = section('collect')
   const pinned = collect.indexOf('repository: ViviDynamics/qare\n          ref: ${{ inputs.qare-ref }}\n          path: .qare-pipeline')
   expect(pinned, 'collect must check out qare at the pinned revision, beside the tree').toBeGreaterThan(0)
-  expect(collect.indexOf('pnpm --dir .qare-pipeline install --frozen-lockfile')).toBeGreaterThan(pinned)
+  expect(collect.indexOf('pnpm install --frozen-lockfile\n        working-directory: .qare-pipeline')).toBeGreaterThan(pinned)
   // The qare collect runs is the one it built there, never the tree's own.
   expect(collect).toContain('node .qare-pipeline/packages/cli/dist/index.js linked-issues')
   expect(collect).toContain('node .qare-pipeline/packages/cli/dist/index.js issue-criteria')
@@ -501,7 +501,7 @@ test('auto-tag runs only after CI passes on a push to main (#188)', () => {
 })
 
 test('auto-tag tags the version package.json carries when it is untagged (#188, #230)', () => {
-  expect(autoTag).toContain("require('./package.json').version")
+  expect(autoTag).toContain("jq -r '.version | if type == \"string\" then . else \"\" end' package.json")
   // Idempotent by the tag's existence: a merge that changes no version
   // computes the next CalVer instead (#230).
   expect(autoTag).toMatch(/git ls-remote --tags origin "refs\/tags\/\$version"/)
@@ -642,8 +642,8 @@ test('the job that runs pull request code is left no token to find (rule 7)', ()
   // built from fragments here and in the release test below (#196).
   const execute = section('execute')
   const depth = ['fe', 'tch-depth: 2'].join('')
-  expect(execute).toContain(`- uses: actions/checkout@v4\n        with:\n          persist-credentials: false\n          ${depth}\n`)
-  expect(execute.match(/actions\/checkout@v4/g)).toHaveLength(1)
+  expect(execute).toMatch(new RegExp(`- uses: actions/checkout@[0-9a-f]{40} # v[0-9.]+\\n        with:\\n          persist-credentials: false\\n          ${depth}\\n`))
+  expect(execute.match(/actions\/checkout@/g)).toHaveLength(1)
   expect(execute).not.toContain(['git ', 'fe', 'tch'].join(''))
   expect(execute).toContain('--base "$BASE_SHA"')
   // The base the pull request recorded can be older than the commit the
@@ -657,7 +657,7 @@ test('the job that runs pull request code is left no token to find (rule 7)', ()
   expect(execute.indexOf('git worktree add --detach "$base_dir" "$BASE_SHA"')).toBeGreaterThan(absent)
   // The planner's container is handed plan's workspace too, and that job
   // holds the model key, so its checkout leaves no token either.
-  expect(section('plan')).toMatch(/actions\/checkout@v4\n\s+with:\n\s+persist-credentials: false/)
+  expect(section('plan')).toMatch(/actions\/checkout@[0-9a-f]{40} # v[\d.]+\n\s+with:\n\s+persist-credentials: false/)
 })
 
 test('release refuses to publish a tag that is not on the default branch (#194)', () => {
@@ -727,10 +727,10 @@ test('the report job holds the GitHub token only and runs qare from the pinned r
   expect(report).not.toContain('contents: write')
   // The pinned qare is the whole workspace (#145): the base commit for qare
   // itself, a release for a caller, and never the pull request's tree.
-  const checkout = report.indexOf('actions/checkout@v4')
+  const checkout = report.indexOf('actions/checkout@')
   const ref = report.indexOf('repository: ViviDynamics/qare\n          ref: ${{ inputs.qare-ref }}\n          persist-credentials: false')
   expect(ref, 'report must check out qare at the pinned revision').toBeGreaterThan(checkout)
-  expect(report.match(/actions\/checkout@v4/g)).toHaveLength(1)
+  expect(report.match(/actions\/checkout@/g)).toHaveLength(1)
   expect(report.indexOf('pnpm install')).toBeGreaterThan(ref)
 })
 
