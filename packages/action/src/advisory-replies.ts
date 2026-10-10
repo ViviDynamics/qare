@@ -251,7 +251,7 @@ export async function carryOutAdvisoryReplies(client: GitHubClient, pr: number, 
       // the first word and the marker the fallback.
       const existing =
         promoted.get(id) ??
-        (await client.searchIssues(`repo:${client.repository} in:body is:issue "${advisoryIssueMarker(pr, id)}"`))[0]?.number
+        (await client.searchOwnIssues(advisoryIssueMarker(pr, id)))[0]?.number
       if (existing !== undefined) {
         if (!promoted.has(id)) {
           promoted.set(id, existing)

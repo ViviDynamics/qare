@@ -22,7 +22,7 @@ export class GitHubStatusReportUpdater implements StatusReportUpdater {
 
   async upsert(draft: { title: string; body: string }): Promise<number> {
     const marker = statusReportMarker()
-    const hits = await this.client.searchIssues(`repo:${this.client.repository} in:body is:issue "${marker}"`)
+    const hits = await this.client.searchOwnIssues(marker)
     const existing = hits[0]
     if (existing !== undefined) {
       await this.client.patchIssueBody(existing.number, draft.body)
@@ -46,7 +46,7 @@ export async function publishSweep(
 
 export async function fileSweepFinding(client: GitHubClient, finding: SweepFinding): Promise<number> {
   const draft = findingDraft(finding)
-  const hits = await client.searchIssues(`repo:${client.repository} in:body is:issue "${sweepFindingMarker(finding.fingerprint)}"`)
+  const hits = await client.searchOwnIssues(sweepFindingMarker(finding.fingerprint))
   const existing = hits[0]
   if (existing !== undefined) {
     await client.patchIssueBody(existing.number, draft.body)

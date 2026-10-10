@@ -20,6 +20,7 @@ function seedStubIssue(fake: FakeGithub, key: string, prs: number[]): number {
     body: [stubIssueMarker(key), ...prs.map((pr) => `qare-refused: #${pr}`)].join('\n'),
     comments: [],
   })
+  fake.issueMeta.set(number, { state: 'open', labels: [], author: 'github-actions[bot]' })
   return number
 }
 
@@ -150,6 +151,22 @@ test('qare-action CLI reports named errors on bad invocations', async () => {
     const code = await main(['stub-issues', '--pr', '11'], { write: () => {} }, { write: (chunk) => errors.push(chunk) })
     expect(code).toBe(1)
     expect(errors.join('')).toContain('--result')
+  } finally {
+    await fake.close()
+  }
+})
+
+test('requeue ignores foreign and unread authors even when their registries name a matching stub', async () => {
+  const fake = await startFakeGithub()
+  try {
+    const foreign = seedStubIssue(fake, HOST_A, [11])
+    fake.issueMeta.set(foreign, { state: 'open', labels: [], author: 'someone-else' })
+    const unread = seedStubIssue(fake, HOST_A, [5])
+    fake.issueMeta.delete(unread)
+    fake.issues.set(11, { number: 11, title: 'pr', body: '', comments: [] })
+    fake.issues.set(5, { number: 5, title: 'pr', body: '', comments: [] })
+    expect(await requeueUnblocked(makeClient(fake), [HOST_A])).toEqual([])
+    expect(fake.calls.filter((call) => call.method === 'POST')).toEqual([])
   } finally {
     await fake.close()
   }
