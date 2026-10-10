@@ -996,7 +996,8 @@ jobs:
             -u "$(id -u):$(id -g)" \
             -e HOME=/tmp \
             "${safety_mount[@]}" \
-            -e QARE_IMAGE_REF="$IMAGE_TAG_REF" \
+            -e QARE_IMAGE_REF="$IMAGE_REF" \
+            -e QARE_IMAGE_TAG="$IMAGE_TAG_REF" \
             -e QARE_IMAGE_DIGEST="$IMAGE_DIGEST" \
             -e QARE_RUNNER_ENVIRONMENT="${RUNNER_ENVIRONMENT:-}" \
             -e QARE_REPOSITORY_VISIBILITY="${QARE_REPOSITORY_VISIBILITY:-}" \
@@ -2307,7 +2308,8 @@ jobs:
             -u "$(id -u):$(id -g)" \
             -e HOME=/tmp \
             "${safety_mount[@]}" \
-            -e QARE_IMAGE_REF="$IMAGE_TAG_REF" \
+            -e QARE_IMAGE_REF="$IMAGE_REF" \
+            -e QARE_IMAGE_TAG="$IMAGE_TAG_REF" \
             -e QARE_IMAGE_DIGEST="$IMAGE_DIGEST" \
             -e QARE_RUNNER_ENVIRONMENT="${RUNNER_ENVIRONMENT:-}" \
             -e QARE_REPOSITORY_VISIBILITY="${QARE_REPOSITORY_VISIBILITY:-}" \

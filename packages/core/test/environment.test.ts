@@ -77,3 +77,12 @@ test('an image ref without a digest refuses to write an unnamed record', () => {
   expect(() => readRunImage({ QARE_IMAGE_DIGEST: 'ghcr.io/vividynamics/qare-core@sha256:abc' }, '/no/such/file'))
     .toThrow(/QARE_IMAGE_REF and QARE_IMAGE_DIGEST must be set together/)
 })
+
+
+test('an immutable operational image keeps the release tag only in evidence', () => {
+  const tag = 'ghcr.io/vividynamics/qare-web:2026.10.51'
+  const digest = `ghcr.io/vividynamics/qare-web@sha256:${'a'.repeat(64)}`
+  expect(readRunImage({ QARE_IMAGE_REF: digest, QARE_IMAGE_TAG: tag, QARE_IMAGE_DIGEST: digest }, '/no/such/file')).toMatchObject({ ref: tag, digest })
+  // Local callers without a separate tag retain their existing image record.
+  expect(readRunImage({ QARE_IMAGE_REF: digest, QARE_IMAGE_DIGEST: digest }, '/no/such/file')).toMatchObject({ ref: digest, digest })
+})

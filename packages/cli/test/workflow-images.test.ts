@@ -94,7 +94,8 @@ test('execution records the release tag separately from the immutable container 
   for (const job of ['execute', 'main_execute']) {
     const step = pipeline.jobs[job]!.steps.find((step) => step.name?.startsWith('Run the plan'))!
     expect(step.env?.IMAGE_TAG_REF).toBe('${{ steps.image.outputs.ref }}')
-    expect(step.run).toContain('QARE_IMAGE_REF="$IMAGE_TAG_REF"')
+    expect(step.run).toContain('QARE_IMAGE_REF="$IMAGE_REF"')
+    expect(step.run).toContain('QARE_IMAGE_TAG="$IMAGE_TAG_REF"')
     expect(step.run).toContain('QARE_IMAGE_DIGEST="$IMAGE_DIGEST"')
   }
 })

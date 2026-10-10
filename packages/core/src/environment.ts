@@ -73,11 +73,14 @@ export function detectExecution(env: NodeJS.ProcessEnv = process.env, containerF
  * versions the image stamps at build time (`/opt/qare/config/IMAGE.json`).
  */
 export function readRunImage(env: NodeJS.ProcessEnv = process.env, imageFile = '/opt/qare/config/IMAGE.json'): RunImage | undefined {
-  const ref = env.QARE_IMAGE_REF
+  const operational = env.QARE_IMAGE_REF
   const digest = env.QARE_IMAGE_DIGEST
-  if (ref === undefined && digest === undefined) return undefined
-  if (ref === undefined || digest === undefined)
+  if (operational === undefined && digest === undefined) return undefined
+  if (operational === undefined || digest === undefined)
     throw new Error('QARE_IMAGE_REF and QARE_IMAGE_DIGEST must be set together, so the evidence names the exact image that produced it')
+  // QARE_IMAGE_REF is operational: nested cells use the same immutable
+  // image. The optional release tag is display metadata only.
+  const ref = env.QARE_IMAGE_TAG ?? operational
   const name = ref.includes('@') ? ref.split('@')[0] ?? ref : (ref.split(':')[0] ?? ref)
   const stamped = existsSync(imageFile) ? (JSON.parse(readFileSync(imageFile, 'utf8')) as unknown) : undefined
   const stampedVersions = (stamped !== undefined && typeof stamped === 'object' ? (stamped as Record<string, unknown>) : undefined) as

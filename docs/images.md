@@ -76,7 +76,9 @@ image pins the versions it ships and stamps them at
 versions beside its drivers at `/opt/qare/drivers/<flavour>/DRIVER.json`. A
 run inside the image reads both into its evidence, so a run names the image
 digest, the flavour and the versions that produced it rather than asking the
-registry.
+registry. The pipeline gives nested cells the same immutable image through
+`QARE_IMAGE_REF`; `QARE_IMAGE_TAG` carries the release tag for evidence alone.
+Local callers may keep using `QARE_IMAGE_REF` without a separate tag.
 
 No derived image reinstalls anything the base already has, and CI enforces
 that: `images/check-derived.sh` builds the family, compares the bytes of the

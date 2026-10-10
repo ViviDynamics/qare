@@ -304,3 +304,20 @@ test('a build the run installed outside the checkout is copied into the cell, no
   // An install is an absolute path of the run's own making, and is held to looking like one.
   await expect(startClientCell({ ...OPTS, docker: fakeDocker().docker, install: 'relative/dir' })).rejects.toThrow(/the build's directory is not an absolute path/)
 })
+
+
+test('a daemon with only the resolved digest can contain clients and commands without a release tag', async () => {
+  const digest = `ghcr.io/vividynamics/qare-web@sha256:${'a'.repeat(64)}`
+  const tag = 'ghcr.io/vividynamics/qare-web:2026.10.51'
+  const calls: string[][] = []
+  const docker = {
+    ...fakeDocker().docker,
+    run: async (args: string[]) => {
+      calls.push(args)
+      return { code: args[0] === 'version' || args.at(-1) === digest ? 0 : 1, stdout: '', stderr: 'No such image' }
+    },
+  }
+  expect(await clientCellProblem({ QARE_IMAGE_REF: digest, QARE_IMAGE_TAG: tag, QARE_IMAGE_DIGEST: digest }, docker)).toBeUndefined()
+  expect(calls.at(-1)).toEqual(['image', 'inspect', '--format', '{{.Id}}', digest])
+  expect(calls.flat()).not.toContain(tag)
+})
