@@ -639,6 +639,23 @@ test('a plan mail check carries its delivery assertions into the job the runner 
   ).toThrow(/authentication\.require/)
 })
 
+test.each([PASSING_RESULTS, DKIM_FAILING])('a missing code retains delivery evidence and names the missing code (#290): %s', async (authentication) => {
+  const job = await makeJob(mailCriteria({
+    address: 'qa@localhost', code: {}, authentication: { require: ['dkim'] }, placement: 'inbox',
+  }), PROVIDER)
+  const { result } = await runJob(job, {
+    ...HEALTHY_BOOT,
+    readMail: reader(() => message({ headers: { 'authentication-results': [authentication] }, placement: 'inbox' })),
+  })
+  expect(result.criteria[0]?.outcome).toBe('unverified')
+  expect(result.criteria[0]?.reason).toContain('carries no one-time code')
+  expect(result.criteria[0]?.mail?.[0]?.delivery).toContain('dkim=')
+  const recorded = JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'message.json'), 'utf8'))
+  expect(recorded.authentication.authserv).toBe('mx.receiver.example')
+  expect(recorded.placement).toBe('inbox')
+  expect(recorded.excerpt).not.toContain('token=abc')
+})
+
 test('a message that passes all three is proven, with the results in the evidence and beside the message (#218)', async () => {
   const job = await makeJob(mailCriteria({ address: 'qa@localhost', subject: 'Sign in', authentication: { require: ['spf', 'dkim', 'dmarc'], domain: 'example.test' }, placement: 'inbox' }), PROVIDER)
   const { result } = await runJob(job, {

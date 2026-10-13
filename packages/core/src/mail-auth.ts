@@ -170,7 +170,7 @@ export function parseAuthenticationResults(header: string): AuthenticationResult
   const results: AuthResult[] = []
   for (const part of rest) {
     // Tokens are words and `name = value` pairs; white space may sit around the equals sign.
-    const tokens = part.trim().replace(/\s*=\s*/g, '=').match(/(?:[^\s"]+|"(?:[^"\\]|\\.)*")+/g) ?? []
+    const tokens = part.trim().replace(/"(?:[^"\\]|\\.)*"|\s*=\s*/g, (match) => match.startsWith('"') ? match : '=').match(/(?:[^\s"]+|"(?:[^"\\]|\\.)*")+/g) ?? []
     const head = tokens[0] ?? ''
     const methodPair = /^([a-z0-9-]+)(?:\/\d+)?=(.+)$/i.exec(head)
     if (methodPair === null) continue

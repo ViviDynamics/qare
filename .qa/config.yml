@@ -16,12 +16,17 @@ flavour: web
 # The commands a command check can genuinely run in the published image
 # (#158): the image carries node, grep, test, python3 and nothing that runs
 # the repository's test suites. QA.md says what is out of reach, so the
-# planner marks suite-driven criteria unplannable instead of guessing an
-# invocation that cannot start.
+# planner uses the declared source checks where they apply and marks other
+# suite-driven criteria unplannable instead of guessing an invocation.
 commands:
   source:
     run: grep -n -- {{pattern}} {{path}}
     about: Asserts that the file {{path}} in the checkout carries {{pattern}}, printing the matching lines; empty output means the pattern is absent, so the check fails.
   script:
     run: node -- {{path}}
-    about: Runs the plain JavaScript check script at {{path}}, a file the checkout already carries; the profile declares no scripts of its own, and a path that does not exist is not a check that can run, so fill {{path}} with a file that is in the repository.
+    about: Runs an existing plain JavaScript check script at {{path}} in the checkout; a missing path is not a runnable check, so fill {{path}} with a file the repository carries.
+
+  mail-self-check:
+    run: node -- .qa/checks/mail-evidence.mjs {{check}}
+    about: Exercises the checkout's actual mail parser (check=quoted-auth) or missing-code delivery evidence writer (check=missing-code), asserting its result and printing the observed evidence; needs no build, test runner, mailbox or network.
+    scratch: [.qa/checks/scratch]

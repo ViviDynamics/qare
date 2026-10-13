@@ -1,3 +1,25 @@
+Executable mail self-checks (#290): these criteria describe qare's source,
+not the Wikipedia application. Never substitute a Wikipedia password-reset
+flow or a real mailbox for a check of the harness's parser or evidence writer.
+The profile declares two checks that run the changed checkout in the published
+Node image, without a build, test runner, network, model or credentials:
+
+- Quoted Authentication-Results values: `node -- .qa/checks/mail-evidence.mjs quoted-auth`.
+  It invokes the checkout's parser and asserts that spaces around equals signs
+  in quoted reason and selector values survive. Its output contains the actual
+  parsed values.
+- A mail check whose message carries no code: `node -- .qa/checks/mail-evidence.mjs missing-code`.
+  It invokes the checkout's runJob with a controlled message and boot adapters,
+  asserts that the criterion is unverified naming the missing code, reads the
+  message.json the run wrote, and asserts its delivery and the mail proof.
+  Its output contains the observed outcome, message record and proof.
+
+Choose the declared mail-self-check command with the matching check name for
+these behaviours. The source loader uses Node's TypeScript transformer and the
+image's shipped production YAML dependency; it does not use the image's built
+qare as the thing under test. Scratch is restricted to .qa/checks/scratch.
+The profile has no mailbox for mail checks against its target.
+
 qare repository QA profile (self-run target).
 
 What this is: the profile qare's own self-run executes, so a pull request
@@ -38,7 +60,7 @@ profile tells it the truth about what a check can do here.
 What qare's own criteria are usually about, and how each is shown in real
 development:
 
-- A package's behaviour: its vitest tests, filtered to the behaviour.
+- A package's behaviour: its executable source self-check when declared, otherwise its vitest tests, filtered to the behaviour.
 - The CLI's behaviour: the built CLI driven with fixtures.
 - The pipeline contract: the workflow's structural tests.
 - A flow against a running site: the kind this profile's target covers.
@@ -48,7 +70,7 @@ image against a raw checkout of the pull request: it installs and builds
 nothing, and the image carries no test runner, no npm, no git and no jq.
 Because of that:
 
-- A criterion shown by a test suite is out of reach: the checkout has no
+- Other criteria shown only by a test suite are out of reach: the checkout has no
   node_modules and there is no test runner to invoke. Mark it unplannable
   naming the missing test runner instead of guessing an invocation that
   cannot start.
@@ -60,9 +82,8 @@ Because of that:
 - A behaviour that needs Docker the check drives itself, several concurrent
   runners, or a clock the check controls is out of reach: the image has no
   Docker CLI, the job runs one runner, with its own clock.
-- A check script that would need writing is out of reach: the profile declares
-  no scripts of its own, and the image runs only files the checkout already
-  carries. A criterion whose check would be a new script is unplannable
+- Beyond the declared source checks, a check script that would need writing
+  is out of reach: the image runs only files the checkout already carries. A criterion whose check would be a new script is unplannable
   naming the missing script, never a path that does not exist. The checkout
   carries no `checks/` directory and no `selection-verdict` or similar
   helper anywhere: a plan naming one is a fiction that turns red at

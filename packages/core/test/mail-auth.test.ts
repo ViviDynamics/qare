@@ -24,6 +24,15 @@ const SOURCE = { describe: 'inbox at the provider', authserv: 'mx.receiver.examp
 /** A catcher: it receives mail and judges nothing, so the profile declares no receiver for it. */
 const CATCHER = { describe: 'mailpit at the catcher' }
 
+test('quoted authentication values keep whitespace around equals signs (#290)', () => {
+  const parsed = parseAuthenticationResults('mx.receiver.example; dkim = fail reason = "policy = reject; spf = pass" header.s = "key = one" header.d = sender.example')
+  expect(parsed?.results).toHaveLength(1)
+  expect(parsed?.results[0]).toMatchObject({
+    method: 'dkim', result: 'fail', reason: 'policy = reject; spf = pass',
+    selector: 'key = one', domain: 'sender.example',
+  })
+})
+
 test('an Authentication-Results header is read into the server that judged, each result and the domain it was evaluated for', () => {
   expect(parseAuthenticationResults(PASSING)).toEqual({
     authserv: 'mx.receiver.example',

@@ -29,3 +29,6 @@ repo.env
 !.opencode/skill
 qare-evidence/
 benchmark-out/
+
+.qa/checks/scratch/*
+!.qa/checks/scratch/.gitkeep

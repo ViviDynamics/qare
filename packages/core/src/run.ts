@@ -2592,15 +2592,13 @@ async function runCriterion(
         // as {{mail.<name>.code}} (#64). A message with no code in it is
         // unverified, named: the check cannot vouch for a code it never saw.
         let code: string | undefined
+        let missingCodeReason: string | undefined
         if (substituted.code !== undefined) {
           code = extractCode(outcome.message.body, substituted.code.pattern)
           if (code === undefined) {
-            return {
-              status: 'unverified' as const,
-              reason: `the message read by mail check ${substituted.name ?? substituted.address} carries no one-time code${
-                substituted.code.pattern === undefined ? '' : ` matching ${JSON.stringify(substituted.code.pattern)}`
-              }`,
-            }
+            missingCodeReason = `the message read by mail check ${substituted.name ?? substituted.address} carries no one-time code${
+              substituted.code.pattern === undefined ? '' : ` matching ${JSON.stringify(substituted.code.pattern)}`
+            }`
           }
         }
         // The values this check publishes — the message's link, the extracted
@@ -2648,6 +2646,7 @@ async function runCriterion(
         const text = JSON.stringify({ ...swept, ...redactValue(delivery.evidence ?? {}, sweepRules) }, null, 2)
         await writeFile(join(job.evidenceDir, checkDir, 'message.json'), `${text}\n`)
         evidence.push(`${checkDir}/message.json`)
+        if (missingCodeReason !== undefined) return { status: 'unverified' as const, reason: missingCodeReason }
         // A message that did not pass the provider's checks, or did not land
         // where the check expects, is a fault in the environment (a DNS
         // record, a relay setting): unverified with the record named, never
