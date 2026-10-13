@@ -3,7 +3,7 @@ import { accessSync, constants, existsSync } from 'node:fs'
 import { delimiter, join, resolve } from 'node:path'
 import { detectExecution, type ExecutionKind } from './environment.js'
 import { electronDisplayProblem } from './flow-electron.js'
-import { describeHost, detectHost, requirementsOf, unmetRequirements, virtualisationProblem, type HostKind, type HostProbes, type Requirements } from './placement.js'
+import { describeHost, detectHost, hasContainedCommand, UNCONTAINED_COMMAND_NOTICE, requirementsOf, unmetRequirements, virtualisationProblem, type HostKind, type HostProbes, type Requirements } from './placement.js'
 import { ProfileMissingError, loadProfile, type QaProfile } from './profile.js'
 import { VERSION } from './version.js'
 import { inspectRunnerSafety, type RunnerSafetyFinding, type RunnerSafetyProbes } from './runner-safety.js'
@@ -123,6 +123,9 @@ export async function runDoctor(opts: DoctorOpts = {}): Promise<DoctorReport> {
       })
     }
   }
+
+  if (profile !== undefined && !hasContainedCommand(profile))
+    findings.push({ name: 'command checks', ok: true, required: false, detail: UNCONTAINED_COMMAND_NOTICE })
 
   const docker = await dockerInfo()
   findings.push({
