@@ -57,7 +57,14 @@ if (check === 'quoted-auth') {
     assert.equal(message.placement, 'inbox')
     const proof = criterion.mail[0]
     assert.match(proof.delivery, /dkim=pass/)
-    console.log(JSON.stringify({ check, outcome: criterion.outcome, reason: criterion.reason, message, proof }))
+    // The stream redactor treats keys starting with "auth" as credentials.
+    // Emit the observed receiver/results under neutral names so it cannot
+    // consume the remaining JSON; the actual message.json stays untouched.
+    const { authentication, ...record } = message
+    console.log(JSON.stringify({
+      check, outcome: criterion.outcome, reason: criterion.reason,
+      message: { ...record, receiver: authentication.authserv, evaluatedResults: authentication.results }, proof,
+    }))
   } finally {
     await rm(repo, { recursive: true, force: true })
   }

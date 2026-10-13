@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { expect, test } from 'vitest'
+import { redactText } from '../src/redact.js'
 
 const exec = promisify(execFile)
 const checkout = fileURLToPath(new URL('../../../', import.meta.url))
@@ -12,7 +13,7 @@ const script = fileURLToPath(new URL('../../../.qa/checks/mail-evidence.mjs', im
 // cannot execute the source makes one of these checks fail.
 test.each(['quoted-auth', 'missing-code'])('the raw-checkout mail self-check executes %s and reports observed evidence', async (check) => {
   const { stdout } = await exec(process.execPath, [script, check], { cwd: checkout })
-  const observed = JSON.parse(stdout)
+  const observed = JSON.parse(redactText(stdout))
   expect(observed.check).toBe(check)
   if (check === 'quoted-auth') {
     expect(observed.reason).toBe('policy = reject; spf = pass')
@@ -20,8 +21,9 @@ test.each(['quoted-auth', 'missing-code'])('the raw-checkout mail self-check exe
   } else {
     expect(observed.outcome).toBe('unverified')
     expect(observed.reason).toContain('carries no one-time code')
-    expect(observed.message.authentication.results).toEqual([{ method: 'dkim', result: 'pass', domain: 'example.test', aligned: true }])
+    expect(observed.message.evaluatedResults).toEqual([{ method: 'dkim', result: 'pass', domain: 'example.test', aligned: true }])
     expect(observed.message.placement).toBe('inbox')
+    expect(observed.message.receiver).toBe('mx.receiver.example')
     expect(observed.proof.delivery).toContain('dkim=pass')
   }
 })
