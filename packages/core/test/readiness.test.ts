@@ -9,6 +9,7 @@ import {
   normalizeOrigin,
   parseComposeServices,
   readinessInventory,
+  runDoctor,
 } from '../src/index.js'
 
 const URL_API = ['http:', '//api.example.com/v1'].join('')
@@ -400,4 +401,38 @@ test('loopback hosts and the compose services themselves are not outbound origin
   })
   const inventory = await readinessInventory(dir)
   expect(inventory.origins.map((hit) => hit.origin)).toEqual([url('search.example.com')])
+})
+
+
+test.each([
+  ['', true],
+  ['commands: {}', true],
+  ['commands: { test: { run: pnpm test, about: tests, egress: uncontained } }', true],
+  ['commands: { test: { run: pnpm test, about: tests } }', false],
+  ['commands: { test: { run: pnpm test, about: tests }, other: { run: node probe.mjs, about: probe, egress: uncontained } }', false],
+])('doctor and readiness report uncontained command checks only without a contained command (#292): %s', async (commands, uncontained) => {
+  const dir = await repoWith({})
+  await withProfile(dir)
+  if (commands !== '') await writeFile(join(dir, '.qa', 'config.yml'), `\n${commands}\n`, { flag: 'a' })
+  const report = await runDoctor({
+    profilePath: join(dir, '.qa'),
+    probes: {
+      which: (name) => `/bin/${name}`,
+      dockerInfo: async () => ({ ok: true, detail: 'available' }),
+      chromium: async () => ({ ok: true, detail: 'available' }),
+      python: async () => ({ version: '3.12', detail: 'available' }),
+      host: { cell: async () => undefined },
+    },
+  })
+  const finding = report.findings.find((entry) => entry.name === 'command checks')
+  const readiness = buildReadinessReport(await readinessInventory(dir))
+  const notice = 'command checks run uncontained; declaring one contained command gives them a cell'
+  if (uncontained) {
+    expect(finding).toMatchObject({ ok: true, required: false, detail: notice })
+    expect(readiness).toContain(notice)
+  } else {
+    expect(finding).toBeUndefined()
+    expect(readiness).not.toContain(notice)
+  }
+  expect(report.ready).toBe(true)
 })

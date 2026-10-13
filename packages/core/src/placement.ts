@@ -25,6 +25,12 @@ export interface Requirements extends ProfileRequires {
   display?: true
 }
 
+export const UNCONTAINED_COMMAND_NOTICE = 'command checks run uncontained; declaring one contained command gives them a cell'
+
+export function hasContainedCommand(profile: QaProfile): boolean {
+  return Object.values(profile.commands ?? {}).some((command) => command.egress !== 'uncontained')
+}
+
 /**
  * The requirement table. The browser, and so a profile that boots an app or
  * names a target, implies nothing: it runs headless on any host. A client
@@ -33,7 +39,7 @@ export interface Requirements extends ProfileRequires {
  * (#73, #74) adds its row here.
  */
 export function requirementsOf(profile: QaProfile): Requirements {
-  const contained = profile.commands !== undefined && Object.values(profile.commands).some((command) => command.egress !== 'uncontained')
+  const contained = hasContainedCommand(profile)
   return {
     ...profile.requires,
     ...(profile.client === undefined ? {} : profile.client.egress === 'uncontained' ? { display: true as const } : { cell: true as const }),

@@ -3,6 +3,7 @@ import { join, relative, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { matchesStub } from './egress.js'
 import { clientExecutableName, loadProfile } from './profile.js'
+import { hasContainedCommand, UNCONTAINED_COMMAND_NOTICE } from './placement.js'
 
 export const READINESS_MAX_FILES = 2000
 export const READINESS_MAX_FILE_BYTES = 1024 * 1024
@@ -30,6 +31,8 @@ export interface ReadinessOriginHit {
 
 export interface ReadinessProfileInfo {
   present: boolean
+  /** Informational containment notice for a successfully loaded profile (#292). */
+  commandNotice?: string
   loadError?: string
   healthUrl?: string
   /** The running app a target profile checks (#122); such a profile boots nothing. */
@@ -371,6 +374,7 @@ async function loadProfileInfo(repo: string): Promise<ReadinessProfileInfo> {
     const healthUrl = profile.app?.health?.http ?? profile.target?.health.http
     return {
       present: true,
+      ...(!hasContainedCommand(profile) ? { commandNotice: UNCONTAINED_COMMAND_NOTICE } : {}),
       healthUrl: typeof healthUrl === 'string' ? healthUrl : undefined,
       ...(profile.target === undefined ? {} : { target: { url: profile.target.url, hosts: [...profile.target.hosts] } }),
       ...(profile.client === undefined
@@ -480,6 +484,10 @@ export function buildReadinessReport(inventory: ReadinessInventory): string {
   lines.push('# QARE readiness report')
   lines.push('')
   lines.push(`Repo: ${inventory.repoPath}`)
+  if (inventory.profile.commandNotice !== undefined) {
+    lines.push('')
+    lines.push(`- ${inventory.profile.commandNotice}`)
+  }
   lines.push('')
   lines.push('## Boot')
   const target = inventory.profile.target
