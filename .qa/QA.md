@@ -82,9 +82,8 @@ Because of that:
 - A behaviour that needs Docker the check drives itself, several concurrent
   runners, or a clock the check controls is out of reach: the image has no
   Docker CLI, the job runs one runner, with its own clock.
-- A check script that would need writing is out of reach: the profile declares
-  no scripts of its own, and the image runs only files the checkout already
-  carries. A criterion whose check would be a new script is unplannable
+- Beyond the declared source checks, a check script that would need writing
+  is out of reach: the image runs only files the checkout already carries. A criterion whose check would be a new script is unplannable
   naming the missing script, never a path that does not exist. The checkout
   carries no `checks/` directory and no `selection-verdict` or similar
   helper anywhere: a plan naming one is a fiction that turns red at
