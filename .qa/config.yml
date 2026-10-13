@@ -25,3 +25,8 @@ commands:
   script:
     run: node -- {{path}}
     about: Runs the plain JavaScript check script at {{path}}, a file the checkout already carries; the profile declares no scripts of its own, and a path that does not exist is not a check that can run, so fill {{path}} with a file that is in the repository.
+
+  mail-self-check:
+    run: node -- .qa/checks/mail-evidence.mjs {{check}}
+    about: Exercises the checkout's actual mail parser (check=quoted-auth) or missing-code delivery evidence writer (check=missing-code), asserting its result and printing the observed evidence; needs no build, test runner, mailbox or network.
+    scratch: [.qa/checks/scratch]
