@@ -1,10 +1,10 @@
 {
   "schemaVersion": "qare.metrics.v1",
-  "recordedAt": "2026-10-13T03:23:37.132Z",
+  "recordedAt": "2026-10-13T11:32:55.085Z",
   "runId": "pr-339",
-  "startedAt": "2026-10-13T03:22:38.093Z",
-  "finishedAt": "2026-10-13T03:23:11.568Z",
-  "wallMs": 33475,
+  "startedAt": "2026-10-13T11:31:50.516Z",
+  "finishedAt": "2026-10-13T11:32:26.200Z",
+  "wallMs": 35684,
   "verdict": "blocked",
   "criteria": {
     "selected": [
