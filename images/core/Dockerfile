@@ -72,6 +72,12 @@ RUN groupadd --gid 1000 qare \
 
 COPY --from=builder --chown=qare:qare /opt/qare/lib /opt/qare/lib
 
+# pip and its vendored certifi from verified wheels first: the base image's pip
+# still trusts the distrusted emSign CAs (#345).
+RUN python3 -m pip install --no-cache-dir --no-deps --no-compile --break-system-packages \
+    "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70" \
+    "certifi @ https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl#sha256=42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b"
+
 # The hash-verified nare: the same wheel the pipeline's plan and judge steps pin, so
 # a container run and a host run speak one nare contract. Bytecode is not
 # precompiled: the first run in a container writes its own cache.
