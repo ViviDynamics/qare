@@ -80,7 +80,7 @@ function result(overrides: Record<string, unknown> = {}): Record<string, unknown
     usage: { input: 11, output: 22, cache_read: 0, cache_write: 0 },
     stop_reason: 'end_turn',
     turns: 1,
-    contract: 1,
+    contract: 2,
     output: { verdict: 'pass' },
     error: null,
     ...overrides,
@@ -161,7 +161,7 @@ test('the request reaches nare as flags, not as prose', async () => {
   expect(argv).toContain('judge this')
   expect(argv).toContain('--yes')
   expect(argv).toContain('--jsonl')
-  expect(argv.join(' ')).toContain('--contract 1')
+  expect(argv.join(' ')).toContain('--contract 2')
   expect(argv.join(' ')).toContain('--tools none')
   expect(argv.join(' ')).toContain('--max-tokens 512')
   expect(argv.join(' ')).toContain('--system you are a verifier')
@@ -363,3 +363,20 @@ test.runIf(process.platform === 'linux')(
     await expect(nare.argv()).rejects.toThrow()
   },
 )
+
+// A version 1 subprocess cannot be mistaken for the patched harness.
+test('a contract 1 result is refused after the contract 2 upgrade', async () => {
+  const nare = await fakeNare([ANSWER, result({ contract: 1 })])
+
+  await expect(new NareAgentRunner({ binary: nare.binary }).run(REQUEST)).rejects.toThrow(/contract 1.*reads 2/)
+})
+
+test('an empty qare system prompt opts out of nare defaults even with read tools', async () => {
+  const nare = await fakeNare([ANSWER, result()])
+
+  await new NareAgentRunner({ binary: nare.binary }).run({ ...REQUEST, system: '', toolPolicy: 'read-only' })
+
+  const argv = await nare.argv()
+  expect(argv).toContain('--system')
+  expect(argv[argv.indexOf('--system') + 1]).toBe('')
+})

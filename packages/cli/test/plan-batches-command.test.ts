@@ -33,7 +33,7 @@ async function batchNare(cutOff: string[] = [], refused: string[] = []): Promise
     `const list = (prompt.split('Criteria:\\n')[1] ?? '').split('\\n\\n')[0] ?? ''`,
     `const ids = [...list.matchAll(/^- (c\\d+): /gm)].map((match) => match[1])`,
     `appendFileSync(${JSON.stringify(log)}, JSON.stringify(ids) + '\\n')`,
-    `const base = { type: 'result', questions: [], usage: { input: 10, output: 2 }, turns: 1, contract: 1 }`,
+    `const base = { type: 'result', questions: [], usage: { input: 10, output: 2 }, turns: 1, contract: 2 }`,
     `if (ids.some((id) => ${JSON.stringify(cutOff)}.includes(id))) {`,
     `  console.log(JSON.stringify({ ...base, status: 'error', stop_reason: 'max_tokens', output: null, error: null }))`,
     `} else {`,

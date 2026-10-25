@@ -166,7 +166,7 @@ test('on a repository with no compose file, init --target writes a target profil
   const script = [
     `const answer = process.argv[3].includes('qare verifier') ? { findings: [] } : ${JSON.stringify(plan)}`,
     "console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },",
-    "  stop_reason: 'end_turn', turns: 1, contract: 1, output: answer, error: null }))",
+    "  stop_reason: 'end_turn', turns: 1, contract: 2, output: answer, error: null }))",
   ].join('\n')
   await writeFile(join(nareDir, 'nare.mjs'), script)
   await writeFile(join(nareDir, 'nare'), `#!/bin/sh\nexec node ${join(nareDir, 'nare.mjs')} "$@"\n`)

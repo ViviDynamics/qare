@@ -124,7 +124,7 @@ export class NotImplemented extends Error {
 }
 
 /** The nare machine contract this runner is written against (nare docs/contract.md). */
-export const NARE_CONTRACT = 1
+export const NARE_CONTRACT = 2
 
 /** Exit 2 from nare: the run never started, so there is no result line. */
 const NEVER_STARTED = 2
@@ -250,7 +250,9 @@ export class NareAgentRunner implements AgentRunner {
     try {
       const argv = ['run', request.prompt, '--yes', '--jsonl', '--contract', String(NARE_CONTRACT)]
       argv.push('--tools', toolFlag(request.toolPolicy))
-      if (request.system) argv.push('--system', request.system)
+      // qare owns the persona, including an empty one. Contract 2 nare adds
+      // a default coding-agent prompt when read tools are enabled.
+      argv.push('--system', request.system)
       if (request.budget.maxOutputTokens > 0) argv.push('--max-tokens', String(request.budget.maxOutputTokens))
       if (this.options.root) argv.push('--root', this.options.root)
       if (request.outputSchema) {

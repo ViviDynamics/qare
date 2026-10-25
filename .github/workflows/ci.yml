@@ -237,6 +237,8 @@ jobs:
         # the whole tree, not a workspace already built on the runner.
       - name: Build the core image
         run: docker build -f images/core/Dockerfile -t qare-core:ci .
+      - name: Exercise the installed nare through qare
+        run: docker run --rm -i qare-core:ci node --input-type=module < scripts/nare-compat.mjs
       - name: Hold the core image to its size budget
         run: |
           set -euo pipefail

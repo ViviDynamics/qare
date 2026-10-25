@@ -290,7 +290,7 @@ async function fakeNare(answer: unknown): Promise<string> {
     `const answer = ${JSON.stringify(JSON.stringify(answer))}`,
     `console.log(JSON.stringify({ type: 'output', text: answer, detail: {} }))`,
     `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
-    `  stop_reason: 'end_turn', turns: 1, contract: 1, output: JSON.parse(answer), error: null }))`,
+    `  stop_reason: 'end_turn', turns: 1, contract: 2, output: JSON.parse(answer), error: null }))`,
   ].join('\n')
   await writeFile(`${binary}.mjs`, script, 'utf8')
   await writeFile(binary, `#!/bin/sh\nexec node ${binary}.mjs "$@"\n`, 'utf8')

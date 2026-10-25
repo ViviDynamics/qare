@@ -121,7 +121,7 @@ async function signupRun(profile: string = PROFILE()): Promise<{ dir: string; ar
 type Reviewer = 'reads-the-evidence' | 'silent' | 'crashes' | 'hostile' | 'leaks'
 
 /**
- * A stand-in for nare. It speaks the contract (a result line, contract 1),
+ * A stand-in for nare. It speaks the contract (a result line, contract 2),
  * records every call, and answers the verifier with no findings. As the UX
  * reviewer it does what its mode says. `reads-the-evidence` opens the files
  * each screen names, under its --root and nowhere else, and reports what the
@@ -143,7 +143,7 @@ const root = argv[argv.indexOf('--root') + 1]
 const mode = ${JSON.stringify(reviewer)}
 const finish = (output, status = 'done', error = null) => {
   if (status === 'done') console.log(JSON.stringify({ type: 'output', text: JSON.stringify(output) }))
-  console.log(JSON.stringify({ type: 'result', status, stop_reason: status === 'done' ? 'end_turn' : null, usage: { input: 200, output: 50 }, contract: 1, output: status === 'done' ? output : null, error, questions: [] }))
+  console.log(JSON.stringify({ type: 'result', status, stop_reason: status === 'done' ? 'end_turn' : null, usage: { input: 200, output: 50 }, contract: 2, output: status === 'done' ? output : null, error, questions: [] }))
   process.exit(status === 'done' ? 0 : 1)
 }
 // The read tool: a file under --root, as text, or a refusal.
