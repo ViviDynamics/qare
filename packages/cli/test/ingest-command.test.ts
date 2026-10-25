@@ -32,7 +32,7 @@ async function fakeNare(plan: unknown): Promise<string> {
   const script = [
     `const answer = ${JSON.stringify(JSON.stringify(plan))}`,
     "console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },",
-    "  stop_reason: 'end_turn', turns: 1, contract: 1, output: JSON.parse(answer), error: null }))",
+    "  stop_reason: 'end_turn', turns: 1, contract: 2, output: JSON.parse(answer), error: null }))",
   ].join('\n')
   await writeFile(join(dir, 'nare.mjs'), script)
   const binary = join(dir, 'nare')

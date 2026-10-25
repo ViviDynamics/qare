@@ -790,7 +790,7 @@ the run was on a runner), on each side of a two-sided run, and what the
 profile required under `requirements`. The comment says both:
 
 > Executed in a container on a linux x64 host, a GitHub-hosted runner, with
-> qare (its version), node (its version), nare contract 1.
+> qare (its version), node (its version), nare contract 2.
 
 ## Advisory UX review
 

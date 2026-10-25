@@ -52,7 +52,7 @@ async function fakeNare(answer: unknown): Promise<string> {
     `const answer = ${JSON.stringify(JSON.stringify(answer))}`,
     `console.log(JSON.stringify({ type: 'output', text: answer, detail: {} }))`,
     `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
-    `  stop_reason: 'end_turn', turns: 1, contract: 1, output: JSON.parse(answer), error: null }))`,
+    `  stop_reason: 'end_turn', turns: 1, contract: 2, output: JSON.parse(answer), error: null }))`,
   ].join('\n')
   await writeFile(`${binary}.mjs`, script, 'utf8')
   await writeFile(binary, `#!/bin/sh\nexec node ${binary}.mjs "$@"\n`, 'utf8')
@@ -79,7 +79,7 @@ async function twoRoundNare(first: unknown, second: unknown): Promise<string> {
     'writeFileSync(marker, "2")',
     `console.log(JSON.stringify({ type: 'output', text, detail: {} }))`,
     `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
-    `  stop_reason: 'end_turn', turns: 1, contract: 1, output: JSON.parse(text), error: null }))`,
+    `  stop_reason: 'end_turn', turns: 1, contract: 2, output: JSON.parse(text), error: null }))`,
   ].join('\n')
   await writeFile(`${binary}.mjs`, script, 'utf8')
   await writeFile(binary, `#!/bin/sh\nexec node ${binary}.mjs "$@"\n`, 'utf8')
@@ -335,7 +335,7 @@ test('the planner never sees the seeded values the diff carries (#64)', async ()
     `const answer = ${JSON.stringify(JSON.stringify(PLAN))}`,
     `console.log(JSON.stringify({ type: 'output', text: answer, detail: {} }))`,
     `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
-    `  stop_reason: 'end_turn', turns: 1, contract: 1, output: JSON.parse(answer), error: null }))`,
+    `  stop_reason: 'end_turn', turns: 1, contract: 2, output: JSON.parse(answer), error: null }))`,
   ].join('\n')
   await writeFile(`${binary}.mjs`, script, 'utf8')
   await writeFile(binary, `#!/bin/sh\nexec node ${binary}.mjs "$@"\n`, 'utf8')
@@ -387,7 +387,7 @@ test('qare plan declares the run contract paths to the planner (#162)', async ()
     `const answer = ${JSON.stringify(JSON.stringify(PLAN))}`,
     `console.log(JSON.stringify({ type: 'output', text: answer, detail: {} }))`,
     `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
-    `  stop_reason: 'end_turn', turns: 1, contract: 1, output: JSON.parse(answer), error: null }))`,
+    `  stop_reason: 'end_turn', turns: 1, contract: 2, output: JSON.parse(answer), error: null }))`,
   ].join('\n')
   await writeFile(`${binary}.mjs`, script, 'utf8')
   await writeFile(binary, `#!/bin/sh\nexec node ${binary}.mjs "$@"\n`, 'utf8')
@@ -459,7 +459,7 @@ test('renamed, mode-only and binary diff paths are declared; deletions are not (
     `const answer = ${JSON.stringify(JSON.stringify(PLAN))}`,
     `console.log(JSON.stringify({ type: 'output', text: answer, detail: {} }))`,
     `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
-    `  stop_reason: 'end_turn', turns: 1, contract: 1, output: JSON.parse(answer), error: null }))`,
+    `  stop_reason: 'end_turn', turns: 1, contract: 2, output: JSON.parse(answer), error: null }))`,
   ].join('\n')
   await writeFile(`${binary}.mjs`, script, 'utf8')
   await writeFile(binary, `#!/bin/sh\nexec node ${binary}.mjs "$@"\n`, 'utf8')
@@ -827,7 +827,7 @@ async function recordingNare(dir: string, answer: unknown): Promise<{ binary: st
     `const answer = ${JSON.stringify(JSON.stringify(answer))}`,
     `console.log(JSON.stringify({ type: 'output', text: answer, detail: {} }))`,
     `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
-    `  stop_reason: 'end_turn', turns: 1, contract: 1, output: JSON.parse(answer), error: null }))`,
+    `  stop_reason: 'end_turn', turns: 1, contract: 2, output: JSON.parse(answer), error: null }))`,
   ].join('\n')
   await writeFile(`${binary}.mjs`, script, 'utf8')
   await writeFile(binary, `#!/bin/sh\nexec node ${binary}.mjs "$@"\n`, 'utf8')

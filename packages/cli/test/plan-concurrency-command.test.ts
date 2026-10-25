@@ -47,7 +47,7 @@ async function meetingNare(together: number, waitMs: number): Promise<{ binary: 
     // The others must see this one alive before it goes.
     `await new Promise((resolve) => setTimeout(resolve, 100))`,
     `rmSync(mark)`,
-    `const base = { type: 'result', questions: [], usage: { input: 10, output: 2 }, turns: 1, contract: 1 }`,
+    `const base = { type: 'result', questions: [], usage: { input: 10, output: 2 }, turns: 1, contract: 2 }`,
     `if (most < ${String(together)}) {`,
     `  console.log(JSON.stringify({ ...base, status: 'error', stop_reason: 'max_tokens', output: null, error: null }))`,
     `} else {`,
