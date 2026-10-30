@@ -4,7 +4,7 @@ description: Use when starting work in qare, when unsure which workflow skill ap
 license: Elastic-2.0
 compatibility: Any agent that can run bash, gh, jq and git.
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # How we work at Vivi Dynamics
@@ -28,7 +28,7 @@ as `$S/<script>`.
 | Watch the default branch's CI and retry flakes | `watch-ci-main` |
 | Merge a PR, or decide whether it can merge | `merge-pr` |
 | Bring a branch up to date with the default branch | `rebase-main` |
-| Run a GitHub Copilot review loop on a PR | `copilot-review` |
+| Get a GitHub Copilot review, only when explicitly asked and after a local review | `copilot-review` |
 | Take an issue to a merged PR unattended | `ship-issue` |
 | Work an issue to an open PR with a plan gate | `work-issue` (future) |
 
