@@ -49,8 +49,8 @@ RUN corepack enable \
 # needs, so no package toolchain is installed into the final image at all.
 FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
 
-ARG NARE_WHEEL=https://github.com/ViviDynamics/nare/releases/download/2026.10.28/nare-2026.10.28-py3-none-any.whl
-ARG NARE_SHA256=d433afcd14065b2db2aba43fae9e43cb14cbba84831c30f5fad57e596df6b653
+ARG NARE_WHEEL=https://github.com/ViviDynamics/nare/releases/download/2026.10.33/nare-2026.10.33-py3-none-any.whl
+ARG NARE_SHA256=c2033f469a4a7902feef6acccd3c7cc4fa186737087c96c1c21c590556d0ace3
 ARG IMAGE_NAME=qare-core
 
 LABEL org.opencontainers.image.title=$IMAGE_NAME \
