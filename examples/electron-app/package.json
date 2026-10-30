@@ -9,6 +9,6 @@
     "package": "node package.mjs"
   },
   "devDependencies": {
-    "electron": "44.5.1"
+    "electron": "44.10.0"
   }
 }
