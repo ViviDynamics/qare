@@ -42,7 +42,7 @@ const text = (name: string): string => readFileSync(join(workflowDir, name), 'ut
 const load = (name: string): Workflow => parse(text(name)) as Workflow
 
 test('every workflow file is read: none is left out of these checks', () => {
-  expect(files).toEqual(['auto-tag.yml', 'benchmark.yml', 'ci.yml', 'pipeline.yml', 'qare.yml', 'release.yml', 'skills.yml', 'sweep.yml'])
+  expect(files).toEqual(['auto-tag.yml', 'benchmark.yml', 'ci.yml', 'disclosure-guard.yml', 'pipeline.yml', 'qare.yml', 'release.yml', 'skills.yml', 'sweep.yml'])
 })
 
 test('every action outside this repository is named by a full commit, with its version beside it', () => {
