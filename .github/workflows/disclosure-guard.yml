@@ -1,0 +1,22 @@
+name: Disclosure guard
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  disclosure-guard:
+    name: disclosure guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Block infrastructure detail from reaching this public repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VIVI_DISCLOSURE_TERMS: ${{ secrets.VIVI_DISCLOSURE_TERMS }}
+        run: |
+          cp repo.env.example repo.env
+          .agents/skills/merge-pr/scripts/disclosure-guard --pr ${{ github.event.pull_request.number }}
