@@ -1499,7 +1499,11 @@ the executed result and the ledger. No model has a say in any of it.
   standing report. A failure no earlier revision is shown to have passed is
   a `qa-failure` issue, never called a regression: one nothing shows ever
   passed, and one that fails on the very revision it passed on, where
-  nothing landed in between to blame (the issue says which).
+  nothing landed in between to blame (the issue says which). When a later
+  run shows such a criterion regressed, its `qa-failure` issue becomes a
+  regression (#304): one comment names the last pass, the changes since and
+  their authors, then the label moves to `qa-regression` and the title
+  follows.
 - **Hand-off.** The `qa-regression` label is the signal an orchestrator
   picks an issue up by. qare itself never fixes and never merges.
 
