@@ -23,7 +23,7 @@ export class IssueCriteriaError extends Error {
 /** The headings this org writes acceptance criteria under. */
 const HEADING = /^#{1,6}\s*(acceptance criteria|done when)\s*$/i
 const ANY_HEADING = /^#{1,6}\s+\S/
-const ITEM = /^\s*[-*]\s*\[[ xX]\]\s*(.+?)\s*$/
+const ITEM = /^\s*[-*]\s+(.+?)\s*$/
 
 /**
  * The id for a criterion, derived from its wording.
@@ -60,8 +60,8 @@ export function criteriaFromIssue(body: string): PlanCriterionInput[] {
   for (const line of lines.slice(start + 1)) {
     if (ANY_HEADING.test(line)) break
     const item = ITEM.exec(line)
-    const text = item?.[1]
-    if (text === undefined) continue
+    const text = item?.[1]?.replace(/^\[[ xX]\]\s*/, '').trim()
+    if (!text) continue
     const id = criterionIdFor(text)
     // The same wording twice is one criterion, not two: planning it twice
     // would double every check it maps to.
