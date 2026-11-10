@@ -674,6 +674,8 @@ function prompt(inputs: PlanInputs, correction?: string): string {
           'to a check. A command check may read only these declared run inputs:',
           ...inputs.runInputs.paths.map((path) => `- ${path}`),
           'A declared directory covers the files under it.',
+          'Other tracked repository files are not declared inputs merely because a criterion mentions them.',
+          'If a required file is outside this list, mark the criterion unplannable and name the missing input.',
           "The run's own outputs do not exist while a check runs: result.json, judged-result.json,",
           'comment.md, checkrun.json and everything under the evidence directory are written when the',
           'run ends, so a check that reads one cannot pass, and neither can a command whose executable is not on the',
@@ -908,6 +910,7 @@ const GREP_LONG_PATTERN_OPTIONS = new Set(['regexp', 'file'])
  */
 function grepFileOperands(tokens: string[]): string[] {
   const operands: string[] = []
+  const optionFiles: string[] = []
   let patternGiven = false
   let optionsEnded = false
   for (let index = 1; index < tokens.length; index += 1) {
@@ -924,6 +927,10 @@ function grepFileOperands(tokens: string[]): string[] {
       const [name = '', value] = token.slice(2).split(/=(.*)/s, 2)
       const isPattern = GREP_LONG_PATTERN_OPTIONS.has(name)
       if (isPattern) patternGiven = true
+      if (name === 'file' || name === 'exclude-from') {
+        const file = value ?? tokens[index + 1]
+        if (file !== undefined) optionFiles.push(file)
+      }
       if ((isPattern || GREP_LONG_VALUE_OPTIONS.has(name)) && value === undefined) index += 1
       continue
     }
@@ -932,12 +939,16 @@ function grepFileOperands(tokens: string[]): string[] {
       const isPattern = GREP_SHORT_PATTERN_OPTIONS.includes(letter)
       if (!isPattern && !GREP_SHORT_VALUE_OPTIONS.includes(letter)) continue
       if (isPattern) patternGiven = true
+      if (letter === 'f') {
+        const file = token.slice(at + 1) || tokens[index + 1]
+        if (file !== undefined) optionFiles.push(file)
+      }
       // The value is the rest of the cluster, or the next token when the letter ends it.
       if (at === token.length - 1) index += 1
       break
     }
   }
-  return patternGiven ? operands : operands.slice(1)
+  return [...optionFiles, ...(patternGiven ? operands : operands.slice(1))]
 }
 
 /**
@@ -1098,7 +1109,9 @@ function normalizedSegments(token: string): { segments: string[]; escapes: boole
 function undeclaredReference(command: string, declared: string[]): string | undefined {
   const covered = (token: string) =>
     declared.some((path) => token === path || token.startsWith(`${path}/`))
-  const [executable, ...arguments_] = command.split(/\s+/).filter((token) => token !== '')
+  const tokens = command.split(/\s+/).filter((token) => token !== '')
+  const [executable] = tokens
+  const arguments_ = executable === 'grep' ? grepFileOperands(tokens) : tokens.slice(1)
   if (executable === HARNESS_CLI)
     return `"${HARNESS_CLI}" is this harness's own CLI, and a check that runs the harness proves what the harness wrote, never that the change holds`
   for (const token of arguments_) {
