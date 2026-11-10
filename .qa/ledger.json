@@ -1,0 +1,53 @@
+{
+  "entries": [
+    {
+      "checks": [
+        ".qa/checks/mail-evidence.mjs:missing-code"
+      ],
+      "criterion": "mail-missing-code-retains-delivery",
+      "proof": "command",
+      "source": [
+        "https://github.com/ViviDynamics/qare/issues/290"
+      ],
+      "status": "proposed",
+      "text": "Running node -- .qa/checks/mail-evidence.mjs missing-code retains the message's authentication results and inbox placement in message.json when the requested one-time code is absent."
+    },
+    {
+      "checks": [
+        ".qa/checks/mail-evidence.mjs:missing-code"
+      ],
+      "criterion": "mail-missing-code-stays-unverified",
+      "proof": "command",
+      "source": [
+        "https://github.com/ViviDynamics/qare/issues/290"
+      ],
+      "status": "proposed",
+      "text": "Running node -- .qa/checks/mail-evidence.mjs missing-code leaves the criterion unverified with a reason naming the missing one-time code."
+    },
+    {
+      "checks": [
+        ".qa/checks/mail-evidence.mjs:quoted-auth"
+      ],
+      "criterion": "mail-quoted-values-preserve-whitespace",
+      "proof": "command",
+      "source": [
+        "https://github.com/ViviDynamics/qare/issues/290"
+      ],
+      "status": "proposed",
+      "text": "Running node -- .qa/checks/mail-evidence.mjs quoted-auth preserves whitespace around equals signs inside quoted Authentication-Results values."
+    }
+  ],
+  "changes": [
+    {
+      "seq": 1,
+      "kind": "import",
+      "actor": "Codex",
+      "timestamp": "2026-11-10T02:04:09.145Z",
+      "reason": "Propose reviewed mail regression criteria from issue 290",
+      "criteria": [],
+      "digest": "sha256:99dc315de5a5c8e318ddc78b323d475ba22f1051ba740e0becffc99382bf8a6a"
+    }
+  ],
+  "schemaVersion": "1",
+  "integrity": "sha256:77865121fb1f115aeec16eaf5da8bdacf100976716322c92b447a1420de42430"
+}
