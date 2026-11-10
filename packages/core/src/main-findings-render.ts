@@ -218,17 +218,10 @@ function outcomeLine(finding: MainFinding, span: Span): string {
   return `- Outcome: ${finding.outcome}${finding.reason === undefined ? '' : ` (${span(finding.reason)})`}`
 }
 
-/** The issue a failed criterion becomes: opened once per fingerprint, and the only place a mention is written. */
-export function renderMainFindingIssue(
-  finding: MainFinding,
-  blame: Blame,
-  range: BlameRange | undefined,
-  context: MainRunContext,
-  rules: readonly RedactionRule[] = BUILTIN_REDACTION_RULES,
-): MainFindingIssue {
-  const span = spanner(rules)
+/** What the record says of the criterion's last pass, as one sentence. */
+function lastPassSentence(finding: MainFinding, span: Span): string {
   const regression = finding.kind === 'regression'
-  const passed =
+  return (
     finding.lastProven === undefined && finding.passedHere !== undefined
       ? `It passed on this same revision in run ${span(finding.passedHere.run)}${
           finding.passedHere.recordedAt === undefined ? '' : `, recorded at ${span(finding.passedHere.recordedAt)}`
@@ -243,6 +236,33 @@ export function renderMainFindingIssue(
           `It last passed in run ${span(finding.lastProven.run)}, on revision ${span(finding.lastProven.sha)}, committed at ${span(finding.lastProven.at)}${
             finding.lastProven.recordedAt === undefined ? '' : `; that pass was recorded at ${span(finding.lastProven.recordedAt)}`
           }.`
+  )
+}
+
+/** An issue's title, by the kind of its finding. */
+export function mainFindingTitle(finding: MainFinding, rules: readonly RedactionRule[] = BUILTIN_REDACTION_RULES): string {
+  return redactText(titled(finding.kind === 'regression' ? 'QA regression on main' : 'QA failure on main', finding.criterionId), rules)
+}
+
+function handOffSection(): string[] {
+  return [
+    '### Hand-off',
+    '',
+    `The \`${QA_REGRESSION_LABEL}\` label is the signal an orchestrator picks this issue up by. qare does not fix it and does not merge anything: it comments here while the criterion still fails, and closes the issue when a run proves it again.`,
+  ]
+}
+
+/** The issue a failed criterion becomes: opened once per fingerprint, and the only place a mention is written. */
+export function renderMainFindingIssue(
+  finding: MainFinding,
+  blame: Blame,
+  range: BlameRange | undefined,
+  context: MainRunContext,
+  rules: readonly RedactionRule[] = BUILTIN_REDACTION_RULES,
+): MainFindingIssue {
+  const span = spanner(rules)
+  const regression = finding.kind === 'regression'
+  const passed = lastPassSentence(finding, span)
   const lines = [
     mainFindingMarker(finding.fingerprint),
     criterionMarker(finding.criterionId),
@@ -255,16 +275,10 @@ export function renderMainFindingIssue(
     ...evidenceSection(finding.evidence, context, span),
     ...rangeSection(finding, blame, range, span),
     ...audienceSection(blame),
-    ...(regression
-      ? [
-          '### Hand-off',
-          '',
-          `The \`${QA_REGRESSION_LABEL}\` label is the signal an orchestrator picks this issue up by. qare does not fix it and does not merge anything: it comments here while the criterion still fails, and closes the issue when a run proves it again.`,
-        ]
-      : ['qare comments here while the criterion still fails, and closes the issue when a run proves it.']),
+    ...(regression ? handOffSection() : ['qare comments here while the criterion still fails, and closes the issue when a run proves it.']),
   ]
   return {
-    title: redactText(titled(regression ? 'QA regression on main' : 'QA failure on main', finding.criterionId), rules),
+    title: mainFindingTitle(finding, rules),
     body: publish(lines),
     labels: [regression ? QA_REGRESSION_LABEL : QA_FAILURE_LABEL],
   }
@@ -287,6 +301,37 @@ export function renderMainFindingUpdate(
     verdictLine(context),
     '',
     ...evidenceSection(finding.evidence, context, span),
+  ])
+}
+
+/**
+ * The comment a run leaves on an issue filed as a plain failure once it
+ * shows the criterion regressed (#304): it failed on the very revision it
+ * passed on, and fails still on a later one. It carries what the issue
+ * lacked, the last pass, the changes since and who brought them, and it is
+ * the one update that mentions anyone: nobody has been named for it before.
+ */
+export function renderMainFindingRegression(
+  finding: MainFinding,
+  blame: Blame,
+  range: BlameRange | undefined,
+  context: MainRunContext,
+  opts: { reopened: boolean },
+  rules: readonly RedactionRule[] = BUILTIN_REDACTION_RULES,
+): string {
+  const span = spanner(rules)
+  return publish([
+    `${opts.reopened ? 'Reopened: this issue was closed while the criterion still fails' : 'Still failing'} on \`main\` ${where(context, span)}, and now a regression. ${lastPassSentence(finding, span)}`,
+    '',
+    `This issue was filed as \`${QA_FAILURE_LABEL}\`. It now carries \`${QA_REGRESSION_LABEL}\` instead.`,
+    '',
+    outcomeLine(finding, span),
+    verdictLine(context),
+    '',
+    ...evidenceSection(finding.evidence, context, span),
+    ...rangeSection(finding, blame, range, span),
+    ...audienceSection(blame),
+    ...handOffSection(),
   ])
 }
 

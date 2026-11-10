@@ -385,14 +385,32 @@ export function startFakeGithub(): Promise<FakeGithub> {
       }
       if (request.method === 'PATCH') {
         // Only what the request names changes: a state change leaves the body alone.
-        const patch = body as { body?: string; state?: 'open' | 'closed'; state_reason?: string }
+        const patch = body as { body?: string; title?: string; state?: 'open' | 'closed'; state_reason?: string }
         if (patch.body !== undefined) issue.body = patch.body
+        if (patch.title !== undefined) issue.title = patch.title
         if (patch.state !== undefined) {
           const meta = issueMeta.get(issue.number) ?? { state: 'open', labels: [], author: TOKEN_LOGIN }
           issueMeta.set(issue.number, { ...meta, state: patch.state, ...(patch.state_reason === undefined ? {} : { stateReason: patch.state_reason }) })
         }
         respond(response, 200, served(issue))
         return
+      }
+    }
+    // An issue's labels (#304): added beside the ones it has, or one taken off.
+    if (parts[0] === 'repos' && parts[3] === 'issues' && parts[5] === 'labels' && (parts.length === 6 || parts.length === 7)) {
+      const number = Number(parts[4])
+      const meta = issueMeta.get(number)
+      if (!issues.has(number) || meta === undefined) return respond(response, 404, { message: 'issue not found' })
+      if (request.method === 'POST' && parts.length === 6) {
+        const added = (body as { labels?: string[] }).labels ?? []
+        meta.labels = [...meta.labels, ...added.filter((label) => !meta.labels.includes(label))]
+        return respond(response, 200, meta.labels.map((name) => ({ name })))
+      }
+      if (request.method === 'DELETE' && parts.length === 7) {
+        const label = decodeURIComponent(parts[6] ?? '')
+        if (!meta.labels.includes(label)) return respond(response, 404, { message: 'Label does not exist' })
+        meta.labels = meta.labels.filter((name) => name !== label)
+        return respond(response, 200, meta.labels.map((name) => ({ name })))
       }
     }
     if (parts[0] === 'repos' && parts[3] === 'issues' && parts[5] === 'comments' && parts.length === 6) {

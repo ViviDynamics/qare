@@ -500,3 +500,96 @@ test('a push that is refused for a reason that is not a race is not tried again'
   ).rejects.toThrow(/403/)
   expect(builds).toBe(1)
 })
+
+// #304: a refusal is a race only when the branch moved. GitHub answers 422 for
+// a validation failure too, and rebuilding the record three times over a
+// branch that never moved only delays the real error.
+test('a push refused while the branch head is unchanged fails on the first attempt, with GitHub\'s own message', async () => {
+  const pusher = new GitHubQaAssetsPusher(client(), PASSED_AT)
+  await pusher.pushMainPasses(async () => '{"first":true}')
+  const head = fake.refs.get('refs/heads/qa-assets')
+  let builds = 0
+  fake.failRefPatches = 1
+  const patches = fake.calls.filter((call) => call.method === 'PATCH').length
+  await expect(
+    pusher.pushMainPasses(async () => {
+      builds += 1
+      return '{"second":true}'
+    }),
+  ).rejects.toThrow(/422: .*Update is not a fast forward/)
+  expect(builds).toBe(1)
+  expect(fake.calls.filter((call) => call.method === 'PATCH').length - patches).toBe(1)
+  expect(fake.refs.get('refs/heads/qa-assets')).toBe(head)
+})
+
+// #304: a criterion filed as qa-failure, because it failed on the very
+// revision it passed on, still fails on the next revision. That run calls it
+// a regression against the recorded pass, so the open issue becomes one: the
+// range, the blame and the hand-off it lacked.
+test('an open qa-failure issue that becomes a regression is relabelled, and the comment names the last pass and the pull requests since', async () => {
+  expect(await run(await result('passed', { 'BIL-014': 'proven', 'BIL-021': 'proven' }), PASSED_AT, ['--record-passes', 'true', '--run-url', runUrl(77)])).toBe(0)
+  const store0 = await recorded()
+  expect(await run(await result('failed', { 'BIL-014': 'failed', 'BIL-021': 'proven' }), PASSED_AT, ['--record-passes', 'true', '--run-url', runUrl(78)])).toBe(0)
+  expect(fake.issueMeta.get(100)).toMatchObject({ labels: ['qa-failure'] })
+  fake.commitLog.push({ sha: FAILED_AT, message: 'Rework payouts (#12)', date: '2026-10-09T09:00:00Z' })
+  fake.commitPulls.set(FAILED_AT, [12])
+  fake.pullRecords.set(12, { title: 'Rework payouts', author: { login: 'alice', type: 'User' }, merged: true, files: ['app/payouts/notice.rb'], reviews: [] })
+  out = []
+  expect(await run(await result('failed', { 'BIL-014': 'failed', 'BIL-021': 'proven' }), FAILED_AT, ['--record-passes', 'true', '--run-url', runUrl(79)])).toBe(0)
+  expect(err.join('')).toBe('')
+  expect(out.join('')).toContain('commented on #100 for BIL-014: still failing, now a regression: relabelled qa-failure to qa-regression, mentioning alice\n')
+  expect(fake.issues.size).toBe(1)
+  expect(fake.issueMeta.get(100)).toMatchObject({ state: 'open', labels: ['qa-regression'] })
+  expect(fake.issues.get(100)?.title).toBe('QA regression on main: BIL-014')
+  const comment = fake.issues.get(100)?.comments.at(-1) ?? ''
+  // The last pass: its run, its revision and when it was committed and recorded.
+  expect(comment).toContain(`\`${runUrl(77)}\``)
+  expect(comment).toContain(`\`${PASSED_AT}\``)
+  expect(comment).toContain(`\`${PASSED_DATE}\``)
+  expect(comment).toContain(`recorded at \`${store0?.passes['BIL-014']?.recordedAt ?? 'missing'}\``)
+  // The pull requests since, and only those: bob's is the revision that passed.
+  expect(comment).toContain('#12 `Rework payouts`, opened by @alice')
+  expect(comment).not.toContain('#11')
+  expect(mentionsIn(comment)).toEqual(['alice'])
+  expect(comment).toContain('`qa-regression`')
+
+  // The next run, still failing, comments once more and names nobody: the issue is a regression already.
+  out = []
+  expect(await run(await result('failed', { 'BIL-014': 'failed', 'BIL-021': 'proven' }), FAILED_AT, ['--run-url', runUrl(80)])).toBe(0)
+  expect(out.join('')).toBe('commented on #100 for BIL-014: still failing\n')
+  expect(mentionsIn(fake.issues.get(100)?.comments.at(-1) ?? '')).toEqual([])
+  expect(fake.issueMeta.get(100)).toMatchObject({ labels: ['qa-regression'] })
+})
+
+test('a dry run says it would relabel the qa-failure issue, and writes nothing', async () => {
+  expect(await run(await result('passed', { 'BIL-014': 'proven' }), PASSED_AT, ['--record-passes', 'true'])).toBe(0)
+  expect(await run(await result('failed', { 'BIL-014': 'failed' }), PASSED_AT, ['--record-passes', 'true'])).toBe(0)
+  fake.commitLog.push({ sha: FAILED_AT, message: 'Rework payouts (#12)', date: '2026-10-09T09:00:00Z' })
+  fake.commitPulls.set(FAILED_AT, [12])
+  fake.pullRecords.set(12, { title: 'Rework payouts', author: { login: 'alice', type: 'User' }, merged: true, files: ['app/payouts/notice.rb'], reviews: [] })
+  out = []
+  const calls = fake.calls.length
+  expect(await run(await result('failed', { 'BIL-014': 'failed' }), FAILED_AT, ['--dry-run', 'true'])).toBe(0)
+  expect(out.join('')).toContain('would comment on #100 for BIL-014: still failing, now a regression: relabelled qa-failure to qa-regression, mentioning alice\n')
+  expect(fake.calls.slice(calls).every((call) => call.method === 'GET')).toBe(true)
+  expect(fake.issueMeta.get(100)).toMatchObject({ labels: ['qa-failure'] })
+})
+
+test('a qa-failure issue a person closed while the criterion still fails is reopened as a regression', async () => {
+  expect(await run(await result('passed', { 'BIL-014': 'proven' }), PASSED_AT, ['--record-passes', 'true'])).toBe(0)
+  expect(await run(await result('failed', { 'BIL-014': 'failed' }), PASSED_AT, ['--record-passes', 'true'])).toBe(0)
+  const meta = fake.issueMeta.get(100)
+  if (meta === undefined) throw new Error('no issue was filed')
+  fake.issueMeta.set(100, { ...meta, state: 'closed' })
+  fake.commitLog.push({ sha: FAILED_AT, message: 'Rework payouts (#12)', date: '2026-10-09T09:00:00Z' })
+  fake.commitPulls.set(FAILED_AT, [12])
+  fake.pullRecords.set(12, { title: 'Rework payouts', author: { login: 'alice', type: 'User' }, merged: true, files: ['app/payouts/notice.rb'], reviews: [] })
+  out = []
+  expect(await run(await result('failed', { 'BIL-014': 'failed' }), FAILED_AT)).toBe(0)
+  expect(out.join('')).toBe('reopened #100 for BIL-014: closed while still failing, now a regression: relabelled qa-failure to qa-regression, mentioning alice\n')
+  expect(fake.issues.size).toBe(1)
+  expect(fake.issueMeta.get(100)).toMatchObject({ state: 'open', labels: ['qa-regression'] })
+  const comment = fake.issues.get(100)?.comments.at(-1) ?? ''
+  expect(comment).toMatch(/^Reopened: this issue was closed while the criterion still fails/)
+  expect(mentionsIn(comment)).toEqual(['alice'])
+})

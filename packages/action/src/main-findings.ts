@@ -1,12 +1,15 @@
 import {
   BUILTIN_REDACTION_RULES,
   ENVIRONMENT_FINGERPRINT,
+  QA_FAILURE_LABEL,
+  QA_REGRESSION_LABEL,
   MAIN_FINDING_MARKER_PREFIX,
   blameEnvironment,
   blameMainFinding,
   classifyMainRun,
   isBotAccount,
   mainCriterionKey,
+  mainFindingTitle,
   mainPassOf,
   mainPassesToRecord,
   parseMainPasses,
@@ -21,11 +24,12 @@ import {
   renderEnvironmentUpdate,
   renderMainFindingIssue,
   renderMainFindingRecovery,
+  renderMainFindingRegression,
   renderMainFindingUpdate,
   retireMainFindingMarkers,
 } from '@qare/core'
 import type { BlameConfig, BlameRange, LedgerDocument, MainFinding, MainPasses, MainRunContext, RangePull, RedactionRule, RunResult } from '@qare/core'
-import type { GitHubClient, GitHubIssue } from './github.js'
+import { labelNames, type GitHubClient, type GitHubIssue } from './github.js'
 import type { ScreenshotPusher } from './qa-assets.js'
 
 /**
@@ -54,6 +58,21 @@ const MAX_FILES = 300
  * for the next run, which opens the next ten.
  */
 export const MAX_NEW_ISSUES = 10
+/**
+ * The most compare requests one run makes to classify its failures (#304):
+ * one for each distinct revision a failed criterion last passed on. A broad
+ * failure over a record that has lived a while names many revisions, and a
+ * run that would ask about more stops by name.
+ */
+export const MAX_CLASSIFY_COMPARES = 20
+
+/** A run that would spend more requests than its budget: it stops, and files nothing. */
+export class MainFindingsBudgetError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'MainFindingsBudgetError'
+  }
+}
 
 export interface MainFindingsInput {
   /** The judged result of a run on `main`. */
@@ -120,7 +139,19 @@ export type MainFindingAction =
        */
       draft?: { title: string; body: string; labels: string[] }
     }
-  | { action: 'updated' | 'reopened'; criterion?: string; fingerprint: string; issue: number }
+  | {
+      action: 'updated' | 'reopened'
+      criterion?: string
+      fingerprint: string
+      issue: number
+      /**
+       * Set when the issue was filed as a plain failure and this run shows the
+       * criterion regressed (#304): its label moved, and the comment named the
+       * people blame names, who are listed.
+       */
+      relabelled?: { from: string; to: string }
+      mentions?: string[]
+    }
   | { action: 'closed'; criterion?: string; issue: number }
   /** A finding with no issue yet that this run did not open one for: the run had opened its share. */
   | { action: 'deferred'; criterion: string; fingerprint: string }
@@ -144,6 +175,7 @@ export interface MainFindingsOutcome {
 interface OwnIssue {
   number: number
   body: string
+  labels: string[]
   fingerprint?: string
   criterion?: string
 }
@@ -209,7 +241,7 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
   }
 
   const mine = (issue: GitHubIssue): boolean => issue.user?.login === input.author
-  const own = (issue: GitHubIssue): OwnIssue => ({ number: issue.number, body: issue.body ?? '', ...readMainFindingMarkers(issue.body ?? '') })
+  const own = (issue: GitHubIssue): OwnIssue => ({ number: issue.number, body: issue.body ?? '', labels: labelNames(issue), ...readMainFindingMarkers(issue.body ?? '') })
   // Every open issue qare filed for a finding, in one search.
   const open = (await client.searchIssues(`repo:${client.repository} is:issue is:open in:body "${MAIN_FINDING_MARKER_PREFIX}"`))
     .filter(mine)
@@ -304,9 +336,36 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
     return range
   }
 
+  /**
+   * An issue filed as a plain failure whose criterion this run shows to have
+   * regressed (#304): it failed on the very revision it passed on, and fails
+   * still on a later one. It becomes the regression issue it would have been
+   * opened as: the comment carries the last pass, the range and the blame,
+   * then the label and the title move. The comment goes first, so a run that
+   * stops half-way leaves the old label, and the next run does this again.
+   */
+  const becameRegression = (finding: MainFinding, issue: OwnIssue): boolean =>
+    finding.kind === 'regression' && issue.labels.includes(QA_FAILURE_LABEL) && !issue.labels.includes(QA_REGRESSION_LABEL)
+  const relabel = async (finding: MainFinding, issue: OwnIssue, reopened: boolean): Promise<{ relabelled: { from: string; to: string }; mentions: string[] }> => {
+    const range = await rangeSince(finding)
+    const blame = blameMainFinding(finding, range, input.findings)
+    if (!dryRun) {
+      await client.postIssueComment(issue.number, renderMainFindingRegression(finding, blame, range, context, { reopened }, rules))
+      await client.setIssueTitle(issue.number, mainFindingTitle(finding, rules))
+      await client.addIssueLabels(issue.number, [QA_REGRESSION_LABEL])
+      await client.removeIssueLabel(issue.number, QA_FAILURE_LABEL)
+    }
+    return { relabelled: { from: QA_FAILURE_LABEL, to: QA_REGRESSION_LABEL }, mentions: blame.mentions }
+  }
+
   let opened = 0
   for (const finding of classified.findings) {
     const existing = open.find((issue) => issue.fingerprint === finding.fingerprint)
+    if (existing !== undefined && becameRegression(finding, existing)) {
+      const moved = await relabel(finding, existing, false)
+      actions.push({ action: 'updated', criterion: finding.criterionId, fingerprint: finding.fingerprint, issue: existing.number, ...moved })
+      continue
+    }
     if (existing !== undefined) {
       // No range is read and nobody is named: a failure that recurs does not notify again.
       if (!dryRun) await client.postIssueComment(existing.number, renderMainFindingUpdate(finding, context, { reopened: false }, rules))
@@ -314,6 +373,12 @@ export async function publishMainFindings(client: GitHubClient, input: MainFindi
       continue
     }
     const closed = await closedByHand(finding.fingerprint)
+    if (closed !== undefined && becameRegression(finding, closed)) {
+      if (!dryRun) await client.setIssueState(closed.number, 'open', 'reopened')
+      const moved = await relabel(finding, closed, true)
+      actions.push({ action: 'reopened', criterion: finding.criterionId, fingerprint: finding.fingerprint, issue: closed.number, ...moved })
+      continue
+    }
     if (closed !== undefined) {
       if (!dryRun) {
         await client.setIssueState(closed.number, 'open', 'reopened')
@@ -370,6 +435,14 @@ async function earlierPasses(client: GitHubClient, input: MainFindingsInput): Pr
   const store = input.passes
   if (store === undefined) return undefined
   const failed = new Set(input.result.criteria.filter((criterion) => criterion.outcome === 'failed').map((criterion) => criterion.id))
+  // Each revision is asked about once. Counted before any is asked (#304): a
+  // run past the budget asks nothing and files nothing, rather than file
+  // some findings as regressions and the rest on a guess.
+  const asked = new Set(Object.entries(store.passes).filter(([id, pass]) => failed.has(id) && pass.sha !== input.headSha).map(([, pass]) => pass.sha))
+  if (asked.size > MAX_CLASSIFY_COMPARES)
+    throw new MainFindingsBudgetError(
+      `main-findings: the failed criteria last passed on ${asked.size} recorded revisions, more than the ${MAX_CLASSIFY_COMPARES} compare requests one run may make to classify them; nothing was filed`,
+    )
   const earlier = new Map<string, boolean>()
   const passes: Array<[string, MainPasses['passes'][string]]> = []
   for (const [id, pass] of Object.entries(store.passes)) {

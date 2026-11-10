@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest'
 import { appendChange, mainFindingMarker, parseResult, valueRules, BUILTIN_REDACTION_RULES } from '@qare/core'
 import type { LedgerChange, LedgerDocument, LedgerEntry, RunResult } from '@qare/core'
 import { GitHubClient } from '../src/github.js'
-import { publishMainFindings, type MainFindingsInput } from '../src/main-findings.js'
+import { MAX_CLASSIFY_COMPARES, publishMainFindings, type MainFindingsInput } from '../src/main-findings.js'
 import { FAKE_TOKEN, startFakeGithub, type FakeGithub } from './fake-github.js'
 
 // #154: findings on main become GitHub issues. Every test here files against
@@ -475,6 +475,41 @@ test('a dry run says what it would do and writes nothing', async () => {
     ])
     expect(writes(fake)).toEqual([])
     expect(fake.issues.size).toBe(0)
+  } finally {
+    await fake.close()
+  }
+})
+
+// #304: classifying a run asks the history about each distinct revision the
+// failed criteria last passed on. Over a long-lived record that is many
+// requests, so it is bounded, and a run past the bound stops by name before
+// it asks anything or files anything from a guess.
+test('a run whose failed criteria name more recorded revisions than the compare budget stops by name, asking and filing nothing', async () => {
+  const fake = await startFakeGithub()
+  try {
+    const ids = Array.from({ length: MAX_CLASSIFY_COMPARES + 1 }, (_, index) => `WIDE-${index}`)
+    const result = parseResult({
+      schemaVersion: '1',
+      verdict: 'failed',
+      criteria: ids.map((id) => ({ id, outcome: 'failed', evidence: [`checks/${id}/0/stdout.txt`] })),
+    })
+    const passes = {
+      passes: Object.fromEntries(
+        ids.map((id, index) => [id, { sha: index.toString(16).padStart(40, '7'), at: LAST_PASS, run: `run-${index}`, recordedAt: LAST_PASS }]),
+      ),
+    }
+    const wide: LedgerDocument = { entries: ids.map((id) => entry(id)), changes: [] }
+    await expect(publishMainFindings(client(fake), input(result, { ledger: wide, passes }))).rejects.toThrow(
+      new RegExp(`${MAX_CLASSIFY_COMPARES + 1} recorded revisions.*more than the ${MAX_CLASSIFY_COMPARES} compare requests one run may make`),
+    )
+    expect(fake.calls.filter((call) => call.path.includes('/compare/'))).toEqual([])
+    expect(writes(fake)).toEqual([])
+    expect(fake.issues.size).toBe(0)
+
+    // At the budget it classifies as before.
+    const within = Object.fromEntries(Object.entries(passes.passes).slice(0, MAX_CLASSIFY_COMPARES))
+    await publishMainFindings(client(fake), input(result, { ledger: wide, passes: { passes: within }, dryRun: true }))
+    expect(fake.calls.filter((call) => call.path.includes('/compare/'))).toHaveLength(MAX_CLASSIFY_COMPARES)
   } finally {
     await fake.close()
   }
