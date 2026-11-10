@@ -226,10 +226,35 @@ test('a second unparseable plan fails loudly', async () => {
 
 test('a failed run is never turned into a plan', async () => {
   const runner = new FakeAgentRunner([
-    { status: 'failed', stopReason: 'max_tokens', usage: { inputTokens: 1, outputTokens: 1 }, output: undefined },
+    { status: 'failed', stopReason: 'error', usage: { inputTokens: 1, outputTokens: 1 }, output: undefined },
   ])
 
-  await expect(planRun(runner, INPUTS)).rejects.toThrow(/max_tokens|failed/)
+  await expect(planRun(runner, INPUTS)).rejects.toThrow(/stop reason error/)
+})
+
+test('a cut-off plan gets one compact planning turn within the same token budget (#343)', async () => {
+  const runner = new FakeAgentRunner([
+    { status: 'failed', stopReason: 'max_tokens', usage: { inputTokens: 10, outputTokens: 16384 }, output: '{"truncated":' },
+    completed(planned()),
+  ])
+  const plan = await planRun(runner, INPUTS)
+  expect(plan.criteria.map((criterion) => criterion.id)).toEqual(['c1', 'c2'])
+  expect(plan.usage).toEqual({ inputTokens: 11, outputTokens: 16385 })
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1].budget).toEqual(runner.requests[0].budget)
+  expect(runner.requests[1].prompt).toMatch(/compact.*plan/i)
+  expect(runner.requests[1].prompt).not.toContain('{"truncated":')
+})
+
+test.each(['failed', 'completed'] as const)('two cut-off turns fail closed even if their partial output looks like a plan (%s) (#343)', async (status) => {
+  const cutOff: AgentRunResult = {
+    status, stopReason: 'max_tokens', usage: { inputTokens: 10, outputTokens: 16384 }, output: planned(),
+  }
+  const runner = new FakeAgentRunner([cutOff, cutOff])
+  const error = await planRun(runner, INPUTS).catch((caught: unknown) => caught)
+  expect(error).toBeInstanceOf(PlanStepError)
+  expect((error as PlanStepError).usage).toEqual({ inputTokens: 20, outputTokens: 32768 })
+  expect(runner.requests).toHaveLength(2)
 })
 
 test('planning nothing is refused before a model is called', async () => {

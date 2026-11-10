@@ -228,6 +228,11 @@ test('a batch that fails while others are in flight costs only its own criteria,
   // The failing batch ends first, with the two others still waiting on the model.
   runner.release('c3')
   await settle()
+  // The compact second turn stays in the same concurrency slot.
+  expect(runner.waiting).toEqual(['c1', 'c5', 'c3'])
+  expect(reports).toEqual([])
+  runner.release('c3')
+  await settle()
   expect(runner.waiting).toEqual(['c1', 'c5'])
   expect(reports.map((report) => [report.index, report.outcome])).toEqual([[2, 'failed']])
   runner.release('c5')
@@ -241,8 +246,8 @@ test('a batch that fails while others are in flight costs only its own criteria,
     expect(lost.checks).toBeUndefined()
     expect(lost.unplannable).toMatch(/^planning failed \(PlanStepError: the planning run did not complete \(stop reason max_tokens/)
   }
-  // The lost batch's turn is still counted.
-  expect(plan.usage).toEqual({ inputTokens: 300, outputTokens: 16404 })
+  // Both turns of the lost batch are still counted.
+  expect(plan.usage).toEqual({ inputTokens: 400, outputTokens: 32788 })
 })
 
 test('a runner that cannot read nare for one batch, and a correction round for another, stay inside their own batches when they overlap', async () => {

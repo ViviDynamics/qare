@@ -107,14 +107,14 @@ test('a turn cut off costs its own criterion only: the others stay planned, and 
 
   expect(await main(argv, out.writer, capture().writer)).toBe(0)
 
-  expect(await nare.calls()).toEqual([['c1'], ['c2'], ['c3']])
+  expect(await nare.calls()).toEqual([['c1'], ['c2'], ['c2'], ['c3']])
   const plan = JSON.parse(await readFile(outPath, 'utf8')) as WrittenPlan
   expect(plan.criteria.map((criterion) => criterion.id)).toEqual(['c1', 'c2', 'c3'])
   expect(plan.criteria[0]?.checks).toHaveLength(1)
   expect(plan.criteria[2]?.checks).toHaveLength(1)
   expect(plan.criteria[1]?.checks).toBeUndefined()
   expect(plan.criteria[1]?.unplannable).toMatch(/^planning failed \(PlanStepError: the planning run did not complete \(stop reason max_tokens/)
-  expect(plan.usage).toEqual({ inputTokens: 30, outputTokens: 6 })
+  expect(plan.usage).toEqual({ inputTokens: 40, outputTokens: 8 })
   expect(out.text()).toMatch(/batch 2 of 3 \(c2\) could not be planned, so its criteria are marked unplannable: PlanStepError: .*max_tokens/)
   expect(out.text()).toContain('planned 3 criteria (1 unplannable)')
 })
@@ -162,8 +162,8 @@ test("when every turn fails, each criterion in the written plan keeps its own ba
   expect(plan.criteria[1]?.unplannable).toMatch(/^planning failed \(PlanStepError: the model could not produce a usable plan: criterion c2 command check "piped c2"/)
   expect(plan.criteria[1]?.unplannable).not.toContain('max_tokens')
   for (const criterion of plan.criteria) expect(criterion.unplannable).not.toContain('none of the')
-  // c1 and c3 one turn each, c2 its turn and its correction round.
-  expect(plan.usage).toEqual({ inputTokens: 40, outputTokens: 8 })
+  // Each batch costs two turns, including both cut-offs and the refused correction.
+  expect(plan.usage).toEqual({ inputTokens: 60, outputTokens: 12 })
   expect(out.text()).toContain("none of the 3 batches could be planned, so every criterion is marked unplannable with its own batch's reason")
   expect(out.text()).toContain('planned 3 criteria (3 unplannable)')
 })
@@ -178,6 +178,6 @@ test('when every turn is cut off the plan is all unplannable, as before, and sti
   const plan = JSON.parse(await readFile(outPath, 'utf8')) as WrittenPlan
   expect(plan.criteria.map((criterion) => criterion.id)).toEqual(['c1', 'c2', 'c3'])
   for (const criterion of plan.criteria) expect(criterion.unplannable).toMatch(/^planning failed \(PlanStepError: the planning run did not complete \(stop reason max_tokens/)
-  expect(plan.usage).toEqual({ inputTokens: 30, outputTokens: 6 })
+  expect(plan.usage).toEqual({ inputTokens: 60, outputTokens: 12 })
   expect(out.text()).toContain('every criterion is marked unplannable')
 })

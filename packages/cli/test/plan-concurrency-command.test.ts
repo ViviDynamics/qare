@@ -124,7 +124,8 @@ test('unset, the turns run one after another: no nare process is alive beside an
 
   await main(argv, capture().writer, capture().writer)
 
-  expect(await nare.alive()).toEqual([1, 1, 1])
+  // A lone turn times out waiting for a peer, then uses its compact correction turn.
+  expect(await nare.alive()).toEqual([1, 1, 1, 1, 1, 1])
 }, 60_000)
 
 test('a concurrency that is not a number stops the plan by name, and nothing is asked or written', async () => {

@@ -195,17 +195,17 @@ test('a batch that answers for a criterion of another batch is corrected, so not
 })
 
 test("the plan's usage is the sum over every batch: the planned, the corrected and the lost", async () => {
-  const runner = new AnsweringRunner((ids, call) => {
+  const runner = new AnsweringRunner((ids, _call, request) => {
     if (ids[0] === 'c2') return CUT_OFF
-    if (ids[0] === 'c3' && call === 3) return completed('{"not":"a plan"}', { inputTokens: 7, outputTokens: 3 })
+    if (ids[0] === 'c3' && !request.prompt.includes('previous answer was rejected')) return completed('{"not":"a plan"}', { inputTokens: 7, outputTokens: 3 })
     return completed(planFor(ids))
   })
 
   const plan = await planRun(runner, INPUTS)
 
-  // c1, c3 (second try), c4, c5: 100/10 each. c2 cut off: 100/16384. c3's rejected first try: 7/3.
-  expect(runner.requests).toHaveLength(6)
-  expect(plan.usage).toEqual({ inputTokens: 4 * 100 + 100 + 7, outputTokens: 4 * 10 + 16384 + 3 })
+  // c1, c3 (second try), c4, c5: 100/10 each. c2 cut off twice: 100/16384 each. c3's rejected first try: 7/3.
+  expect(runner.requests).toHaveLength(7)
+  expect(plan.usage).toEqual({ inputTokens: 607, outputTokens: 32811 })
 })
 
 test('when no batch can be planned the step still fails closed, carrying what the attempts cost', async () => {
@@ -213,14 +213,14 @@ test('when no batch can be planned the step still fails closed, carrying what th
   const error = (await planRun(several, { ...INPUTS, criteria: CRITERIA.slice(0, 3) }).catch((caught: unknown) => caught)) as PlanStepError
   expect(error).toBeInstanceOf(PlanStepError)
   expect(error.message).toMatch(/none of the 3 batches could be planned.*max_tokens/)
-  expect(error.usage).toEqual({ inputTokens: 300, outputTokens: 3 * 16384 })
+  expect(error.usage).toEqual({ inputTokens: 600, outputTokens: 6 * 16384 })
 
   // One batch is the plan step as it always was: its own error, unchanged.
   const single = new AnsweringRunner(() => CUT_OFF)
   const alone = (await planRun(single, { ...INPUTS, batchSize: 5 }).catch((caught: unknown) => caught)) as PlanStepError
   expect(alone).toBeInstanceOf(PlanStepError)
   expect(alone.message).toMatch(/^the planning run did not complete \(stop reason max_tokens/)
-  expect(alone.usage).toEqual({ inputTokens: 100, outputTokens: 16384 })
+  expect(alone.usage).toEqual({ inputTokens: 200, outputTokens: 32768 })
 
   // A runner that cannot run at all is not a planning gap: its own error surfaces.
   const broken = new AnsweringRunner(() => {
@@ -246,8 +246,8 @@ test("when no batch can be planned the error carries each criterion with its own
   // Still a failure of the step, named as before, for a caller that treats it as one.
   expect(error).toBeInstanceOf(PlanStepError)
   expect(error.message).toMatch(/^none of the 3 batches could be planned, the first because the planning run did not complete \(stop reason max_tokens/)
-  // c1, c2 cut off: 100/16384. c3, c4 errored: 5/0. c5 refused twice: 7/3 each.
-  expect(error.usage).toEqual({ inputTokens: 100 + 5 + 2 * 7, outputTokens: 16384 + 0 + 2 * 3 })
+  // c1, c2 cut off twice: 100/16384 each. c3, c4 errored: 5/0. c5 refused twice: 7/3 each.
+  expect(error.usage).toEqual({ inputTokens: 219, outputTokens: 32774 })
 
   expect(error.unplanned?.map((criterion) => criterion.id)).toEqual(['c1', 'c2', 'c3', 'c4', 'c5'])
   const reasons = Object.fromEntries((error.unplanned ?? []).map((criterion) => [criterion.id, criterion.unplannable]))
@@ -274,7 +274,7 @@ test('a single batch that fails raises the error it always raised, with no crite
   expect(alone).toBeInstanceOf(PlanStepError)
   expect(alone.message).toMatch(/^the planning run did not complete \(stop reason max_tokens/)
   expect(alone.unplanned).toBeUndefined()
-  expect(alone.usage).toEqual({ inputTokens: 100, outputTokens: 16384 })
+  expect(alone.usage).toEqual({ inputTokens: 200, outputTokens: 32768 })
 })
 
 test("a runner that cannot run for the first batch still surfaces as itself, whatever the later batches' reasons", async () => {

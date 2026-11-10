@@ -1363,7 +1363,13 @@ async function planTurns(
     // same as an accepted one, and the plan's usage says what the plan really
     // cost, not what the lucky attempt did.
     spend(run.usage)
-    if (run.status !== 'completed')
+    if (run.stopReason === 'max_tokens' && attempt === 0) {
+      correction = 'The previous turn exhausted its output-token budget. Write a compact complete plan: ' +
+        'use the minimum checks needed for each criterion, short check names, and no explanatory prose outside the JSON. ' +
+        'Keep every requested criterion and all required assertions; mark a criterion unplannable if no executable check can prove it.'
+      continue
+    }
+    if (run.status !== 'completed' || run.stopReason === 'max_tokens')
       throw new PlanStepError(
         `the planning run did not complete (stop reason ${stopDetail(run.stopReason, budget)}), so there is no plan` +
           // A turn asked for less also fits its budget (#259), when there is less to ask for.
