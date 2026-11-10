@@ -585,7 +585,7 @@ test.each([
   expect(runner.requests).toHaveLength(1)
 })
 
-test.each(['grep -f secrets.txt README.md', 'grep --file=secrets.txt README.md'])('grep pattern files must be declared inputs: %s (#342)', async (command) => {
+test.each(['grep -f secrets.txt README.md', 'grep --file=secrets.txt README.md', 'grep --exclude-from=secrets.txt x README.md'])('grep pattern files must be declared inputs: %s (#342)', async (command) => {
   const answer = JSON.stringify({
     schemaVersion: '1',
     criteria: [{ id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'readme', command }] }],
@@ -594,6 +594,17 @@ test.each(['grep -f secrets.txt README.md', 'grep --file=secrets.txt README.md']
   await expect(planRun(runner, {
     criteria: [CRITERIA[0]], runInputs: { paths: ['README.md'] },
   })).rejects.toThrow(/secrets.txt is not among the declared run inputs/)
+})
+
+test('grep files without an extension must also be declared inputs (#342)', async () => {
+  const answer = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [{ id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'license', command: 'grep permission LICENSE' }] }],
+  })
+  const runner = new FakeAgentRunner([completed(answer), completed(answer)])
+  await expect(planRun(runner, {
+    criteria: [CRITERIA[0]], runInputs: { paths: ['README.md'] },
+  })).rejects.toThrow(/LICENSE is not among the declared run inputs/)
 })
 
 test('a plan that still reads undeclared artifacts after its correction round fails closed (#162)', async () => {

@@ -902,7 +902,7 @@ const GREP_LONG_VALUE_OPTIONS = new Set([
 const GREP_LONG_PATTERN_OPTIONS = new Set(['regexp', 'file'])
 
 /**
- * What grep would open as files: its operands after the pattern, read by
+ * What grep would open as files: option files and operands after the pattern, read by
  * grep's own option grammar. Short options cluster (`-ni`), and one that
  * takes a value takes the rest of its cluster (`-m1`, `-eA`) or, when it
  * ends the cluster, the next token (`-m 1`, `-e A`). A pattern given by an
@@ -1115,6 +1115,7 @@ function undeclaredReference(command: string, declared: string[]): string | unde
   if (executable === HARNESS_CLI)
     return `"${HARNESS_CLI}" is this harness's own CLI, and a check that runs the harness proves what the harness wrote, never that the change holds`
   for (const token of arguments_) {
+    if (executable === 'grep' && token === '-') continue
     if (token.startsWith('http://') || token.startsWith('https://') || token.startsWith('{{')) continue
     if (token.startsWith('/') || token.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(token))
       return `${token} is an absolute path, so it does not name an input inside this repository`
@@ -1134,7 +1135,7 @@ function undeclaredReference(command: string, declared: string[]): string | unde
     // its name (#168).
     if (segments.includes('evidence') && !declared.includes(segments.join('/')))
       return `${token} is under an evidence directory, and nothing writes evidence while a check runs: the run publishes it when it ends, and the executing job runs no model-driven session`
-    if (!isPathLike(token) || covered(segments.join('/'))) continue
+    if ((executable !== 'grep' && !isPathLike(token)) || covered(segments.join('/'))) continue
     return `${token} is not among the declared run inputs`
   }
   return undefined
