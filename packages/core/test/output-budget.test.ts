@@ -81,7 +81,7 @@ test('the planner asks with the default budget, and with the one the environment
 
 test('a plan cut off at the budget says what the budget was and what raises it', async () => {
   process.env[MAX_OUTPUT_TOKENS_ENV] = '6000'
-  await expect(planRun(new FakeAgentRunner([CUT_OFF]), INPUTS)).rejects.toThrow(
+  await expect(planRun(new FakeAgentRunner([CUT_OFF, CUT_OFF]), INPUTS)).rejects.toThrow(
     /stop reason max_tokens.*6000 output tokens.*QARE_MAX_OUTPUT_TOKENS.*max-output-tokens/,
   )
 })
@@ -139,7 +139,7 @@ test('the cut-off message passes the secret sweep unchanged, alone and inside th
   process.env[MAX_OUTPUT_TOKENS_ENV] = '6000'
   const withError: AgentRunResult = { ...CUT_OFF, error: 'the provider closed the stream' }
   for (const result of [CUT_OFF, withError]) {
-    const refusal = String(await planRun(new FakeAgentRunner([result]), INPUTS).catch((caught: unknown) => caught))
+    const refusal = String(await planRun(new FakeAgentRunner([result, result]), INPUTS).catch((caught: unknown) => caught))
     expect(refusal).toContain(detail)
     expect(redactText(refusal)).toBe(refusal)
 
