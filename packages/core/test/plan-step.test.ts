@@ -567,6 +567,46 @@ test('a plan whose command checks read only declared run inputs is accepted on t
   expect(runner.requests).toHaveLength(1)
 })
 
+test.each([
+  'grep -n -- two.ways README.md',
+  'grep -neDocker.is.the.only.prerequisite README.md',
+  'grep --regexp=two.ways README.md',
+  'grep -e two.ways README.md',
+])('grep patterns are not treated as input paths: %s (#342)', async (command) => {
+  const answer = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [{ id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'readme', command }] }],
+  })
+  const runner = new FakeAgentRunner([completed(answer), completed(answer)])
+  const plan = await planRun(runner, {
+    criteria: [CRITERIA[0]], runInputs: { paths: ['README.md'] },
+  })
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ command }] })
+  expect(runner.requests).toHaveLength(1)
+})
+
+test.each(['grep -f secrets.txt README.md', 'grep --file=secrets.txt README.md', 'grep --exclude-from=secrets.txt x README.md'])('grep pattern files must be declared inputs: %s (#342)', async (command) => {
+  const answer = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [{ id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'readme', command }] }],
+  })
+  const runner = new FakeAgentRunner([completed(answer), completed(answer)])
+  await expect(planRun(runner, {
+    criteria: [CRITERIA[0]], runInputs: { paths: ['README.md'] },
+  })).rejects.toThrow(/secrets.txt is not among the declared run inputs/)
+})
+
+test('grep files without an extension must also be declared inputs (#342)', async () => {
+  const answer = JSON.stringify({
+    schemaVersion: '1',
+    criteria: [{ id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'license', command: 'grep permission LICENSE' }] }],
+  })
+  const runner = new FakeAgentRunner([completed(answer), completed(answer)])
+  await expect(planRun(runner, {
+    criteria: [CRITERIA[0]], runInputs: { paths: ['README.md'] },
+  })).rejects.toThrow(/LICENSE is not among the declared run inputs/)
+})
+
 test('a plan that still reads undeclared artifacts after its correction round fails closed (#162)', async () => {
   const doomed = JSON.stringify({
     schemaVersion: '1',
