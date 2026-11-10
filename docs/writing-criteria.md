@@ -72,7 +72,7 @@ can point at.
 never writes the ledger. What it does with an issue body:
 
 - It reads the criteria under an "Acceptance criteria" or "Done when" heading,
-  one candidate per checkbox item. An issue with no such heading states
+  one candidate per plain bullet or checkbox item (`-` or `*`). An issue with no such heading states
   nothing to check, and contributes no proposal.
 - The words are the criterion. The entry's note carries the item's wording
  unchanged, and the wording (normalized) is hashed into the proposed entry's

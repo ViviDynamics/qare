@@ -31,6 +31,29 @@ test('a checked box is still a criterion', () => {
   expect(criteriaFromIssue(ISSUE)).toHaveLength(2)
 })
 
+test('plain bullets and task items state criteria with the same identity', () => {
+  const issue = `## Acceptance criteria
+- the login form rejects an empty password
+* the dashboard renders on a phone
+- [ ] the login form rejects an empty password
+
+## Notes
+- not a criterion
+`
+  const criteria = criteriaFromIssue(issue)
+  expect(criteria.map((criterion) => criterion.text)).toEqual([
+    'the login form rejects an empty password',
+    'the dashboard renders on a phone',
+  ])
+  expect(criteria.map((criterion) => criterion.id)).toEqual(
+    criteriaFromIssue(ISSUE).map((criterion) => criterion.id),
+  )
+})
+
+test('empty task markers do not become plain-bullet criteria', () => {
+  expect(() => criteriaFromIssue('## Acceptance criteria\n- [ ]\n* [x]\n- \n')).toThrow(IssueCriteriaError)
+})
+
 test('the house "Done when" heading is read the same way', () => {
   const issue = `## Scope\n\n- [ ] not a criterion\n\n## Done when\n\n- [ ] the ledger records the run\n`
 
