@@ -12,6 +12,13 @@ export interface GitHubIssue {
   state?: string
   /** Who opened it. An issue is qare's own only when this is the identity qare posts as. */
   user?: { login?: string } | null
+  /** The labels it carries, as GitHub lists them: an object with a name, or a bare name. */
+  labels?: Array<{ name?: string } | string>
+}
+
+/** The names of the labels an issue carries. */
+export function labelNames(issue: GitHubIssue): string[] {
+  return (issue.labels ?? []).map((label) => (typeof label === 'string' ? label : (label.name ?? ''))).filter((name) => name !== '')
 }
 
 /** A GitHub account as blame reads it (#154): its login, and whether GitHub says it is a bot. */
@@ -330,6 +337,25 @@ export class GitHubClient {
 
   async patchIssueBody(number: number, body: string): Promise<void> {
     await this.request('PATCH', `/repos/${this.repository}/issues/${number}`, undefined, { body })
+  }
+
+  async setIssueTitle(number: number, title: string): Promise<void> {
+    await this.request('PATCH', `/repos/${this.repository}/issues/${number}`, undefined, { title })
+  }
+
+  /** Adds labels to an issue, keeping the ones it has. GitHub creates a label that does not exist yet. */
+  async addIssueLabels(number: number, labels: string[]): Promise<void> {
+    await this.request('POST', `/repos/${this.repository}/issues/${number}/labels`, undefined, { labels })
+  }
+
+  /** Takes a label off an issue. One the issue no longer carries is already off, not an error. */
+  async removeIssueLabel(number: number, label: string): Promise<void> {
+    try {
+      await this.request('DELETE', `/repos/${this.repository}/issues/${number}/labels/${encodeURIComponent(label)}`)
+    } catch (error) {
+      if (error instanceof GitHubApiError && error.status === 404) return
+      throw error
+    }
   }
 
   async postIssueComment(number: number, body: string): Promise<void> {

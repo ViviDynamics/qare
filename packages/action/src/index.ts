@@ -477,8 +477,17 @@ function describeMainFindingAction(action: MainFindingAction, dryRun: boolean): 
   }
   if (action.action === 'deferred') return `left ${about} for the next run: this run opened its ${MAX_NEW_ISSUES} issues`
   const still = action.criterion === undefined ? 'still down' : 'still failing'
-  if (action.action === 'updated') return `${dryRun ? 'would comment' : 'commented'} on #${action.issue} for ${about}: ${still}`
-  if (action.action === 'reopened') return `${dryRun ? 'would reopen' : 'reopened'} #${action.issue} for ${about}: closed while ${still}`
+  if (action.action === 'updated' || action.action === 'reopened') {
+    // #304: an issue filed as a plain failure that this run shows regressed.
+    const moved =
+      action.relabelled === undefined
+        ? ''
+        : `, now a regression: relabelled ${action.relabelled.from} to ${action.relabelled.to}, ${
+            (action.mentions ?? []).length === 0 ? 'mentioning nobody' : `mentioning ${(action.mentions ?? []).join(', ')}`
+          }`
+    if (action.action === 'updated') return `${dryRun ? 'would comment' : 'commented'} on #${action.issue} for ${about}: ${still}${moved}`
+    return `${dryRun ? 'would reopen' : 'reopened'} #${action.issue} for ${about}: closed while ${still}${moved}`
+  }
   return `${dryRun ? 'would close' : 'closed'} #${action.issue} for ${about}: ${action.criterion === undefined ? 'a check executed again' : 'proven again'}`
 }
 

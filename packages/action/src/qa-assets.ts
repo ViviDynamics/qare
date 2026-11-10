@@ -114,7 +114,8 @@ export class GitHubQaAssetsPusher implements ScreenshotPusher {
    * and returns the text to write; when another run's push lands first and
    * this one is refused, the head is read again and `build` is asked again,
    * so a pass another run recorded meanwhile is built on, never written
-   * over. `build` throws to refuse: then nothing is written.
+   * over. A refusal while the head is still where this push read it is no
+   * race and fails at once. `build` throws to refuse: then nothing is written.
    */
   async pushMainPasses(build: (current: string | undefined) => Promise<string>, path: string = MAIN_PASSES_PATH): Promise<string> {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -128,12 +129,15 @@ export class GitHubQaAssetsPusher implements ScreenshotPusher {
         await this.client.pushBranch(this.branch, sha, parent)
         return path
       } catch (error) {
-        // Only a race is worth another try: the branch moved (GitHub refuses
-        // an update that is not a fast forward, or a branch that now
-        // exists). Anything else, a refusal for want of access above all, is
-        // real the first time.
-        const raced = error instanceof GitHubApiError && (error.status === 409 || error.status === 422)
-        if (!raced || attempt === 3) throw error
+        // Only a race is worth another try, and a race is the branch having
+        // moved: GitHub refuses an update that is not a fast forward, or a
+        // branch that now exists. The status alone does not say so, since
+        // 422 is also a validation failure (#304), so the head is read again
+        // and the push is tried again only when it is no longer the commit
+        // this one was built on. Anything else, a refusal for want of access
+        // above all, is real the first time, with GitHub's own message.
+        const refused = error instanceof GitHubApiError && (error.status === 409 || error.status === 422)
+        if (!refused || attempt === 3 || (await this.client.getBranchHead(this.branch)) === parent) throw error
       }
     }
     return path

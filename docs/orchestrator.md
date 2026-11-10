@@ -188,6 +188,9 @@ run proves the criterion again, so an orchestrator need not close it.
 `qa-environment` (nothing could boot or be reached) and `qa-failure` (a
 failure no earlier revision is shown to have passed) are not hand-offs:
 neither names a change to undo.
+A `qa-failure` issue whose criterion a later run shows to have regressed
+loses that label and gains `qa-regression` (#304), so it becomes a hand-off
+then, with the changes since its last pass named in a comment.
 
 ## The worked example
 
