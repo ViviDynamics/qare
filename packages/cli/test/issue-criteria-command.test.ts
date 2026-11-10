@@ -25,8 +25,8 @@ async function issues(...bodies: string[]): Promise<{ dir: string; paths: string
 
 const STATED = '## Goal\n\nExport.\n\n## Done when\n\n- [ ] The ledger exports to CSV\n'
 
-test('writes the criteria an issue states, as the {id, text} list plan --criteria reads', async () => {
-  const { dir, paths } = await issues(STATED)
+test.each([STATED, '## Done when\n\n- The ledger exports to CSV\n'])('writes checkbox or plain-bullet criteria as the {id, text} list plan --criteria reads: %s', async (body) => {
+  const { dir, paths } = await issues(body)
   const out = join(dir, 'criteria.json')
 
   const code = await main(['issue-criteria', '--out', out, ...paths], capture().writer, capture().writer)
@@ -107,7 +107,7 @@ test('usage errors name what is missing', async () => {
 // statement of criteria, not an absent one. Treating it as neutral would skip
 // the change unchecked.
 test('a criteria section with no criteria in it is a failure naming the issue', async () => {
-  const { dir, paths } = await issues('## Done when\n\n- The ledger exports to CSV\n')
+  const { dir, paths } = await issues('## Done when\n\n- [ ]\n')
   const err = capture()
 
   const code = await main(['issue-criteria', '--out', join(dir, 'criteria.json'), ...paths], capture().writer, err.writer)
