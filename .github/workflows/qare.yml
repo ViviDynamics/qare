@@ -31,6 +31,11 @@ on:
   push:
     branches: [main]
     paths: ['.qa/**']
+  # The main lane (#363) runs the ledger's active criteria on the default
+  # branch every day, before the 04:17 sweep reads what it recorded (#361).
+  # A push that changes .qa runs it too; a schedule starts no other job.
+  schedule:
+    - cron: '37 3 * * *'
   issue_comment:
     types: [created]
 
@@ -64,6 +69,13 @@ jobs:
       # The planner's prompt travels as one argument (nare#29): its copy of
       # the diff keeps the change's source and spec and leaves these out.
       planner-diff-exclude: packages/*/test/* .agents .claude
+      # Findings on main (#154, #363): run the suites the ledger names for
+      # its active criteria, file what fails for the fallback in
+      # .qa/config.yml, and record each pass on qa-assets (#295) for the
+      # standing report.
+      main-lane: 'true'
+      main-lane-dry-run: 'false'
+      main-lane-record-passes: 'true'
     secrets:
       model-key: ${{ secrets.QARE_PLANNER_KEY }}
       # Who qare posts as (#61): the App once #155 has stored its id and key,
