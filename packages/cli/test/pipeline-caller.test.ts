@@ -411,8 +411,8 @@ test('nothing in the pipeline may fail without failing the run', () => {
 test("qare's own workflow calls the pipeline it ships", () => {
   const caller = load('.github/workflows/qare.yml')
   // issue_comment is the reply to an advisory finding (#150): it runs the
-  // advisory job alone.
-  expect(Object.keys(caller.on).sort()).toEqual(['issue_comment', 'pull_request', 'push', 'workflow_dispatch'])
+  // advisory job alone. schedule runs the main lane alone (#363).
+  expect(Object.keys(caller.on).sort()).toEqual(['issue_comment', 'pull_request', 'push', 'schedule', 'workflow_dispatch'])
   const jobs = Object.entries(caller.jobs)
   expect(jobs).toHaveLength(1)
   const [, job] = jobs[0] as [string, Job]
