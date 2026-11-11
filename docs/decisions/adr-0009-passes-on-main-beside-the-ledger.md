@@ -120,8 +120,9 @@ lane, and never in the ledger.**
   beside the ledger, by a run on the default branch, when the repository
   asks. `classifyMainRun` still reads `verify` history where a ledger
   carries it, and takes the later of the two.
-- The fleet report and the sweep read the ledger's own history for "last
-  verified" and do not read this record yet.
+- The fleet report reads the ledger's own history for "last verified" and
+  does not read this record yet. The sweep reads it (#361): a standing pass
+  counts as a verification, and the later of it and a ledger `verify` wins.
 
 ## Reversing this
 

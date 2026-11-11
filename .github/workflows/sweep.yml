@@ -110,6 +110,23 @@ jobs:
               echo "skipped $file: not valid JSON"
             }
           done < <(git ls-tree -r --name-only FETCH_HEAD -- metrics)
+      # What the main lane proved (#295) is recorded on the same branch, as
+      # passes/main.json, never in the ledger. The sweep reads it beside the
+      # ledger (#361), so a criterion the lane keeps proving is shown as
+      # proven. No branch, or no record on it, is no pass yet, not an error.
+      - name: Place the record of passes on main beside the ledger
+        run: |
+          set -euo pipefail
+          if ! git fetch origin qa-assets --depth 1; then
+            echo "no qa-assets branch: no run has recorded a pass yet"
+            exit 0
+          fi
+          if ! git cat-file -e FETCH_HEAD:passes/main.json 2>/dev/null; then
+            echo "no record of passes on qa-assets: no main lane run has recorded one yet"
+            exit 0
+          fi
+          mkdir -p .qa/passes
+          git show FETCH_HEAD:passes/main.json > .qa/passes/main.json
       - name: Classify the ledger
         run: node packages/cli/dist/index.js sweep --ledger .qa --out sweep-payload.json
       - name: Publish the standing report and file findings
