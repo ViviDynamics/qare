@@ -25,7 +25,12 @@ test("the repository's own profile loads as a target profile", async () => {
   expect(profile.target?.hosts).toEqual(declared.target.hosts)
 
   expect(profile.stubs).toEqual([])
-  expect(profile.suites).toEqual([])
+  // The suites the main lane runs for the ledger's active criteria (#363):
+  // the mail self-checks, and nothing that runs the repository's test suites.
+  expect(profile.suites).toEqual([
+    { name: 'mail-quoted-auth', command: 'node -- .qa/checks/mail-evidence.mjs quoted-auth', kind: 'command' },
+    { name: 'mail-missing-code', command: 'node -- .qa/checks/mail-evidence.mjs missing-code', kind: 'command' },
+  ])
 })
 
 test("the repository's own profile ships non-empty QA.md instructions", () => {
