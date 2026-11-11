@@ -353,7 +353,7 @@ test('a metrics store that cannot be read is named in the standing report, not d
 // proving is shown as proven. A pass counts only while it is of the entry as
 // the ledger words it now.
 function passOf(of: LedgerEntry, recordedAt: string): MainPasses['passes'][string] {
-  return { sha: 'a1'.repeat(20), at: recordedAt, run: 'https://ci.example/runs/7', recordedAt, entry: mainPassEntryDigest(of) }
+  return { sha: 'a1'.repeat(20), at: recordedAt, run: 'run-7', recordedAt, entry: mainPassEntryDigest(of) }
 }
 
 describe('a recorded pass on main', () => {
