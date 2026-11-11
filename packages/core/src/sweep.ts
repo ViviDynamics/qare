@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import { FileLedgerStore } from './ledger.js'
 import type { LedgerChange, LedgerDocument, LedgerEntry } from './ledger.js'
+import { MAIN_PASSES_PATH, parseMainPasses, standingMainPasses, type MainPass, type MainPasses } from './main-passes.js'
 import { metricsSummaryLines, readMetricsStore, summarizeMetrics, type MetricsStore } from './metrics.js'
 
 /**
@@ -218,6 +219,28 @@ export async function loadHeldResult(ledgerDir: string): Promise<{ held: string[
   return { held, refused }
 }
 
+/**
+ * The record of passes on the default branch (#295), as the scheduled sweep
+ * places it beside the ledger from the qa-assets branch (#361). An absent
+ * file means no run has recorded a pass. One that cannot be read is a
+ * finding: read as nothing, it would quietly show proven criteria as never
+ * proven.
+ */
+export async function loadMainPasses(ledgerDir: string): Promise<MainPasses | undefined> {
+  let text: string
+  try {
+    text = await readFile(join(ledgerDir, MAIN_PASSES_PATH), 'utf8')
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return undefined
+    throw new SweepLedgerError('sweep:passes-unreadable', `${MAIN_PASSES_PATH} is unreadable: ${messageOf(error)}`)
+  }
+  try {
+    return parseMainPasses(text)
+  } catch (error) {
+    throw new SweepLedgerError('sweep:passes-unreadable', `${MAIN_PASSES_PATH} cannot be read as the record of passes: ${messageOf(error)}`)
+  }
+}
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -235,8 +258,20 @@ export function classifySweep(
   entries: LedgerEntry[],
   changes: LedgerChange[],
   config: SweepConfig,
-  opts: { now: Date; quarantined?: string[]; refused?: string[] },
+  opts: {
+    now: Date
+    quarantined?: string[]
+    refused?: string[]
+    /**
+     * The record of what runs on the default branch proved (#295, #361). A
+     * pass counts for an active entry while it stands for the entry as the
+     * ledger has it now, and is held against the threshold from when it was
+     * recorded.
+     */
+    passes?: MainPasses
+  },
 ): SweepClassification {
+  const standing = opts.passes === undefined ? new Map<string, MainPass>() : standingMainPasses(opts.passes, { entries, changes })
   const lastVerify = new Map<string, { seq: number; timestamp: string }>()
   const lastEdit = new Map<string, number>()
   for (const change of changes) {
@@ -262,18 +297,28 @@ export function classifySweep(
       classification.unverified.push(entry.criterion)
       continue
     }
+    const recorded = standing.get(entry.criterion)
     const verified = lastVerify.get(entry.criterion)
-    if (verified === undefined) {
+    if (verified === undefined && recorded === undefined) {
       classification.unverified.push(entry.criterion)
       continue
     }
     const editedAt = lastEdit.get(entry.criterion)
-    if (editedAt !== undefined && editedAt > verified.seq) {
+    // A ledger verify counts only when nothing edited the entry since. A
+    // recorded pass needs no such check: it stands only for the entry as it
+    // is worded and checked now.
+    const ledgerAt = verified === undefined || (editedAt !== undefined && editedAt > verified.seq) ? undefined : verified.timestamp
+    // The later of the two. A time that does not read as one counts as none,
+    // and with no time left the entry is stale, as an unreadable verify was.
+    const at = [ledgerAt, recorded?.recordedAt]
+      .filter((time): time is string => time !== undefined && !Number.isNaN(Date.parse(time)))
+      .sort((a, b) => Date.parse(b) - Date.parse(a))[0]
+    if (at === undefined) {
       classification.stale.push(entry.criterion)
       continue
     }
     const threshold = sweepConfigFor(config, areasOf(entry))
-    const verifiedAt = new Date(verified.timestamp)
+    const verifiedAt = new Date(at)
     if (Number.isNaN(verifiedAt.getTime()) || opts.now.getTime() - verifiedAt.getTime() > parseStaleAfter(threshold.staleAfter, 'staleAfter') * 24 * 60 * 60 * 1000)
       classification.stale.push(entry.criterion)
     else classification.proven.push(entry.criterion)
@@ -403,10 +448,12 @@ export async function sweepLedger(ledgerDir: string, now: Date = new Date()): Pr
   try {
     const config = (await readSweepConfig(ledgerDir)) ?? { default: { staleAfter: DEFAULT_STALE_AFTER } }
     const { held, refused } = await loadHeldResult(ledgerDir)
+    const passes = await loadMainPasses(ledgerDir)
     const classification = classifySweep(document.entries, document.changes, config, {
       now,
       quarantined: held,
       refused,
+      ...(passes === undefined ? {} : { passes }),
     })
     const metrics = await metricsSection(ledgerDir)
     return { at: now.toISOString(), ledger: ledgerDir, classification, findings: [], lastActor, ...(metrics === undefined ? {} : { metrics }) }

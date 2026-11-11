@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { expect, test } from 'vitest'
+import { describe, expect, test } from 'vitest'
 import { FileLedgerStore, appendChange, LEDGER_FILE } from '../src/ledger.js'
 import {
   DEFAULT_STALE_AFTER,
@@ -19,6 +19,7 @@ import {
   sweepLedger,
 } from '../src/sweep.js'
 import type { LedgerChange, LedgerEntry } from '../src/ledger.js'
+import { MAIN_PASSES_PATH, mainPassEntryDigest, serializeMainPasses, type MainPasses } from '../src/main-passes.js'
 
 function entry(overrides: Partial<LedgerEntry> = {}): LedgerEntry {
   return {
@@ -345,4 +346,94 @@ test('a metrics store that cannot be read is named in the standing report, not d
     await rm(join(dir, 'metrics'), { recursive: true, force: true })
     await rm(dir, { recursive: true })
   }
+})
+
+// #361: the main lane records what it proved on qa-assets (#295), and the
+// sweep reads that record beside the ledger, so a criterion the lane keeps
+// proving is shown as proven. A pass counts only while it is of the entry as
+// the ledger words it now.
+function passOf(of: LedgerEntry, recordedAt: string): MainPasses['passes'][string] {
+  return { sha: 'a1'.repeat(20), at: recordedAt, run: 'run-7', recordedAt, entry: mainPassEntryDigest(of) }
+}
+
+describe('a recorded pass on main', () => {
+  const now = new Date(Date.parse('2026-09-29T00:00:00Z'))
+
+  test('proves an active criterion within its area threshold, and is stale past it', () => {
+    const fresh = entry({ criterion: 'fresh', text: 'Fresh.' })
+    const old = entry({ criterion: 'old', text: 'Old.' })
+    const passes: MainPasses = { passes: { fresh: passOf(fresh, '2026-09-25T00:00:00Z'), old: passOf(old, '2026-06-01T00:00:00Z') } }
+    const classification = classifySweep([fresh, old], [], CONFIG, { now, passes })
+    expect(classification.proven).toEqual(['fresh'])
+    expect(classification.stale).toEqual(['old'])
+    expect(classification.unverified).toEqual([])
+  })
+
+  test('of other wording or checks is no pass of the entry as it is now', () => {
+    const now_ = entry({ criterion: 'reworded', text: 'The new words.', checks: ['suite:web'] })
+    const before = entry({ criterion: 'reworded', text: 'The old words.', checks: ['suite:web'] })
+    const rechecked = entry({ criterion: 'rechecked', text: 'Same words.', checks: ['suite:new'] })
+    const passes: MainPasses = {
+      passes: { reworded: passOf(before, '2026-09-25T00:00:00Z'), rechecked: passOf({ ...rechecked, checks: ['suite:old'] }, '2026-09-25T00:00:00Z') },
+    }
+    const classification = classifySweep([now_, rechecked], [], CONFIG, { now, passes })
+    expect(classification.unverified).toEqual(['rechecked', 'reworded'])
+    expect(classification.proven).toEqual([])
+  })
+
+  test('leaves a proposed criterion unverified: the record proves runs, it does not admit criteria', () => {
+    const proposed = entry({ criterion: 'proposed-one', status: 'proposed', text: 'Proposed.' })
+    const classification = classifySweep([proposed], [], CONFIG, { now, passes: { passes: { 'proposed-one': passOf(proposed, '2026-09-28T00:00:00Z') } } })
+    expect(classification.unverified).toEqual(['proposed-one'])
+  })
+
+  test('and a ledger verify: the later of the two counts', () => {
+    const one = entry({ criterion: 'one', text: 'One.' })
+    const two = entry({ criterion: 'two', text: 'Two.' })
+    // One: an old ledger verify, a recent pass. Two: a recent ledger verify, an old pass.
+    const changes = appendChange(verifyChange('2026-06-01T00:00:00Z', ['one']), {
+      kind: 'verify',
+      actor: 'run-2',
+      timestamp: '2026-09-25T00:00:00Z',
+      reason: 'run run-2: pass on 1 criterion(s), already active',
+      criteria: ['two'],
+    })
+    const passes: MainPasses = { passes: { one: passOf(one, '2026-09-26T00:00:00Z'), two: passOf(two, '2026-06-01T00:00:00Z') } }
+    const classification = classifySweep([one, two], changes, CONFIG, { now, passes })
+    expect(classification.proven).toEqual(['one', 'two'])
+  })
+
+  test('still stands when the ledger edited the entry after its last verify, as long as the pass is of the entry now', () => {
+    const edited = entry({ criterion: 'edited', text: 'Now.' })
+    const changes = appendChange(verifyChange('2026-09-20T00:00:00Z', ['edited']), {
+      kind: 'ingest',
+      actor: 'someone',
+      timestamp: '2026-09-21T00:00:00Z',
+      reason: 'wording tightened',
+      criteria: ['edited'],
+    })
+    expect(classifySweep([edited], changes, CONFIG, { now }).stale).toEqual(['edited'])
+    expect(classifySweep([edited], changes, CONFIG, { now, passes: { passes: { edited: passOf(edited, '2026-09-22T00:00:00Z') } } }).proven).toEqual(['edited'])
+  })
+
+  test('is read beside the ledger by sweepLedger, and a record that cannot be read is a finding by name', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qare-sweep-passes-'))
+    try {
+      const proven = entry({ criterion: 'mail-quoted', text: 'Quoted values keep their spaces.', checks: ['suite:mail-quoted-auth'] })
+      await new FileLedgerStore(dir).saveDocument([proven], [])
+      expect((await sweepLedger(dir, now)).classification.unverified).toEqual(['mail-quoted'])
+      await mkdir(join(dir, 'passes'), { recursive: true })
+      await writeFile(join(dir, MAIN_PASSES_PATH), serializeMainPasses({ passes: { 'mail-quoted': passOf(proven, '2026-09-28T00:00:00Z') } }), 'utf8')
+      const payload = await sweepLedger(dir, now)
+      expect(payload.findings).toEqual([])
+      expect(payload.classification.proven).toEqual(['mail-quoted'])
+      await writeFile(join(dir, MAIN_PASSES_PATH), '{"schemaVersion":"1","passes":', 'utf8')
+      const broken = await sweepLedger(dir, now)
+      expect(broken.findings.map((finding) => finding.fingerprint)).toEqual(['sweep:passes-unreadable'])
+      expect(broken.findings[0]?.reason).toContain(MAIN_PASSES_PATH)
+      expect(broken.classification.proven).toEqual([])
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
 })

@@ -1356,6 +1356,15 @@ picture: proven (verified within its area's staleness threshold), stale
 verification), unverified (admitted but never proven), quarantined (held for
 an open conflict question) and refused (the last run refused it).
 
+A criterion is verified by a `verify` change in the ledger's history, or by
+a pass the main lane recorded (#295) that still stands for the entry as the
+ledger words and checks it now (#361). The scheduled job places that record
+from the `qa-assets` branch beside the ledger, as `passes/main.json`, before
+it classifies; when the pass was recorded is when it was verified, and where
+both are there the later counts. A `proposed` criterion stays unverified
+whatever is recorded: a pass proves a run, it does not admit a criterion. A
+record that cannot be read is a sweep finding, never read as no pass.
+
 Staleness thresholds are per area, in a strict `sweep.json` beside the
 ledger: an area names its `staleAfter` as a duration (`30d`, `2w`, `1y`), a
 criterion's area comes from the suite or repository-relative path its
