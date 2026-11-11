@@ -30,3 +30,15 @@ commands:
     run: node -- .qa/checks/mail-evidence.mjs {{check}}
     about: Exercises the checkout's actual mail parser (check=quoted-auth) or missing-code delivery evidence writer (check=missing-code), asserting its result and printing the observed evidence; needs no build, test runner, mailbox or network.
     scratch: [.qa/checks/scratch]
+
+# The suites the main lane runs for the ledger's active criteria (#363): the
+# lane reads no plan, it runs what each entry's `suite:<name>` check names.
+# These run the same mail self-checks as the declared command above, so the
+# three mail criteria (#290) are proven on the default branch every day.
+suites:
+  - { name: mail-quoted-auth, command: "node -- .qa/checks/mail-evidence.mjs quoted-auth", kind: command }
+  - { name: mail-missing-code, command: "node -- .qa/checks/mail-evidence.mjs missing-code", kind: command }
+
+# Who hears of a finding on main that no change can be blamed for (#154).
+findings:
+  fallback: Jason733i

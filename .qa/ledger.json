@@ -2,38 +2,38 @@
   "entries": [
     {
       "checks": [
-        ".qa/checks/mail-evidence.mjs:missing-code"
+        "suite:mail-missing-code"
       ],
       "criterion": "mail-missing-code-retains-delivery",
       "proof": "command",
       "source": [
         "https://github.com/ViviDynamics/qare/issues/290"
       ],
-      "status": "proposed",
+      "status": "active",
       "text": "Running node -- .qa/checks/mail-evidence.mjs missing-code retains the message's authentication results and inbox placement in message.json when the requested one-time code is absent."
     },
     {
       "checks": [
-        ".qa/checks/mail-evidence.mjs:missing-code"
+        "suite:mail-missing-code"
       ],
       "criterion": "mail-missing-code-stays-unverified",
       "proof": "command",
       "source": [
         "https://github.com/ViviDynamics/qare/issues/290"
       ],
-      "status": "proposed",
+      "status": "active",
       "text": "Running node -- .qa/checks/mail-evidence.mjs missing-code leaves the criterion unverified with a reason naming the missing one-time code."
     },
     {
       "checks": [
-        ".qa/checks/mail-evidence.mjs:quoted-auth"
+        "suite:mail-quoted-auth"
       ],
       "criterion": "mail-quoted-values-preserve-whitespace",
       "proof": "command",
       "source": [
         "https://github.com/ViviDynamics/qare/issues/290"
       ],
-      "status": "proposed",
+      "status": "active",
       "text": "Running node -- .qa/checks/mail-evidence.mjs quoted-auth preserves whitespace around equals signs inside quoted Authentication-Results values."
     }
   ],
@@ -46,8 +46,17 @@
       "reason": "Propose reviewed mail regression criteria from issue 290",
       "criteria": [],
       "digest": "sha256:99dc315de5a5c8e318ddc78b323d475ba22f1051ba740e0becffc99382bf8a6a"
+    },
+    {
+      "seq": 2,
+      "kind": "import",
+      "actor": "Jason733i",
+      "timestamp": "2026-11-11T02:42:02.171Z",
+      "reason": "Activate the three mail criteria and check them with the mail suites, so the main lane runs them (#363); approved by the maintainer under rule 5",
+      "criteria": [],
+      "digest": "sha256:3867131b6a34b9b47e157774327bf213f6cb0c79bd6dd0ba1255b1dc9ddead54"
     }
   ],
   "schemaVersion": "1",
-  "integrity": "sha256:77865121fb1f115aeec16eaf5da8bdacf100976716322c92b447a1420de42430"
+  "integrity": "sha256:3da1021f0f2dfc74bddbaaa548dda40903f6d4b3e57e5089fb1b0594d0a94b9a"
 }
