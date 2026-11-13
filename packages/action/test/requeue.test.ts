@@ -114,6 +114,42 @@ test('qare-action requeue posts /qa from --keys through the CLI', async () => {
   }
 })
 
+test('a valid stub diff with no hosts succeeds without contacting GitHub', async () => {
+  const fake = await startFakeGithub()
+  try {
+    const errors: string[] = []
+    const output: string[] = []
+    const code = await main(
+      ['requeue', '--keys-from-diff', 'HEAD...HEAD', '--repository', 'octocat/qare', '--api-root', fake.url],
+      { write: (chunk) => output.push(chunk) },
+      { write: (chunk) => errors.push(chunk) },
+    )
+    expect(code).toBe(0)
+    expect(errors).toEqual([])
+    expect(output).toEqual([])
+    expect(fake.calls).toEqual([])
+  } finally {
+    await fake.close()
+  }
+})
+
+test('an unreadable stub comparison remains an error without contacting GitHub', async () => {
+  const fake = await startFakeGithub()
+  try {
+    const errors: string[] = []
+    const code = await main(
+      ['requeue', '--keys-from-diff', 'refs/qare-test-missing...HEAD', '--repository', 'octocat/qare', '--api-root', fake.url],
+      { write: () => {} },
+      { write: (chunk) => errors.push(chunk) },
+    )
+    expect(code).toBe(1)
+    expect(errors.join('')).toContain('could not read the stub diff')
+    expect(fake.calls).toEqual([])
+  } finally {
+    await fake.close()
+  }
+})
+
 test('qare-action stub-issues files from a refused result.json through the CLI', async () => {
   const fake = await startFakeGithub()
   const savedToken = process.env.QA_TEST_TOKEN
