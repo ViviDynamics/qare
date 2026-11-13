@@ -124,7 +124,7 @@ export class NotImplemented extends Error {
 }
 
 /** The nare machine contract this runner is written against (nare docs/contract.md). */
-export const NARE_CONTRACT = 2
+export const NARE_CONTRACT = 3
 
 /** Exit 2 from nare: the run never started, so there is no result line. */
 const NEVER_STARTED = 2
@@ -250,10 +250,15 @@ export class NareAgentRunner implements AgentRunner {
     try {
       const argv = ['run', request.prompt, '--yes', '--jsonl', '--contract', String(NARE_CONTRACT)]
       argv.push('--tools', toolFlag(request.toolPolicy))
-      // qare owns the persona, including an empty one. Contract 2 nare adds
+      // qare owns the persona, including an empty one. nare (since contract 2) adds
       // a default coding-agent prompt when read tools are enabled.
       argv.push('--system', request.system)
       if (request.budget.maxOutputTokens > 0) argv.push('--max-tokens', String(request.budget.maxOutputTokens))
+      // A turn cut off at its budget ends the run, as it did before nare's
+      // cut-off corrections (nare defaults to two on the command line): the
+      // planner recovers a cut-off turn itself (#358), and the verifier reports
+      // one as unavailable with the batch size that avoids it.
+      argv.push('--max-cutoffs', '0')
       if (this.options.root) argv.push('--root', this.options.root)
       if (request.outputSchema) {
         const schemaPath = join(workDir, 'schema.json')
