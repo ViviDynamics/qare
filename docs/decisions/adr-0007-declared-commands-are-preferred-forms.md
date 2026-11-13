@@ -1,5 +1,19 @@
 # ADR-0007: a declared command is a form the planner should prefer, not the only form its program may be planned in
 
+## Interpreter restriction added by #309
+
+The maintainer approved narrowing standard interpreter forms on 2026-11-11.
+The preferred-form decision below still holds, within this program-specific
+rule: `node` and `python3` execute repository scripts, optionally after `--`,
+and a declared run-input list bounds the script path. Inline code, module
+execution, preload/import/loader options and stdin execution are refused even
+if the profile declares that interpreter. Bare version probes remain accepted
+because they execute no plan-supplied code. Arguments after the script are data.
+
+`nare` is installed for qare itself but is no longer a standard command-check
+tool. A profile must explicitly declare a nare command to plan its use.
+This changes plan acceptance, not the program-based containment boundary.
+
 Date: 2026-10-08
 Status: accepted. The owner confirmed it on 2026-10-09 (issue #270). It was
 written provisionally on 2026-10-08 by the agent that shipped #270,

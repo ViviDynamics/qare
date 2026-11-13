@@ -6,7 +6,7 @@ import { isUnsafeProfileName, type ProfileCommand } from './profile.js'
 import { sumUsage, type ModelUsage } from './metrics.js'
 import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
 import { placeholderValue, shellCharacter, tokenFillsTemplate } from './run.js'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 import { redactText, redactionRules, type ProfileRedaction, type RedactionRule } from './redact.js'
 
@@ -661,6 +661,10 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     'grep takes its pattern as one token: every argument after it is a file to search, so a pattern of several',
     'words searches for the first word in files named by the rest, and shows nothing. Write one word that is',
     'enough to tell, or a regular expression with . where a space would be.',
+    'node and python3 execute a repository script, optionally after --, using a declared run input when a list is supplied.',
+    'Do not use inline code (-e, --eval, -p, --print, -c), module execution (-m), preload/import/loader flags or stdin (-).',
+    'Arguments after the script are script data. A bare --version (node -v or python3 -V) is also accepted.',
+    'nare is not a standard command-check tool; it requires an explicit profile command declaration.',
     'A command check runs the checkout as it is: nothing is built or installed first. Do not run a TypeScript source,',
     'or any program that needs a build step or its dependencies installed, as a check; it fails to load, which shows',
     'nothing about the change either.',
@@ -669,7 +673,7 @@ function prompt(inputs: PlanInputs, correction?: string): string {
       ? []
       : [
           'Command checks run on a machine that has the repository checked out. A command check may run',
-          'the standard tools (node, grep, test, python3, nare) or the program of a command the profile',
+          'the standard tools (node, grep, test, python3) or the program of a command the profile',
           'declares, and nothing else; other executables may exist on the machine, but they are not available',
           'to a check. A command check may read only these declared run inputs:',
           ...inputs.runInputs.paths.map((path) => `- ${path}`),
@@ -860,7 +864,44 @@ function commandContractGap(plan: Plan): string | undefined {
  * check may use; anything else it runs must be a program of a command the
  * profile declares (#156).
  */
-export const EXECUTE_PATH_TOOLS: readonly string[] = Object.freeze(['node', 'grep', 'test', 'python3', 'nare'])
+export const EXECUTE_PATH_TOOLS: readonly string[] = Object.freeze(['node', 'grep', 'test', 'python3'])
+
+/** Interpreter arguments are authored by the planner, not reviewed repository code (#309). */
+function interpreterGap(plan: Plan, inputs: PlanInputs): string | undefined {
+  const declaresNare = Object.values(inputs.commands ?? {}).some((command) => command.run.trim().split(/\s+/)[0] === 'nare')
+  for (const criterion of plan.criteria) {
+    if (!('checks' in criterion)) continue
+    for (const check of criterion.checks) {
+      if (check.kind !== 'command') continue
+      const [program, ...args] = check.command.trim().split(/\s+/)
+      const where = `criterion ${criterion.id} command check "${check.name}"`
+      if (program === 'nare' && !declaresNare)
+        return `${where}: nare is not a standard command-check tool; the profile must explicitly declare a nare command`
+      if (program !== 'node' && program !== 'python3') continue
+      // Version inspection executes no code supplied by the plan.
+      if (args.length === 1 && (args[0] === '--version' || args[0] === (program === 'node' ? '-v' : '-V'))) continue
+      const script = args[0] === '--' ? args[1] : args[0]
+      if (script === undefined || script.startsWith('-'))
+        return `${where}: ${program} argument ${JSON.stringify(script ?? '<missing script>')} is not a repository script; inline code, module/preload options and stdin execution are not accepted`
+      // The existing no-shell gate explains malformed quoting or shell syntax.
+      if (commandContractViolation(check.command) !== undefined) continue
+      const { segments, escapes } = normalizedSegments(script)
+      const normalized = segments.join('/')
+      if (escapes || script.startsWith('/') || script.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(script))
+        return `${where}: ${program} script ${JSON.stringify(script)} escapes the checkout; it must stay inside the repository`
+      if (inputs.runInputs !== undefined && !inputs.runInputs.paths.some((path) => {
+        const declared = normalizedSegments(path).segments.join('/')
+        return normalized === declared || normalized.startsWith(`${declared}/`)
+      }))
+        return `${where}: ${program} script ${JSON.stringify(script)} is not among the declared run inputs`
+      if (inputs.repoPath !== undefined && !existsSync(resolve(inputs.repoPath, script)) && !willExist(script, inputs))
+        return `${where}: ${program} script ${JSON.stringify(script)} does not exist in the checkout`
+      if (inputs.repoPath !== undefined && existsSync(resolve(inputs.repoPath, script)) && !statSync(resolve(inputs.repoPath, script)).isFile())
+        return `${where}: ${program} script ${JSON.stringify(script)} must be a file, not a directory`
+    }
+  }
+  return undefined
+}
 
 function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
   // The allowlist follows the run contract, not the declared commands: a
@@ -884,7 +925,7 @@ function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
       if (declared.has(program) || EXECUTE_PATH_TOOLS.includes(program)) continue
       return (
         `criterion ${criterion.id} command check "${check.name}": the program ${program} is neither a program of ` +
-        'the declared commands nor a standard tool the runner carries (node, grep, test, python3, nare)'
+        'the declared commands nor a standard tool the runner carries (node, grep, test, python3)'
       )
     }
   }
@@ -1399,6 +1440,11 @@ async function planTurns(
         `${browser}. Until then, plan the criterion with ` +
         (inputs.suites?.length ? `a declared suite (${inputs.suites.map(suiteName).join(', ')}) or a command` : 'a command') +
         ', or mark it unplannable.'
+      continue
+    }
+    const interpreter = interpreterGap(plan, inputs)
+    if (interpreter !== undefined) {
+      correction = `${interpreter}. Use node or python3 with a repository script in the declared run inputs, or mark the criterion unplannable.`
       continue
     }
     const violation = commandContractGap(plan)
