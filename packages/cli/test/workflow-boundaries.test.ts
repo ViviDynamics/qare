@@ -67,7 +67,7 @@ function versionFixture(): { dir: string; sha: string; env: Record<string, strin
   const bin = join(dir, 'bin')
   mkdirSync(bin)
   writeFileSync(join(bin, 'curl'), FAKE_CURL, { mode: 0o755 })
-  return { dir, sha: git('rev-parse', 'HEAD'), env: { PATH: `${bin}:${process.env.PATH ?? ''}`, FAKE_API_LOG: join(dir, 'api.log'), GITHUB_API_URL: 'http://api.invalid', GH_TOKEN: 'job-token', FAKE_RELEASES: '' } }
+  return { dir, sha: git('rev-parse', 'HEAD'), env: { PATH: `${bin}:${process.env.PATH ?? ''}`, FAKE_API_LOG: join(dir, 'api.log'), GITHUB_API_URL: 'fake-api.invalid', GH_TOKEN: 'job-token', FAKE_RELEASES: '' } }
 }
 function summary(dir: string): string {
   try { return readFileSync(join(dir, 'summary'), 'utf8') } catch { return '' }
@@ -110,7 +110,7 @@ for (const job of ['collect', 'main_collect']) {
       .toEqual({ status: 0, output: 'version=2026.11.9\n' })
     // Newest first, by number rather than by text, and each compared with the pinned revision.
     const asked = readFileSync(env.FAKE_API_LOG!, 'utf8').split('\n').filter((line) => line.includes('/compare/'))
-    expect(asked).toEqual([`http://api.invalid/repos/ViviDynamics/qare/compare/2026.11.10...${sha}`, `http://api.invalid/repos/ViviDynamics/qare/compare/2026.11.9...${sha}`])
+    expect(asked).toEqual([`fake-api.invalid/repos/ViviDynamics/qare/compare/2026.11.10...${sha}`, `fake-api.invalid/repos/ViviDynamics/qare/compare/2026.11.9...${sha}`])
     expect(summary(dir)).toContain('qare 2026.11.9, older than the latest release 2026.11.10')
   })
   test(`${job} says nothing is stale when the pinned revision is the latest release`, () => {
