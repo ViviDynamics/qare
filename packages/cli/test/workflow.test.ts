@@ -188,12 +188,14 @@ test('the pipeline needs no GitHub CLI on the runner: collect reads a linked iss
   expect(collect).toContain('linked issue #$number could not be read')
 })
 
-test('a release tag passed as qare-ref names the images, and any other revision is named by the version it carries (#242)', () => {
+test('a release tag passed as qare-ref names the images, and any other revision runs the newest published release it contains (#242, #360)', () => {
   const collect = section('collect')
   expect(collect).toContain('QARE_REF: ${{ inputs.qare-ref }}')
   expect(collect).toContain('version="$QARE_REF"')
+  expect(collect).toContain('qare_api "compare/$tag...$pinned"')
+  // The manifest names a revision that contains no published release.
   expect(collect).toContain("jq -ser 'select(length == 1) | .[0].version | select")
-  // Both branches are executed by workflow-boundaries.test.ts, including rejected fields.
+  // Every branch is executed by workflow-boundaries.test.ts, including rejected fields.
 })
 
 test('nothing runs when the change states no criteria', () => {

@@ -1291,3 +1291,11 @@ release, name it twice: pin it in `uses:`, and pass the same tag as the
 With `qare-ref` a release tag, the pipeline builds that release's source and
 pulls the images published under that tag. Left out on a computed release,
 the pipeline runs the stamped release before it.
+
+With `qare-ref` a commit, as qare's own workflow passes its base revision
+(#360), the images are those of the newest published release that commit
+contains, found by comparing it with qare's releases through the GitHub API.
+A commit that contains none of the 20 newest, or a run that cannot read the
+releases, falls back to the version in that commit's `package.json`. Either
+way the run summary names the images' version, and says when it is older than
+the latest release.
