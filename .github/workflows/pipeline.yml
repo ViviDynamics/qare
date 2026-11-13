@@ -426,8 +426,14 @@ jobs:
           # last version a person stamped. A release is published only after
           # its images are pushed, so a published release always has them.
           calver='^20[0-9]{2}\.[0-9]+\.[0-9]+$'
+          # Read from the API with curl and jq, which every runner has (#238).
+          qare_api() {
+            curl --fail --silent --show-error --location \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/ViviDynamics/qare/$1"
+          }
           newest_first() { grep -E "$calver" | sort -t. -k1,1nr -k2,2nr -k3,3nr || true; }
-          if published="$(gh api 'repos/ViviDynamics/qare/releases?per_page=100' --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')"; then
+          if published="$(qare_api 'releases?per_page=100' | jq -r '.[] | select(.draft == false and .prerelease == false) | .tag_name')"; then
             published="$(printf '%s\n' "$published" | newest_first)"
           else
             published=""
@@ -444,7 +450,7 @@ jobs:
             # far behind, and its manifest names it as before.
             while IFS= read -r tag; do
               [ -n "$tag" ] || continue
-              status="$(gh api "repos/ViviDynamics/qare/compare/$tag...$pinned" --jq .status)" || break
+              status="$(qare_api "compare/$tag...$pinned" | jq -r .status)" || break
               if [ "$status" = ahead ] || [ "$status" = identical ]; then
                 version="$tag"
                 break
@@ -2114,8 +2120,14 @@ jobs:
           # last version a person stamped. A release is published only after
           # its images are pushed, so a published release always has them.
           calver='^20[0-9]{2}\.[0-9]+\.[0-9]+$'
+          # Read from the API with curl and jq, which every runner has (#238).
+          qare_api() {
+            curl --fail --silent --show-error --location \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/ViviDynamics/qare/$1"
+          }
           newest_first() { grep -E "$calver" | sort -t. -k1,1nr -k2,2nr -k3,3nr || true; }
-          if published="$(gh api 'repos/ViviDynamics/qare/releases?per_page=100' --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')"; then
+          if published="$(qare_api 'releases?per_page=100' | jq -r '.[] | select(.draft == false and .prerelease == false) | .tag_name')"; then
             published="$(printf '%s\n' "$published" | newest_first)"
           else
             published=""
@@ -2132,7 +2144,7 @@ jobs:
             # far behind, and its manifest names it as before.
             while IFS= read -r tag; do
               [ -n "$tag" ] || continue
-              status="$(gh api "repos/ViviDynamics/qare/compare/$tag...$pinned" --jq .status)" || break
+              status="$(qare_api "compare/$tag...$pinned" | jq -r .status)" || break
               if [ "$status" = ahead ] || [ "$status" = identical ]; then
                 version="$tag"
                 break

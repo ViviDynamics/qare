@@ -35,21 +35,27 @@ function run(dir: string, source: string, env: Record<string, string> = {}): { s
 }
 
 // The version step asks GitHub which releases are published and which of them
-// the pinned revision contains (#360). A fake gh answers from the environment:
-// FAKE_RELEASES lists the published tags, FAKE_CONTAINED the ones the pinned
-// revision contains, FAKE_IDENTICAL the one it is, and FAKE_GH_FAIL refuses.
-const FAKE_GH = `#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "$FAKE_GH_LOG"
-[ "\${FAKE_GH_FAIL:-}" = 1 ] && exit 1
-case "$2" in
-  repos/ViviDynamics/qare/releases*) printf '%s' "\${FAKE_RELEASES:-}" ;;
-  repos/ViviDynamics/qare/compare/*)
-    spec="\${2#repos/ViviDynamics/qare/compare/}"
+// the pinned revision contains (#360). A fake curl answers from the
+// environment: FAKE_RELEASES lists the published tags, FAKE_DRAFTS tags that
+// are drafts, FAKE_CONTAINED the ones the pinned revision contains,
+// FAKE_IDENTICAL the one it is, and FAKE_API_FAIL refuses.
+const FAKE_CURL = `#!/usr/bin/env bash
+url="\${*: -1}"
+printf '%s\\n' "$url" >> "$FAKE_API_LOG"
+[ "\${FAKE_API_FAIL:-}" = 1 ] && exit 22
+case "$url" in
+  "$GITHUB_API_URL"/repos/ViviDynamics/qare/releases*)
+    sep=''; printf '['
+    for tag in \${FAKE_RELEASES:-}; do printf '%s{"tag_name":"%s","draft":false,"prerelease":false}' "$sep" "$tag"; sep=,; done
+    for tag in \${FAKE_DRAFTS:-}; do printf '%s{"tag_name":"%s","draft":true,"prerelease":false}' "$sep" "$tag"; sep=,; done
+    printf ']' ;;
+  "$GITHUB_API_URL"/repos/ViviDynamics/qare/compare/*)
+    spec="\${url#"$GITHUB_API_URL"/repos/ViviDynamics/qare/compare/}"
     tag="\${spec%%...*}"
-    if [ "$tag" = "\${FAKE_IDENTICAL:-}" ]; then echo identical
-    elif printf '%s\\n' \${FAKE_CONTAINED:-} | grep -qx -- "$tag"; then echo ahead
-    else echo behind; fi ;;
-  *) exit 2 ;;
+    if [ "$tag" = "\${FAKE_IDENTICAL:-}" ]; then echo '{"status":"identical"}'
+    elif printf '%s\\n' \${FAKE_CONTAINED:-} | grep -qx -- "$tag"; then echo '{"status":"ahead"}'
+    else echo '{"status":"behind"}'; fi ;;
+  *) exit 22 ;;
 esac
 `
 function versionFixture(): { dir: string; sha: string; env: Record<string, string> } {
@@ -60,8 +66,8 @@ function versionFixture(): { dir: string; sha: string; env: Record<string, strin
   git('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'pinned')
   const bin = join(dir, 'bin')
   mkdirSync(bin)
-  writeFileSync(join(bin, 'gh'), FAKE_GH, { mode: 0o755 })
-  return { dir, sha: git('rev-parse', 'HEAD'), env: { PATH: `${bin}:${process.env.PATH ?? ''}`, FAKE_GH_LOG: join(dir, 'gh.log'), FAKE_RELEASES: '' } }
+  writeFileSync(join(bin, 'curl'), FAKE_CURL, { mode: 0o755 })
+  return { dir, sha: git('rev-parse', 'HEAD'), env: { PATH: `${bin}:${process.env.PATH ?? ''}`, FAKE_API_LOG: join(dir, 'api.log'), GITHUB_API_URL: 'http://api.invalid', GH_TOKEN: 'job-token', FAKE_RELEASES: '' } }
 }
 function summary(dir: string): string {
   try { return readFileSync(join(dir, 'summary'), 'utf8') } catch { return '' }
@@ -103,15 +109,15 @@ for (const job of ['collect', 'main_collect']) {
     expect(run(dir, source, { ...env, QARE_REF: sha, FAKE_RELEASES: releases, FAKE_CONTAINED: '2026.10.53 2026.11.2 2026.11.9' }))
       .toEqual({ status: 0, output: 'version=2026.11.9\n' })
     // Newest first, by number rather than by text, and each compared with the pinned revision.
-    const asked = readFileSync(env.FAKE_GH_LOG!, 'utf8').split('\n').filter((line) => line.includes('/compare/'))
-    expect(asked.map((line) => line.split(' ')[1])).toEqual([`repos/ViviDynamics/qare/compare/2026.11.10...${sha}`, `repos/ViviDynamics/qare/compare/2026.11.9...${sha}`])
+    const asked = readFileSync(env.FAKE_API_LOG!, 'utf8').split('\n').filter((line) => line.includes('/compare/'))
+    expect(asked).toEqual([`http://api.invalid/repos/ViviDynamics/qare/compare/2026.11.10...${sha}`, `http://api.invalid/repos/ViviDynamics/qare/compare/2026.11.9...${sha}`])
     expect(summary(dir)).toContain('qare 2026.11.9, older than the latest release 2026.11.10')
   })
   test(`${job} says nothing is stale when the pinned revision is the latest release`, () => {
     const { dir, sha, env } = versionFixture()
     writeFileSync(join(dir, '.qare-pipeline/package.json'), JSON.stringify({ version: '2026.10.53' }))
     const source = script(job, 'Read the version of the pinned qare')
-    expect(run(dir, source, { ...env, QARE_REF: sha, FAKE_RELEASES: '2026.11.3\n2026.11.2\n', FAKE_IDENTICAL: '2026.11.3' }))
+    expect(run(dir, source, { ...env, QARE_REF: sha, FAKE_RELEASES: '2026.11.3\n2026.11.2\n', FAKE_DRAFTS: '2026.11.4', FAKE_IDENTICAL: '2026.11.3' }))
       .toEqual({ status: 0, output: 'version=2026.11.3\n' })
     expect(summary(dir)).toContain('qare 2026.11.3')
     expect(summary(dir)).not.toContain('older than')
@@ -136,7 +142,7 @@ for (const job of ['collect', 'main_collect']) {
     const { dir, sha, env } = versionFixture()
     writeFileSync(join(dir, '.qare-pipeline/package.json'), JSON.stringify({ version: '2026.10.53' }))
     const source = script(job, 'Read the version of the pinned qare')
-    expect(run(dir, source, { ...env, QARE_REF: sha, FAKE_GH_FAIL: '1' })).toEqual({ status: 0, output: 'version=2026.10.53\n' })
+    expect(run(dir, source, { ...env, QARE_REF: sha, FAKE_API_FAIL: '1' })).toEqual({ status: 0, output: 'version=2026.10.53\n' })
     expect(summary(dir)).toContain('could not read the published releases')
     expect(summary(dir)).toContain('qare 2026.10.53')
   })
