@@ -412,21 +412,58 @@ jobs:
         shell: bash
         env:
           QARE_REF: ${{ inputs.qare-ref }}
+          # The job's own read-only token, which its checkout already holds:
+          # it reads qare's public releases, nothing of the repository.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # A release tag names its own images (#242): a release the
           # automation computed carries the last stamped version in its
           # package.json, and reading that ran an older release's images.
-          # Any other revision is named by the version it carries.
-          if [[ "$QARE_REF" =~ ^20[0-9]{2}\.[0-9]+\.[0-9]+$ ]]; then
+          # Any other revision runs the images of the newest published
+          # release it contains (#360): the automation tags releases without
+          # committing their version back, so main's package.json keeps the
+          # last version a person stamped. A release is published only after
+          # its images are pushed, so a published release always has them.
+          calver='^20[0-9]{2}\.[0-9]+\.[0-9]+$'
+          newest_first() { grep -E "$calver" | sort -t. -k1,1nr -k2,2nr -k3,3nr || true; }
+          if published="$(gh api 'repos/ViviDynamics/qare/releases?per_page=100' --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')"; then
+            published="$(printf '%s\n' "$published" | newest_first)"
+          else
+            published=""
+            echo "::warning::could not read the published releases of qare, so whether these images are the latest is not known"
+            echo "qare could not read the published releases, so whether these images are the latest is not known" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          latest="$(printf '%s\n' "$published" | head -n 1)"
+          version=""
+          if [[ "$QARE_REF" =~ $calver ]]; then
             version="$QARE_REF"
           else
-            if ! version="$(jq -ser 'select(length == 1) | .[0].version | select(type == "string" and test("^20[0-9]{2}\\.[0-9]+\\.[0-9]+\\z"))' .qare-pipeline/package.json)"; then
-              echo "::error::the pinned qare manifest has no readable CalVer version, so no version output or image is named" >&2
-              exit 1
+            pinned="$(git -C .qare-pipeline rev-parse HEAD)"
+            # At most the 20 newest: a revision that contains none of them is
+            # far behind, and its manifest names it as before.
+            while IFS= read -r tag; do
+              [ -n "$tag" ] || continue
+              status="$(gh api "repos/ViviDynamics/qare/compare/$tag...$pinned" --jq .status)" || break
+              if [ "$status" = ahead ] || [ "$status" = identical ]; then
+                version="$tag"
+                break
+              fi
+            done < <(printf '%s\n' "$published" | head -n 20)
+            if [ -z "$version" ]; then
+              if ! version="$(jq -ser 'select(length == 1) | .[0].version | select(type == "string" and test("^20[0-9]{2}\\.[0-9]+\\.[0-9]+\\z"))' .qare-pipeline/package.json)"; then
+                echo "::error::the pinned qare manifest has no readable CalVer version, so no version output or image is named" >&2
+                exit 1
+              fi
             fi
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ -n "$latest" ] && [ "$version" != "$latest" ] && [ "$(printf '%s\n%s\n' "$latest" "$version" | newest_first | head -n 1)" = "$latest" ]; then
+            echo "::warning::this run uses the images of qare $version, older than the latest release $latest"
+            echo "This run uses the images of qare $version, older than the latest release $latest." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "This run uses the images of qare $version." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Say why a fork gets no QA
         if: github.event.pull_request.head.repo.full_name != github.repository
         run: |
@@ -2063,21 +2100,58 @@ jobs:
         shell: bash
         env:
           QARE_REF: ${{ inputs.qare-ref }}
+          # The job's own read-only token, which its checkout already holds:
+          # it reads qare's public releases, nothing of the repository.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # A release tag names its own images (#242): a release the
           # automation computed carries the last stamped version in its
           # package.json, and reading that ran an older release's images.
-          # Any other revision is named by the version it carries.
-          if [[ "$QARE_REF" =~ ^20[0-9]{2}\.[0-9]+\.[0-9]+$ ]]; then
+          # Any other revision runs the images of the newest published
+          # release it contains (#360): the automation tags releases without
+          # committing their version back, so main's package.json keeps the
+          # last version a person stamped. A release is published only after
+          # its images are pushed, so a published release always has them.
+          calver='^20[0-9]{2}\.[0-9]+\.[0-9]+$'
+          newest_first() { grep -E "$calver" | sort -t. -k1,1nr -k2,2nr -k3,3nr || true; }
+          if published="$(gh api 'repos/ViviDynamics/qare/releases?per_page=100' --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')"; then
+            published="$(printf '%s\n' "$published" | newest_first)"
+          else
+            published=""
+            echo "::warning::could not read the published releases of qare, so whether these images are the latest is not known"
+            echo "qare could not read the published releases, so whether these images are the latest is not known" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          latest="$(printf '%s\n' "$published" | head -n 1)"
+          version=""
+          if [[ "$QARE_REF" =~ $calver ]]; then
             version="$QARE_REF"
           else
-            if ! version="$(jq -ser 'select(length == 1) | .[0].version | select(type == "string" and test("^20[0-9]{2}\\.[0-9]+\\.[0-9]+\\z"))' .qare-pipeline/package.json)"; then
-              echo "::error::the pinned qare manifest has no readable CalVer version, so no version output or image is named" >&2
-              exit 1
+            pinned="$(git -C .qare-pipeline rev-parse HEAD)"
+            # At most the 20 newest: a revision that contains none of them is
+            # far behind, and its manifest names it as before.
+            while IFS= read -r tag; do
+              [ -n "$tag" ] || continue
+              status="$(gh api "repos/ViviDynamics/qare/compare/$tag...$pinned" --jq .status)" || break
+              if [ "$status" = ahead ] || [ "$status" = identical ]; then
+                version="$tag"
+                break
+              fi
+            done < <(printf '%s\n' "$published" | head -n 20)
+            if [ -z "$version" ]; then
+              if ! version="$(jq -ser 'select(length == 1) | .[0].version | select(type == "string" and test("^20[0-9]{2}\\.[0-9]+\\.[0-9]+\\z"))' .qare-pipeline/package.json)"; then
+                echo "::error::the pinned qare manifest has no readable CalVer version, so no version output or image is named" >&2
+                exit 1
+              fi
             fi
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ -n "$latest" ] && [ "$version" != "$latest" ] && [ "$(printf '%s\n%s\n' "$latest" "$version" | newest_first | head -n 1)" = "$latest" ]; then
+            echo "::warning::this run uses the images of qare $version, older than the latest release $latest"
+            echo "This run uses the images of qare $version, older than the latest release $latest." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "This run uses the images of qare $version." >> "$GITHUB_STEP_SUMMARY"
+          fi
       # The plan, read out of the ledger by code: every active criterion,
       # checked by the suites its ledger checks name. The ledger sits in the
       # profile directory (`<profile>/ledger.json`). A ledger that holds no

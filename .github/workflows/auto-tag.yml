@@ -22,7 +22,8 @@ name: Auto-tag
 # ships nothing until a rerun re-dispatches it. And a computed tag cannot
 # stamp the pipeline's qare-ref default, because the automation never pushes
 # commits, so a caller pinning a computed tag names its qare-ref explicitly
-# to avoid running one release behind.
+# to avoid running one release behind. A caller passing a commit as qare-ref
+# gets the images of the newest published release that commit contains (#360).
 #
 # The release runs exactly once per commit, and a failed dispatch is
 # recoverable: when the validated commit already carries a release tag and a
