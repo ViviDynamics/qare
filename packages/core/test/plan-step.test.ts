@@ -758,16 +758,16 @@ test('a file the profile declares by its exact path is readable even under an ev
   const clean = JSON.stringify({
     schemaVersion: '1',
     criteria: [
-      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'parser', command: 'node --test src/evidence/parser.ts' }] },
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'parser', command: 'node src/evidence/parser.mjs' }] },
       { id: 'c2', text: CRITERIA[1].text, unplannable: 'no phone layout yet' },
     ],
   })
   const runner = new FakeAgentRunner([completed(clean)])
 
-  const plan = await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', 'src/evidence/parser.ts'] } })
+  const plan = await planRun(runner, { ...INPUTS, runInputs: { paths: ['plan.json', 'src/evidence/parser.mjs'] } })
 
   expect(runner.requests).toHaveLength(1)
-  expect(plan.criteria[0].checks?.[0]?.command).toBe('node --test src/evidence/parser.ts')
+  expect(plan.criteria[0].checks?.[0]?.command).toBe('node src/evidence/parser.mjs')
 })
 
 test('runtime URLs and template values are not treated as filesystem paths (#162)', async () => {
@@ -967,7 +967,7 @@ const UNDECLARED_PROGRAM_PLAN = JSON.stringify({
 
 const DECLARED_COMMANDS = { test: { run: 'pnpm test {{pattern}}', about: 'runs the tests the pattern names' } }
 const SCRIPT_COMMANDS = { script: { run: 'node -- {{path}}', about: 'runs the plain JavaScript check script at {{path}}' } }
-const SCRIPT_EMBEDDED_COMMANDS = { script: { run: 'node --file={{path}}', about: 'runs the plain JavaScript check script at {{path}}' } }
+const SCRIPT_EMBEDDED_COMMANDS = { script: { run: 'script-runner --file={{path}}', about: 'runs the plain JavaScript check script at {{path}}' } }
 
 test('a plan whose command check runs an undeclared program is corrected, naming the program (#156)', async () => {
   const runner = new FakeAgentRunner([completed(UNDECLARED_PROGRAM_PLAN), completed(planned())])
@@ -1058,7 +1058,7 @@ test('a plan that fills an embedded path placeholder with a file the checkout do
   const invented = JSON.stringify({
     schemaVersion: '1',
     criteria: [
-      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'x', command: 'node --file=.qa/check-invented.js' }] },
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'command', name: 'x', command: 'script-runner --file=.qa/check-invented.js' }] },
       { id: 'c2', text: CRITERIA[1].text, checks: [{ kind: 'visual', name: 'v', screenshot: 'dashboard', widths: [390] }] },
     ],
   })
@@ -1116,9 +1116,9 @@ test('the standard tools the prompt names are the ones the image contract ships 
     { tool: 'python3', pattern: /FROM python:3\.12-slim/ },
     { tool: 'nare', pattern: /python3 -m pip install .*"\/tmp\/qare-nare\/\$wheel"/ },
   ]
-  // The allowlist equals the image contract exactly: a tool that joins or
-  // leaves the list has to change this test, which is the point.
-  const imageTools = ['node', 'grep', 'test', 'python3', 'nare']
+  // Standard command-check tools are a subset of installed binaries: nare
+  // is installed for qare itself and requires an explicit profile declaration.
+  const imageTools = ['node', 'grep', 'test', 'python3']
   expect([...EXECUTE_PATH_TOOLS].sort()).toEqual([...imageTools].sort())
   // Every marker is verified independently of the allowlist, so a tool the
   // image drops turns the test red even if the list drifted with it.
@@ -1140,7 +1140,7 @@ test('the planner is told only the tools the run image really carries (#198)', a
   await planRun(runner, { ...INPUTS, runInputs: { paths: ['.qa'] } })
 
   const prompt = runner.requests[0].prompt
-  expect(prompt).toContain('(node, grep, test, python3, nare)')
+  expect(prompt).toContain('(node, grep, test, python3)')
   expect(prompt).not.toContain('npm, git, jq')
 })
 
@@ -1157,7 +1157,7 @@ test('the gate correction names only the tools the run image really carries (#19
   await planRun(runner, { ...INPUTS, commands: DECLARED_COMMANDS })
 
   expect(runner.requests[1].prompt).toContain('the program jq is neither')
-  expect(runner.requests[1].prompt).toContain('(node, grep, test, python3, nare)')
+  expect(runner.requests[1].prompt).toContain('(node, grep, test, python3)')
   expect(runner.requests[1].prompt).not.toContain('npm, git, jq')
 })
 
