@@ -11,15 +11,15 @@
     "mail-missing-code-stays-unverified": {
       "sha": "9cad83285a47e62fe485ff37d2a0d0721222961b",
       "at": "2026-11-11T02:56:09Z",
-      "run": "https://github.com/ViviDynamics/qare/actions/runs/43149566564/attempts/1",
-      "recordedAt": "2026-11-12T03:40:36.540Z",
+      "run": "https://github.com/ViviDynamics/qare/actions/runs/43360251597/attempts/1",
+      "recordedAt": "2026-11-13T03:39:52.182Z",
       "entry": "sha256:d2de79a4ed151ae3ea60e9c5386a44f4ffce031a4879e677e2557e0b25a3c59d"
     },
     "mail-quoted-values-preserve-whitespace": {
       "sha": "9cad83285a47e62fe485ff37d2a0d0721222961b",
       "at": "2026-11-11T02:56:09Z",
-      "run": "https://github.com/ViviDynamics/qare/actions/runs/43149566564/attempts/1",
-      "recordedAt": "2026-11-12T03:40:36.540Z",
+      "run": "https://github.com/ViviDynamics/qare/actions/runs/43360251597/attempts/1",
+      "recordedAt": "2026-11-13T03:39:52.182Z",
       "entry": "sha256:f69bd521dbf0bc8dd555419d885abff154ff2995ec02c0ac975bca4ccf1440c6"
     }
   }
