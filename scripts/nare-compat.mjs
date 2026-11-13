@@ -1,6 +1,6 @@
 // Exercise the core image's installed nare through qare's real subprocess seam.
 // No model credentials or external model service are needed:
-// docker run --rm -i qare-core:nare-2026.10.33 node --input-type=module < scripts/nare-compat.mjs
+// docker run --rm -i qare-core:nare-2026.11.104 node --input-type=module < scripts/nare-compat.mjs
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -12,10 +12,10 @@ const { NareAgentRunner } = await import('/opt/qare/lib/packages/core/dist/index
 const versions = JSON.parse(execFileSync('python3', ['-c',
   'import json, importlib.metadata as m; print(json.dumps({p: m.version(p) for p in ["nare", "pillow", "opentelemetry-api"]}))',
 ], { encoding: 'utf8' }))
-assert.equal(versions.nare, '2026.10.33')
+assert.equal(versions.nare, '2026.11.104')
 assert.equal(versions.pillow, '13.0.0')
 const contract = JSON.parse(execFileSync('nare', ['contract'], { encoding: 'utf8' }))
-assert.equal(contract.contract, 2)
+assert.equal(contract.contract, 3)
 console.log('installed versions:', JSON.stringify(versions))
 
 let replies = []
@@ -73,7 +73,7 @@ try {
   assert.equal(requests[0].tools, undefined)
   // The new schema-constrained mode stays opt-in, preserving backend support.
   assert.equal(requests[0].response_format, undefined)
-  console.log('PASS: contract 2 result, schema output, usage and qare persona')
+  console.log('PASS: contract 3 result, schema output, usage and qare persona')
 
   reset(answer('not JSON'), answer('{"verdict":"corrected"}'))
   const corrected = await runner.run(base)

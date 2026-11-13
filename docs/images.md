@@ -144,17 +144,25 @@ inside it. The contract-conformant fixture stamped with the release version
 is the fallback for a release whose published base is not reachable, so the
 check stays about the example and the contract rather than the base.
 
-The shared core runtime pins nare **2026.10.28**, machine contract 2. All derived
+The shared core runtime pins nare **2026.11.104**, machine contract 3. All derived
 flavours and the pipeline planner/judge inherit that installation. Host callers
-can install the same wheel from the [nare release](https://github.com/ViviDynamics/nare/releases/tag/2026.10.28)
+can install the same wheel from the [nare release](https://github.com/ViviDynamics/nare/releases/tag/2026.11.104)
 in a separate Python 3.12+ environment.
 
-The upgrade to nare 2026.10.28 moves the subprocess contract from 1 to 2.
-Contract 2 blocks only on a successful turn of `ask` calls with no other tools.
-qare offers only `read` or no built-in tools and still fails closed on a blocked
-result. qare starts fresh sessions, so nare's refusal to resume contract 1
-sessions does not affect these runs. qare passes its system prompt explicitly,
-including an empty prompt, to avoid inheriting nare's new coding-agent default.
+The upgrade to nare 2026.11.104 moves the subprocess contract from 2 to 3
+(#366). Contract 3 changes only nare's redaction rule set: its
+`credential-assignment` rule now redacts values that look like secrets and
+leaves code such as `authorId: number` alone. qare redacts the evidence it
+publishes with its own rules (`packages/core/src/redact.ts`), which keep the
+broader rule. Since contract 2, nare corrects up to two replies cut off at the
+output cap on the command line. qare passes `--max-cutoffs 0`, so a cut-off
+turn still ends the run as before: the planner recovers it itself (#358), and
+the verifier reports it with the batch size that avoids it. Contract 2 blocks
+only on a successful turn of `ask` calls with no other tools. qare offers only
+`read` or no built-in tools and still fails closed on a blocked result. qare
+starts fresh sessions, so nare's refusal to resume older sessions does not
+affect these runs. qare passes its system prompt explicitly, including an
+empty prompt, to avoid inheriting nare's coding-agent default.
 
 Schema-constrained backend output is opt-in in nare and remains off here:
 qare keeps nare's schema validation and correction without requiring a backend
@@ -167,9 +175,9 @@ To exercise the installed wheel, contract, schema correction, read-only tool
 execution and fail-closed results against a local model fixture after building:
 
 ```sh
-docker build -f images/core/Dockerfile -t qare-core:nare-2026.10.28 .
-docker run --rm -i qare-core:nare-2026.10.28 node --input-type=module < scripts/nare-compat.mjs
+docker build -f images/core/Dockerfile -t qare-core:nare-2026.11.104 .
+docker run --rm -i qare-core:nare-2026.11.104 node --input-type=module < scripts/nare-compat.mjs
 ```
 
-This also asserts the installed nare and Pillow versions (2026.10.28 and 13.0.0).
+This also asserts the installed nare and Pillow versions (2026.11.104 and 13.0.0).
 The patched Pillow dependency addresses ViviDynamics/nare#112, part of qare #347.
