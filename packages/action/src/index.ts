@@ -553,6 +553,9 @@ async function runRequeue(
       },
     )
     keys = stubKeysFromDiffText(diff)
+    // A valid comparison may change the profile without adding any stub hosts.
+    // There is then nothing to requeue, and no GitHub identity is needed.
+    if (keys.length === 0) return []
   }
   if (keys === undefined || keys.length === 0) {
     throw new GitHubClientError('qare-action requeue needs --keys <host,host,...> or --keys-from-diff <base>...<head> [--profile <dir>]')
