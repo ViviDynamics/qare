@@ -62,6 +62,7 @@ export type {
   ProfileSuiteKind,
   ProfileCommand,
   ProfileMcpServer,
+  ProfileExplore,
   ProfileMcpToolMap,
   McpStep,
 } from './profile.js'
@@ -117,13 +118,17 @@ export type {
 export {
   EXPLORATION_TOOLS,
   callExplorationTool,
+  requestExplorationTool,
   needsSandboxSplit,
   sandboxEnvironment,
   startExplorationServer,
+  explorationPageOf,
   untrustedToolResult,
   ExplorationError,
 } from './explore.js'
 export type { ExplorationPage, ExplorationSource, ExplorationTool } from './explore.js'
+export { EXPLORATION_BRIDGE_ALIAS, EXPLORATION_BRIDGE_TOOLS, startExplorationBridge } from './explore-bridge.js'
+export type { ExplorationBridge, ExploredPage } from './explore-bridge.js'
 export {
   McpError,
   McpUnreachable,
@@ -586,3 +591,4 @@ export type {
   ProvisionSide,
   ProvisionedArtefact,
 } from './provision.js'
+export { runSeed } from './seed.js'

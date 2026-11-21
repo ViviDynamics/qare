@@ -740,6 +740,50 @@ only reads and is not given it. Off by default: a cache costs storage (10 GB
 a repository on GitHub-hosted runners, the oldest entries evicted first) and
 pays only for images that take long to build.
 
+### Planning against the running base app
+
+By default the planner reads the diff, the criteria and `QA.md`, and the
+elements a flow acts on are its best reading of them. A profile can instead
+have the planner look at the app first (#377):
+
+```yaml
+# .qa/config.yml
+flavour: web       # the browser is in the web image
+explore: base      # boot the base revision's app in the plan job and let the planner explore it
+```
+
+With `explore: base` the plan job does four more things. When `explore` is
+absent or says `off`, nothing changes:
+
+1. It boots the base revision's app from the base checkout, with the same
+   recipe, stubs and seed the base side of a run uses. The prebuilt base
+   image (`base.image`) and the build cache are never used here: the plan job
+   holds the model key, and an image trusted by the label its pusher wrote
+   does not belong beside it. This step is handed the runner's docker and
+   exits once the app is up.
+2. It starts a browser and the exploration server in a container of their
+   own, with no docker access, on the runner's network.
+3. It runs the planner as before, on the runner's network and pointed at that
+   server. The planner can call `observe`, `snapshot` and `navigate`, and
+   nothing else; `navigate` stays on the app. Every element a planned flow
+   names carries the page it was read from (`"page": "/settings"`) and its
+   path in that page's snapshot (`"at"`), and a plan naming an element the
+   planner was never shown is corrected once and then marked unplannable.
+4. It removes the browser and takes the app down, and uploads what the boot,
+   the seed and the server printed as the `exploration-logs` artifact,
+   swept by the profile's redaction rules.
+
+No step it adds is handed a secret, and the boot and the browser start before
+the model key is written anywhere. A boot, seed or browser that fails stops
+the plan job, naming the step, rather than planning blind. The runner needs
+docker compose for it, as execute does for a booted app.
+
+What it does trust: the base revision's own services run on the machine while
+the planner holds the key. That is code your repository already merged. If the
+base side's compose file reaches for something a pull request can write (an
+image tag your pull request CI pushes, say), do not turn exploration on. The
+reasoning is in [ADR-0011](decisions/adr-0011-explore-the-base-in-the-plan-job.md).
+
 ## Profiles that install a build
 
 A desktop application is not booted: it is a build that qare installs,

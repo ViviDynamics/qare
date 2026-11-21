@@ -22,7 +22,7 @@ import { totpCode, totpWindow, windowRemaining } from './totp.js'
  * driver that declares the same set; the driver resolves element references
  * against the page, and nothing here names a selector.
  */
-export type FlowElement = { role: string; name: string; at?: string } | { testId: string }
+export type FlowElement = { role: string; name: string; at?: string; page?: string } | { testId: string }
 
 export type FlowAction =
   | { action: 'open'; url: string }
@@ -132,6 +132,11 @@ export interface FlowPage {
    * keeps working; its flow checks carry no snapshot evidence.
    */
   snapshot?: () => Promise<SnapshotNode>
+  /**
+   * Where the page stands, as the driver reports it: its URL and title.
+   * Optional; the exploration channel (#87, #377) reads it, and a flow does not.
+   */
+  observe?: () => Promise<{ url: string; title: string }>
   /**
    * Audit the page as it stands against the accessibility rule set (#149),
    * at the width and theme asked for, and put the viewport back. Optional:

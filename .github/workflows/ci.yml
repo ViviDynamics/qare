@@ -214,6 +214,12 @@ jobs:
         run: scripts/electron-driver.sh qare-web:ci
       - name: Provision prebuilt base and head builds, and block on a failed install
         run: scripts/client-provision.sh qare-web:ci
+      # Exploration (#377), through the plan job's own steps: the base app is
+      # booted, a browser and the exploration channel are served beside it with
+      # no docker access and nothing in their environment, and a plan is kept
+      # only when it names what that page really showed.
+      - name: Explore the example compose app through the plan job's steps
+        run: scripts/explore-boot.sh qare-web:ci
       - name: Upload the run's evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

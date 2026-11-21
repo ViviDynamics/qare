@@ -5,6 +5,7 @@ import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { dirname, join, relative, resolve } from 'node:path'
 import { initCommand } from './init.js'
+import { exploreCommand } from './explore.js'
 import {
   BranchLedgerStore,
   FileLedgerStore,
@@ -42,6 +43,8 @@ import {
   redactionRules,
   valueRules,
   startMcpToolServer,
+  startExplorationBridge,
+  requestExplorationTool,
   startRegisteredMcpSources,
   mcpRecordsFile,
   criteriaFromIssue,
@@ -102,6 +105,7 @@ import type {
   McpCallRecord,
   McpSource,
   McpToolServer,
+  ExplorationBridge,
   ResolutionSource,
   ReplayDifference,
   RunContext,
@@ -150,6 +154,7 @@ export async function main(
   if (argv[0] === 'sweep') return sweepCommand(argv.slice(1), out, err)
   if (argv[0] === 'metrics') return metricsCommand(argv.slice(1), out, err)
   if (argv[0] === 'reap') return reapCommand(out, err, argv.slice(1), boot)
+  if (argv[0] === 'explore') return exploreCommand(argv.slice(1), out, err, { boot })
   // The two halves of a client build's cell (#223): started by the run, from
   // the image it is in, never by a person, so the usage below does not list it.
   if (argv[0] === 'cell') return runCellCommand(argv.slice(1), { out: (line) => out.write(`${line}\n`), err: (line) => err.write(`${line}\n`) })
@@ -726,6 +731,8 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
     const binary = flag(argv, '--nare')
     const flowActions = flowActionKinds(flag(argv, '--flow-actions'))
     const profilePath = flag(argv, '--profile')
+    // The exploration channel the pipeline serves beside the base app (#377).
+    const exploreEndpoint = flag(argv, '--explore')
 
     const allowNone = argv.includes('--allow-no-criteria')
     let criteria: { id: string; text: string }[]
@@ -767,6 +774,12 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         out.write(`no usable .qa/ profile at ${profilePath}, so the diff is not swept for seeded values\n`)
       }
     }
+
+    // Exploring is the profile's choice (#377): an endpoint handed to a plan
+    // whose profile did not ask for one is refused before any model call,
+    // rather than explored or quietly ignored.
+    if (exploreEndpoint !== undefined && profile?.explore !== 'base')
+      throw new Error(`the plan was handed an exploration endpoint, and the profile${profilePath === undefined ? '' : ` at ${profilePath}`} does not explore (explore: base)`)
 
     const runner = new NareAgentRunner(binary === undefined ? {} : { binary })
     // The browser driver is what a plan can assume; the change's own kinds
@@ -817,7 +830,20 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
     const mcpRecords: McpCallRecord[] = []
     let mcpSources: McpSource[] = []
     let mcpServer: McpToolServer | undefined
+    let bridge: ExplorationBridge | undefined
     try {
+      if (exploreEndpoint !== undefined) {
+        // A channel that does not answer stops the plan by name (rule 6):
+        // the profile asked for flows planned against the app, and a plan
+        // written blind would read as one that looked.
+        try {
+          await requestExplorationTool(exploreEndpoint, 'observe')
+        } catch (error) {
+          throw new Error(`the exploration channel at ${exploreEndpoint} does not answer, so the base app cannot be explored: ${error instanceof Error ? error.message : String(error)}`)
+        }
+        bridge = await startExplorationBridge(exploreEndpoint)
+      }
+      const explored = bridge
       const started = await startRegisteredMcpSources(profile?.mcp ?? [], 'plan', {
         record: (record) => mcpRecords.push(record),
       })
@@ -854,6 +880,9 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         ...(profile?.instructions ? { qaMd: profile.instructions } : {}),
         ...(profile?.redact === undefined ? {} : { redact: profile.redact }),
         ...(profile?.commands === undefined ? {} : { commands: profile.commands }),
+        ...(explored === undefined
+          ? {}
+          : { exploration: { endpoint: explored.url, tools: explored.tools, explored: () => explored.explored() } }),
         ...(mcpServer === undefined
           ? {}
           : {
@@ -888,6 +917,11 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       // The turns that failed were still paid for (#259), and the plan says so.
       plan = { ...(unplanned ?? unplannedPlan(criteria, `planning failed (${named})`)), ...(error.usage === undefined ? {} : { usage: error.usage }) }
     } finally {
+      if (bridge !== undefined) {
+        const pages = bridge.explored().map((page) => page.page)
+        out.write(`explored ${pages.length} page${pages.length === 1 ? '' : 's'} of the base app${pages.length === 0 ? '' : `: ${pages.join(', ')}`}\n`)
+        await bridge.close().catch(() => {})
+      }
       await mcpServer?.close().catch(() => {})
       await Promise.all(mcpSources.map((source) => source.close().catch(() => {})))
     if (mcpRecords.length > 0) {

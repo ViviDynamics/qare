@@ -774,6 +774,152 @@ jobs:
         with:
           name: qa-inputs
           path: .
+      # Exploration (#377): a profile that says `explore: base` has its flows
+      # planned against the running base app instead of guessed from the
+      # diff. The base revision is the tree this job checked out, and no pull
+      # request code runs here (rule 7): the app is built from that tree,
+      # never from the prebuilt base image, whose revision label is only what
+      # its pusher wrote. The steps that boot and serve it name no secret and
+      # run before the key is written anywhere; the boot is the only one
+      # handed the runner's docker, and it exits once the app is up. The
+      # browser and the exploration server run in a container with no docker
+      # access, so nothing qare starts can read the planner's container while
+      # it holds the key. ADR-0011 records the decision. Absent or off, every
+      # one of these steps skips, and the plan step runs as before.
+      - name: Read whether the profile explores
+        id: explore
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          explore=""
+          if [ -f "$PROFILE/config.yml" ]; then
+            explore="$(awk -F'[: ]+' '$1=="explore"{print $2; exit}' "$PROFILE/config.yml")"
+          fi
+          # Only base turns it on. Anything else the profile loader reads for
+          # itself in the plan step, and refuses there by name.
+          if [ "$explore" = "base" ]; then
+            echo "explore=base" >> "$GITHUB_OUTPUT"
+            echo "the profile explores the base app: its flows are planned against the base revision, booted in this job" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "explore=off" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Pull the web image for exploration
+        id: explore-image
+        if: steps.explore.outputs.explore == 'base'
+        shell: bash
+        env:
+          QARE_VERSION: ${{ needs.collect.outputs.qare-version }}
+        run: |
+          set -euo pipefail
+          ref="ghcr.io/vividynamics/qare-web:$QARE_VERSION"
+          if ! docker buildx version > /dev/null 2>&1; then
+            echo "::error::qare image inspection needs Docker buildx with imagetools: install the buildx plugin alongside this runner's Docker client"
+            exit 1
+          fi
+          if ! digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')"; then
+            echo "::error::qare could not resolve the published image $ref to its registry digest; nothing was pulled"
+            exit 1
+          fi
+          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::qare registry inspection returned no valid SHA-256 digest for $ref; nothing was pulled"
+            exit 1
+          fi
+          immutable="${ref%:*}@$digest"
+          if ! docker pull "$immutable"; then
+            echo "no published qare-web image for version $QARE_VERSION ($ref): exploring the base app needs the browser the web image carries (#88)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "digest=$immutable" >> "$GITHUB_OUTPUT"
+      # The runner's docker, found as execute finds it (#209), for the boot
+      # alone. ADR-0005 explains what docker access grants; here it is
+      # granted to the base revision's compose file, which is code the
+      # repository already merged, never to the pull request's.
+      - name: Find the runner's docker for exploration
+        if: steps.explore.outputs.explore == 'base'
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/qare-explore-docker-client"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          cp -L "$(command -v docker)" "$stage/docker"
+          docker_access=(--network host -v "$stage/docker:/usr/bin/docker:ro")
+          plugins=""
+          while read -r plugin path; do
+            case "$plugin" in compose | buildx) ;; *) continue ;; esac
+            [ -f "$path" ] || continue
+            cp -L "$path" "$stage/docker-$plugin"
+            docker_access+=(-v "$stage/docker-$plugin:/usr/local/lib/docker/cli-plugins/docker-$plugin:ro")
+            plugins="$plugins $plugin"
+          done < <(docker info --format '{{range .ClientInfo.Plugins}}{{println .Name .Path}}{{end}}' 2>/dev/null || true)
+          case "$plugins" in
+            *compose*) ;;
+            *) echo "this runner's docker has no compose plugin, so the base app cannot be booted for exploration: install docker compose v2 on the runner" >> "$GITHUB_STEP_SUMMARY" ;;
+          esac
+          endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
+          case "$endpoint" in
+            unix://*)
+              socket="${endpoint#unix://}"
+              docker_access+=(-v "$socket:/var/run/docker.sock" --group-add "$(stat -L -c %g "$socket")")
+              ;;
+            ?*) docker_access+=(-e "DOCKER_HOST=$endpoint") ;;
+            *) echo "this runner's docker names no daemon endpoint, so the base app cannot be booted for exploration" >> "$GITHUB_STEP_SUMMARY" ;;
+          esac
+          printf '%s\n' "${docker_access[@]}" > "$RUNNER_TEMP/qare-explore-docker-access"
+      # Boot and seed the base app, then exit, leaving it up. A boot or a
+      # seed that fails stops the job by name (rule 6): the profile asked for
+      # flows planned against the app, and a plan written blind is not that.
+      - name: Boot the base app for the planner
+        if: steps.explore.outputs.explore == 'base'
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.explore-image.outputs.digest }}
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          mapfile -t docker_access < "$RUNNER_TEMP/qare-explore-docker-access"
+          mkdir -p .qare-explore
+          if ! docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              -v "$PWD:$PWD" -w "$PWD" \
+              "${docker_access[@]}" \
+              "$IMAGE_REF" qare explore boot --profile "$PROFILE" --repo "$PWD" --out .qare-explore; then
+            echo "the base app did not come up for exploration, so nothing was planned; explore-boot.log in the exploration logs says why" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      # The browser and the exploration channel (#87), in a container of
+      # their own on the runner's network, with no docker access and nothing
+      # mounted but the directory the ready file lands in. It runs while the
+      # planner explores and is stopped after.
+      - name: Serve the base app to the planner
+        id: serve
+        if: steps.explore.outputs.explore == 'base'
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.explore-image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          dir="$PWD/.qare-explore"
+          origin="$(jq -er '.origin' "$dir/app.json")"
+          name="qare-explore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -f "$dir/serve.json"
+          docker run -d --name "$name" --network host -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$dir:$dir" \
+            "$IMAGE_REF" qare explore serve --app "$origin" --port 0 --ready "$dir/serve.json" > /dev/null
+          echo "container=$name" >> "$GITHUB_OUTPUT"
+          for _ in $(seq 1 120); do
+            [ -s "$dir/serve.json" ] && break
+            if [ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null || echo false)" != "true" ]; then break; fi
+            sleep 1
+          done
+          if ! endpoint="$(jq -er '.endpoint' "$dir/serve.json" 2>/dev/null)"; then
+            docker logs "$name" >&2 || true
+            echo "the exploration channel did not start beside the base app, so nothing was planned" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "endpoint=$endpoint" >> "$GITHUB_OUTPUT"
       - name: Plan the QA run
         shell: bash
         env:
@@ -789,6 +935,7 @@ jobs:
           QARE_PLAN_BATCH_SIZE: ${{ inputs.plan-batch-size }}
           QARE_PLAN_CONCURRENCY: ${{ inputs.plan-concurrency }}
           PROFILE: ${{ inputs.profile }}
+          EXPLORE_ENDPOINT: ${{ steps.serve.outputs.endpoint }}
         run: |
           set -euo pipefail
           # Fail closed (rule 6): a planner without a key is stopped here, by
@@ -848,12 +995,22 @@ jobs:
             flow_actions=(--flow-actions "$kinds")
             echo "planning with the change's flow action kinds: $kinds" >> "$GITHUB_STEP_SUMMARY"
           fi
+          # The exploration channel served beside the base app (#377): the
+          # planner reaches it on the runner's loopback, so it shares the
+          # runner's network, and nothing else changes. Off, both are empty.
+          explore_args=()
+          network_args=()
+          if [ -n "${EXPLORE_ENDPOINT:-}" ]; then
+            explore_args=(--explore "$EXPLORE_ENDPOINT")
+            network_args=(--network host)
+          fi
           if ! docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
             "${model_env[@]}" \
+            "${network_args[@]}" \
             -v "$PWD:$PWD" -w "$PWD" \
             "$IMAGE_REF" qare plan \
             --criteria criteria.json --diff change-planner.diff --out plan.json \
-            --nare /usr/local/bin/nare --profile "$PROFILE" "${flow_actions[@]}" 2>plan.err; then
+            --nare /usr/local/bin/nare --profile "$PROFILE" "${flow_actions[@]}" "${explore_args[@]}" 2>plan.err; then
             # The planner's copy of the diff — scrubbed of the values the
             # change adds, with the test suite left out — is what the planner
             # always reads, whatever fits the argument budget (nare#29). Any
@@ -861,6 +1018,45 @@ jobs:
             cat plan.err >&2
             exit 4
           fi
+      # The explored app goes with the job that booted it: the serve
+      # container is stopped and the compose project the boot named is
+      # reaped, whatever the plan did. A teardown that fails is said and
+      # changes nothing about the plan.
+      - name: Tear down the explored app
+        if: always() && steps.explore.outputs.explore == 'base'
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.explore-image.outputs.digest }}
+          CONTAINER: ${{ steps.serve.outputs.container }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CONTAINER:-}" ]; then
+            docker logs "$CONTAINER" > .qare-explore/serve.log 2>&1 || true
+            docker rm -f "$CONTAINER" > /dev/null 2>&1 || echo "::warning::the exploration container $CONTAINER could not be removed"
+          fi
+          project="$(jq -r '.project // empty' .qare-explore/isolation.json 2>/dev/null || true)"
+          if [ -z "$project" ] || [ -z "${IMAGE_REF:-}" ] || [ ! -f "$RUNNER_TEMP/qare-explore-docker-access" ]; then
+            echo "nothing was booted for exploration, so there is nothing to reap"
+            exit 0
+          fi
+          mapfile -t docker_access < "$RUNNER_TEMP/qare-explore-docker-access"
+          if ! docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              -v "$PWD:$PWD" -w "$PWD" \
+              "${docker_access[@]}" \
+              "$IMAGE_REF" qare reap "$project"; then
+            echo "::warning::qare reap failed: the base app booted for exploration may still be running on the runner ($project)"
+          fi
+      - name: Upload the exploration logs
+        if: always() && steps.explore.outputs.explore == 'base'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          # What the base app's boot and seed printed, swept by the profile's
+          # redaction rules, and what the exploration server said.
+          name: exploration-logs
+          path: |
+            .qare-explore/explore-boot.log
+            .qare-explore/serve.log
+          if-no-files-found: ignore
       - name: Upload plan.json
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

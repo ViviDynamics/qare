@@ -383,6 +383,11 @@ export async function makePlaywrightFlowSession(
       const started = await start()
       return normaliseAriaSnapshot(await started.page.ariaSnapshot())
     },
+    // Where the page stands (#377): what the exploration channel's observe answers.
+    observe: async () => {
+      const started = await start()
+      return { url: started.page.url(), title: await started.page.title() }
+    },
     // The accessibility audit (#149): axe-core runs in the page as the flow
     // left it, at the width and colour scheme asked for, and the viewport is
     // put back afterwards so the flow carries on where it was. The engine's

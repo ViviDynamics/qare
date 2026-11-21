@@ -161,7 +161,10 @@ test('a planning run explores the booted application over a channel that holds n
     expect(request.toolPolicy).toBe('none')
     expect(request.tools?.endpoint).toBe(server.url)
     expect(request.tools?.allowlist).toEqual(EXPLORATION_TOOLS)
-    expect(request.prompt).toContain(server.url)
+    // The session calls the tools by name through nare's MCP client (#377):
+    // the prompt names the tools, and no address the model cannot call.
+    expect(request.prompt).not.toContain(server.url)
+    expect(request.prompt).toContain('explore__snapshot')
     expect(request.prompt).toContain('untrusted data')
 
     // The model key never enters the sandbox: the environment the server and
@@ -230,16 +233,16 @@ test('the exploration prompt describes exactly the tools the channel serves', as
   const narrowed = new FakeAgentRunner([completed(planned())])
   await planRun(narrowed, { ...INPUTS, exploration: { endpoint: url('sandbox.internal:8080'), tools: ['observe'] } })
   const [request] = narrowed.requests
-  expect(request.prompt).toContain('Its tools are observe (where the page stands, its URL and title).')
+  expect(request.prompt).toContain('Its tools are explore__observe (where the page stands, its URL and title).')
   expect(request.prompt).not.toContain('the page structure')
   expect(request.prompt).not.toContain('open a URL on the app')
 
   const every = new FakeAgentRunner([completed(planned())])
   await planRun(every, { ...INPUTS, exploration: { endpoint: url('sandbox.internal:8080') } })
   expect(every.requests[0].prompt).toContain(
-    'Its tools are observe (where the page stands, its URL and title), ' +
-      'snapshot (the page structure as a normalised accessibility snapshot), ' +
-      'navigate (open a URL on the app) and capture (a screenshot).',
+    'Its tools are explore__observe (where the page stands, its URL and title), ' +
+      'explore__snapshot (the page structure as a normalised accessibility snapshot), ' +
+      'explore__navigate (open a URL on the app) and explore__capture (a screenshot).',
   )
 })
 

@@ -350,6 +350,13 @@ export interface QaProfile {
   mail?: ProfileMail
   /** The host's MCP servers the planner may look through (#93). */
   mcp?: ProfileMcpServer[]
+  /**
+   * Whether the planner explores the running app (#377): `base` boots the
+   * base revision's app in the plan job and serves it to the planner over the
+   * exploration channel (#87). Absent, the plan reads the diff and QA.md as
+   * before. `explore: off` in the file says the same as leaving it out.
+   */
+  explore?: ProfileExplore
   /** Fixture data that must not be published in evidence (#52). */
   redact?: ProfileRedaction
   commands?: Record<string, ProfileCommand>
@@ -679,6 +686,7 @@ export function validateProfileConfig(config: unknown): QaProfile {
     ...(config.a11y === undefined ? {} : { a11y: parseA11y(config.a11y) }),
     ...(config.ux === undefined ? {} : { ux: parseUx(config.ux) }),
     ...(config.findings === undefined ? {} : { findings: parseFindings(config.findings) }),
+    ...exploreOf(config.explore, config.flavour),
     ...requiresOf(config.requires, undefined, commands),
   }
 }
@@ -697,6 +705,8 @@ function validateTargetConfig(config: Record<string, unknown>): QaProfile {
     fail('stubs', 'a target profile boots no stack, so it has no stubs; list the hosts its checks may reach in target.hosts')
   if (config.base !== undefined)
     fail('base', 'a target profile has one side only, so it has no base side to bound; remove the base section')
+  if (isExploring(config.explore))
+    fail('explore', 'a target profile boots no app, so there is no base app for the planner to explore; explore takes a profile with an app section')
   const commands = config.commands === undefined ? undefined : parseCommands(config.commands)
   return {
     target: parseTarget(config.target),
@@ -736,6 +746,8 @@ function validateClientConfig(config: Record<string, unknown>): QaProfile {
   if (config.stubs !== undefined && !(Array.isArray(config.stubs) && config.stubs.length === 0))
     fail('stubs', 'a client profile boots no stack, so it has no stubs')
   const client = parseClient(config.client)
+  if (isExploring(config.explore))
+    fail('explore', 'a client profile launches a build with no browser page, so there is no base app for the planner to explore; explore takes a profile with an app section')
   // A client profile has a second side exactly when it names a build of the
   // base (#75), and only then is there a base side to bound.
   if (config.base !== undefined && client.artefact?.base === undefined)
@@ -946,6 +958,31 @@ function parseClient(value: unknown): ProfileClient {
   if (artefact !== undefined) return { driver, artefact, ...common }
   // parseClient read an executable whenever it read no artefact.
   return { driver, executable: executable as string, ...common }
+}
+
+/** What the planner explores (#377): the base revision's booted app. */
+export type ProfileExplore = 'base'
+
+const EXPLORE_VALUES = ['base', 'off']
+
+function isExploring(value: unknown): boolean {
+  return value !== undefined && value !== 'off'
+}
+
+/**
+ * The profile's `explore` key (#377). `base` is the one thing it can say:
+ * the head is pull request code, which must not run beside the model key, so
+ * exploring it would need the sandbox split #87 describes and is not offered.
+ * The browser is in the web image, so a profile that explores names it.
+ */
+function exploreOf(value: unknown, flavour: unknown): { explore?: ProfileExplore } {
+  if (value === undefined) return {}
+  if (typeof value !== 'string' || !EXPLORE_VALUES.includes(value))
+    fail('explore', `explore must be one of ${EXPLORE_VALUES.join(', ')}, not ${JSON.stringify(value)}: the planner explores the base revision's app, never the head's`)
+  if (value === 'off') return {}
+  if (flavour !== 'web')
+    fail('explore', 'explore: base drives a browser through the base app, and only the web image carries one: add flavour: web to the profile')
+  return { explore: 'base' }
 }
 
 /**
