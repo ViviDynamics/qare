@@ -16,10 +16,10 @@
       "entry": "sha256:d2de79a4ed151ae3ea60e9c5386a44f4ffce031a4879e677e2557e0b25a3c59d"
     },
     "mail-quoted-values-preserve-whitespace": {
-      "sha": "04536714681c7760ce6abbabfa20e735d69e26e9",
-      "at": "2026-11-21T18:09:30Z",
-      "run": "https://github.com/ViviDynamics/qare/actions/runs/44933963123/attempts/1",
-      "recordedAt": "2026-11-21T18:11:32.687Z",
+      "sha": "538fd8f20c2844ab3ab6c816eb4c2c546715a2ad",
+      "at": "2026-11-21T19:33:42Z",
+      "run": "https://github.com/ViviDynamics/qare/actions/runs/44941592711/attempts/1",
+      "recordedAt": "2026-11-21T19:35:37.360Z",
       "entry": "sha256:f69bd521dbf0bc8dd555419d885abff154ff2995ec02c0ac975bca4ccf1440c6"
     }
   }
