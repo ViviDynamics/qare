@@ -68,7 +68,9 @@ fi
 
 jq '{verdict, base: .base.status, criteria: [.criteria[] | {id, outcome, reason, mail}]}' evidence/result.json
 # Passed, with both criteria proven: the message arrived and its link worked.
-# The result names the message as the catcher held it.
+# The result names the message as the catcher held it. The stack ran
+# contained (#382): the catcher is the stack's own, so nothing undeclared
+# was looked up.
 if [ "$code" -ne 0 ] || ! jq -e '
   .verdict == "passed" and
   (.criteria | length) == 2 and
@@ -76,7 +78,9 @@ if [ "$code" -ne 0 ] || ! jq -e '
   (.criteria[0].mail | length) == 1 and
   .criteria[0].mail[0].check == "confirmation" and
   .criteria[0].mail[0].subject == "Confirm your account" and
-  (.criteria[0].mail[0].from | contains("no-reply@mail-app.example"))
+  (.criteria[0].mail[0].from | contains("no-reply@mail-app.example")) and
+  .egress.containment == "contained" and
+  .egress.undeclared == []
 ' evidence/result.json > /dev/null; then
   echo "the execute step exited $code: the app did not boot, no message was read from the catcher, or its link did not confirm the account" >&2
   exit 1

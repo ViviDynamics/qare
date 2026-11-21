@@ -1,7 +1,8 @@
 import { renderAdvisorySection } from './advisory-comment.js'
 import { describeHost, describeRequirements, type HostKind, type Requirements } from './placement.js'
 import type { ModelUsage } from './metrics.js'
-import type { CriterionResult, RunResult, RunVerdict } from './result.js'
+import { missingStubReason } from './egress.js'
+import type { CriterionResult, RunEgress, RunResult, RunVerdict } from './result.js'
 
 export interface CheckRunPayload {
   title: string
@@ -349,7 +350,10 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
     // The URL stays a code span; a comment links only to uploaded files.
     ...(result.target === undefined
       ? []
-      : [`Checked against the running target ${codeSpan(result.target.url)}. Nothing ran at a base revision, so there is no base comparison and no regression was looked for.`, '']),
+      : [
+          `Checked against the running target ${codeSpan(result.target.url)}. Nothing ran at a base revision, so there is no base comparison and no regression was looked for. The target is not a stack this run booted, so its own egress was not contained by the run.`,
+          '',
+        ]),
     // A build the run launched has one side too (#72): the driver and the
     // executable are named, so a reader knows what the checks drove.
     // A build the run provisioned (#75) names the artefact it installed for
@@ -378,6 +382,10 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
             '',
           ]),
     ...baseLines,
+    // What the booted stack reached for (#382): contained or not, and every
+    // name no stub declares, at the head and at the base.
+    ...(result.profiles === undefined ? egressLines(result.egress, 'The booted stack') : []),
+    ...egressLines(result.base?.egress, 'At the base, the booted stack'),
     // Where the run executed and what it ran with (issue #91): a host run and
     // an image run are readable side by side.
     ...environment,
@@ -403,6 +411,7 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
             '',
             // What this app's own profile required of the host (#76).
             ...(summary.requirements === undefined ? [] : requirementLines(summary.requirements, codeSpan(summary.name), host).flatMap((line) => [line, ''])),
+            ...egressLines(summary.egress, `The stack of ${codeSpan(summary.name)}`),
             ...table(result.criteria.filter(criterion => summary.criteria.includes(criterion.id))),
             '',
           ]),
@@ -547,6 +556,31 @@ export function renderCheckRun(result: RunResult, opts: CheckRunOptions = {}): C
 }
 
 /** What a client run's comment says about the build's network (#223): contained, opted out, or (an older result) nothing. */
+/**
+ * What a booted stack's egress was held to (#382), in words: contained, the
+ * stub hosts it looked up, and each name no stub declares as the missing
+ * stub it is; or that it was not contained, and why. A stack that boots is
+ * never left to read as contained when it was not.
+ */
+function egressLines(egress: RunEgress | undefined, who: string): string[] {
+  if (egress === undefined) return []
+  if (egress.containment === 'uncontained')
+    return [`${who}'s egress was not contained (${codeSpan(egress.reason ?? 'no reason recorded')}): what it reached was not recorded, and nothing held it to the declared stubs.`, '']
+  const declared = egress.declared ?? []
+  const undeclared = egress.undeclared ?? []
+  const lines = [
+    `${who} ran contained: its networks were internal, so its only routes out were the declared stubs, and every name it looked up went to the run's resolver. ${
+      declared.length === 0 ? 'It looked up no stub host.' : `Stub hosts it looked up: ${declared.map((host) => codeSpan(host)).join(', ')}.`
+    } A connection to a literal address names no host, so the internal network refuses it and the record cannot list it.`,
+    '',
+  ]
+  if (undeclared.length > 0)
+    lines.push(`It looked up ${undeclared.length === 1 ? 'a name' : `${undeclared.length} names`} no stub declares, which refused the run:`, '', ...undeclared.map((host) => `- ${codeSpan(missingStubReason(host))}`), '')
+  if (egress.capped === true) lines.push('The record was cut at its bound: names looked up past it were not recorded.', '')
+  if (egress.unread !== undefined) lines.push(`Its record could not be read (${codeSpan(egress.unread)}), so the run cannot say the stack reached for nothing, and it does not pass.`, '')
+  return lines
+}
+
 function clientEgressNote(egress: 'contained' | 'uncontained' | undefined): string {
   if (egress === 'contained') return " The build ran contained, with no network of its own: the hosts it reached through the gate are in each flow check's `outbound.json`."
   if (egress === 'uncontained')

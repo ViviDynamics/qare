@@ -2,6 +2,7 @@ import { readFile, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
+import { NO_EGRESS_IMAGE } from '../src/stack-egress.js'
 import { loadResult, runJob, type BootOpts, type Job, type JobCriterion, type QaProfile } from '../src/index.js'
 import type { RunDocker } from '../src/base-image.js'
 
@@ -69,6 +70,7 @@ test('the base side runs the image built from the base commit, and the result na
     ref: BASE_SHA,
     status: 'executed',
     images: [{ ref: `ghcr.io/acme/app:${BASE_SHA}`, used: true, digest: IMAGE_DIGEST, revision: BASE_SHA }],
+    egress: { containment: 'uncontained', reason: NO_EGRESS_IMAGE },
   })
   expect(boot.docker[0]).toEqual(['pull', '--', `ghcr.io/acme/app:${BASE_SHA}`])
   // The base boots with the override that runs the image; the head builds as before.
@@ -97,7 +99,7 @@ test('a profile that names no base image pulls nothing, and the result names no 
   const boot = seams(BASE_SHA)
   const { result } = await runJob(jobFor(head, { ...PROFILE, base: { criteria: 'all' } }), { ...boot, base: { repoPath: base } })
   expect(boot.docker).toEqual([])
-  expect(result.base).toEqual({ ref: BASE_SHA, status: 'executed' })
+  expect(result.base).toEqual({ ref: BASE_SHA, status: 'executed', egress: { containment: 'uncontained', reason: NO_EGRESS_IMAGE } })
 })
 
 test('a base ref that is not a commit id leaves the commit unknown, and nothing stands in for the base (#381)', async () => {

@@ -10,11 +10,12 @@ import { collectCriterionFiles, criterionCacheKey, FileCheckCache, planFingerpri
 import { Artefacts, type ArtefactField } from './artefacts.js'
 import { inspectRunnerSafety, type RunnerSafetyProbes } from './runner-safety.js'
 import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
-import { bootApp, CANCEL_DOWN_TIMEOUT_MS, clientCellStarter, clientExecutablePath, inPlaceBuild, killActiveCompose, stopApp, type BootOpts, type BootedClient } from './boot.js'
+import { bootApp, CANCEL_DOWN_TIMEOUT_MS, clientCellStarter, clientExecutablePath, inPlaceBuild, killActiveCompose, stopApp, type BootOpts, type BootedClient, type StackEgress } from './boot.js'
 import { removeLiveInstalls } from './provision.js'
 import { detectHost, placementProblem, rememberProbes, requirementsOf, unmetReason, unmetRequirements, type HostProbes, type Requirements } from './placement.js'
 import { hasMintedProject, isolatedHealthUrl, isolateRun, type RunIsolation } from './isolation.js'
-import { matchesStub, type EgressAttempt } from './egress.js'
+import { matchesStub, mergeVerdicts, type EgressAttempt } from './egress.js'
+import { StackEgressLedger, stackEgressVerdict } from './egress-record.js'
 import { runFlowCheck, runSuiteCheck, undeclaredCheckKinds, type FlowCheckResult, type FlowDriverCapabilities, type FlowPage, type FlowTotpConfig, type FlowTrace } from './flow.js'
 import type { FlowRepairRecord } from './locator.js'
 import { flowDriverFor } from './flow-driver.js'
@@ -34,7 +35,7 @@ import { extractCode, mailEvidence, runMailCheck, type MailProof, type ReadMail 
 import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCapabilities, mcpDriverServer, type McpToolResult } from './mcp.js'
 import { ProfileMissingError, clientExecutableName, isCommandBoot, loadProfile, pathOnTarget, validateProfileConfig, type ProfileClient, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, mailEvidenceRules, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
-import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunBaseImage, type RunProfileSummary, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
+import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunBaseImage, type RunEgress, type RunProfileSummary, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
 import { flowOpenUrl } from './app-address.js'
 import { runHttpCheckJob } from './http-run.js'
@@ -395,8 +396,7 @@ function containmentOf(
  * Execute a job's checks against the head revision and write result.json into the
  * job's evidence directory.
  *
- * Limitations of this slice: checks run against the head revision only (base
- * execution lands with the orchestrator), and each command's `run` string is
+ * Limitations of this slice: each command's `run` string is
  * split on whitespace and spawned directly without a shell, so quoting, pipes
  * and shell syntax are not interpreted. Flow checks run last-in-class: suite
  * flows through their declared command, action flows through the page seam.
@@ -839,24 +839,34 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
       a11y: a11yContextOf(profile, visual.comparison, side, job.criteria),
       ...(side === undefined ? {} : { tracesRoot: side.tracesRoot }),
     }
+    const egress = new StackEgressLedger()
     const criteria = await runCriteriaAcrossLanes(
       job.criteria,
       shardCriteria(job.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
-      { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy, opts, ...(side?.gate === undefined ? {} : { gate: side.gate }) },
+      { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy, opts, egress, ...(side?.gate === undefined ? {} : { gate: side.gate }) },
     )
     await cleanMail(mail, values.mail_address, job.evidenceDir, 'mail-cleanup.json', rules)
+    // What the run's own stack looked up (#382), read once its checks are done.
+    await egress.note(boot.egress, isolation, opts)
+    const stackEgress = egress.summary()
     await persistQuarantine(policy)
     await writeCacheHits(job.evidenceDir, cache?.hits ?? [])
     await releaseClient()
-    // The judge is the verdict decision. Base execution and egress interception
-    // of a booted stack land with the orchestrator; a target run records what its
+    // The judge is the verdict decision. A target run records what its
     // browser reached, and a host the profile does not declare refuses the run.
     // A client run records what its build reached through the gate, and holds
-    // it to the same rule (#223).
+    // it to the same rule (#223). A booted stack is held to its stubs by the
+    // run's resolver, and a name no stub declares refuses the run too (#382).
     const undeclared = (target?.undeclared.length ?? 0) + (reaching?.undeclared.length ?? 0)
-    const egressVerdict = undeclared > 0 ? 'refused' : 'allowed'
-    const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict })
-    const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, startedAt, ...targetNote }, rules, values, execution, opts.host)
+    const verdict = stackVerdictOver(judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: undeclared > 0 ? 'refused' : 'allowed' }).verdict, stackEgress)
+    const finished = await finishRun(
+      job,
+      { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, startedAt, ...targetNote, ...(stackEgress === undefined ? {} : { egress: stackEgress }) },
+      rules,
+      values,
+      execution,
+      opts.host,
+    )
     await feedIfOptedIn(opts, job, finished.result)
     return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
   } finally {
@@ -865,6 +875,18 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     cancelProvision?.()
     cancelCleanup?.()
   }
+}
+
+/**
+ * What a booted stack's record does to the judge's verdict (#382): a name no
+ * stub declares refuses the run, and a record that cannot say what the stack
+ * looked up keeps a pass from standing. Nothing here raises a verdict.
+ */
+function stackVerdictOver(verdict: RunVerdict, egress: RunEgress | undefined): RunVerdict {
+  const stack = stackEgressVerdict(egress)
+  if (stack === 'refused') return mergeVerdicts([verdict, 'refused'])
+  if (stack === 'blocked' && verdict === 'passed') return 'blocked'
+  return verdict
 }
 
 /**
@@ -960,6 +982,10 @@ interface ProfileGroupOutcome {
   values?: RunValues
   isolation?: RunIsolation
   egressRefused?: boolean
+  /** The app's stack record could not say what it looked up (#382). */
+  egressBlocked?: boolean
+  /** What the app's stack reached for (#382). */
+  egress?: RunEgress
   /** The criteria this group served from the run's cache (#47). */
   cacheHits?: RunCacheContext['hits']
 }
@@ -1092,6 +1118,7 @@ async function runSeveralProfiles(
   // persists into the same quarantine store.
   const policy = await flakePolicyOf(opts)
   let egressRefused = false
+  let egressBlocked = false
   // Every started group's cancellation disposer is collected here and released
   // only when the whole run is over, so a SIGINT at any point of the run tears
   // down every app the run has booted (#55).
@@ -1109,10 +1136,12 @@ async function runSeveralProfiles(
         criteria: outcome.criteria.map((criterion) => criterion.id),
         profile: entry.group.profile,
         ...(entry.requirements === undefined ? {} : { requirements: entry.requirements }),
+        ...(outcome.egress === undefined ? {} : { egress: outcome.egress }),
       })
       if (outcome.values !== undefined) recorded.push({ name: entry.group.name, values: outcome.values })
       if (outcome.isolation !== undefined) isolations.push({ name: entry.group.name, isolation: outcome.isolation })
       if (outcome.egressRefused === true) egressRefused = true
+      if (outcome.egressBlocked === true) egressBlocked = true
       if (outcome.cacheHits !== undefined) cacheHits.push(...outcome.cacheHits)
     }
   } finally {
@@ -1129,7 +1158,8 @@ async function runSeveralProfiles(
       `${redactText(JSON.stringify(entry.values, null, 2), rules)}\n`,
     )
   }
-  const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
+  const judged = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' }).verdict
+  const verdict = egressBlocked && judged === 'passed' ? 'blocked' : judged
   await writeCacheHits(job.evidenceDir, cacheHits)
   const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict, criteria, startedAt, profiles }, rules, undefined, execution, opts.host)
   await feedIfOptedIn(opts, job, finished.result)
@@ -1307,15 +1337,28 @@ async function runProfileGroup(
       a11y: a11yContextOf(profile, visual.comparison, side, group.criteria),
       ...(side === undefined ? {} : { tracesRoot: side.tracesRoot }),
     }
+    const ledger = new StackEgressLedger()
     const criteria = await runCriteriaAcrossLanes(
       group.criteria,
       shardCriteria(group.criteria, opts.workers ?? 1, isolatedSuitesOf(profile)),
-      { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy, opts, ...(side?.gate === undefined ? {} : { gate: side.gate }) },
+      { job, profile, rules, values, mail, artefacts, flow, execution, cache, policy, opts, egress: ledger, ...(side?.gate === undefined ? {} : { gate: side.gate }) },
     )
     await cleanMail(mail, values.mail_address, job.evidenceDir, `mail-cleanup-${group.name}.json`, rules)
-    const egressRefused = target !== undefined && target.undeclared.length > 0
-    const { verdict } = judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' })
-    return { criteria, verdict, values, ...(isolation === undefined ? {} : { isolation }), egressRefused, ...(cache === undefined ? {} : { cacheHits: cache.hits }) }
+    // Each app's stack is held to its own profile's stubs (#382).
+    await ledger.note(boot.egress, isolation, opts)
+    const egress = ledger.summary()
+    const egressRefused = (target !== undefined && target.undeclared.length > 0) || stackEgressVerdict(egress) === 'refused'
+    const verdict = stackVerdictOver(judgeRun({ base: [], head: toSideResults({ criteria }), egressVerdict: egressRefused ? 'refused' : 'allowed' }).verdict, egress)
+    return {
+      criteria,
+      verdict,
+      values,
+      ...(isolation === undefined ? {} : { isolation }),
+      egressRefused,
+      egressBlocked: stackEgressVerdict(egress) === 'blocked',
+      ...(egress === undefined ? {} : { egress }),
+      ...(cache === undefined ? {} : { cacheHits: cache.hits }),
+    }
   } finally {
     // The disposer stays installed until the whole several-app run ends, not
     // just this group: the earlier apps' stacks are still up while a later
@@ -1446,6 +1489,8 @@ interface LaneContext {
    * reason, and the comparison reports it as not compared.
    */
   gate?: (criterion: JobCriterion) => string | undefined
+  /** What the side's booted stacks reached for (#382): a criterion that boots its own stack adds its record here. */
+  egress?: StackEgressLedger
 }
 
 /**
@@ -1494,6 +1539,7 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
     app: { ...profile.app, health: { ...profile.app.health, http: isolatedHealthUrl(substituteValues(profile.app.health.http, shardValues), shardIsolation.port) } },
   }
   const cancelCleanup = installCancelCleanup(bootedShard, { ...opts, isolation: shardIsolation })
+  let shardEgress: StackEgress | undefined
   try {
     const boot = await bootApp(bootedShard, { ...opts, isolation: shardIsolation, root: job.repoPath })
     if (boot.kind === 'blocked') {
@@ -1507,6 +1553,7 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
     // is seeded the same way before the criterion's checks (#240).
     // Its log is in the criterion's own evidence directory, where no app's
     // seed log can have the same name.
+    shardEgress = boot.egress
     const unseeded = await seedBooted(bootedShard, shardValues, shardIsolation, job.repoPath, job.evidenceDir, ctx.rules, ctx.execution, `checks/${criterion.id}/${SEED_LOG}`)
     if (unseeded !== undefined) return { id: criterion.id, outcome: 'unverified', ...unseeded }
     // The criterion's artefact ledger starts empty: what its flow checks
@@ -1526,7 +1573,9 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
     // The criterion's app is torn down with the criterion: a sharded run
     // leaves no stack of its own holding a port or a volume the next
     // criterion or run could collide with (#48). The run's own app stays
-    // with the run, exactly as an unsharded one does.
+    // with the run, exactly as an unsharded one does. What the criterion's
+    // stack looked up is read first, while its resolver is still up (#382).
+    await ctx.egress?.note(shardEgress, shardIsolation, opts).catch(() => {})
     await stopApp(bootedShard, { ...opts, isolation: shardIsolation })
     cancelCleanup()
   }
@@ -2128,7 +2177,11 @@ function compareSides(job: Job, head: RunResult, base: BaseSideOutcome, startedA
   const regressed = new Set(
     judgeRun({ base: toBaseSideResults({ criteria }), head: toSideResults({ criteria }) }).regressions.map((regression) => regression.criterionId),
   )
-  const offered = base.images === undefined ? {} : { images: base.images }
+  // What the base side's stack reached for (#382): a base that looked up a
+  // name no stub declares refuses the run as the head would, because stubs
+  // merge first, so the base boots against them too.
+  const baseEgress = base.status === 'executed' ? base.result.egress : undefined
+  const offered = { ...(base.images === undefined ? {} : { images: base.images }), ...(baseEgress === undefined ? {} : { egress: baseEgress }) }
   const status: RunBase =
     base.status === 'executed' ? { ref: job.baseRef, status: 'executed', ...offered } : { ref: job.baseRef, status: 'not-executed', reason: base.reason, ...offered }
   // A client's two sides are two builds (#75): the result names the one the
@@ -2147,6 +2200,7 @@ function compareSides(job: Job, head: RunResult, base: BaseSideOutcome, startedA
   return {
     ...head,
     ...client,
+    verdict: stackEgressVerdict(baseEgress) === 'refused' ? mergeVerdicts([head.verdict, 'refused']) : head.verdict,
     criteria: criteria.map((criterion) => {
       if (criterion.outcome !== 'failed') return criterion
       if (regressed.has(criterion.id)) return { ...criterion, regression: true }

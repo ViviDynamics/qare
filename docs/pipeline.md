@@ -636,6 +636,56 @@ things hold:
 When the run ends, the pipeline takes its compose projects down, volumes
 included. Images the stack built stay in the runner's cache.
 
+### The stack's egress is contained
+
+A booted stack reaches nothing outside its declared stubs (#382). Before
+anything of the stack starts, the run reads it as compose resolves it and
+adds an override of its own:
+
+- **Every network of the stack is internal.** Docker gives an internal
+  network no route out, so no service of the stack reaches the internet,
+  the runner's network or another run's stack. Every service also joins
+  one more internal network, `qare-contained`.
+- **The run's resolver answers every name.** A resolver from the image the
+  run is in (`qare cell egress-dns`) runs on `qare-contained`, and every
+  service resolves through it. Your services still find each other by
+  compose name. A host a stub declares (`stubs[].hosts`, `*.` for one label)
+  is answered with the address of the service named in
+  `provided_by.compose_service`, so the app dials the stub by the vendor's
+  own host name and needs no configuration of its own for it. Any other name
+  is answered that there is no such host, and recorded.
+- **The relay publishes the ports.** Docker publishes no port of an
+  internal network, so each port your compose file publishes moves to a
+  relay (`qare cell egress-relay`), which publishes it on the same address
+  and carries each connection to your service. The health check, the
+  checks, a seed or suite that execs into a service, and a contained
+  command's gate reach the app exactly as before.
+
+After the checks the run reads what the resolver recorded. Every name the
+stack looked up that no stub declares refuses the run (`refused: missing
+stub: <host>:unknown (dns)`), at the head or at the base, because stubs
+merge first so the base boots against them too. The checks still run and
+their outcomes stand; the comment lists each name, the stub issue step
+files each one, and `result.json` records it under `egress` (and
+`base.egress`, or `profiles[].egress` for a run over several apps). A record
+the run cannot read keeps a run from passing: it is `blocked`.
+
+What this does not record: a connection to a literal address looks up no
+name, so the internal network refuses it and the record cannot list it.
+
+A stack is booted uncontained, and the comment says so with the reason,
+when the run cannot hold it to this: no image is named to run the resolver
+from (`QARE_IMAGE_REF`, which the execute step sets; a local `qare run`
+outside the image has none), a service runs with `network_mode: host`, the
+stack joins an external network, or it publishes a udp port or a port
+range. A target profile boots nothing, so its comment says the target's own
+egress was not contained by the run.
+
+[`examples/egress-app`](../examples/egress-app) is a stack whose app reaches
+its stub by the vendor's host name, tries a vendor no stub declares and a
+literal address. qare's CI runs the pipeline's execute steps against it and
+holds the run to a refusal that lists that vendor.
+
 [`examples/compose-app`](../examples/compose-app) is a small profile of this
 shape. qare's CI runs the pipeline's own execute steps against it on every
 change, so this path is exercised and not only described.

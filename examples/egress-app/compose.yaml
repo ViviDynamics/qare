@@ -1,0 +1,14 @@
+# The stack the egress example boots (#382): an app that reaches for two
+# vendors and a literal address as it starts, and the stub that stands in
+# for one of the vendors. The profile declares the stub's host; the other
+# vendor is declared nowhere, so the run must list it and refuse.
+services:
+  web:
+    build: .
+    ports:
+      - "127.0.0.1:${QARE_APP_PORT:-3000}:3000"
+    depends_on:
+      - billing-stub
+  billing-stub:
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /stub && echo billing-stub-says-hello > /stub/index.html && exec httpd -f -p 80 -h /stub"]

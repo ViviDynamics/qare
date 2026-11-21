@@ -182,6 +182,8 @@ export interface RunBase {
    * place of building, with the reason when it did not.
    */
   images?: RunBaseImage[]
+  /** What the base side's stack reached for (#382), when it booted one. */
+  egress?: RunEgress
 }
 
 export interface RunBaseImage {
@@ -192,6 +194,22 @@ export interface RunBaseImage {
   reason?: string
 }
 
+/**
+ * What a booted stack's egress was held to (#382): contained on internal
+ * networks, where the run's resolver answered every name, or not, and why
+ * not. A contained stack names the stub hosts it looked up and every name no
+ * stub declares, each of which refused the run. `capped` says the record was
+ * cut at its bound; `unread` says the record could not be read at all.
+ */
+export interface RunEgress {
+  containment: 'contained' | 'uncontained'
+  reason?: string
+  declared?: string[]
+  undeclared?: string[]
+  capped?: boolean
+  unread?: string
+}
+
 /** One app of a several-app run (#55): its verdict, its criteria, the profile it was checked under, and what that profile required of the host (#76). */
 export interface RunProfileSummary {
   name: string
@@ -199,6 +217,8 @@ export interface RunProfileSummary {
   criteria: string[]
   profile?: JobProfileRef
   requirements?: Requirements
+  /** What this app's stack reached for (#382), when it booted one. */
+  egress?: RunEgress
 }
 
 export interface RunResult {
@@ -212,6 +232,13 @@ export interface RunResult {
   client?: RunClient
   /** The base side this run compared the head against (#147); absent on a one-sided run. */
   base?: RunBase
+  /**
+   * What the run's booted stack reached for (#382): contained or not, the
+   * stub hosts it looked up and the names no stub declares. Absent when the
+   * run booted no stack (a target or a client build) or a result written
+   * before stacks were contained.
+   */
+  egress?: RunEgress
   /** Where and with which versions this run executed (issue #91). */
   environment?: RunEnvironment
   /**
@@ -351,6 +378,7 @@ export function parseResult(input: unknown): RunResult {
   const judgeUsage = parseModelUsage(input.judgeUsage, 'judgeUsage')
   const planUsage = parseModelUsage(input.planUsage, 'planUsage')
   const advisory = parseAdvisory(input.advisory)
+  const egress = parseEgress(input.egress, 'egress')
 
   return {
     schemaVersion,
@@ -368,6 +396,37 @@ export function parseResult(input: unknown): RunResult {
     ...(judgeUsage === undefined ? {} : { judgeUsage }),
     ...(planUsage === undefined ? {} : { planUsage }),
     ...(advisory === undefined ? {} : { advisory }),
+    ...(egress === undefined ? {} : { egress }),
+  }
+}
+
+/** A stack's egress record (#382), read field by field: a contained stack says what it looked up, an uncontained one says why it was not contained. */
+function parseEgress(value: unknown, field: string): RunEgress | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) fail(field, `result.json ${field} must be a JSON object with containment`)
+  if (value.containment !== 'contained' && value.containment !== 'uncontained')
+    fail(`${field}.containment`, `unknown containment ${JSON.stringify(value.containment)} (a stack ran "contained" or "uncontained")`)
+  const names = (key: 'declared' | 'undeclared'): string[] | undefined => {
+    const list = value[key]
+    if (list === undefined) return undefined
+    if (!Array.isArray(list)) fail(`${field}.${key}`, `${field}.${key} must be an array of host names`)
+    return list.map((name, index) => nonEmptyString(name, `${field}.${key}[${index}]`, 'host name'))
+  }
+  if (value.containment === 'uncontained') {
+    if (value.declared !== undefined || value.undeclared !== undefined)
+      fail(field, 'an uncontained stack had no resolver of the run, so it records no names it looked up')
+    return { containment: 'uncontained', reason: nonEmptyString(value.reason, `${field}.reason`, 'reason a stack was not contained') }
+  }
+  if (value.capped !== undefined && typeof value.capped !== 'boolean') fail(`${field}.capped`, `${field}.capped must be a boolean`)
+  const declared = names('declared')
+  const undeclared = names('undeclared')
+  const unread = value.unread === undefined ? undefined : nonEmptyString(value.unread, `${field}.unread`, 'why the record could not be read')
+  return {
+    containment: 'contained',
+    ...(declared === undefined ? {} : { declared }),
+    ...(undeclared === undefined ? {} : { undeclared }),
+    ...(value.capped === true ? { capped: true } : {}),
+    ...(unread === undefined ? {} : { unread }),
   }
 }
 
@@ -611,8 +670,10 @@ function parseProfiles(value: unknown): RunProfileSummary[] | undefined {
     // carried here rather than reconstructed from the app's name alone.
     const profile = entry.profile === undefined ? undefined : parseProfileRef(entry.profile)
     const requirements = parseRequirements(entry.requirements, `profiles[${index}].requirements`)
+    const egress = parseEgress(entry.egress, `profiles[${index}].egress`)
     return {
       ...(requirements === undefined ? {} : { requirements }),
+      ...(egress === undefined ? {} : { egress }),
       name,
       verdict: verdict as RunVerdict,
       criteria: entry.criteria.map((criterion, criterionIndex) =>
@@ -691,7 +752,8 @@ function parseRunBase(value: unknown): RunBase | undefined {
   const ref = nonEmptyString(value.ref, 'base.ref', 'base ref')
   if (value.status !== 'executed' && value.status !== 'not-executed')
     fail('base.status', `unknown base status ${JSON.stringify(value.status)} (expected "executed" or "not-executed")`)
-  const images = value.images === undefined ? {} : { images: parseBaseImages(value.images) }
+  const egress = parseEgress(value.egress, 'base.egress')
+  const images = { ...(value.images === undefined ? {} : { images: parseBaseImages(value.images) }), ...(egress === undefined ? {} : { egress }) }
   if (value.status === 'executed')
     return value.reason === undefined ? { ref, status: 'executed', ...images } : { ref, status: 'executed', reason: nonEmptyString(value.reason, 'base.reason', 'reason'), ...images }
   if (value.reason === undefined) fail('base.reason', 'a base side that did not execute names why')

@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "1",
+  "criteria": [
+    {
+      "id": "stub-reached",
+      "text": "The app reaches its billing vendor's stub by the vendor's own host name",
+      "checks": [
+        {
+          "kind": "command",
+          "name": "billing-stub-answered",
+          "command": "node examples/compose-app/page-has.mjs http://localhost:{{run.app_port}}/billing.txt billing-stub-says-hello"
+        }
+      ]
+    },
+    {
+      "id": "undeclared-blocked",
+      "text": "The app cannot reach a vendor no stub declares",
+      "checks": [
+        {
+          "kind": "command",
+          "name": "undeclared-vendor-blocked",
+          "command": "node examples/compose-app/page-has.mjs http://localhost:{{run.app_port}}/undeclared.txt blocked"
+        }
+      ]
+    },
+    {
+      "id": "address-blocked",
+      "text": "The app cannot reach a literal address outside the stack",
+      "checks": [
+        {
+          "kind": "command",
+          "name": "address-blocked",
+          "command": "node examples/compose-app/page-has.mjs http://localhost:{{run.app_port}}/address.txt blocked"
+        }
+      ]
+    }
+  ]
+}

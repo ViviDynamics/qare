@@ -5,6 +5,10 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import './source.mjs'
 
+// Its compose is a stand-in, so the stack is booted uncontained: containment
+// is exercised by stack-egress.mjs (#382), and the run's image is not named here.
+delete process.env.QARE_IMAGE_REF
+
 // Executable checks of faster booted runs (#381), run against the checkout
 // without a build: the workflow's own step scripts with curl and docker
 // stubbed, and the checkout's core source through source.mjs, with compose

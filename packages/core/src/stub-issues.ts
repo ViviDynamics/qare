@@ -1,4 +1,4 @@
-import type { EgressFinding } from './egress.js'
+import { missingStubReason, type EgressFinding } from './egress.js'
 import type { RunResult } from './result.js'
 
 export interface MissingStub {
@@ -36,6 +36,10 @@ export function missingStubsFromResult(result: RunResult): MissingStub[] {
       findings.push({ kind: 'refused', reason, count: 1 })
     }
   }
+  // A booted stack's lookups of names no stub declares (#382): the head's, the base's and each app's.
+  const records = [result?.egress, result?.base?.egress, ...(result?.profiles ?? []).map((profile) => profile.egress)]
+  for (const record of records)
+    for (const host of record?.undeclared ?? []) findings.push({ kind: 'refused', reason: missingStubReason(host), count: 1 })
   return missingStubs(findings)
 }
 

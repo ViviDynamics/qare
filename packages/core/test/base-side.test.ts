@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
+import { NO_EGRESS_IMAGE } from '../src/stack-egress.js'
 import {
   FileLedgerStore,
   loadResult,
@@ -89,7 +90,8 @@ test('a criterion that passed at the base and fails at the head is a regression,
   const { result } = await runJob(job, { ...recordingBoot(), base: { repoPath: trees.base } })
 
   expect(result.verdict).toBe('failed')
-  expect(result.base).toEqual({ ref: 'origin/main', status: 'executed' })
+  // The base booted a stack, uncontained where no image names the run's own (#382).
+  expect(result.base).toEqual({ ref: 'origin/main', status: 'executed', egress: { containment: 'uncontained', reason: NO_EGRESS_IMAGE } })
 
   // Worked at the base, fails at the head: a regression.
   const regressed = criterionOf(result, 'old-behaviour')
@@ -199,7 +201,8 @@ test('a criterion that cannot run at the base is not compared, and never a regre
   const job = jobFor(trees.head, [{ id: 'in-new-dir', text: 'the feature ships its file', checks: [{ kind: 'command', run: 'test -f shipped.txt', cwd: 'feature' }] }])
   const { result } = await runJob(job, { ...recordingBoot(), base: { repoPath: trees.base } })
 
-  expect(result.base).toEqual({ ref: 'origin/main', status: 'executed' })
+  // The base booted a stack, uncontained where no image names the run's own (#382).
+  expect(result.base).toEqual({ ref: 'origin/main', status: 'executed', egress: { containment: 'uncontained', reason: NO_EGRESS_IMAGE } })
   const criterion = criterionOf(result, 'in-new-dir')
   expect(criterion).toMatchObject({ outcome: 'failed', base: { outcome: 'not-compared' } })
   expect(criterion.base?.reason).toMatch(/^unverified at the base: /)

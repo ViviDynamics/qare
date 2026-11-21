@@ -87,6 +87,7 @@ export type {
   RunResult,
   RunTarget,
   RunBase,
+  RunEgress,
   RunBaseImage,
   CriterionBase,
 } from './result.js'
@@ -190,8 +191,8 @@ export { inboxSource, mailpitSource, mailReader, mailSourceOf, MAIL_SOURCE_KINDS
 export type { MailSource, MailFilter, MailRef, DeclaredMailSource, MailSourceKind } from './mail-source.js'
 export { Artefacts } from './artefacts.js'
 export type { ArtefactField } from './artefacts.js'
-export { bootApp, commandBootCompose, commandBootFile, stopApp } from './boot.js'
-export type { BootOutcome, BootOpts } from './boot.js'
+export { bootApp, commandBootCompose, commandBootFile, readStackEgress, stopApp } from './boot.js'
+export type { BootOutcome, BootOpts, StackEgress } from './boot.js'
 export { isolatedHealthUrl, isolateRun, mintIsolation } from './isolation.js'
 export type { RunIsolation } from './isolation.js'
 export { reapProjects } from './reap.js'
@@ -327,7 +328,8 @@ export { runCellCommand } from './cell-launch.js'
 export { clientCellProblem, reapLiveCells, startClientCell, trackLiveCell } from './client-cell.js'
 export type { CellDocker, CellRecord, ClientCell } from './client-cell.js'
 export type { ReachedHost } from './cell-gate.js'
-export { matchesStub, summarizeEgress, mergeVerdicts } from './egress.js'
+export { matchesStub, missingStubReason, summarizeEgress, mergeVerdicts } from './egress.js'
+export { NO_EGRESS_IMAGE } from './stack-egress.js'
 export type { EgressAttempt, EgressFinding, EgressStub } from './egress.js'
 export { diffStubs, flagAddedStubs } from './stub-diff.js'
 export type { StubDiff } from './stub-diff.js'

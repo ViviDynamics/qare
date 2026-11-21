@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
-import { loadResult, renderComment, toBaseSideResults } from '@qare/core'
+import { loadResult, NO_EGRESS_IMAGE, renderComment, toBaseSideResults } from '@qare/core'
 import { main } from '../src/index.js'
 import type { Writer } from '../src/index.js'
 
@@ -77,7 +77,8 @@ test('qare run checks the base too and names the regression; qare judge is hande
   expect(err.text()).toBe('')
 
   const executed = loadResult(await readFile(join(evidenceDir, 'result.json'), 'utf8'))
-  expect(executed.base).toEqual({ ref: 'origin/main', status: 'executed' })
+  // The base booted a stack, uncontained where no image names the run's own (#382).
+  expect(executed.base).toEqual({ ref: 'origin/main', status: 'executed', egress: { containment: 'uncontained', reason: NO_EGRESS_IMAGE } })
   // The judge gets a non-empty base out of what the run wrote.
   expect(toBaseSideResults(executed)).toEqual([
     { criterionId: 'old-behaviour', outcome: 'proven' },

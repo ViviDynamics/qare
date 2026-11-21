@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
+import { NO_EGRESS_IMAGE } from '../src/stack-egress.js'
 import {
   FileLedgerStore,
   decodePng,
@@ -373,7 +374,8 @@ test('a change that moves an element fails the visual criterion, with base, head
   const { result } = await runJob(job, { ...recordingBoot(), visualSession: backend.session, base: { repoPath: trees.base } })
 
   expect(result.verdict).toBe('failed')
-  expect(result.base).toEqual({ ref: 'origin/main', status: 'executed' })
+  // The base booted a stack, uncontained where no image names the run's own (#382).
+  expect(result.base).toEqual({ ref: 'origin/main', status: 'executed', egress: { containment: 'uncontained', reason: NO_EGRESS_IMAGE } })
   const criterion = criterionOf(result, 'dashboard')
   // Captured at the base, different at the head: the judge names it a regression.
   expect(criterion).toMatchObject({ outcome: 'failed', regression: true, base: { outcome: 'proven' } })
