@@ -464,6 +464,33 @@ things hold:
       kind: flow
   ```
 
+  A suite that runs your project's own tests can take a filter, so one
+  criterion runs one test. `filter` names the placeholder of the command that
+  takes a test name or path, and `report` the machine-readable format the
+  runner prints on stdout (`vitest-json`, `junit-xml` or `node-tap`), which
+  the run reads to count what ran:
+
+  ```yaml
+  suites:
+    - name: rspec
+      command: "docker compose -p qare-{{run.id}} -f compose.qa.yaml exec -T web bundle exec rspec {{test}} --format RspecJunitFormatter"
+      kind: command
+      filter: test
+      report: junit-xml
+  ```
+
+  The planner is told which suites take a filter, and plans a criterion about
+  behaviour as a suite check naming the test that covers it
+  (`{"kind":"flow","suite":"rspec","filter":"spec/models/invoice_spec.rb:12"}`)
+  before it falls back to a grep of the source. The filter is one token, checked
+  in code: letters, digits and `. _ / : * + ? ^ [ ] = , @ -`, not starting with
+  `-`, not absolute and not climbing out with `..`. The command that runs is
+  always the profile's, with that one token filled in. A run that ran no test,
+  or whose report cannot be read, is unverified however it exited, since some
+  runners exit 0 when a filter matches nothing. A filtered suite always needs a
+  filter, so a ledger `suite:<name>` reference to one is unverified: declare a
+  second suite without a filter for a whole-suite run.
+
 - **The seed runs inside the booted service the same way.** The run executes
   `app.seed.command` once the app is healthy and before any check. It runs
   inside the run image, where your application's runtime is not, so a seed
