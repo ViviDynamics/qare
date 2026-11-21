@@ -1,0 +1,33 @@
+# A stack written the way stacks on a daemon that answers no embedded DNS
+# are (#408): the default network has a subnet of its own, the database and
+# the stub are pinned to addresses on it, and the app declares no network at
+# all and finds both through extra_hosts. Containment must keep the app on
+# that default network, or the pinned addresses are out of its reach.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 198.18.89.0/24
+services:
+  web:
+    build: .
+    ports:
+      - "127.0.0.1:${QARE_APP_PORT:-3000}:3000"
+    extra_hosts:
+      - "db:198.18.89.10"
+      - "billing-stub:198.18.89.20"
+    depends_on:
+      - db
+      - billing-stub
+  db:
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /data && echo seeded-from-db > /data/seed.txt && echo db-ready > /data/ready && exec httpd -f -p 80 -h /data"]
+    networks:
+      default:
+        ipv4_address: 198.18.89.10
+  billing-stub:
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /stub && echo billing-stub-says-hello > /stub/index.html && exec httpd -f -p 80 -h /stub"]
+    networks:
+      default:
+        ipv4_address: 198.18.89.20

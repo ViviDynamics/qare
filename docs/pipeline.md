@@ -645,7 +645,11 @@ adds an override of its own:
 - **Every network of the stack is internal.** Docker gives an internal
   network no route out, so no service of the stack reaches the internet,
   the runner's network or another run's stack. Every service also joins
-  one more internal network, `qare-contained`.
+  one more internal network, `qare-contained`, and stays on every network
+  it was on, the implicit `default` of a service that declares none
+  included (#408). A pinned `ipv4_address` and every other network setting
+  are kept, so a stack that finds its services by static address and
+  `extra_hosts` boots as it was written.
 - **The run's resolver answers every name.** A resolver from the image the
   run is in (`qare cell egress-dns`) runs on `qare-contained`, and every
   service resolves through it. Your services still find each other by
@@ -653,13 +657,19 @@ adds an override of its own:
   is answered with the address of the service named in
   `provided_by.compose_service`, so the app dials the stub by the vendor's
   own host name and needs no configuration of its own for it. Any other name
-  is answered that there is no such host, and recorded.
+  is answered that there is no such host, and recorded. The stub services
+  start before the app, and the run hands the resolver their addresses as
+  the daemon reports them (`docker inspect`), so the resolver needs no
+  embedded DNS to find them (#408).
 - **The relay publishes the ports.** Docker publishes no port of an
   internal network, so each port your compose file publishes moves to a
   relay (`qare cell egress-relay`), which publishes it on the same address
-  and carries each connection to your service. The health check, the
-  checks, a seed or suite that execs into a service, and a contained
-  command's gate reach the app exactly as before.
+  and carries each connection to your service. The relay starts once the
+  stack is up, and carries each port to the address the daemon reports for
+  its service, never to its name, so it works on a daemon that answers no
+  embedded DNS (#408). The health check, the checks, a seed or suite that
+  execs into a service, and a contained command's gate reach the app
+  exactly as before.
 
 After the checks the run reads what the resolver recorded. Every name the
 stack looked up that no stub declares refuses the run (`refused: missing
@@ -678,13 +688,26 @@ when the run cannot hold it to this: no image is named to run the resolver
 from (`QARE_IMAGE_REF`, which the execute step sets; a local `qare run`
 outside the image has none), a service runs with `network_mode: host`, the
 stack joins an external network, or it publishes a udp port or a port
-range. A target profile boots nothing, so its comment says the target's own
-egress was not contained by the run.
+range. The same holds when the daemon cannot give the run an address it
+needs, a stub service's or the address of a service whose port the relay
+carries, or the resolver cannot be handed the stub addresses (#408): the
+run takes the stack it began to contain down and boots it as it is, so a
+stack is never booted half contained. A stack that cannot be taken down
+blocks the boot. A target profile boots nothing, so its comment says the
+target's own egress was not contained by the run.
 
 [`examples/egress-app`](../examples/egress-app) is a stack whose app reaches
 its stub by the vendor's host name, tries a vendor no stub declares and a
 literal address. qare's CI runs the pipeline's execute steps against it and
 holds the run to a refusal that lists that vendor.
+
+[`examples/pinned-app`](../examples/pinned-app) is a stack written for a
+daemon with no embedded DNS: a default network with a subnet of its own, a
+database and a stub pinned to addresses on it, and an app that declares no
+network and finds both through `extra_hosts`. qare's CI boots it contained
+through the pipeline's execute steps, seeds it, holds every check to
+passing, and reads the live stack to show the relay and the resolver were
+handed addresses, not service names.
 
 [`examples/compose-app`](../examples/compose-app) is a small profile of this
 shape. qare's CI runs the pipeline's own execute steps against it on every

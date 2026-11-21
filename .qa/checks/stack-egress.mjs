@@ -47,6 +47,23 @@ function compose(record = []) {
   }
 }
 
+/**
+ * A docker stand-in (#408): the run reads each service's address on the
+ * contained network from the daemon, so every container of the project is
+ * listed and described with one.
+ */
+function daemon() {
+  return async (args) => {
+    const project = (args.find((arg) => arg.startsWith('label=com.docker.compose.project=')) ?? '').split('=')[2]
+    if (args[0] === 'ps') return { code: 0, stdout: `${project}/web\n${project}/billing-stub`, stderr: '' }
+    const described = args.slice(1).map((id) => {
+      const [owner, service] = id.split('/')
+      return { Config: { Labels: { 'com.docker.compose.project': owner, 'com.docker.compose.service': service } }, NetworkSettings: { Networks: { [`${owner}_qare-contained`]: { IPAddress: service === 'web' ? '198.18.0.4' : '198.18.0.3' } } } }
+    })
+    return { code: 0, stdout: JSON.stringify(described), stderr: '' }
+  }
+}
+
 const profile = (extra = {}) => ({
   app: { boot: { compose: 'compose.qa.yaml', service: 'web' }, health: { http: HEALTH, timeout: '5s' }, seed: { command: 'true' }, login: { fixture: 'f.yml', role: 'admin' } },
   stubs: STUBS,
@@ -117,18 +134,19 @@ try {
   } else if (check === 'boot') {
     // The checkout's bootApp with an image to run the resolver from: every
     // network internal, the ports moved to the relay, the resolver started
-    // alone first, every service pointed at it with no search domain, and
-    // the down naming the overrides so the resolver and relay go too.
+    // alone first, every service pointed at it with no search domain, the
+    // relay started last by address (#408), and the down naming the
+    // overrides so the resolver and relay go too.
     const { bootApp, stopApp } = await core('boot.ts')
     const { isolateRun } = await core('isolation.ts')
     const isolation = await isolateRun()
     const stack = compose()
-    const outcome = await bootApp(profile(), { runCompose: stack.runCompose, probe: async () => ({ ok: true }), pollIntervalMs: 1, isolation, egressImage: IMAGE })
+    const outcome = await bootApp(profile(), { runCompose: stack.runCompose, runDocker: daemon(), probe: async () => ({ ok: true }), pollIntervalMs: 1, isolation, egressImage: IMAGE })
     assert.equal(outcome.kind, 'up')
     assert.deepEqual(outcome.egress, { containment: 'contained' })
     const verbs = stack.calls.map((call) => call.args.filter((arg) => !arg.startsWith('/') && arg !== '-f' && arg !== '-p' && arg !== isolation.project).join(' '))
     const override = stack.calls.find((call) => call.args.includes('--no-deps')).files[0]
-    const dns = stack.calls.at(-1).files.at(-1)
+    const dns = stack.calls.find((call) => call.args.includes('--wait')).files.at(-1)
     assert.match(override, /"default": \{"internal":true\}/)
     assert.match(override, /"qare-contained": \{"internal":true\}/)
     assert.match(dns, /dns_search: !override \["\."\]/)
@@ -159,7 +177,7 @@ try {
     mkdirSync(repo)
     const job = (inline) => ({ id: 'egress', repoPath: repo, baseRef: 'main', headRef: 'HEAD', post: 'none', evidenceDir: join(repo, 'evidence'), profile: { inline }, criteria: [{ id: 'runs', text: 'the check runs', checks: [{ kind: 'command', run: 'true' }] }] })
     const lookups = ['{"event":"lookup","host":"api.billing-vendor.example","declared":true}', '{"event":"lookup","host":"api.undeclared-vendor.example","declared":false}']
-    const { result } = await runJob(job(profile()), { runCompose: compose(lookups).runCompose, probe: async () => ({ ok: true }), pollIntervalMs: 1, execution: 'native', egressImage: IMAGE })
+    const { result } = await runJob(job(profile()), { runCompose: compose(lookups).runCompose, runDocker: daemon(), probe: async () => ({ ok: true }), pollIntervalMs: 1, execution: 'native', egressImage: IMAGE })
     const written = parseResult(JSON.parse(readFileSync(join(repo, 'evidence', 'result.json'), 'utf8')))
     assert.equal(result.verdict, 'refused')
     assert.deepEqual(written.egress, { containment: 'contained', declared: ['api.billing-vendor.example'], undeclared: ['api.undeclared-vendor.example'] })
