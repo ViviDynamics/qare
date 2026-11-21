@@ -39,6 +39,17 @@ standing in for fetch in the same process, so they need no network, model or
 credentials. Choose them for those criteria, never a grep of the source or a
 Wikipedia page: the target has no API of its own to send an http check to.
 
+Executable command boot checks (#379): booting an app by `app.boot: { command,
+image, port }`, its run against health, seed, checks and suites, isolation of
+concurrent runs with reap, and `qare init` offering the command form are proven
+by `node -- .qa/checks/command-boot.mjs <check>`, the declared
+command-boot-check command, with check `boot`, `run`, `isolation` or `init`.
+They run the checkout's core source without a build, with compose standing in
+for docker and reading the project file the run writes, so they need no daemon,
+network, model or credentials. Choose them for those criteria, never a grep of
+the source: a grep shows that a string exists, not that the boot works. The
+real docker boot of examples/command-app is CI's compose-boot job.
+
 qare repository QA profile (self-run target).
 
 What this is: the profile qare's own self-run executes, so a pull request
