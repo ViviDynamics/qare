@@ -2,6 +2,7 @@
 // verbatim and rejects anything else. Type-only import: the loader adds no
 // runtime dependency on the runner.
 import { undeclaredCheckKinds, type FlowAction, type FlowDriverCapabilities, type FlowElement } from './flow.js'
+import { suiteFilterViolation } from './suite-filter.js'
 import { parseMailDelivery, type MailAuthenticationAssertion } from './mail-delivery.js'
 import { identityOfPath, isSnapshotPath } from './locator.js'
 import type { ModelUsage } from './metrics.js'
@@ -25,6 +26,8 @@ export interface FlowCheck {
   kind: 'flow'
   name: string
   suite?: string
+  /** The test name or path a suite that declares a filter runs (#376). */
+  filter?: string
   actions?: FlowActionStep[]
   inferred?: boolean
 }
@@ -405,9 +408,12 @@ function parseCheck(value: unknown, base: string, extraFlowActions: readonly str
         fail(`${base}.suite`, 'flow check needs a suite (an existing suite name) or actions (a fixed action set)')
       if (hasSuite && hasActions)
         fail(`${base}.suite`, 'flow check carries both suite and actions; a flow check is one or the other')
+      if (value.filter !== undefined && !hasSuite)
+        fail(`${base}.filter`, 'a filter names the test a suite runs, so only a flow check that names a suite carries one')
       if (hasSuite) {
         const suite = nonEmptyString(value.suite, `${base}.suite`, 'suite')
-        return finish({ kind: 'flow', name, suite }, inferred)
+        const filter = parseSuiteFilter(value.filter, `${base}.filter`)
+        return finish({ kind: 'flow', name, suite, ...(filter === undefined ? {} : { filter }) }, inferred)
       }
       const actions = parseFlowActions(value.actions, `${base}.actions`, extraFlowActions)
       return finish({ kind: 'flow', name, actions }, inferred)
@@ -715,6 +721,14 @@ function parseCode(value: unknown, field: string): { pattern?: string } | undefi
 function parseTimeoutMs(value: unknown, field: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)
     fail(field, 'timeoutMs must be a positive number of milliseconds')
+  return value
+}
+
+function parseSuiteFilter(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') fail(field, 'filter must be a string: the test name or path the suite runs')
+  const violation = suiteFilterViolation(value)
+  if (violation !== undefined) fail(field, violation)
   return value
 }
 

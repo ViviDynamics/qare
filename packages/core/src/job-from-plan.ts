@@ -29,6 +29,7 @@ function runnable(check: PlanCheck): JobCheck | undefined {
       return {
         kind: 'flow',
         ...(check.suite === undefined ? {} : { suite: check.suite }),
+        ...(check.filter === undefined ? {} : { filter: check.filter }),
         ...(check.actions === undefined ? {} : { actions: check.actions }),
       }
     case 'mail':

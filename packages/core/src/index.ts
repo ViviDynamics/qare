@@ -164,6 +164,7 @@ export {
 } from './plan-step.js'
 export type { DeclaredRunInputs, PlanBatchReport, PlanCriterionInput, PlanInputs, PlanSuite, UnplannedCriterion } from './plan-step.js'
 export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'
+export { SUITE_FILTER_LIMIT, suiteFilterViolation } from './suite-filter.js'
 export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobVisualCheck, JobA11yCheck, JobCheck, JobPostTarget, JobProfileGroup, SingleProfileJob, SeveralProfilesJob } from './job.js'
 export { httpMailbox, mailEvidence, runMailCheck, extractCode, DEFAULT_CODE_PATTERN } from './mailbox.js'
 export { AUTH_MECHANISMS, assessDelivery, fromDomain, parseAuthenticationResults } from './mail-auth.js'
