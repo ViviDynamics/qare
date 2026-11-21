@@ -1,9 +1,8 @@
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
-import { ask, echoServer, readThrough, type Closable } from './egress-sockets.js'
+import { ask, echoServer, freePort, readThrough, type Closable } from './egress-sockets.js'
 import { parseSinkRecord, startDnsSink, startRelay, type DnsSink, type Relay } from '../src/egress-sink.js'
 
 /** A DNS query for one name, as a stub resolver sends it. */
@@ -151,14 +150,6 @@ describe('reading the sink record back (#382)', () => {
     expect(parseSinkRecord('{"event":"capped"}\n')).toEqual({ lookups: [], capped: true })
   })
 })
-
-async function freePort(): Promise<number> {
-  const server = createServer()
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-  const port = (server.address() as { port: number }).port
-  await new Promise((resolve) => server.close(resolve))
-  return port
-}
 
 describe('qare cell egress-dns-map, and the sink and relay by address (#408)', () => {
   test('the map is written whole, and the running sink answers from it where no service name resolves', async () => {

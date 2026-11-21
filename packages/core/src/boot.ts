@@ -12,7 +12,22 @@ import { VERSION } from './version.js'
 import { parseDurationMs } from './duration.js'
 import { composeEnv, hasMintedProject, mintIsolation, type RunIsolation } from './isolation.js'
 import { parseSinkRecord, type SinkRecord } from './egress-sink.js'
-import { containmentOf, containmentOverrideFile, NO_EGRESS_IMAGE, dnsOverride, dnsOverrideFile, EGRESS_DNS_SERVICE, EGRESS_RELAY_SERVICE, type ComposeConfig } from './stack-egress.js'
+import {
+  containedAddresses,
+  containmentOf,
+  containmentOverrideFile,
+  NO_EGRESS_IMAGE,
+  dnsOverride,
+  dnsOverrideFile,
+  EGRESS_DNS_SERVICE,
+  EGRESS_MAP_FILE,
+  EGRESS_RELAY_SERVICE,
+  relayOverride,
+  relayOverrideFile,
+  type ComposeConfig,
+  type RelayPlan,
+} from './stack-egress.js'
+import { defaultRunDocker } from './base-image.js'
 import { DEFAULT_CLIENT_HEALTH_TIMEOUT, electronHealthCheck, provisionClient, type ProvisionOpts, type ProvisionSide, type ProvisionedArtefact } from './provision.js'
 
 /**
@@ -429,13 +444,50 @@ const EGRESS_POLL_MS = 250
 /** A compose call the containment makes beside the boot: reading the stack, starting its resolver, reading its log. */
 const EGRESS_CALL_TIMEOUT_MS = 120_000
 
+/** How the boot runs `docker` itself. */
+type RunDockerSeam = NonNullable<BootOpts['runDocker']>
+
+/**
+ * The address of each running container of the project on its contained
+ * network, by compose service (#408), read from the daemon: a daemon may
+ * answer no embedded DNS, so nothing of the containment looks a service up
+ * by name. A service with no running container is not listed.
+ */
+async function readContainedAddresses(project: string, runDocker: RunDockerSeam): Promise<Record<string, string[]> | { problem: string }> {
+  const listed = await runDocker(['ps', '-q', '--no-trunc', '--filter', `label=com.docker.compose.project=${project}`], EGRESS_CALL_TIMEOUT_MS)
+  if (listed.code !== 0) return { problem: `docker ps exited ${listed.code}` }
+  const ids = listed.stdout.split(/\s+/).filter((id) => id !== '')
+  if (ids.length === 0) return {}
+  const inspected = await runDocker(['inspect', ...ids], EGRESS_CALL_TIMEOUT_MS)
+  if (inspected.code !== 0) return { problem: `docker inspect exited ${inspected.code}` }
+  return containedAddresses(inspected.stdout, project) ?? { problem: 'docker inspect did not describe the containers' }
+}
+
+/**
+ * Take a stack the run could not finish containing down (#408), and the
+ * containment overrides with it, so it boots again as it is: a stack is
+ * never booted half contained. The reason why is undefined when it is down.
+ */
+async function abandonContainment(app: ComposeApp, isolation: RunIsolation, runCompose: NonNullable<BootOpts['runCompose']>, env: Record<string, string> | undefined): Promise<{ problem: string; logs: string } | undefined> {
+  const down = await runCompose(['-p', isolation.project, ...composeFiles(app), 'down'], EGRESS_CALL_TIMEOUT_MS, env)
+  if (down.code !== 0) return { problem: `the stack could not be taken down to boot it uncontained: compose down exited ${down.code}`, logs: `${down.stdout}${down.stderr}` }
+  for (const file of [containmentOverrideFile(isolation.project), dnsOverrideFile(isolation.project), relayOverrideFile(isolation.project)]) await rm(file, { force: true }).catch(() => {})
+  return undefined
+}
+
+/** Contained, the forwards the relay is handed once the stack is up; or why the stack boots as it is; or what blocks the boot. */
+type Contained = { app: ComposeApp; egress: StackEgress; forwards?: RelayPlan[] } | { blocked: string; logs: string }
+
 /**
  * Contain the stack before it boots (#382): read it as compose resolves it,
  * write the override that makes its networks internal and moves its
  * published ports to the relay, start the resolver alone, and once it has
- * said its address, point every service's resolver at it. A stack the run
- * cannot hold to that boots as it is, and says why. A containment that
- * fails part way blocks the boot: a stack is never booted half contained.
+ * said its address, point every service's resolver at it. The services that
+ * provide stubs start next, and the resolver is handed their addresses as
+ * the daemon gives them (#408). A stack the run cannot hold to that boots as
+ * it is, and says why; one it began to contain is taken down first. A
+ * containment that fails part way and cannot be undone blocks the boot: a
+ * stack is never booted half contained.
  */
 async function containStack(
   app: ComposeApp,
@@ -444,7 +496,8 @@ async function containStack(
   runCompose: NonNullable<BootOpts['runCompose']>,
   isolation: RunIsolation,
   env: Record<string, string> | undefined,
-): Promise<{ app: ComposeApp; egress: StackEgress } | { blocked: string; logs: string }> {
+  timeoutMs: number,
+): Promise<Contained> {
   const image = opts.egressImage ?? process.env.QARE_IMAGE_REF ?? ''
   // With no image to run the resolver from, the stack is not read at all: it boots as it is, and says so.
   if (image === '') return { app, egress: { containment: 'uncontained', reason: NO_EGRESS_IMAGE } }
@@ -476,7 +529,69 @@ async function containStack(
   if (address === undefined) return { blocked: "the stack's resolver did not say where it answers, so its egress could not be contained", logs: said }
   const second = dnsOverrideFile(isolation.project)
   await writeFile(second, dnsOverride(plan.services, address), { mode: 0o600 })
-  return { app: { ...held, overrides: [...(held.overrides ?? []), second] }, egress: { containment: 'contained' } }
+  const resolving: ComposeApp = { ...held, overrides: [...(held.overrides ?? []), second] }
+  const contained: Contained = { app: resolving, egress: { containment: 'contained' }, forwards: plan.forwards }
+  if (plan.stubServices.length === 0) return contained
+
+  // The stubs are up, and the resolver knows where they are, before anything that may dial them starts (#408).
+  const uncontained = async (reason: string): Promise<Contained> => {
+    const left = await abandonContainment(resolving, isolation, runCompose, env)
+    if (left !== undefined) return { blocked: `${reason}, and ${left.problem}`, logs: left.logs }
+    return { app, egress: { containment: 'uncontained', reason } }
+  }
+  const stubs = await runCompose(['-p', isolation.project, ...composeFiles(resolving), 'up', '-d', ...plan.stubServices], timeoutMs, env)
+  if (stubs.code !== 0) return { blocked: `the stack's stub services did not start, so its egress could not be contained: compose up exited ${stubs.code}`, logs: `${stubs.stdout}${stubs.stderr}` }
+  const found = await readContainedAddresses(isolation.project, opts.runDocker ?? defaultRunDocker)
+  if ('problem' in found) return uncontained(`the run could not read the stack's addresses from the daemon: ${String(found.problem)}`)
+  for (const service of plan.stubServices)
+    if ((found[service] ?? []).length === 0) return uncontained(`the daemon gave the stub service ${service} no address on the stack's contained network, so the run's resolver could not answer for it`)
+  const handed = await runCompose(
+    [
+      '-p',
+      isolation.project,
+      ...composeFiles(resolving),
+      'exec',
+      '-T',
+      EGRESS_DNS_SERVICE,
+      'qare',
+      'cell',
+      'egress-dns-map',
+      '--map',
+      EGRESS_MAP_FILE,
+      ...plan.stubServices.flatMap((service) => ['--service', `${service}=${(found[service] ?? []).join(',')}`]),
+    ],
+    EGRESS_CALL_TIMEOUT_MS,
+    env,
+  )
+  if (handed.code !== 0) return uncontained(`the run's resolver could not be handed the stub services' addresses: compose exec exited ${handed.code}`)
+  return contained
+}
+
+/**
+ * Start the relay of a contained stack that is up (#408): each published
+ * port is carried to the address the daemon gives its service, never to its
+ * name. `uncontained` is why the relay cannot be handed an address it
+ * needs; `blocked` is a relay that did not start.
+ */
+async function startStackRelay(
+  app: ComposeApp,
+  forwards: readonly RelayPlan[],
+  opts: BootOpts,
+  runCompose: NonNullable<BootOpts['runCompose']>,
+  isolation: RunIsolation,
+  env: Record<string, string> | undefined,
+): Promise<{ app: ComposeApp } | { uncontained: string } | { blocked: string; logs: string }> {
+  const found = await readContainedAddresses(isolation.project, opts.runDocker ?? defaultRunDocker)
+  if ('problem' in found) return { uncontained: `the run could not read the stack's addresses from the daemon: ${String(found.problem)}` }
+  const relay = relayOverride(forwards, found)
+  if ('missing' in relay) return { uncontained: `the daemon gave the service ${relay.missing} no address on the stack's contained network, so the relay could not carry the port it publishes` }
+  if (relay.override === undefined) return { app }
+  const file = relayOverrideFile(isolation.project)
+  await writeFile(file, relay.override, { mode: 0o600 })
+  const relayed: ComposeApp = { ...app, overrides: [...(app.overrides ?? []), file] }
+  const started = await runCompose(['-p', isolation.project, ...composeFiles(relayed), 'up', '-d', '--no-deps', EGRESS_RELAY_SERVICE], EGRESS_CALL_TIMEOUT_MS, env)
+  if (started.code !== 0) return { blocked: `the stack's relay did not start, so the ports it publishes cannot be reached: compose up exited ${started.code}`, logs: `${started.stdout}${started.stderr}` }
+  return { app: relayed }
 }
 
 /**
@@ -499,7 +614,7 @@ export async function readStackEgress(isolation: RunIsolation, opts: Pick<BootOp
 
 /** The containment overrides a stack was booted with (#382), the ones its down must name too. */
 function containmentFiles(project: string): string[] {
-  return [containmentOverrideFile(project), dnsOverrideFile(project)].filter((file) => existsSync(file))
+  return [containmentOverrideFile(project), dnsOverrideFile(project), relayOverrideFile(project)].filter((file) => existsSync(file))
 }
 
 async function captureComposeLogs(app: ComposeApp, opts: BootOpts, isolation: RunIsolation): Promise<string> {
@@ -823,29 +938,45 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   if (unbuilt !== undefined) return { kind: 'blocked', ...unbuilt, isolation }
 
   // The stack's egress (#382): contained before anything of it starts.
-  const contained = await containStack(app, profile, opts, runCompose, isolation, env)
+  const contained = await containStack(app, profile, opts, runCompose, isolation, env, timeoutMs)
   if ('blocked' in contained) return { kind: 'blocked', reason: contained.blocked, logs: contained.logs, isolation }
+  const plain = app
   app = contained.app
-  const egress = contained.egress
-  const relay = egress.containment === 'contained' ? [EGRESS_RELAY_SERVICE] : []
+  let egress = contained.egress
 
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const watchdog = new Promise<'watchdog'>((resolve) => {
-    timer = setTimeout(() => resolve('watchdog'), timeoutMs)
-  })
-  let up: { code: number; stdout: string; stderr: string } | 'watchdog'
-  let started: Promise<{ code: number; stdout: string; stderr: string }>
-  try {
-    started = runCompose(['-p', isolation.project, ...composeFiles(app), 'up', '-d', '--wait', app.boot.service, ...relay], timeoutMs, env)
-    // The losing branch of the race is drained, so a compose up that settles
-    // late after the watchdog does not crash the process unhandled.
-    void started.catch(() => {})
-    up = await Promise.race([watchdog, started])
-  } catch (error) {
-    clearTimeout(timer)
-    return { kind: 'blocked', reason: `boot command failed to start: ${String(error)}`, logs: '', isolation }
+  const upStack = async (target: ComposeApp): Promise<{ up: { code: number; stdout: string; stderr: string } | 'watchdog'; started: Promise<unknown> } | { error: unknown }> => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const watchdog = new Promise<'watchdog'>((resolve) => {
+      timer = setTimeout(() => resolve('watchdog'), timeoutMs)
+    })
+    try {
+      const started = runCompose(['-p', isolation.project, ...composeFiles(target), 'up', '-d', '--wait', target.boot.service], timeoutMs, env)
+      // The losing branch of the race is drained, so a compose up that settles
+      // late after the watchdog does not crash the process unhandled.
+      void started.catch(() => {})
+      return { up: await Promise.race([watchdog, started]), started }
+    } catch (error) {
+      return { error }
+    } finally {
+      clearTimeout(timer)
+    }
   }
-  clearTimeout(timer)
+
+  let booted = await upStack(app)
+  // A contained stack's relay starts once the stack is up, so the daemon can say where each service it carries to is (#408).
+  if ('up' in booted && booted.up !== 'watchdog' && booted.up.code === 0 && contained.forwards !== undefined) {
+    const relayed = await startStackRelay(app, contained.forwards, opts, runCompose, isolation, env)
+    if ('blocked' in relayed) return { kind: 'blocked', reason: relayed.blocked, logs: relayed.logs, isolation, egress }
+    if ('uncontained' in relayed) {
+      const left = await abandonContainment(app, isolation, runCompose, env)
+      if (left !== undefined) return { kind: 'blocked', reason: `${relayed.uncontained}, and ${left.problem}`, logs: left.logs, isolation, egress }
+      app = plain
+      egress = { containment: 'uncontained', reason: relayed.uncontained }
+      booted = await upStack(app)
+    } else app = relayed.app
+  }
+  if ('error' in booted) return { kind: 'blocked', reason: `boot command failed to start: ${String(booted.error)}`, logs: '', isolation }
+  const { up, started } = booted
 
   if (up === 'watchdog') {
     // The losing branch is drained before the down: a compose up that is
@@ -914,7 +1045,8 @@ export async function stopApp(profile: QaProfile, opts: BootOpts = {}): Promise<
     } catch (error) {
       console.error(`compose down failed: ${String(error)}`)
     }
-    for (const file of [commandBootFile(opts.isolation.project), containmentOverrideFile(opts.isolation.project), dnsOverrideFile(opts.isolation.project)]) await rm(file, { force: true }).catch(() => {})
+    for (const file of [commandBootFile(opts.isolation.project), containmentOverrideFile(opts.isolation.project), dnsOverrideFile(opts.isolation.project), relayOverrideFile(opts.isolation.project)])
+      await rm(file, { force: true }).catch(() => {})
     return
   }
   // A contained stack's resolver and relay are in its overrides alone (#382): the down names them, or it leaves them running.
@@ -930,6 +1062,12 @@ export async function stopApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   }
   // The base image and build cache overrides go with the stack they booted (#381).
   if (opts.isolation !== undefined)
-    for (const file of [baseImageOverrideFile(opts.isolation.project), buildCacheOverrideFile(opts.isolation.project), containmentOverrideFile(opts.isolation.project), dnsOverrideFile(opts.isolation.project)])
+    for (const file of [
+      baseImageOverrideFile(opts.isolation.project),
+      buildCacheOverrideFile(opts.isolation.project),
+      containmentOverrideFile(opts.isolation.project),
+      dnsOverrideFile(opts.isolation.project),
+      relayOverrideFile(opts.isolation.project),
+    ])
       await rm(file, { force: true }).catch(() => {})
 }

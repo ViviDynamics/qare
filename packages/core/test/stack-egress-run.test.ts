@@ -50,6 +50,16 @@ function stack(records: string[][]): BootOpts & { calls: string[][] } {
       if (args.includes('logs')) return { code: 0, stdout: [READY, ...(records[projects.indexOf(project)] ?? [])].join('\n'), stderr: '' }
       return { code: 0, stdout: '', stderr: '' }
     },
+    // The daemon gives every service of a project an address on its contained network (#408).
+    runDocker: async (args) => {
+      const project = (args.find((arg) => arg.startsWith('label=com.docker.compose.project=')) ?? '').split('=')[2]
+      if (args[0] === 'ps') return { code: 0, stdout: `${project}/web\n${project}/billing-stub`, stderr: '' }
+      const containers = args.slice(1).map((id) => {
+        const [owner, service] = id.split('/') as [string, string]
+        return { Config: { Labels: { 'com.docker.compose.project': owner, 'com.docker.compose.service': service } }, NetworkSettings: { Networks: { [`${owner}_qare-contained`]: { IPAddress: '198.18.0.9' } } } }
+      })
+      return { code: 0, stdout: JSON.stringify(containers), stderr: '' }
+    },
     probe: async () => ({ ok: true }),
     pollIntervalMs: 1,
   }
