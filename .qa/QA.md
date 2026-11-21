@@ -39,6 +39,19 @@ standing in for fetch in the same process, so they need no network, model or
 credentials. Choose them for those criteria, never a grep of the source or a
 Wikipedia page: the target has no API of its own to send an http check to.
 
+Executable pinned stack checks (#408): a contained service keeping every
+network it had (the implicit `default` included, `ipv4_address` kept), the
+unit test that covers it, the relay and the resolver reaching services by
+the addresses the run reads from the daemon and not by name, and a stack
+the run cannot finish containing booting uncontained with the reason are
+proven by `node -- .qa/checks/pinned-stack.mjs <check>`, the declared
+pinned-stack-check command, with check `merge`, `unit`, `boot`, `sink`,
+`uncontained` or `ci`. They run the checkout's core source without a build,
+with compose and docker standing in and every service name lookup failing,
+so they need no daemon, network, model or credentials. Choose them for
+those criteria, never a grep of the source. The real docker boot of
+examples/pinned-app is CI's compose-boot job (`ci` prints that step).
+
 Executable command boot checks (#379): booting an app by `app.boot: { command,
 image, port }`, its run against health, seed, checks and suites, isolation of
 concurrent runs with reap, and `qare init` offering the command form are proven

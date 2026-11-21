@@ -1,5 +1,8 @@
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
-import { ask, echoServer, readThrough, type Closable } from './egress-sockets.js'
+import { ask, echoServer, freePort, readThrough, type Closable } from './egress-sockets.js'
 import { parseSinkRecord, startDnsSink, startRelay, type DnsSink, type Relay } from '../src/egress-sink.js'
 
 /** A DNS query for one name, as a stub resolver sends it. */
@@ -86,6 +89,30 @@ describe('the DNS sink of a contained stack (#382)', () => {
   })
 })
 
+describe('the sink without the embedded DNS (#408)', () => {
+  test("a stub's service is answered with the address the run handed the sink, and looked up by name only until then", async () => {
+    const map = join(mkdtempSync(join(tmpdir(), 'qare-egress-map-')), 'services.json')
+    const asked: string[] = []
+    const started = await startDnsSink({
+      hosts: { 'api.billing-vendor.example': 'billing-stub' },
+      port: 0,
+      bind: '127.0.0.1',
+      map,
+      // A daemon with no embedded DNS: a service name never resolves.
+      resolveService: async (service) => {
+        asked.push(service)
+        throw new Error(`getaddrinfo ENOTFOUND ${service}`)
+      },
+      write: () => {},
+    })
+    sinks.push(started)
+    expect((await ask(started.port, query('api.billing-vendor.example'))).rcode).toBe(2)
+    writeFileSync(map, JSON.stringify({ 'billing-stub': ['198.18.0.3'] }))
+    expect(await ask(started.port, query('api.billing-vendor.example'))).toEqual({ id: 0x1234, rcode: 0, addresses: ['198.18.0.3'] })
+    expect(asked).toEqual(['billing-stub'])
+  })
+})
+
 describe('the relay of a contained stack (#382)', () => {
   test('carries a connection on a published port to the service inside', async () => {
     const server = await echoServer('from the app')
@@ -121,6 +148,56 @@ describe('reading the sink record back (#382)', () => {
 
   test('says when the record was capped, and has no address when the sink never said it was ready', () => {
     expect(parseSinkRecord('{"event":"capped"}\n')).toEqual({ lookups: [], capped: true })
+  })
+})
+
+describe('qare cell egress-dns-map, and the sink and relay by address (#408)', () => {
+  test('the map is written whole, and the running sink answers from it where no service name resolves', async () => {
+    const { runCellCommand } = await import('../src/cell-launch.js')
+    const { EventEmitter } = await import('node:events')
+    const map = join(mkdtempSync(join(tmpdir(), 'qare-egress-map-')), 'services.json')
+    const out: string[] = []
+    const signals = new EventEmitter()
+    // The command resolves a service by name only through the host's resolver, where `qare-test-stub-408` is no host.
+    const running = runCellCommand(['egress-dns', '--port', '0', '--bind', '127.0.0.1', '--map', map, '--host', 'api.example.test=qare-test-stub-408'], { out: (line) => out.push(line), err: () => {}, signals })
+    await expect.poll(() => out.length).toBe(1)
+    const port = (JSON.parse(out[0] as string) as { port: number }).port
+    expect(await runCellCommand(['egress-dns-map', '--map', map, '--service', 'qare-test-stub-408=198.18.0.3,198.18.0.5'], { out: () => {}, err: () => {} })).toBe(0)
+    expect(JSON.parse(readFileSync(map, 'utf8'))).toEqual({ 'qare-test-stub-408': ['198.18.0.3', '198.18.0.5'] })
+    expect((await ask(port, query('api.example.test'))).addresses).toEqual(['198.18.0.3', '198.18.0.5'])
+    signals.emit('SIGTERM')
+    expect(await running).toBe(0)
+  })
+
+  test('the map refuses what is not a service and its addresses', async () => {
+    const { runCellCommand } = await import('../src/cell-launch.js')
+    const said: string[] = []
+    const io = { out: () => {}, err: (line: string) => said.push(line) }
+    expect(await runCellCommand(['egress-dns-map', '--service', 'stub=198.18.0.3'], io)).toBe(4)
+    expect(await runCellCommand(['egress-dns-map', '--map', 'relative.json', '--service', 'stub=198.18.0.3'], io)).toBe(4)
+    expect(await runCellCommand(['egress-dns-map', '--map', '/run/qare-egress/services.json', '--service', 'stub=stub-host'], io)).toBe(4)
+    expect(await runCellCommand(['egress-dns-map', '--map', '/run/qare-egress/services.json', '--service', '../stub=198.18.0.3'], io)).toBe(4)
+    expect(said).toEqual([
+      'qare cell egress-dns-map: --map must be an absolute path',
+      'qare cell egress-dns-map: --map must be an absolute path',
+      'qare cell egress-dns-map: "stub=stub-host" is not a <compose service>=<address>[,<address>] entry',
+      'qare cell egress-dns-map: "../stub=198.18.0.3" is not a <compose service>=<address>[,<address>] entry',
+    ])
+  })
+
+  test('the relay carries a connection to an address it was handed, with no name to look up', async () => {
+    const { runCellCommand } = await import('../src/cell-launch.js')
+    const { EventEmitter } = await import('node:events')
+    const server = await echoServer('from the app by address')
+    servers.push(server)
+    const listen = await freePort()
+    const out: string[] = []
+    const signals = new EventEmitter()
+    const running = runCellCommand(['egress-relay', '--bind', '127.0.0.1', '--forward', `${listen}=127.0.0.1:${server.port}`], { out: (line) => out.push(line), err: () => {}, signals })
+    await expect.poll(() => out.length).toBe(1)
+    expect(await readThrough(listen)).toBe('from the app by address')
+    signals.emit('SIGTERM')
+    expect(await running).toBe(0)
   })
 })
 

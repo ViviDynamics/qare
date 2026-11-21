@@ -105,12 +105,20 @@ jobs:
         run: |
           mv evidence evidence-command-app
           scripts/egress-boot.sh qare-core:ci
+      # A contained stack that pins addresses (#408): a custom subnet, static
+      # addresses and extra_hosts, and an app that declares no network. It
+      # boots contained, healthy and seeded, every check passes, and the
+      # relay and the resolver were handed addresses, not service names.
+      - name: Prove a contained stack keeps its pinned addresses
+        run: |
+          mv evidence evidence-egress-app
+          scripts/pinned-boot.sh qare-core:ci
       # The opt-in build cache (#381), through the pipeline's own steps: the
       # main lane's run writes the compose app's layers, and a pull request's
       # run reads them and writes none.
       - name: Boot the example compose app with the build cache
         run: |
-          mv evidence evidence-egress-app
+          mv evidence evidence-pinned-app
           scripts/build-cache-boot.sh qare-core:ci
       - name: Upload the run's evidence
         if: always()
@@ -122,6 +130,7 @@ jobs:
             evidence-compose-app/
             evidence-command-app/
             evidence-egress-app/
+            evidence-pinned-app/
           if-no-files-found: ignore
 
   # A real mail catcher (#65): the pipeline's execute steps run against

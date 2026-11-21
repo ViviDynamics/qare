@@ -1,6 +1,6 @@
 import { rm } from 'node:fs/promises'
 import { baseImageOverrideFile, buildCacheOverrideFile, commandBootFile, defaultRunCompose } from './boot.js'
-import { containmentOverrideFile, dnsOverrideFile } from './stack-egress.js'
+import { containmentOverrideFile, dnsOverrideFile, relayOverrideFile } from './stack-egress.js'
 
 /**
  * What reaping found: the qare projects torn down, and the ones compose could
@@ -105,6 +105,7 @@ async function down(runCompose: NonNullable<ReapOpts['runCompose']>, project: st
     stderr: String(error),
   }))
   if (outcome.code === 0)
-    for (const file of [commandBootFile(project), baseImageOverrideFile(project), buildCacheOverrideFile(project), containmentOverrideFile(project), dnsOverrideFile(project)]) await rm(file, { force: true }).catch(() => {})
+    for (const file of [commandBootFile(project), baseImageOverrideFile(project), buildCacheOverrideFile(project), containmentOverrideFile(project), dnsOverrideFile(project), relayOverrideFile(project)])
+      await rm(file, { force: true }).catch(() => {})
   return outcome
 }

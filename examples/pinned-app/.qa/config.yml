@@ -1,0 +1,16 @@
+app:
+  boot: { compose: examples/pinned-app/compose.yaml, service: web }
+  health: { http: "http://localhost:{{run.app_port}}/up", timeout: 180s }
+  # The seed runs inside the app, where the database's pinned address is.
+  seed: { command: "docker compose -p qare-{{run.id}} -f examples/pinned-app/compose.yaml exec -T web sh /seed.sh" }
+  login: { fixture: fixtures/users.yml, role: reader }
+# The one vendor the app reaches: its host is answered with the address of
+# the stub service beside the app.
+stubs:
+  - service: billing
+    hosts: ["api.billing-vendor.example"]
+    provided_by: { compose_service: billing-stub }
+visual:
+  widths: [1440]
+  themes: [light]
+suites: []

@@ -61,3 +61,12 @@ export function readThrough(port: number): Promise<string> {
     socket.on('error', reject)
   })
 }
+
+/** A loopback port nothing listens on, for a command that must be told the port it listens on (#408). */
+export async function freePort(): Promise<number> {
+  const server = createServer()
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const port = (server.address() as AddressInfo).port
+  await new Promise((resolve) => server.close(resolve))
+  return port
+}

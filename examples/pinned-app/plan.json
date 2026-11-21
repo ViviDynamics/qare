@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "1",
+  "criteria": [
+    {
+      "id": "db-reached",
+      "text": "The app reaches its database at the address the stack pins it to",
+      "checks": [
+        {
+          "kind": "command",
+          "name": "db-answered",
+          "command": "node examples/compose-app/page-has.mjs http://localhost:{{run.app_port}}/db.txt db-ready"
+        }
+      ]
+    },
+    {
+      "id": "stub-reached",
+      "text": "The app reaches its billing vendor's stub by the vendor's own host name",
+      "checks": [
+        {
+          "kind": "command",
+          "name": "billing-stub-answered",
+          "command": "node examples/compose-app/page-has.mjs http://localhost:{{run.app_port}}/billing.txt billing-stub-says-hello"
+        }
+      ]
+    },
+    {
+      "id": "seeded",
+      "text": "The seed ran against the database before any check",
+      "checks": [
+        {
+          "kind": "command",
+          "name": "seeded-from-db",
+          "command": "node examples/compose-app/page-has.mjs http://localhost:{{run.app_port}}/seeded.txt seeded-from-db"
+        }
+      ]
+    }
+  ]
+}
