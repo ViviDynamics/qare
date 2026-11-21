@@ -799,6 +799,9 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       name: suite.name,
       kind: suite.kind,
       command: redactText(suite.command, seeded),
+      // A suite that takes a filter is offered as one (#376), so the planner
+      // can name the test that covers a criterion instead of grepping for it.
+      ...(suite.filter === undefined ? {} : { filter: suite.filter }),
     }))
     const plannerSuites: (string | PlanSuite)[] = [
       ...declaredSuites,
