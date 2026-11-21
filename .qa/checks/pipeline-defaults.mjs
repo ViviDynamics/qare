@@ -1,0 +1,130 @@
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import './source.mjs'
+
+// Executable checks of the pipeline defaults (#380), run against the
+// checkout without a build: the workflow's own step scripts with docker and
+// git stubbed, and the checkout's core source through source.mjs. Each prints
+// what it observed. Scratch is restricted to .qa/checks/scratch.
+
+const root = fileURLToPath(new URL('../../', import.meta.url))
+const scratch = fileURLToPath(new URL('./scratch/', import.meta.url))
+mkdirSync(scratch, { recursive: true })
+const { parse } = await import('yaml')
+const workflow = parse(readFileSync(join(root, '.github/workflows/pipeline.yml'), 'utf8'))
+const inputs = workflow.on.workflow_call.inputs
+const stepOf = (job, name) => {
+  const found = workflow.jobs[job].steps.find((step) => step.name === name)
+  assert.ok(found, `${job} has no step ${name}`)
+  return found.run
+}
+const tool = (dir, name, body) => {
+  writeFileSync(join(dir, name), `#!/bin/bash\n${body}\n`)
+  chmodSync(join(dir, name), 0o755)
+}
+const runScript = (script, dir, env) =>
+  spawnSync('bash', ['-c', script], { cwd: dir, encoding: 'utf8', env: { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: join(dir, 'summary'), ...env } })
+const after = (args, flag) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined)
+
+const check = process.argv[2]
+const dir = mkdtempSync(join(scratch, `defaults-${check}-`))
+try {
+  if (check === 'flake') {
+    // The defaults: one retry, a store in the ledger directory.
+    assert.equal(inputs['flake-attempts'].default, '2')
+    assert.equal(inputs.quarantine.default, '.qa')
+    // The execute step hands both to qare run, and reads the base's store, not the pull request's.
+    tool(dir, 'docker', 'printf "%s\\n" "$@" > "$RUNNER_TEMP/calls"; mkdir -p evidence; echo "{}" > evidence/result.json')
+    tool(dir, 'git', 'if [ "$1" = worktree ]; then mkdir -p "$4/.qa"; echo base > "$4/.qa/quarantine.json"; fi; exit 0')
+    writeFileSync(join(dir, 'qare-docker-access'), '')
+    mkdirSync(join(dir, '.qa'))
+    writeFileSync(join(dir, '.qa/quarantine.json'), 'pull request\n')
+    const ran = runScript(stepOf('execute', 'Run the plan'), dir, {
+      IMAGE_REF: 'image', IMAGE_DIGEST: 'image', IMAGE_TAG_REF: 'tag', BASE_SHA: 'a'.repeat(40), HEAD_SHA: 'b'.repeat(40),
+      PR_NUMBER: '1', PROFILE: '.qa', FLAKE_ATTEMPTS: inputs['flake-attempts'].default, QUARANTINE: inputs.quarantine.default,
+    })
+    assert.equal(ran.status, 0, ran.stderr)
+    const args = readFileSync(join(dir, 'calls'), 'utf8').split('\n')
+    assert.equal(after(args, '--flake-attempts'), '2')
+    assert.equal(after(args, '--quarantine'), join(dir, 'qare-quarantine'))
+    const uploaded = readFileSync(join(dir, 'evidence/quarantine.json'), 'utf8').trim()
+    assert.equal(uploaded, 'base')
+    // And what one retry does, on the checkout's own runner: a check that
+    // fails then passes is quarantined and unverified, never proven; a check
+    // that fails every attempt still fails.
+    const { runJob } = await import('../../packages/core/src/run.ts')
+    const outcomes = {}
+    for (const [name, script] of [
+      ['fails-then-passes', "import { existsSync, writeFileSync } from 'node:fs'\nif (existsSync('flipped')) process.exit(0)\nwriteFileSync('flipped', 'x')\nprocess.exit(1)\n"],
+      ['always-fails', 'process.exit(1)\n'],
+    ]) {
+      const repo = mkdtempSync(join(dir, `${name}-`))
+      writeFileSync(join(repo, 'check.mjs'), script)
+      const { result } = await runJob(
+        {
+          id: name, repoPath: repo, baseRef: 'main', headRef: 'HEAD', post: 'none', evidenceDir: join(repo, 'evidence'),
+          profile: { inline: { app: { boot: { compose: 'compose.qa.yaml', service: 'app' }, health: { http: ['http:', '//localhost:3000/up'].join(''), timeout: '120s' }, seed: { command: 'true' }, login: { fixture: 'f.yml', role: 'admin' } }, stubs: [], visual: { widths: [], themes: [] }, suites: [] } },
+          criteria: [{ id: name, text: name, checks: [{ kind: 'command', run: 'node check.mjs' }] }],
+        },
+        { runCompose: async () => ({ code: 0, stdout: '', stderr: '' }), probe: async () => ({ ok: true }), pollIntervalMs: 1, execution: 'native', flakeAttempts: 2, quarantineDir: join(repo, 'store') },
+      )
+      const criterion = result.criteria[0]
+      outcomes[name] = { outcome: criterion.outcome, reason: criterion.reason, attempt2: existsSync(join(repo, 'evidence/checks', name, '0-attempt2')) }
+    }
+    assert.equal(outcomes['fails-then-passes'].outcome, 'unverified')
+    assert.match(outcomes['fails-then-passes'].reason, /^quarantined \(.*\): unstable: the check failed and passed across 2 attempts/)
+    assert.equal(outcomes['fails-then-passes'].attempt2, true)
+    assert.equal(outcomes['always-fails'].outcome, 'failed')
+    console.log(JSON.stringify({ check, defaults: { 'flake-attempts': '2', quarantine: '.qa' }, qareRun: { flakeAttempts: '2', quarantine: 'runner temp', storeRead: uploaded }, outcomes }))
+  } else if (check === 'exclude') {
+    assert.equal(inputs['planner-diff-default-exclude'].default, 'true')
+    // The collect step's default pathspecs, applied the way it applies them.
+    const collect = stepOf('collect', 'Read the linked issue and the diff')
+    const list = /default_excludes=\(\n([\s\S]*?)\n\s*\)/.exec(collect)[1]
+    const patterns = [...list.matchAll(/'([^']+)'/g)].map((found) => found[1])
+    // The image carries no git, so git's default pathspec rule is applied
+    // here: `*` and `?` match across `/`, and a name without either matches
+    // that path or anything under it. The cli suite runs the same list
+    // through git itself (pipeline-defaults.test.ts).
+    const matches = (pattern, path) => {
+      if (!/[*?[]/.test(pattern)) return path === pattern || path.startsWith(`${pattern}/`)
+      const body = pattern.replace(/[.+^${}()|\\]/g, '\\$&').replaceAll('*', '.*').replaceAll('?', '.')
+      return new RegExp(`^${body}$`).test(path)
+    }
+    const excluded = ['pnpm-lock.yaml', 'apps/web/package-lock.json', 'go.sum', 'services/api/poetry.lock', 'public/app.min.js', 'public/app.js.map', 'dist/index.js', 'packages/core/dist/index.js', 'node_modules/left-pad/index.js']
+    const kept = ['src/app.ts', 'packages/core/src/lockfile.ts', 'docs/dist-notes.md', 'package.json']
+    const planner = [...excluded, ...kept].filter((path) => !patterns.some((pattern) => matches(pattern, path))).sort()
+    assert.deepEqual(planner, [...kept].sort())
+    // The record is uploaded with the QA inputs, and publish hands it to the comment.
+    assert.ok(collect.includes('> planner-diff-excluded.json'))
+    assert.ok(stepOf('publish', 'Post the evidence on the pull request').includes('--planner-diff-excluded qa-inputs/planner-diff-excluded.json'))
+    const section = readFileSync(join(root, 'packages/action/src/post-evidence.ts'), 'utf8')
+    assert.ok(section.includes("'## Planner diff'"))
+    console.log(JSON.stringify({ check, patterns: patterns.length, plannerSaw: planner, leftOut: excluded }))
+  } else if (check === 'blocked') {
+    assert.equal(inputs['blocked-check'].default, 'neutral')
+    const { renderCheckRun } = await import('../../packages/core/src/index.ts')
+    const blocked = { schemaVersion: '1', verdict: 'blocked', criteria: [{ id: 'c', outcome: 'unverified', reason: 'environment: down', evidence: [] }] }
+    const conclusions = { default: renderCheckRun(blocked).conclusion, optIn: renderCheckRun(blocked, { blocked: 'failure' }).conclusion }
+    assert.deepEqual(conclusions, { default: 'neutral', optIn: 'failure' })
+    // The publish step passes the opt-in through, passes nothing for neutral, and refuses a typo.
+    tool(dir, 'docker', 'if [ "$1" = run ] && printf "%s\\n" "$@" | grep -qx grep; then exit 0; fi; printf "%s\\n" "$@" > "$RUNNER_TEMP/calls"')
+    const post = stepOf('publish', 'Post the evidence on the pull request')
+    const seen = {}
+    for (const value of ['neutral', 'failure', 'red']) {
+      rmSync(join(dir, 'calls'), { force: true })
+      const ran = runScript(post, dir, { IMAGE_REF: 'image', PR_NUMBER: '1', HEAD_SHA: 'b'.repeat(40), EVIDENCE_URL: '', BLOCKED_CHECK: value, GITHUB_OUTPUT: join(dir, 'out') })
+      const args = existsSync(join(dir, 'calls')) ? readFileSync(join(dir, 'calls'), 'utf8').split('\n') : []
+      seen[value] = { status: ran.status, flag: after(args, '--blocked-conclusion') ?? null }
+    }
+    assert.deepEqual(seen, { neutral: { status: 0, flag: null }, failure: { status: 0, flag: 'failure' }, red: { status: 1, flag: null } })
+    console.log(JSON.stringify({ check, conclusions, publish: seen }))
+  } else {
+    throw new Error(`unknown check ${JSON.stringify(check)}: flake, exclude or blocked`)
+  }
+} finally {
+  rmSync(dir, { recursive: true, force: true })
+}
