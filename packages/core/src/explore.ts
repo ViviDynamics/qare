@@ -1,4 +1,5 @@
 import { createServer, request, type IncomingMessage, type ServerResponse } from 'node:http'
+import type { FlowPage } from './flow.js'
 import type { SnapshotNode } from './snapshot.js'
 
 /**
@@ -48,6 +49,48 @@ export class ExplorationError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'ExplorationError'
+  }
+}
+
+/**
+ * The browser driver's flow page, answering the exploration channel (#377).
+ * The page is the base app the plan job booted, and the channel is steered by
+ * a model whose prompt carries the pull request's diff, so navigation is held
+ * to the app's own origin: a tool call cannot point the browser at the
+ * runner's metadata service, another port on the host, or anywhere else.
+ * What the page needs and lacks is refused here, before the server starts,
+ * rather than when the model first calls it.
+ */
+export function explorationPageOf(page: FlowPage, app: string): ExplorationPage {
+  let origin: string
+  try {
+    const parsed = new URL(app)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('not http')
+    origin = parsed.origin
+  } catch {
+    throw new ExplorationError(`the app to explore must be an absolute http or https URL, not ${JSON.stringify(app)}`)
+  }
+  const { observe, snapshot, frame } = page
+  if (observe === undefined) throw new ExplorationError('the browser driver reports no page location, so the channel has nothing to observe with')
+  if (snapshot === undefined) throw new ExplorationError('the browser driver takes no accessibility snapshot, so the channel has nothing to show the planner')
+  return {
+    observe: () => observe(),
+    snapshot: () => snapshot(),
+    navigate: async (target) => {
+      let parsed: URL
+      try {
+        parsed = new URL(target)
+      } catch {
+        throw new ExplorationError('navigate needs an absolute URL on the app being explored')
+      }
+      if (parsed.origin !== origin)
+        throw new ExplorationError(`navigate stays on the app being explored, ${origin}: ${parsed.origin} is not it`)
+      await page.open(parsed.href)
+    },
+    capture: async () => {
+      if (frame === undefined) throw new ExplorationError('the browser driver takes no frame, so there is nothing to capture')
+      return Buffer.from(await frame())
+    },
   }
 }
 

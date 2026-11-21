@@ -121,6 +121,7 @@ export {
   needsSandboxSplit,
   sandboxEnvironment,
   startExplorationServer,
+  explorationPageOf,
   untrustedToolResult,
   ExplorationError,
 } from './explore.js'

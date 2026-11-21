@@ -133,6 +133,11 @@ export interface FlowPage {
    */
   snapshot?: () => Promise<SnapshotNode>
   /**
+   * Where the page stands, as the driver reports it: its URL and title.
+   * Optional; the exploration channel (#87, #377) reads it, and a flow does not.
+   */
+  observe?: () => Promise<{ url: string; title: string }>
+  /**
    * Audit the page as it stands against the accessibility rule set (#149),
    * at the width and theme asked for, and put the viewport back. Optional:
    * a driver without the seam leaves an `a11y` check unverified.
