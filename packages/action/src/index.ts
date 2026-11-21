@@ -8,7 +8,7 @@ import { GitHubClient, GitHubClientError } from './github.js'
 import { GitHubQaAssetsPusher, QA_ASSETS_BRANCH } from './qa-assets.js'
 import { fileRefusalStubs, GitHubStubIssuePoster } from './stub-issues.js'
 import { requeueUnblocked, stubDiffArgs, stubKeysFromDiffText } from './requeue.js'
-import { GitHubEvidencePoster, postEvidence } from './post-evidence.js'
+import { GitHubEvidencePoster, loadPlannerDiffExcluded, postEvidence } from './post-evidence.js'
 import { deliverIngest, IngestDeliveryError } from './ingest-deliver.js'
 import { loadQuestions, postQuestions } from './post-questions.js'
 import { parseSweepPayload, publishSweep } from './sweep-report.js'
@@ -156,6 +156,15 @@ async function postEvidenceCommand(argv: string[], out: Writer): Promise<number>
   const artifactUrl = flags.string('artifact-url') || undefined
   if (artifactUrl !== undefined && !/^https:\/\/[^\s<>]+$/.test(artifactUrl))
     throw new GitHubClientError(`--artifact-url must be an https URL (got ${JSON.stringify(artifactUrl)})`)
+  // How a blocked verdict's check run reads (#380): neutral unless the caller
+  // opted in to failing it. Any other value is refused before anything is
+  // posted, so a misspelt opt-in never quietly gates nothing.
+  const blockedFlag = flags.string('blocked-conclusion')
+  if (blockedFlag !== undefined && blockedFlag !== 'neutral' && blockedFlag !== 'failure')
+    throw new GitHubClientError(`--blocked-conclusion is neutral or failure (got ${JSON.stringify(blockedFlag)})`)
+  // What the planner's copy of the diff left out (#380), as collect recorded it.
+  const excludedPath = flags.string('planner-diff-excluded') || undefined
+  const plannerDiffExcluded = excludedPath === undefined ? undefined : loadPlannerDiffExcluded(await readFile(excludedPath, 'utf8'))
   const result = loadResult(await readFile(resultPath, 'utf8'))
   const client = new GitHubClient({
     repository: flags.string('repository'),
@@ -207,8 +216,11 @@ async function postEvidenceCommand(argv: string[], out: Writer): Promise<number>
     evidenceDir,
     questions: riding,
     dismissed,
+    ...(blockedFlag === undefined ? {} : { blockedConclusion: blockedFlag }),
+    ...(plannerDiffExcluded === undefined ? {} : { plannerDiffExcluded }),
   })
   out.write(`posted verdict ${result.verdict} on pull request #${pr} at ${headSha.slice(0, 12)}\n`)
+  if (result.verdict === 'blocked') out.write(`blocked verdict posted as check run ${blockedFlag === 'failure' ? 'failure' : 'neutral'}\n`)
   if (riding.length > 0) out.write(`asked ${riding.length} question(s) in the evidence comment\n`)
   return 0
 }

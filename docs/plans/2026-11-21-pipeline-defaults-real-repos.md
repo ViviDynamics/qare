@@ -21,6 +21,6 @@ Out:
 
 ## Tasks
 - [x] 1. core: `renderCheckRun` takes a blocked conclusion; test that blocked is neutral by default and failure on opt-in, and that no other verdict moves.
-- [ ] 2. action: `post-evidence --blocked-conclusion` and `--planner-diff-excluded`; tests for the check run, the rejected value, and the comment section.
+- [x] 2. action: `post-evidence --blocked-conclusion` and `--planner-diff-excluded`; tests for the check run, the rejected value, and the comment section.
 - [ ] 3. pipeline: inputs, collect default exclusion and its record, execute and main_execute flake and quarantine, publish flags; workflow tests.
 - [ ] 4. docs/pipeline.md: inputs table and a section on the defaults; doc test.
