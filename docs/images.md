@@ -170,6 +170,13 @@ outcomes, combine answer diagnostics with schema corrections, and add the
 it is additive: qare passes none of the new options, so its argv and the
 typed result it reads are unchanged.
 
+qare hands nare its prompt with `--prompt-file`, never as an argument (#401).
+One argument is capped at 128 KiB on Linux, and a pull request's diff often
+passes that. The file sits in a directory private to the run (0700, the file
+itself 0600) and is removed with it however the run ends. No argument size
+bounds a prompt now; the model's context window does (`NARE_CONTEXT_WINDOW`,
+`nare-context-window` in the pipeline, #391).
+
 Schema-constrained backend output is opt-in in nare and remains off here:
 qare keeps nare's schema validation and correction without requiring a backend
 to support strict JSON schemas. The new turn-cap summaries retain an error
@@ -178,7 +185,8 @@ fields, prompt caching, thinking cleanup, and safer session saves stay inside
 nare; qare consumes the terminal typed result. The optional TUI is not installed.
 
 To exercise the installed wheel, contract, schema correction, read-only tool
-execution and fail-closed results against a local model fixture after building:
+execution, a prompt past one argument's limit and fail-closed results against
+a local model fixture after building:
 
 ```sh
 docker build -f images/core/Dockerfile -t qare-core:nare-2026.11.107 .

@@ -589,10 +589,12 @@ jobs:
           # never installed or run in this job.
           git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
           git diff "${BASE_SHA}...${HEAD_SHA}" > change.diff
-          # The planner's prompt travels as one argument (nare#29), so a diff
-          # bigger than that budget cannot reach the planner whole. The
-          # planner's copy keeps the change's source and spec and leaves out
-          # the paths the caller names (a test suite, say); the full diff
+          # The planner's prompt reaches nare by file (#401), so no argument
+          # size bounds it: the model's context window does
+          # (nare-context-window, #391), and a diff bigger than the window
+          # cannot reach the planner whole. The planner's copy keeps the
+          # change's source and spec and leaves out the paths the caller
+          # names (a test suite, say); the full diff
           # stays the diff for execute and judge. The names are read as
           # words, never expanded by the shell: git matches them, as
           # pathspecs.
@@ -1011,10 +1013,9 @@ jobs:
             "$IMAGE_REF" qare plan \
             --criteria criteria.json --diff change-planner.diff --out plan.json \
             --nare /usr/local/bin/nare --profile "$PROFILE" "${flow_actions[@]}" "${explore_args[@]}" 2>plan.err; then
-            # The planner's copy of the diff — scrubbed of the values the
-            # change adds, with the test suite left out — is what the planner
-            # always reads, whatever fits the argument budget (nare#29). Any
-            # failure surfaces as it happened.
+            # The planner's copy of the diff (scrubbed of the values the
+            # change adds, with the paths the caller names left out) is what
+            # the planner always reads. Any failure surfaces as it happened.
             cat plan.err >&2
             exit 4
           fi

@@ -111,7 +111,7 @@ UX review".
 | `execute-runs-on` | empty | Where execute and main_execute run, in the same JSON form. Self-hosted execution requires a pool different from `runs-on`, unless `ephemeral-runners` is `true`. Empty still means `runs-on` on GitHub-hosted runners. See "Your own runners". |
 | `ephemeral-runners` | empty | `true` declares that each job gets a fresh machine destroyed afterwards, with no docker daemon, volume or cache shared between jobs. This caller declaration is recorded in `result.json` and posted evidence; qare cannot verify the lifecycle. See "Your own runners". |
 | `self-hosted` | empty | `allow` lets a public repository's pipeline run on self-hosted runners. Empty, collect, plan and execute stop there by name, before any checkout. It changes nothing for a private repository or on hosted runners. See "Your own runners". |
-| `planner-diff-exclude` | empty | Space-separated git pathspecs left out of the planner's copy of the diff, for a diff too large to plan from whole. execute and judge still read the full diff. |
+| `planner-diff-exclude` | empty | Space-separated git pathspecs left out of the planner's copy of the diff, for a diff too large to plan from whole within the model's context window (`nare-context-window`). execute and judge still read the full diff. |
 | `planner-diff-default-exclude` | `true` | Whether the planner's copy of the diff also leaves out lockfiles and common generated paths, on top of `planner-diff-exclude`. `false` keeps them in. The evidence comment lists every path left out. See "Defaults for real repositories". |
 | `flake-attempts` | `2` | How many times execute runs a failing check before it judges it: one retry by default. A check that fails and then passes is quarantined and its criterion reported unverified, never proven. `1` turns retries off. See "Defaults for real repositories". |
 | `quarantine` | `.qa` | The directory, relative to the repository root, that holds the quarantine store (`quarantine.json`), the ledger directory by default. A pull request run reads the base revision's store, never the pull request's. Empty turns quarantine off. See "Defaults for real repositories". |
@@ -186,9 +186,10 @@ with:
   planner-diff-default-exclude: 'false'   # off: only planner-diff-exclude applies
 ```
 
-The planner's prompt travels as one argument, so a diff larger than that
-budget cannot reach the planner whole, and a lockfile is often most of a
-diff. By default the planner's copy of the diff leaves out these pathspecs, on
+The planner's prompt reaches nare by file, so no argument size limit applies
+to it. What bounds it is the model's context window (`nare-context-window`): a
+diff larger than the window cannot reach the planner whole, and a lockfile is
+often most of a diff. By default the planner's copy of the diff leaves out these pathspecs, on
 top of anything `planner-diff-exclude` names:
 
 `pnpm-lock.yaml` `*/pnpm-lock.yaml` `package-lock.json` `*/package-lock.json`
