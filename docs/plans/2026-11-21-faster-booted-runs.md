@@ -77,18 +77,18 @@ Before (15 green QARE pull request runs up to 7cff346, mean wall clock per job):
 ## Tasks
 
 PR 1:
-- [ ] 1. Metrics: a record may carry `jobs`; the summary and the report lines give each job's median over the latest ten runs and the ten before. Tests in metrics.test.ts and sweep.test.ts.
-- [ ] 2. Pipeline: publish reads the run's jobs and adds them to metrics.json before post-evidence. Test: the step script, run with curl stubbed, writes the jobs into the record; publish declares `actions: read`.
-- [ ] 3. Pipeline: collect pulls the core image and runs its three commands there; no pnpm install or build in collect. Workflow tests updated.
-- [ ] 4. Docs: pipeline.md, SPEC metrics section.
+- [x] 1. Metrics: a record may carry `jobs`; the summary and the report lines give each job's median over the latest ten runs and the ten before. Tests in metrics.test.ts and sweep.test.ts.
+- [x] 2. Pipeline: publish reads the run's jobs and adds them to metrics.json before post-evidence. Test: the step script, run with curl stubbed, writes the jobs into the record; publish declares `actions: read`.
+- [x] 3. Pipeline: collect pulls the core image and runs its three commands there; no pnpm install or build in collect. Workflow tests updated.
+- [x] 4. Docs: pipeline.md, SPEC metrics section.
 
 PR 2:
-- [ ] 5. Profile: `base.image` loads, `{base}` allowed, refused on target and client profiles. Tests in profile.test.ts.
-- [ ] 6. Base image: pull, read the revision label, used or not with the reason. Tests with a docker seam.
-- [ ] 7. Boot: a prebuilt image for both boot forms. Tests in boot.test.ts.
-- [ ] 8. Run: the base side uses it and records it in the result. Tests in run tests.
-- [ ] 9. `base.criteria` defaults to `ledger`, with the visual, a11y and standing-audit exception, client profiles `all`. Tests in the base side suites.
-- [ ] 10. Docs and a no-build check for the QARE self-run if needed.
+- [x] 5. Profile: `base.image` loads, `{base}` allowed, refused on target and client profiles. Tests in profile.test.ts.
+- [x] 6. Base image: pull, read the revision label, used or not with the reason. Tests with a docker seam.
+- [x] 7. Boot: a prebuilt image for both boot forms. Tests in boot.test.ts.
+- [x] 8. Run: the base side uses it and records it in the result. Tests in run tests.
+- [x] 9. `base.criteria` defaults to `ledger`, with the visual, a11y and standing-audit exception, client profiles `all`. Tests in the base side suites.
+- [x] 10. Docs. The no-build check for the QARE self-run lands with the last pull request, the one that closes #381.
 
 PR 3:
 - [ ] 11. `qare run --build-cache`: the boot's override with cache_from and cache_to. Tests in boot.test.ts.
