@@ -41,12 +41,12 @@ What remains, and is written in pipeline.md: the base app's own containers run o
 
 ## Tasks
 
-- [ ] 1. Profile: `explore: base | off`, refused without `app` or without `flavour: web`. Tests in profile.test.ts.
-- [ ] 2. Plan loader: an element may carry `page`, a path starting `/`. Tests in plan.test.ts.
-- [ ] 3. Browser page: the Playwright session answers `observe`; `explorationPageOf` adapts a flow page to the channel with navigation pinned to the app's origin. Tests in explore.test.ts.
-- [ ] 4. Bridge: `startExplorationBridge` speaks MCP over HTTP, forwards to the exploration server through the channel client, fences every result and records the pages snapshotted. Tests in explore-bridge.test.ts.
-- [ ] 5. Runner: an exploration channel reaches nare as `--mcp-config` and an explicit `--tools` allowlist, not as environment. Tests in runner.test.ts.
-- [ ] 6. Plan step: the prompt names the tools and the `page`/`at` rule; `exploredGap` corrects then refuses an element not seen. Tests in plan-step.test.ts.
-- [ ] 7. CLI: `qare explore boot` and `qare explore serve`; `qare plan --explore`. Tests in explore-command.test.ts and plan-command.test.ts.
-- [ ] 8. Pipeline: the plan job's explore steps, gated on the profile; the plan step unchanged when off. Tests in workflow tests, pins updated.
-- [ ] 9. Docs: SPEC exploration paragraph and profile sketch, pipeline.md, a QARE no-build check in `.qa/checks`.
+- [x] 1. Profile: `explore: base | off`, refused without `app` or without `flavour: web`. Tests in profile.test.ts.
+- [x] 2. Plan loader: an element may carry `page`, a path starting `/`. Tests in plan.test.ts.
+- [x] 3. Browser page: the Playwright session answers `observe`; `explorationPageOf` adapts a flow page to the channel with navigation pinned to the app's origin. Tests in explore.test.ts.
+- [x] 4. Bridge: `startExplorationBridge` speaks MCP over HTTP, forwards to the exploration server through the channel client, fences every result and records the pages snapshotted. Tests in explore-bridge.test.ts.
+- [x] 5. Runner: an exploration channel reaches nare as `--mcp-config` and an explicit `--tools` allowlist, not as environment. Tests in runner.test.ts.
+- [x] 6. Plan step: the prompt names the tools and the `page`/`at` rule; `exploredGap` corrects then refuses an element not seen. Tests in plan-step.test.ts.
+- [x] 7. CLI: `qare explore boot` and `qare explore serve`; `qare plan --explore`. Tests in explore-command.test.ts and plan-command.test.ts.
+- [x] 8. Pipeline: the plan job's explore steps, gated on the profile; the plan step unchanged when off. Tests in workflow tests, pins updated.
+- [x] 9. Docs: SPEC exploration paragraph and profile sketch, pipeline.md, a QARE no-build check in `.qa/checks`.
