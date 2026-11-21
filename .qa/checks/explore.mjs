@@ -16,7 +16,7 @@ import './source.mjs'
 const core = (file) => import(`../../packages/core/src/${file}`)
 // The run module first: it loads the core's modules in the order they expect.
 await core('run.ts')
-const { planRun, FakeAgentRunner, startExplorationServer, startExplorationBridge, NareAgentRunner, validateProfileConfig } = await core('index.ts')
+const { planRun, FakeAgentRunner, startExplorationServer, startExplorationBridge } = await core('index.ts')
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const scratch = fileURLToPath(new URL('./scratch/', import.meta.url))
 mkdirSync(scratch, { recursive: true })
@@ -160,54 +160,8 @@ try {
       await bridge.close()
       await server.close()
     }
-  } else if (check === 'channel') {
-    // What nare is handed: the bridge as an MCP server and only its tools.
-    const server = await startExplorationServer(fakeApp())
-    const bridge = await startExplorationBridge(server.url)
-    try {
-      const init = await rpc(bridge.url, 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'check', version: '0' } })
-      const listed = await rpc(bridge.url, 'tools/list')
-      console.log(`the bridge answers MCP ${init.result.protocolVersion} with tools ${listed.result.tools.map((tool) => tool.name).join(', ')}`)
-      const off = await rpc(bridge.url, 'tools/call', { name: 'navigate', arguments: { url: ['http:', '//169.254.169.254/'].join('') } })
-      console.log(`navigate off the app: isError ${off.result.isError}: ${off.result.content[0].text.split('\n')[1]}`)
-      const capture = await rpc(bridge.url, 'tools/call', { name: 'capture', arguments: {} })
-      console.log(`capture: isError ${capture.result.isError}`)
-      // A nare stand-in that records its argv and its MCP config, run by node with no shell.
-      const seenPath = join(dir, 'seen.json')
-      const stand = join(dir, 'nare.mjs')
-      writeFileSync(stand, `import { readFileSync, writeFileSync } from 'node:fs'\nconst argv = process.argv.slice(2)\nconst at = argv.indexOf('--mcp-config')\nwriteFileSync(${JSON.stringify(seenPath)}, JSON.stringify({ argv, config: at === -1 ? null : JSON.parse(readFileSync(argv[at + 1], 'utf8')), env: Object.keys(process.env).filter((name) => name.startsWith('QARE_EXPLORATION')) }))\nconsole.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 }, stop_reason: 'end_turn', turns: 1, contract: 3, output: {}, error: null }))\n`)
-      const runner = new NareAgentRunner({ binary: process.execPath })
-      const ask = (tools) => runner.run({ prompt: 'plan', system: '', toolPolicy: 'none', outputSchema: '', budget: { maxOutputTokens: 1 }, ...(tools === undefined ? {} : { tools }) })
-      // node runs the stand-in script, which is the first argument nare would see.
-      const original = runner.spawn.bind(runner)
-      runner.spawn = (argv, ...rest) => original([stand, ...argv], ...rest)
-      await ask({ allowlist: bridge.tools, endpoint: bridge.url })
-      const on = JSON.parse(readFileSync(seenPath, 'utf8'))
-      console.log(`with the channel, nare is handed --mcp-config ${JSON.stringify(on.config)} and --tools ${on.argv[on.argv.indexOf('--tools') + 1]}; exploration environment: ${JSON.stringify(on.env)}`)
-      await ask(undefined)
-      const off2 = JSON.parse(readFileSync(seenPath, 'utf8'))
-      console.log(`without it: --mcp-config ${off2.argv.includes('--mcp-config') ? 'present' : 'absent'}, --tools ${off2.argv[off2.argv.indexOf('--tools') + 1]}`)
-      assert.equal(off2.argv.includes('--mcp-config'), false)
-      // The profile switch the pipeline reads, held by the loader.
-      const app = { boot: { compose: 'compose.qa.yaml', service: 'web' }, health: { http: `${APP}/up`, timeout: '5s' }, seed: { command: 'true' }, login: { fixture: 'f.yml', role: 'admin' } }
-      console.log(`profile explore: base with flavour web loads as explore=${validateProfileConfig({ app, stubs: [], visual: { widths: [], themes: [] }, suites: [], flavour: 'web', explore: 'base' }).explore}`)
-      for (const extra of [{ explore: 'base' }, { flavour: 'web', explore: 'head' }]) {
-        const said = (() => {
-          try {
-            validateProfileConfig({ app, stubs: [], visual: { widths: [], themes: [] }, suites: [], ...extra })
-            return 'loaded'
-          } catch (error) {
-            return `refused: ${error.message}`
-          }
-        })()
-        console.log(`profile ${JSON.stringify(extra)}: ${said}`)
-      }
-    } finally {
-      await bridge.close()
-      await server.close()
-    }
   } else {
-    throw new Error(`unknown check ${JSON.stringify(check)}: pipeline, plan or channel`)
+    throw new Error(`unknown check ${JSON.stringify(check)}: pipeline or plan`)
   }
 } finally {
   rmSync(dir, { recursive: true, force: true })
