@@ -832,3 +832,34 @@ test('a base section may name a prebuilt image for the base side, with the base 
   }
   rmSync(dir, { recursive: true })
 })
+
+test('a booted profile opts in to exploring the base app with explore: base, and nothing else turns it on (#377)', async () => {
+  const dir = copiedProfile()
+  const config = fixtureConfig()
+  writeFileSync(join(dir, 'config.yml'), `${config}\nflavour: web\nexplore: base\n`)
+  expect((await loadProfile(dir)).explore).toBe('base')
+  // Absent or off, the profile does not explore: the plan is what it was.
+  writeFileSync(join(dir, 'config.yml'), `${config}\nflavour: web\n`)
+  expect((await loadProfile(dir)).explore).toBeUndefined()
+  writeFileSync(join(dir, 'config.yml'), `${config}\nflavour: web\nexplore: off\n`)
+  expect((await loadProfile(dir)).explore).toBeUndefined()
+})
+
+test('explore is refused where there is no base app to boot, no browser to drive, or a value it does not know (#377)', async () => {
+  const dir = copiedProfile()
+  const config = fixtureConfig()
+  const refused = async (extra: string): Promise<ProfileValidationError> => {
+    writeFileSync(join(dir, 'config.yml'), `${config}\n${extra}\n`)
+    return profileError(() => loadProfile(dir))
+  }
+  const noBrowser = await refused('explore: base')
+  expect(noBrowser.field).toBe('explore')
+  expect(noBrowser.message).toContain('flavour: web')
+  expect((await refused('flavour: web\nexplore: head')).field).toBe('explore')
+  expect((await refused('flavour: web\nexplore: true')).field).toBe('explore')
+  // A target runs elsewhere and a client build has no page: neither boots a base app here.
+  expect(() => validateProfileConfig({ target: MCP_HEALTH, flavour: 'web', explore: 'base' })).toThrow(/explore/)
+  expect(() =>
+    validateProfileConfig({ client: { driver: 'electron', executable: 'dist/app' }, explore: 'base' }),
+  ).toThrow(/explore/)
+})

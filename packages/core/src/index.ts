@@ -62,6 +62,7 @@ export type {
   ProfileSuiteKind,
   ProfileCommand,
   ProfileMcpServer,
+  ProfileExplore,
   ProfileMcpToolMap,
   McpStep,
 } from './profile.js'
