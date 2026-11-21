@@ -18,17 +18,7 @@ Out:
 
 ## Trust boundary
 
-What #87 guarantees: the browser and the exploration server run beside the app and hold no secret; the only traffic is tool calls and their results; exactly the read-only tools are served; every result is fenced as untrusted data. SPEC: "Exploring the merge base or a deployed target needs no sandbox split, because there is no PR code beside the app there."
-
-Constitution 7 is about pull request code. The plan job already checks out only the base revision and holds the model key and nothing else. The design keeps every rule as follows:
-
-1. **No PR code runs in the plan job.** The app is built from the base checkout the job already has. The prebuilt `base.image` (#381) is never used for exploration: it is trusted by its revision label, and a label is whatever its pusher wrote, so a registry a pull request's own CI can push to could put PR code beside the key. Execute holds no secret, so the label check is enough there; here it is not, and exploration always builds from the base tree. The build cache (#398) is not read either.
-2. **The steps that run base code hold nothing.** Booting and serving are their own steps, with no `secrets.*` and no token in their environment, started before the key exists on disk. The boot step is the only one handed the runner's docker, and it exits once the app is up and seeded. The serve step (browser and exploration server) is handed no docker access, so nothing qare starts can `docker inspect` the planner's container while the key is in it.
-3. **The plan step holds what it held.** It gains a host network (to reach the served channel on loopback) and an `--explore` endpoint, and nothing else. The model key still travels in its file, and no GitHub token is anywhere in the job.
-4. **Navigation stays on the app.** The browser's `navigate` is pinned to the booted app's origin, so a prompt injected through the diff cannot point the browser at the runner's metadata service or anywhere else.
-5. **Fail closed.** A boot, seed or serve that fails stops the plan job with the reason in the step summary; it never falls back to planning blind, because the profile asked for exploration.
-
-What remains, and is written in pipeline.md: the base app's own containers run on the machine while the plan step holds the key. That is the base revision's code, which the repository already merged, and the same trust the plan job places in the base checkout's profile. A profile whose base compose file reaches out to something a pull request can write (a mutable image tag CI pushes, say) should not turn exploration on.
+Recorded in [ADR-0011](../decisions/adr-0011-explore-the-base-in-the-plan-job.md): no pull request code in the plan job (the base tree, never `base.image`), the boot and serve steps hold nothing and start before the key exists, only the boot is handed docker, navigation stays on the app, and every failure stops the job by name.
 
 ## Assumptions
 
