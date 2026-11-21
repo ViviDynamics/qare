@@ -96,7 +96,9 @@ redacted like every other piece of run text, beside its id. A criterion the
 verifier left unverified because the evidence did not show it was met is
 labelled thin evidence, a gap in the check, not an environment failure. The
 standing report's metrics section states how many of the recorded criterion
-outcomes were proven or failed, as a rate.
+outcomes were proven or failed, as a rate, and each job's median wall clock
+over the latest ten runs beside the ten before (#381), read from the `jobs`
+publish adds to the run's metrics record.
 
 Not evaluated (#203). A pipeline that fails before it records a verdict
 (a tool that will not install, an image that will not pull, or a planner

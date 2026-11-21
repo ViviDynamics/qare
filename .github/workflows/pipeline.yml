@@ -65,9 +65,9 @@ name: QARE pipeline
 # What this does not change: the key is still a secret of the job. GitHub
 # hands a job's runner every secret the job's steps name, so the steps that
 # run on the runner after the minting step (the build of the pinned qare in
-# collect, report, advisory and requeue, and the step that enables pnpm with corepack) run
-# on a machine that was given it, though never in their own environment. A
-# container is not that machine. And "before anything else of the run" is a
+# report, advisory and requeue, the step that enables pnpm with corepack, and
+# the image pull in collect and publish) run on a machine that was given it,
+# though never in their own environment. A container is not that machine. And "before anything else of the run" is a
 # statement about one job: a runner that outlives its jobs keeps what
 # earlier jobs left on it, which is what execute-runs-on is for.
 #
@@ -84,12 +84,12 @@ name: QARE pipeline
 #
 # What runs what: plan, execute and judge run qare inside the published image
 # family (#88), pulled for that revision's version so a run of the pipeline
-# is a pull of the image, not a build of the tree. collect, report and
-# requeue hold the GitHub token only, so they build and run qare from a
-# checkout of that revision beside the caller's tree, and no secret-holding
-# job installs or runs the pull request's tree. collect reads the version
-# from that checkout and hands it on, so no image job reads a version from
-# any tree. The pull request contributes data only: its body, the linked
+# is a pull of the image, not a build of the tree. collect runs that image
+# too (#381): it reads the version from a checkout of the pinned revision
+# beside the caller's tree, which needs no build, and hands it on, so no
+# image job reads a version from any tree. report and requeue hold the
+# GitHub token only, and build and run qare from a checkout of that
+# revision. No secret-holding job installs or runs the pull request's tree. The pull request contributes data only: its body, the linked
 # issues, the diff, its profile read as YAML, and the artifacts execute
 # uploaded. execute runs the flavour its profile targets (core by default,
 # web for browser checks), and holds no secrets. Until a release publishes
@@ -391,10 +391,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
-      # This job holds the GitHub token, so the qare it installs and runs is
-      # the revision the caller pinned, which the pull request cannot change:
-      # a release for a repository that calls this workflow, the base commit
-      # for qare itself.
+      # This job holds the GitHub token, so the qare whose script it runs and
+      # whose version it reads is the revision the caller pinned, which the
+      # pull request cannot change: a release for a repository that calls
+      # this workflow, the base commit for qare itself. The qare it runs is
+      # that version's published image (#381), pulled below.
       - name: Check out qare at the pinned revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -424,31 +425,6 @@ jobs:
             exit 1
           fi
           node "$script"
-      # pnpm as package.json names it (#310): corepack, which ships with node,
-      # reads `packageManager`, which carries the version and the hash the
-      # download is checked against. No action installs it. The version that
-      # resolved is then held to the one named, so a runner that answers with
-      # another pnpm stops here.
-      - name: Enable the pnpm package.json names
-        shell: bash
-        working-directory: .qare-pipeline
-        run: |
-          set -euo pipefail
-          COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
-          export COREPACK_HOME
-          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
-          corepack enable
-          wanted="$(jq -r '.packageManager // empty' package.json)"
-          wanted="${wanted%%+*}"
-          found="pnpm@$(pnpm --version)"
-          if [ "$found" != "$wanted" ]; then
-            echo "::error::corepack resolved $found, and package.json names ${wanted:-no package manager}"
-            exit 1
-          fi
-      - run: pnpm install --frozen-lockfile
-        working-directory: .qare-pipeline
-      - run: pnpm build
-        working-directory: .qare-pipeline
       - name: Read the version of the pinned qare
         id: qare
         shell: bash
@@ -512,6 +488,39 @@ jobs:
           else
             echo "This run uses the images of qare $version." >> "$GITHUB_STEP_SUMMARY"
           fi
+      # The qare this job runs is the published core image of that version
+      # (#381), the image plan, execute, judge and publish run, resolved to
+      # its registry digest and pulled by it, so nothing here installs or
+      # builds qare from source. The image is qare's own, never built from
+      # anything the pull request carries, and the pull request's body,
+      # issues and diff reach it as files. No cache is restored: this job
+      # holds the GitHub token (#305).
+      - name: Pull the core image
+        id: image
+        shell: bash
+        env:
+          QARE_VERSION: ${{ steps.qare.outputs.version }}
+        run: |
+          set -euo pipefail
+          ref="ghcr.io/vividynamics/qare-core:$QARE_VERSION"
+          if ! docker buildx version > /dev/null 2>&1; then
+            echo "::error::qare image inspection needs Docker buildx with imagetools: install the buildx plugin alongside this runner's Docker client"
+            exit 1
+          fi
+          if ! digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')"; then
+            echo "::error::qare could not resolve the published image $ref to its registry digest; nothing was pulled"
+            exit 1
+          fi
+          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::qare registry inspection returned no valid SHA-256 digest for $ref; nothing was pulled"
+            exit 1
+          fi
+          immutable="${ref%:*}@$digest"
+          if ! docker pull "$immutable"; then
+            echo "no published qare-core image for version $QARE_VERSION ($ref): the image family publishes when a release is tagged, so tag a release and the images job in qare's .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "digest=$immutable" >> "$GITHUB_OUTPUT"
       - name: Say why a fork gets no QA
         if: github.event.pull_request.head.repo.full_name != github.repository
         run: |
@@ -520,6 +529,7 @@ jobs:
         id: inputs
         shell: bash
         env:
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_BODY: ${{ github.event.pull_request.body }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -529,8 +539,14 @@ jobs:
           PLANNER_DIFF_DEFAULT_EXCLUDE: ${{ inputs.planner-diff-default-exclude }}
         run: |
           set -euo pipefail
+          # The image's qare reads files of this workspace and nothing else:
+          # no token and no network reach its container.
+          qare() {
+            docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp --network none \
+              -v "$PWD:$PWD" -w "$PWD" "$IMAGE_REF" qare "$@"
+          }
           printf '%s' "${PR_BODY:-}" > pr-body.md
-          node .qare-pipeline/packages/cli/dist/index.js linked-issues --body pr-body.md > linked.txt
+          qare linked-issues --body pr-body.md > linked.txt
           if [ ! -s linked.txt ]; then
             echo "this change promises to close no issue, so it states no acceptance criteria and there is nothing to check" >> "$GITHUB_STEP_SUMMARY"
             echo "criteria=none" >> "$GITHUB_OUTPUT"
@@ -552,7 +568,7 @@ jobs:
           # Read here, without a model: an issue that states no criteria (a bug
           # report closed by a one-line fix) has nothing to check, the same
           # neutral outcome as closing no issue at all.
-          node .qare-pipeline/packages/cli/dist/index.js issue-criteria --out criteria.json "${issues[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          qare issue-criteria --out criteria.json "${issues[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
           if [ ! -f criteria.json ]; then
             echo "criteria=none" >> "$GITHUB_OUTPUT"
             exit 0
@@ -630,6 +646,7 @@ jobs:
       - name: Read recorded advisory context
         shell: bash
         env:
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           QARE_APP_TOKEN: ${{ steps.app.outputs.token }}
           QARE_APP_SLUG: ${{ steps.app.outputs.slug }}
@@ -638,7 +655,19 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          if ! node .qare-pipeline/packages/action/dist/index.js advisory-context --pr "$PR_NUMBER" --out advisory-dismissed.json; then
+          # The tokens reach the image's container by name, as publish hands
+          # them to the same image.
+          if ! docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              -e GITHUB_TOKEN \
+              -e QARE_APP_TOKEN \
+              -e QARE_APP_SLUG \
+              -e QARE_APP_TOKEN_EXPIRES_AT \
+              -e QARE_GITHUB_TOKEN \
+              -e GITHUB_REPOSITORY \
+              -v "$PWD:$PWD" -w "$PWD" \
+              --entrypoint node \
+              "$IMAGE_REF" /opt/qare/lib/packages/action/dist/index.js advisory-context \
+              --pr "$PR_NUMBER" --out advisory-dismissed.json; then
             rm -f advisory-dismissed.json
             echo "::warning::recorded advisory context could not be read; judging has no known dismissals, and no new reply was carried out"
           fi
@@ -1599,7 +1628,10 @@ jobs:
     needs: [collect, plan, execute, judge]
     if: always() && needs.judge.outputs.ready == 'true'
     runs-on: ${{ fromJSON(inputs.runs-on) }}
+    # actions: read is for this run's own jobs (#381), read with the run's
+    # own token and never asked of the App.
     permissions:
+      actions: read
       contents: write
       issues: write
       checks: write
@@ -1745,6 +1777,54 @@ jobs:
           else
             echo "verdict $(jq -r '.verdict' judged/judged-result.json): not refused, no stub issues to file"
           fi
+      # Each job's wall clock (#381) rides the run's metrics record to
+      # qa-assets, so the standing report can say what a change did to the
+      # run time. The jobs are this run attempt's, as the Actions API reports
+      # them with the run's own read-only token: every job that completed
+      # and ran (a skipped job ran nothing, and this job and report are still
+      # running), by the name its workflow gives it, without the caller's
+      # prefix. jq does it here rather than a flag of the image, which a pull
+      # request's run would not have until the next release. The numbers
+      # describe the run and never gate it: a read that fails leaves the
+      # record as judge wrote it.
+      - name: Add each job's wall clock to the run's metrics
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          record=judged/metrics.json
+          if [ ! -f "$record" ]; then
+            echo "no metrics record: judge recorded none, so there is nothing to add the jobs to"
+            exit 0
+          fi
+          jobs_file="$(mktemp "$RUNNER_TEMP/qare-jobs.XXXXXX")"
+          timed="$(mktemp "$RUNNER_TEMP/qare-metrics.XXXXXX")"
+          trap 'rm -f "$jobs_file" "$timed"' EXIT
+          # The token on curl's standard input, never its command line.
+          if ! curl --fail --silent --show-error --location \
+              -H "Accept: application/vnd.github+json" -H @- \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100" \
+              > "$jobs_file" <<< "Authorization: Bearer $GH_TOKEN"; then
+            echo "::warning::the run's jobs could not be read, so its metrics record carries no job wall clock; the verdict is unaffected"
+            exit 0
+          fi
+          if ! jq --slurpfile api "$jobs_file" '. + {jobs: [
+                $api[0].jobs[]
+                | select(.status == "completed" and .conclusion != "skipped")
+                | {
+                    name: (.name | split(" / ") | last),
+                    startedAt: .started_at,
+                    completedAt: .completed_at,
+                    wallMs: ([((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)) * 1000, 0] | max)
+                  }
+              ]}' "$record" > "$timed"; then
+            echo "::warning::the run's jobs were not in the shape the Actions API promises, so its metrics record carries no job wall clock; the verdict is unaffected"
+            exit 0
+          fi
+          cp "$timed" "$record"
       - name: Post the evidence on the pull request
         id: posted
         if: github.event_name == 'pull_request'
@@ -2243,7 +2323,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      # The pinned qare, like every job that holds the token (rule 7).
+      # The pinned qare, like every job that holds the token (rule 7): its
+      # version names the image the lane runs.
       - name: Check out qare at the pinned revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -2251,29 +2332,6 @@ jobs:
           ref: ${{ inputs.qare-ref }}
           path: .qare-pipeline
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .qare-pipeline/.nvmrc
-      - name: Enable the pnpm package.json names
-        shell: bash
-        working-directory: .qare-pipeline
-        run: |
-          set -euo pipefail
-          COREPACK_HOME="$(mktemp -d "$RUNNER_TEMP/qare-corepack.XXXXXX")"
-          export COREPACK_HOME
-          printf 'COREPACK_HOME=%s\n' "$COREPACK_HOME" >> "$GITHUB_ENV"
-          corepack enable
-          wanted="$(jq -r '.packageManager // empty' package.json)"
-          wanted="${wanted%%+*}"
-          found="pnpm@$(pnpm --version)"
-          if [ "$found" != "$wanted" ]; then
-            echo "::error::corepack resolved $found, and package.json names ${wanted:-no package manager}"
-            exit 1
-          fi
-      - run: pnpm install --frozen-lockfile
-        working-directory: .qare-pipeline
-      - run: pnpm build
-        working-directory: .qare-pipeline
       - name: Read the version of the pinned qare
         id: qare
         shell: bash
@@ -2337,6 +2395,34 @@ jobs:
           else
             echo "This run uses the images of qare $version." >> "$GITHUB_STEP_SUMMARY"
           fi
+      # The qare that reads the ledger is the core image of that version
+      # (#381), as in collect: pulled by its digest, never built here.
+      - name: Pull the core image
+        id: image
+        shell: bash
+        env:
+          QARE_VERSION: ${{ steps.qare.outputs.version }}
+        run: |
+          set -euo pipefail
+          ref="ghcr.io/vividynamics/qare-core:$QARE_VERSION"
+          if ! docker buildx version > /dev/null 2>&1; then
+            echo "::error::qare image inspection needs Docker buildx with imagetools: install the buildx plugin alongside this runner's Docker client"
+            exit 1
+          fi
+          if ! digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')"; then
+            echo "::error::qare could not resolve the published image $ref to its registry digest; nothing was pulled"
+            exit 1
+          fi
+          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::qare registry inspection returned no valid SHA-256 digest for $ref; nothing was pulled"
+            exit 1
+          fi
+          immutable="${ref%:*}@$digest"
+          if ! docker pull "$immutable"; then
+            echo "no published qare-core image for version $QARE_VERSION ($ref): the image family publishes when a release is tagged, so tag a release and the images job in qare's .github/workflows/release.yml publishes it; until then this pipeline stays red rather than building qare from source (#88)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "digest=$immutable" >> "$GITHUB_OUTPUT"
       # The plan, read out of the ledger by code: every active criterion,
       # checked by the suites its ledger checks name. The ledger sits in the
       # profile directory (`<profile>/ledger.json`). A ledger that holds no
@@ -2347,11 +2433,16 @@ jobs:
         id: inputs
         shell: bash
         env:
+          IMAGE_REF: ${{ steps.image.outputs.digest }}
           PROFILE: ${{ inputs.profile }}
         run: |
           set -euo pipefail
           rm -f plan.json
-          node .qare-pipeline/packages/cli/dist/index.js ledger plan --ledger "$PROFILE" --out plan.json | tee -a "$GITHUB_STEP_SUMMARY"
+          # The image's qare reads the ledger in this workspace, with no
+          # token and no network.
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp --network none \
+            -v "$PWD:$PWD" -w "$PWD" "$IMAGE_REF" \
+            qare ledger plan --ledger "$PROFILE" --out plan.json | tee -a "$GITHUB_STEP_SUMMARY"
           if [ ! -f plan.json ]; then
             echo "criteria=none" >> "$GITHUB_OUTPUT"
             exit 0

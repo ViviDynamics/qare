@@ -355,11 +355,25 @@ test('secret-holding jobs run qare from the base commit, not the pull request tr
   const collect = section('collect')
   const pinned = collect.indexOf('repository: ViviDynamics/qare\n          ref: ${{ inputs.qare-ref }}\n          path: .qare-pipeline')
   expect(pinned, 'collect must check out qare at the pinned revision, beside the tree').toBeGreaterThan(0)
-  expect(collect.indexOf('pnpm install --frozen-lockfile\n        working-directory: .qare-pipeline')).toBeGreaterThan(pinned)
-  // The qare collect runs is the one it built there, never the tree's own.
-  expect(collect).toContain('node .qare-pipeline/packages/cli/dist/index.js linked-issues')
-  expect(collect).toContain('node .qare-pipeline/packages/cli/dist/index.js issue-criteria')
-  expect(collect).not.toMatch(/node packages\//)
+  // The qare collect runs is the published image of the pinned revision's
+  // version (#381), pulled by its digest: never built from source here, and
+  // never the tree's own.
+  expect(collect).not.toContain('pnpm install')
+  expect(collect).not.toContain('pnpm build')
+  const version = collect.indexOf('- name: Read the version of the pinned qare')
+  const pull = collect.indexOf('- name: Pull the core image')
+  expect(pull, 'collect pulls the core image once it knows the version').toBeGreaterThan(version)
+  expect(collect).toContain('QARE_VERSION: ${{ steps.qare.outputs.version }}')
+  expect(collect).toContain('ref="ghcr.io/vividynamics/qare-core:$QARE_VERSION"')
+  expect(collect).toContain('immutable="${ref%:*}@$digest"')
+  expect(collect).toContain('docker pull "$immutable"')
+  expect(collect).toContain('echo "digest=$immutable" >> "$GITHUB_OUTPUT"')
+  expect(collect).toMatch(/"\$IMAGE_REF" qare "\$@"/)
+  expect(collect).toContain('qare linked-issues --body pr-body.md')
+  expect(collect).toContain('qare issue-criteria --out criteria.json')
+  expect(collect).toContain('"$IMAGE_REF" /opt/qare/lib/packages/action/dist/index.js advisory-context')
+  expect(collect.indexOf('IMAGE_REF: ${{ steps.image.outputs.digest }}')).toBeGreaterThan(pull)
+  expect(collect).not.toMatch(/node (\.qare-pipeline\/)?packages\//)
   // The version every image job pulls is read from that same checkout.
   expect(collect).toContain('qare-version: ${{ steps.qare.outputs.version }}')
   expect(collect).toMatch(/jq -ser 'select\(length == 1\) \| \.\[0\]\.version \| select.*' \.qare-pipeline\/package\.json/)
@@ -371,8 +385,10 @@ test('no job runs a qare that the repository under test carries', () => {
   // report the pinned checkout is the whole workspace, so its path is bare.
   for (const job of ['collect', 'plan', 'execute', 'judge', 'requeue'])
     expect(section(job), job).not.toMatch(/node packages\/(cli|action)\/dist/)
-  for (const job of ['collect', 'requeue'])
+  for (const job of ['requeue'])
     expect(section(job)).toMatch(/node \.qare-pipeline\/packages\/(cli|action)\/dist\/index\.js/)
+  // collect runs the image's qare (#381).
+  expect(section('collect')).toMatch(/"\$IMAGE_REF" qare "\$@"/)
   expect(section('judge')).toMatch(/"\$IMAGE_REF" qare metrics record/)
 })
 

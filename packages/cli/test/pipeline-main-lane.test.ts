@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
 import { parse } from 'yaml'
 import { serializeLedger } from '@qare/core'
@@ -366,21 +366,22 @@ test('the filing step says what the run amounted to before it says what it files
 test('main_collect plans from the ledger without a model: criteria present with an active criterion, none without, red when the ledger will not load', () => {
   const plan = step('main_collect', 'Plan from the checks the ledger records')
   expect(plan.id).toBe('inputs')
-  expect(plan.env).toEqual({ PROFILE: '${{ inputs.profile }}' })
+  expect(plan.env).toEqual({ IMAGE_REF: '${{ steps.image.outputs.digest }}', PROFILE: '${{ inputs.profile }}' })
   expect(plan.run).not.toContain('${{')
   expect(existsSync(join(repoRoot, 'packages', 'cli', 'dist', 'index.js')), 'build before testing: the step runs the built CLI').toBe(true)
   const link = ['https:', '//example.test/pr/1'].join('')
   const collect = (ledger: string | undefined): { status: number | null; output: string; summary: string; plan: boolean } => {
     const dir = mkdtempSync(join(tmpdir(), 'qare-main-collect-'))
-    // The pinned qare the job checked out, standing in as a file that runs
-    // this tree's built CLI: a symlink would not do, because the CLI runs
-    // only as the file node was asked for.
-    mkdirSync(join(dir, '.qare-pipeline', 'packages', 'cli', 'dist'), { recursive: true })
+    // The image's qare (#381), standing in as a docker that runs this
+    // tree's built CLI with what follows the image's own `qare`, once it has
+    // been asked for the image the step was handed.
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
     writeFileSync(
-      join(dir, '.qare-pipeline', 'packages', 'cli', 'dist', 'index.js'),
-      `import { main } from ${JSON.stringify(pathToFileURL(join(repoRoot, 'packages', 'cli', 'dist', 'index.js')).href)}\nprocess.exitCode = await main(process.argv.slice(2))\n`,
+      join(bin, 'docker'),
+      `#!/bin/bash\nwhile [ "$#" -gt 0 ] && [ "$1" != "$IMAGE_REF" ]; do shift; done\n[ "$#" -gt 0 ] || { echo "docker was not asked for $IMAGE_REF" >&2; exit 125; }\nshift\n[ "$1" = qare ] || exit 125\nshift\nexec node ${JSON.stringify(join(repoRoot, 'packages', 'cli', 'dist', 'index.js'))} "$@"\n`,
+      { mode: 0o755 },
     )
-    writeFileSync(join(dir, '.qare-pipeline', 'package.json'), '{"type":"module"}')
     mkdirSync(join(dir, '.qa'))
     if (ledger !== undefined) writeFileSync(join(dir, '.qa', 'ledger.json'), ledger)
     // A plan left by an earlier run on a runner that outlives its jobs.
@@ -391,7 +392,7 @@ test('main_collect plans from the ledger without a model: criteria present with 
     writeFileSync(summary, '')
     const outcome = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', plan.run ?? ''], {
       cwd: dir,
-      env: { PATH: process.env.PATH ?? '', PROFILE: '.qa', GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary },
+      env: { PATH: `${bin}:${process.env.PATH ?? ''}`, IMAGE_REF: 'ghcr.io/vividynamics/qare-core@sha256:test', PROFILE: '.qa', GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary },
       encoding: 'utf8',
     })
     const written = existsSync(join(dir, 'plan.json')) && !readFileSync(join(dir, 'plan.json'), 'utf8').includes('stale')
@@ -437,4 +438,19 @@ test('the documentation shows a caller that turns the lane on as a dry run, and 
   const findings = spec.slice(spec.indexOf('### Findings on main'), spec.indexOf('## GitHub identity'))
   expect(findings).toContain('main lane')
   expect(findings).toContain('main-lane-dry-run')
+})
+
+test('main_collect reads the ledger with the published core image of the pinned version, never a build of qare (#381)', () => {
+  const steps = job('main_collect').steps ?? []
+  const text = JSON.stringify(steps)
+  expect(text).not.toMatch(/pnpm|corepack|setup-node/)
+  const names = steps.map((candidate) => candidate.name)
+  const pull = names.indexOf('Pull the core image')
+  expect(pull).toBeGreaterThan(names.indexOf('Read the version of the pinned qare'))
+  // The same pull as collect's, which resolves the version to a digest first.
+  expect(step('main_collect', 'Pull the core image').run).toBe(step('collect', 'Pull the core image').run)
+  const plan = step('main_collect', 'Plan from the checks the ledger records')
+  expect(plan.env?.IMAGE_REF).toBe('${{ steps.image.outputs.digest }}')
+  expect(plan.run).toContain('--network none')
+  expect(plan.run).toMatch(/"\$IMAGE_REF" \\\n\s+qare ledger plan --ledger "\$PROFILE" --out plan\.json/)
 })
