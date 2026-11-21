@@ -10,12 +10,13 @@ Pick the newest release from [the releases page](https://github.com/ViviDynamics
 and run it from the root of your repository:
 
 ```sh
-QARE=ghcr.io/vividynamics/qare-web:<release>
-docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" "$QARE" qare --version
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" ghcr.io/vividynamics/qare-web:<release> qare --version
 ```
 
-The image's working directory is `/work`, so every `qare` command below reads
-and writes the repository you mounted there. `--user` keeps the files it writes
+The commands below keep the image in a variable to stay short:
+`QARE=ghcr.io/vividynamics/qare-web:<release>`. The image's working directory
+is `/work`, so every `qare` command reads and writes the repository you
+mounted there. `--user` keeps the files it writes
 owned by you. `qare` is on the image's `PATH`; the image contract is in
 [images.md](images.md).
 

@@ -17,8 +17,10 @@ test('the quickstart runs the CLI from an image the release publishes, mounting 
   expect(existsSync(join(repoRoot, QUICKSTART)), `${QUICKSTART} is missing`).toBe(true)
   const doc = read(QUICKSTART)
   const release = read('.github/workflows/release.yml')
-  const image = /QARE=(ghcr\.io\/vividynamics\/qare-[a-z-]+):<release>/.exec(doc)?.[1]
-  expect(image, 'the quickstart names no released image').toBeDefined()
+  // The one-line command, with the image named in it rather than in a variable.
+  const image = /^docker run --rm --user "\$\(id -u\):\$\(id -g\)" -v "\$PWD:\/work" (ghcr\.io\/vividynamics\/qare-[a-z-]+):<release> qare --version$/m.exec(doc)?.[1]
+  expect(image, 'the quickstart shows no one-line command naming a released image').toBeDefined()
+  expect(doc).toContain(`QARE=${image}:<release>`)
   expect(release).toContain(`${image}:\${{ github.ref_name }}`)
   // The contract's working directory and entry point (docs/images.md).
   expect(read('images/core/Dockerfile')).toMatch(/^WORKDIR \/work$/m)
