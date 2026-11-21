@@ -6,6 +6,10 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import './source.mjs'
 
+// Its compose is a stand-in, so the stack is booted uncontained: containment
+// is exercised by stack-egress.mjs (#382), and the run's image is not named here.
+delete process.env.QARE_IMAGE_REF
+
 // Executable checks of booting an app by command (#379), run against the
 // checkout's core source without a build. The image has no docker daemon,
 // so compose is a stand-in that records each call and reads the project

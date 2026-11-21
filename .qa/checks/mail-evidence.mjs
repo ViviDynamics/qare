@@ -4,6 +4,10 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import './source.mjs'
 
+// Its compose is a stand-in, so the stack is booted uncontained: containment
+// is exercised by stack-egress.mjs (#382), and the run's image is not named here.
+delete process.env.QARE_IMAGE_REF
+
 const check = process.argv[2]
 if (check === 'quoted-auth') {
   const { parseAuthenticationResults } = await import('../../packages/core/src/mail-auth.ts')
