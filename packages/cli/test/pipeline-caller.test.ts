@@ -120,8 +120,12 @@ test('nare-stream reaches the planner and the verifier containers, and only when
 test('the interface a caller sees: its inputs, their defaults, and its secrets', () => {
   expect(Object.keys(call.inputs).sort()).toEqual([
     'artefacts',
+    // #380: a blocked verdict is a neutral check unless the caller opts in.
+    'blocked-check',
     'ephemeral-runners',
     'execute-runs-on',
+    // #380: one retry for a failing check by default.
+    'flake-attempts',
     // #294: the main lane, off by default, and a dry run unless told otherwise.
     'main-lane',
     'main-lane-dry-run',
@@ -135,9 +139,13 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
     'nare-stream',
     'plan-batch-size',
     'plan-concurrency',
+    // #380: lockfiles and generated paths left out of the planner diff by default.
+    'planner-diff-default-exclude',
     'planner-diff-exclude',
     'profile',
     'qare-ref',
+    // #380: the quarantine store, read from the base revision.
+    'quarantine',
     'runs-on',
     'self-hosted',
     'verify-batch-size',

@@ -115,7 +115,7 @@ for (const job of ['execute', 'main_execute']) {
     const tag = 'ghcr.io/vividynamics/qare-web:2026.10.51'
     const result = spawnSync('bash', ['-c', step.run!], { cwd: dir, encoding: 'utf8', env: {
       PATH: `${dir}:${process.env.PATH ?? ''}`, CALLS: calls, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: join(dir, 'summary'),
-      IMAGE_REF: digest, IMAGE_DIGEST: digest, IMAGE_TAG_REF: tag, BASE_SHA: 'a'.repeat(40), HEAD_SHA: 'b'.repeat(40), PR_NUMBER: '1', PROFILE: '.qa', RUN_ID: '1', RUN_ATTEMPT: '1',
+      IMAGE_REF: digest, IMAGE_DIGEST: digest, IMAGE_TAG_REF: tag, BASE_SHA: 'a'.repeat(40), HEAD_SHA: 'b'.repeat(40), PR_NUMBER: '1', PROFILE: '.qa', RUN_ID: '1', RUN_ATTEMPT: '1', FLAKE_ATTEMPTS: '2', QUARANTINE: '.qa',
     } })
     expect(result.status, result.stderr).toBe(0)
     const args = readFileSync(calls, 'utf8').split('\n')

@@ -4,7 +4,7 @@ Issue #380
 
 ## Scope
 In:
-- `flake-attempts` and `quarantine` pipeline inputs, passed to `qare run` in execute and main_execute, on by default with one retry (`flake-attempts: '2'`).
+- `flake-attempts` and `quarantine` (default `.qa`, the ledger directory `qare ledger status` reads) pipeline inputs, passed to `qare run` in execute and main_execute, on by default with one retry (`flake-attempts: '2'`).
 - A default planner diff exclusion for lockfiles and common generated paths (`planner-diff-default-exclude`), on top of the caller's own `planner-diff-exclude`, with the excluded patterns and paths listed in the evidence comment.
 - A `blocked-check` input: `neutral` (the default) or `failure`, which makes a blocked verdict's QARE verdict check run fail.
 - `docs/pipeline.md`: each new default and how to turn it off.
@@ -22,5 +22,5 @@ Out:
 ## Tasks
 - [x] 1. core: `renderCheckRun` takes a blocked conclusion; test that blocked is neutral by default and failure on opt-in, and that no other verdict moves.
 - [x] 2. action: `post-evidence --blocked-conclusion` and `--planner-diff-excluded`; tests for the check run, the rejected value, and the comment section.
-- [ ] 3. pipeline: inputs, collect default exclusion and its record, execute and main_execute flake and quarantine, publish flags; workflow tests.
-- [ ] 4. docs/pipeline.md: inputs table and a section on the defaults; doc test.
+- [x] 3. pipeline: inputs, collect default exclusion and its record, execute and main_execute flake and quarantine, publish flags; workflow tests.
+- [x] 4. docs/pipeline.md: inputs table and a section on the defaults; doc test.

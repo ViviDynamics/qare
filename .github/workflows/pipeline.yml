@@ -228,6 +228,40 @@ on:
           reaches execute and judge.
         type: string
         default: ''
+      planner-diff-default-exclude:
+        description: >-
+          Whether the planner's copy of the diff also leaves out lockfiles
+          and common generated paths (minified bundles, source maps, dist,
+          node_modules, vendor), on top of planner-diff-exclude. Anything but
+          'false' leaves them out, and the evidence comment lists every path
+          that was left out. The full diff still reaches execute and judge.
+        type: string
+        default: 'true'
+      flake-attempts:
+        description: >-
+          How many times execute runs a failing check before it judges it.
+          The default, 2, is one retry. A check that fails and then passes is
+          quarantined and its criterion reported unverified, never proven; a
+          check that fails every attempt fails. '1' turns retries off.
+        type: string
+        default: '2'
+      quarantine:
+        description: >-
+          The directory, relative to the repository root, that holds the
+          quarantine store (quarantine.json). A pull request run reads the
+          base revision's store, never the pull request's, and the store the
+          run wrote is uploaded with the evidence as quarantine.json, for a
+          person to commit. Empty turns quarantine off.
+        type: string
+        default: '.qa'
+      blocked-check:
+        description: >-
+          How the QARE verdict check run reports a blocked verdict, one that
+          disproved nothing but left a criterion unverified: 'neutral', the
+          default, or 'failure', so that a run that verified less than it was
+          asked to stops a merge that requires the check.
+        type: string
+        default: 'neutral'
       artefacts:
         description: >-
           The name of a workflow artifact that holds the builds a client
@@ -484,6 +518,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PLANNER_DIFF_EXCLUDE: ${{ inputs.planner-diff-exclude }}
+          PLANNER_DIFF_DEFAULT_EXCLUDE: ${{ inputs.planner-diff-default-exclude }}
         run: |
           set -euo pipefail
           printf '%s' "${PR_BODY:-}" > pr-body.md
@@ -526,12 +561,50 @@ jobs:
           # stays the diff for execute and judge. The names are read as
           # words, never expanded by the shell: git matches them, as
           # pathspecs.
+          #
+          # Lockfiles and common generated paths are left out by default
+          # (#380): they are large, and nothing a criterion says is planned
+          # from them. Each name is listed at the root and below it, because
+          # a pathspec's `*` matches across directories. `planner-diff-
+          # default-exclude: 'false'` keeps them in.
+          default_excludes=()
+          if [ "${PLANNER_DIFF_DEFAULT_EXCLUDE:-}" != "false" ]; then
+            default_excludes=(
+              'pnpm-lock.yaml' '*/pnpm-lock.yaml'
+              'package-lock.json' '*/package-lock.json'
+              'npm-shrinkwrap.json' '*/npm-shrinkwrap.json'
+              'yarn.lock' '*/yarn.lock'
+              'bun.lock' '*/bun.lock'
+              'bun.lockb' '*/bun.lockb'
+              'Cargo.lock' '*/Cargo.lock'
+              'Gemfile.lock' '*/Gemfile.lock'
+              'poetry.lock' '*/poetry.lock'
+              'Pipfile.lock' '*/Pipfile.lock'
+              'uv.lock' '*/uv.lock'
+              'composer.lock' '*/composer.lock'
+              'go.sum' '*/go.sum'
+              '*.min.js' '*.min.css' '*.js.map' '*.css.map'
+              'dist/*' '*/dist/*'
+              'node_modules/*' '*/node_modules/*'
+              'vendor/*' '*/vendor/*'
+            )
+          fi
           excludes=()
+          applied=()
           read -r -a patterns <<< "${PLANNER_DIFF_EXCLUDE:-}"
-          for pattern in "${patterns[@]}"; do
+          for pattern in "${default_excludes[@]}" "${patterns[@]}"; do
             excludes+=(":(exclude)$pattern")
+            applied+=("$pattern")
           done
           git diff "${BASE_SHA}...${HEAD_SHA}" -- . "${excludes[@]}" > change-planner.diff
+          # What was left out is recorded for the evidence comment (#380):
+          # the pathspecs, and the paths of this change they matched.
+          git -c core.quotePath=false diff --name-only "${BASE_SHA}...${HEAD_SHA}" | sort > diff-paths.txt
+          git -c core.quotePath=false diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- . "${excludes[@]}" | sort > planner-paths.txt
+          comm -23 diff-paths.txt planner-paths.txt > excluded-paths.txt
+          jq -n --rawfile paths excluded-paths.txt \
+            '{patterns: $ARGS.positional, paths: ($paths | split("\n") | map(select(. != "")))}' \
+            --args "${applied[@]}" > planner-diff-excluded.json
           # Both model-facing copies of the diff are scrubbed of the seeded
           # values the diff itself adds, wherever the profile that carries
           # them lives and however the mapping is written (a value inside an
@@ -544,6 +617,7 @@ jobs:
             echo "criteria read from: $(tr '\n' ' ' < linked.txt)"
             echo "diff bytes: $(wc -c < change.diff)"
             echo "planner diff bytes: $(wc -c < change-planner.diff)"
+            echo "paths left out of the planner diff: $(grep -c . excluded-paths.txt || true)"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Read recorded advisory context
         shell: bash
@@ -569,6 +643,7 @@ jobs:
             criteria.json
             change.diff
             change-planner.diff
+            planner-diff-excluded.json
             advisory-dismissed.json
           if-no-files-found: error
 
@@ -1037,6 +1112,8 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PROFILE: ${{ inputs.profile }}
+          FLAKE_ATTEMPTS: ${{ inputs.flake-attempts }}
+          QUARANTINE: ${{ inputs.quarantine }}
         run: |
           set -uo pipefail
           # The run's own facts come from here rather than from the plan: a
@@ -1077,6 +1154,34 @@ jobs:
           else
             echo "the base commit could not be checked out, so qare checks the head alone and reports every criterion as not compared" >> "$GITHUB_STEP_SUMMARY"
           fi
+          # The flake policy (#380): how many attempts a failing check gets,
+          # and the quarantine store a check that failed and then passed is
+          # recorded in. A retry never turns a failure into a pass: such a
+          # check is quarantined and its criterion reported unverified.
+          if ! [[ "${FLAKE_ATTEMPTS:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::flake-attempts takes a whole number of attempts, one or more, not '${FLAKE_ATTEMPTS:-}'"
+            exit 1
+          fi
+          quarantine_args=()
+          quarantine_mount=()
+          quarantine_dir="$RUNNER_TEMP/qare-quarantine"
+          if [ -n "${QUARANTINE:-}" ]; then
+            case "$QUARANTINE" in
+              /*|..|../*|*/..|*/../*)
+                echo "::error::quarantine names a directory inside the repository, not '$QUARANTINE'"
+                exit 1
+                ;;
+            esac
+            mkdir -p "$quarantine_dir"
+            # The store is the base revision's (#380): a pull request cannot
+            # quarantine its own failing check. Without a base checkout the
+            # run starts from an empty store.
+            if [ -n "${base_args[*]}" ] && [ -f "$base_dir/$QUARANTINE/quarantine.json" ]; then
+              cp "$base_dir/$QUARANTINE/quarantine.json" "$quarantine_dir/quarantine.json"
+            fi
+            quarantine_args=(--quarantine "$quarantine_dir")
+            quarantine_mount=(-v "$quarantine_dir:$quarantine_dir")
+          fi
           mapfile -t docker_access < "$RUNNER_TEMP/qare-docker-access"
           safety_mount=()
           if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ]; then
@@ -1096,6 +1201,7 @@ jobs:
             -e QARE_EPHEMERAL_RUNNERS="${QARE_EPHEMERAL_RUNNERS:-}" \
             -v "$PWD:$PWD" -w "$PWD" \
             "${base_mount[@]}" \
+            "${quarantine_mount[@]}" \
             "${docker_access[@]}" \
             "$IMAGE_REF" qare run --plan plan.json \
             --id "pr-${PR_NUMBER}" \
@@ -1104,7 +1210,14 @@ jobs:
             --head "$HEAD_SHA" \
             --profile "$PROFILE" \
             "${base_args[@]}" \
+            --flake-attempts "$FLAKE_ATTEMPTS" \
+            "${quarantine_args[@]}" \
             --evidence evidence || code=$?
+          # The store the run wrote goes up with the evidence, for a person
+          # to commit where the quarantine input points.
+          if [ -n "${quarantine_args[*]}" ] && [ -d evidence ] && [ -f "$quarantine_dir/quarantine.json" ]; then
+            cp "$quarantine_dir/quarantine.json" evidence/quarantine.json
+          fi
           # 3 is refused: this repository has no profile or no stubs, or the
           # run landed where it cannot execute (#76: a host without what the
           # profile requires, or a self-hosted runner a public repository did
@@ -1540,6 +1653,13 @@ jobs:
         with:
           name: execute-evidence
           path: evidence
+      # collect's record of what the planner's diff left out (#380), which the
+      # evidence comment lists.
+      - name: Download the QA inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: qa-inputs
+          path: qa-inputs
       - name: Carry out the advisory replies
         if: github.event_name == 'pull_request'
         shell: bash
@@ -1608,12 +1728,34 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVIDENCE_URL: ${{ needs.execute.outputs.evidence-url }}
+          BLOCKED_CHECK: ${{ inputs.blocked-check }}
         run: |
           set -euo pipefail
           dismissed=()
           if [ -f advisory-dismissed.json ]; then
             dismissed=(--dismissed advisory-dismissed.json)
           fi
+          excluded=()
+          if [ -f qa-inputs/planner-diff-excluded.json ]; then
+            excluded=(--planner-diff-excluded qa-inputs/planner-diff-excluded.json)
+          fi
+          # How a blocked verdict's check run reads (#380). Neutral is the
+          # default and passes nothing. An image too old to know the flag
+          # would ignore it and post neutral, so the opt-in checks first and
+          # fails closed.
+          blocked=()
+          case "$BLOCKED_CHECK" in
+            neutral|'') ;;
+            failure)
+              if ! docker run --rm --network none --entrypoint grep "$IMAGE_REF" \
+                  -q blocked-conclusion /opt/qare/lib/packages/action/dist/index.js; then
+                echo "::error::the qare image this run pulled ($IMAGE_REF) does not know blocked-check: failure and would post a blocked verdict as neutral: run a qare whose image knows it, or leave blocked-check neutral"
+                exit 1
+              fi
+              blocked=(--blocked-conclusion failure)
+              ;;
+            *) echo "::error::blocked-check is neutral or failure, not '$BLOCKED_CHECK'"; exit 1 ;;
+          esac
           docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
             -e GITHUB_TOKEN \
             -e QARE_APP_TOKEN \
@@ -1626,7 +1768,7 @@ jobs:
             "$IMAGE_REF" /opt/qare/lib/packages/action/dist/index.js post-evidence \
             --result judged/judged-result.json \
             --pr "$PR_NUMBER" --sha "$HEAD_SHA" --artifact-url "$EVIDENCE_URL" \
-            --evidence evidence --metrics judged/metrics.json "${dismissed[@]}"
+            --evidence evidence --metrics judged/metrics.json "${dismissed[@]}" "${excluded[@]}" "${blocked[@]}"
           # The verdict is on the pull request: the report job must not
           # replace it, whatever fails after this (#203).
           echo "posted=true" >> "$GITHUB_OUTPUT"
@@ -2424,6 +2566,8 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           PROFILE: ${{ inputs.profile }}
+          FLAKE_ATTEMPTS: ${{ inputs.flake-attempts }}
+          QUARANTINE: ${{ inputs.quarantine }}
         run: |
           set -uo pipefail
           # One revision, so one side: the base and the head are the same
@@ -2431,6 +2575,32 @@ jobs:
           # failure is a regression is the ledger's record to say, not a
           # second boot's. The run is named for the workflow run, so two
           # runs on one runner never share a compose project.
+          # The flake policy (#380): how many attempts a failing check gets,
+          # and the quarantine store a check that failed and then passed is
+          # recorded in. A retry never turns a failure into a pass: such a
+          # check is quarantined and its criterion reported unverified.
+          if ! [[ "${FLAKE_ATTEMPTS:-}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::flake-attempts takes a whole number of attempts, one or more, not '${FLAKE_ATTEMPTS:-}'"
+            exit 1
+          fi
+          quarantine_args=()
+          quarantine_mount=()
+          quarantine_dir="$RUNNER_TEMP/qare-quarantine"
+          if [ -n "${QUARANTINE:-}" ]; then
+            case "$QUARANTINE" in
+              /*|..|../*|*/..|*/../*)
+                echo "::error::quarantine names a directory inside the repository, not '$QUARANTINE'"
+                exit 1
+                ;;
+            esac
+            mkdir -p "$quarantine_dir"
+            # The default branch is reviewed, so its own copy is the store.
+            if [ -f "$PWD/$QUARANTINE/quarantine.json" ]; then
+              cp "$PWD/$QUARANTINE/quarantine.json" "$quarantine_dir/quarantine.json"
+            fi
+            quarantine_args=(--quarantine "$quarantine_dir")
+            quarantine_mount=(-v "$quarantine_dir:$quarantine_dir")
+          fi
           mapfile -t docker_access < "$RUNNER_TEMP/qare-docker-access"
           safety_mount=()
           if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ]; then
@@ -2449,6 +2619,7 @@ jobs:
             -e QARE_SELF_HOSTED="${QARE_SELF_HOSTED:-}" \
             -e QARE_EPHEMERAL_RUNNERS="${QARE_EPHEMERAL_RUNNERS:-}" \
             -v "$PWD:$PWD" -w "$PWD" \
+            "${quarantine_mount[@]}" \
             "${docker_access[@]}" \
             "$IMAGE_REF" qare run --plan plan.json \
             --id "main-${RUN_ID}-${RUN_ATTEMPT}" \
@@ -2456,7 +2627,14 @@ jobs:
             --base "$HEAD_SHA" \
             --head "$HEAD_SHA" \
             --profile "$PROFILE" \
+            --flake-attempts "$FLAKE_ATTEMPTS" \
+            "${quarantine_args[@]}" \
             --evidence evidence || code=$?
+          # The store the run wrote goes up with the evidence, for a person
+          # to commit where the quarantine input points.
+          if [ -n "${quarantine_args[*]}" ] && [ -d evidence ] && [ -f "$quarantine_dir/quarantine.json" ]; then
+            cp "$quarantine_dir/quarantine.json" evidence/quarantine.json
+          fi
           # 3 is refused, as in execute: the run wrote result.json and
           # main_judge reports it. Without one, exit 3 is something else.
           if [ "$code" -eq 3 ]; then
