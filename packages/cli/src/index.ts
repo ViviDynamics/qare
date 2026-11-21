@@ -1101,7 +1101,10 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
       throw new Error(
         'qare judge checks proven criteria with the verifier, which needs --plan <path> (for the criteria text) and --diff <path>, or --no-diff when no change is under review; pass --runner none to judge without it',
       )
-    const plan = verify ? loadPlan(await readFile(resolve(planPath as string), 'utf8'), flowActions) : undefined
+    // The plan gives each criterion its text and says what planning spent
+    // (#373): read whenever it is given, so a comment judged without the
+    // verifier still says what was checked and what it cost.
+    const plan = planPath === undefined ? undefined : loadPlan(await readFile(resolve(planPath), 'utf8'), flowActions)
     // Evidence paths in result.json are relative to its directory, and that
     // directory is all the verifier's read tool can reach.
     const evidenceDir = dirname(resultPath)
@@ -1113,6 +1116,7 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
       // evidence (#64).
       diff: !verify ? '' : noDiff ? NO_DIFF : redactText(await readFile(resolve(diffPath as string), 'utf8'), rules),
       rules,
+      ...(plan?.usage === undefined ? {} : { planUsage: plan.usage }),
       ...(verify ? { verifier: nareRunners(binary).verifier(evidenceDir) } : {}),
     })
     for (const criterion of changed)

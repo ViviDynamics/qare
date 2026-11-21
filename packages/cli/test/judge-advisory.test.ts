@@ -304,8 +304,8 @@ test('a reviewer that claims outcomes and verdicts changes neither: its words ar
   const { judged, checkrun } = await artifacts(run.dir)
   expect(judged.verdict).toBe('passed')
   expect(judged.criteria).toEqual([
-    { id: 'signup-form', outcome: 'proven', evidence: [`${SCREEN}/actions.log`, `${SCREEN}/assert-2.json`, `${SCREEN}/final.png`] },
-    { id: 'export-csv', outcome: 'proven', evidence: ['checks/export-csv/0/stdout.txt'] },
+    { id: 'signup-form', outcome: 'proven', evidence: [`${SCREEN}/actions.log`, `${SCREEN}/assert-2.json`, `${SCREEN}/final.png`], text: 'A visitor who submits the empty sign-up form is told it failed.' },
+    { id: 'export-csv', outcome: 'proven', evidence: ['checks/export-csv/0/stdout.txt'], text: 'The ledger exports every row to CSV.' },
   ])
   expect(checkrun).toMatchObject({ conclusion: 'success' })
   expect(judged.advisory?.findings).toHaveLength(1)

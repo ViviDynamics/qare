@@ -408,3 +408,13 @@ test('the message a result carries is swept with the rules like every other free
   expect(JSON.stringify(swept)).not.toContain('CUST-123456')
   expect(swept.criteria[0]?.mail?.[0]?.links).toEqual(['/orders/[redacted]'])
 })
+
+test('criterion text is swept with the result, because a public comment shows it (#373)', () => {
+  const result: RunResult = {
+    schemaVersion: '1',
+    verdict: 'passed',
+    criteria: [{ id: 'c1', outcome: 'proven', evidence: ['c1/out.txt'], text: `the token ${GITHUB_TOKEN} is never shown` }],
+  }
+  const redacted = redactResult(result)
+  expect(redacted.criteria[0]?.text).toBe(`the token ${REDACTED} is never shown`)
+})

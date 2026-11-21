@@ -54,11 +54,12 @@ export async function replayRun(input: {
     texts,
     diff: NO_DIFF,
     rules: BUILTIN_REDACTION_RULES,
+    ...(input.plan.usage === undefined ? {} : { planUsage: input.plan.usage }),
   })
   const bytes = `${JSON.stringify(result, null, 2)}\n`
   if (input.stored === undefined)
     return { result, bytes, stored: false, identical: false, differences: [] }
-  const identical = withoutAdvisory(input.stored.bytes) === bytes
+  const identical = verdictBytes(input.stored.bytes) === verdictBytes(bytes)
   const differences = identical ? [] : compare(input.stored.result, result)
   const explanation =
     differences.length === 0 && !identical
@@ -78,16 +79,30 @@ export async function replayRun(input: {
  * that key reproduces. Bytes that are not a JSON object, or carry no such
  * key, are compared as they are.
  */
-function withoutAdvisory(bytes: string): string {
+/**
+ * A judged result's bytes without what describes the run but decides none of
+ * it: the advisory review (#150), each criterion's text and the plan's spend
+ * (#373). A result stored before those fields existed replays as identical,
+ * and so does one that carried them.
+ */
+function verdictBytes(bytes: string): string {
   let parsed: unknown
   try {
     parsed = JSON.parse(bytes)
   } catch {
     return bytes
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed) || !('advisory' in parsed)) return bytes
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return bytes
   const rest: Record<string, unknown> = { ...parsed }
   delete rest.advisory
+  delete rest.planUsage
+  if (Array.isArray(rest.criteria))
+    rest.criteria = rest.criteria.map((criterion: unknown) => {
+      if (typeof criterion !== 'object' || criterion === null || Array.isArray(criterion)) return criterion
+      const described: Record<string, unknown> = { ...criterion }
+      delete described.text
+      return described
+    })
   return `${JSON.stringify(rest, null, 2)}\n`
 }
 

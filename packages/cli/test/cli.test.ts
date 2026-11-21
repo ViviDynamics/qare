@@ -173,6 +173,29 @@ test('judge writes judged-result.json, comment.md and checkrun.json next to the 
   expect(await readFile(resultPath, 'utf8')).toBe(resultText)
 })
 
+test('judge without the verifier still shows the plan text and spend when given the plan (#373)', async () => {
+  const { dir, resultPath } = await writeResultFile()
+  const planPath = join(dir, 'plan.json')
+  await writeFile(
+    planPath,
+    JSON.stringify({
+      schemaVersion: '1',
+      criteria: [{ id: 'criterion-1', text: 'The ledger exports to CSV.', checks: [{ kind: 'command', name: 'export', command: 'true' }] }],
+      usage: { inputTokens: 1500, outputTokens: 200 },
+    }),
+    'utf8',
+  )
+  const code = await main(['judge', '--result', resultPath, '--plan', planPath, '--runner', 'none'], capture().writer, NO_OUT)
+  expect(code).toBe(0)
+  const judged = JSON.parse(await readFile(join(dir, 'judged-result.json'), 'utf8'))
+  expect(judged.criteria[0].text).toBe('The ledger exports to CSV.')
+  expect(judged.planUsage).toEqual({ inputTokens: 1500, outputTokens: 200 })
+  const comment = await readFile(join(dir, 'comment.md'), 'utf8')
+  expect(comment).toContain('| criterion-1: The ledger exports to CSV. | proven |  |')
+  expect(comment).toContain('Criteria: 1 proven, 0 failed, 0 unverified.')
+  expect(comment).toContain('Model tokens: plan 1,500 input and 200 output; judge not recorded.')
+})
+
 test('judge of a waived result keeps the waived verdict and the waiver record', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'qare-cli-'))
   const resultPath = join(dir, 'result.json')

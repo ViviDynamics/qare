@@ -699,3 +699,37 @@ test('a one-sided result judges with an empty base, as it always did (#147)', as
   expect(result.base).toBeUndefined()
   expect(result.criteria).toEqual([{ id: 'c1', outcome: 'failed', evidence: ['checks/c1/0/stdout.txt'] }])
 })
+
+test('the judged result carries each criterion text and the plan spend, so the comment can show them (#373)', async () => {
+  const executed: RunResult = {
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'passed',
+    criteria: [
+      { id: 'c1', outcome: 'proven', evidence: ['checks/c1/0/stdout.txt'] },
+      { id: 'c2', outcome: 'unverified', reason: 'boot failed' },
+    ],
+  }
+  const { result } = await judgeExecuted(executed, {
+    texts: { c1: 'The ledger exports to CSV.' },
+    diff: NO_DIFF,
+    planUsage: { inputTokens: 1200, outputTokens: 300 },
+  })
+  expect(result.criteria[0]).toMatchObject({ id: 'c1', text: 'The ledger exports to CSV.' })
+  // A criterion the plan has no text for carries none, never an empty string.
+  expect(result.criteria[1]).not.toHaveProperty('text')
+  expect(result.planUsage).toEqual({ inputTokens: 1200, outputTokens: 300 })
+})
+
+test('criterion text in the judged result is swept by the profile rules like every reason (#373)', async () => {
+  const executed: RunResult = {
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'passed',
+    criteria: [{ id: 'c1', outcome: 'proven', evidence: ['checks/c1/0/stdout.txt'] }],
+  }
+  const { result } = await judgeExecuted(executed, {
+    texts: { c1: 'Signing in as seeded-user@example.test works.' },
+    diff: NO_DIFF,
+    rules: [{ name: 'seeded', pattern: /seeded-user@example\.test/g, replacement: '[redacted]' }],
+  })
+  expect(result.criteria[0]?.text).not.toContain('seeded-user@example.test')
+})

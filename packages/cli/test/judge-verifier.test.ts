@@ -105,6 +105,7 @@ test('a verifier finding fails a run the checks passed, and the comment says why
       outcome: 'failed',
       evidence: ['checks/export-csv/0/stdout.txt'],
       reason: 'verifier: the export wrote 0 rows, so it did not export every row (checks/export-csv/0/stdout.txt)',
+      text: 'The ledger exports every row to CSV.',
     },
   ])
   expect(await readFile(join(dir, 'comment.md'), 'utf8')).toContain('the export wrote 0 rows')
