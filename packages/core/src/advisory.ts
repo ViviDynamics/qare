@@ -82,7 +82,7 @@ export interface DismissedFinding {
 const MAX_FINDINGS = 12
 const MAX_TEXT = 300
 const MAX_ELEMENT = 160
-/** QA.md rides the prompt, and the prompt is one argument (nare#29): a long one is cut, and says so. */
+/** QA.md rides the prompt, which the model's context window bounds: a long one is cut, and says so. */
 const MAX_CONTEXT = 20_000
 /**
  * How long the reviewer is waited for. The verdict is computed before it is

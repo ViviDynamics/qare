@@ -154,12 +154,6 @@ export const NARE_CONTRACT = 3
 /** Exit 2 from nare: the run never started, so there is no result line. */
 const NEVER_STARTED = 2
 
-/**
- * Linux caps one argv element at 128 KiB (MAX_ARG_STRLEN, counting its NUL),
- * and nare takes its prompt only as an argument until nare#29 lands.
- */
-const MAX_ARG_BYTES = 128 * 1024 - 1
-
 export class NareRunnerError extends Error {
   constructor(message: string) {
     super(message)
@@ -258,17 +252,19 @@ export class NareAgentRunner implements AgentRunner {
     const { tmpdir } = await import('node:os')
     const { join } = await import('node:path')
 
-    // Past the cap the spawn fails with a bare E2BIG. Saying what happened is
-    // the difference between a named outcome and a mystery.
-    const promptBytes = Buffer.byteLength(request.prompt, 'utf8')
-    if (process.platform === 'linux' && promptBytes > MAX_ARG_BYTES)
-      throw new NareRunnerError(
-        `the prompt is ${promptBytes} bytes, over the ${MAX_ARG_BYTES} one argument can carry on Linux, and nare takes its prompt only as an argument (nare#29)`,
-      )
-
+    // mkdtemp makes the directory 0700, so the files below are this run's
+    // alone, and the finally removes them however the run ends.
     const workDir = await mkdtemp(join(tmpdir(), 'qare-nare-'))
     try {
-      const argv = ['run', request.prompt, '--yes', '--jsonl', '--contract', String(NARE_CONTRACT)]
+      // The prompt travels by file (#401), never as an argument: an argument
+      // is capped at 128 KiB on Linux, and a diff is often larger. nare reads
+      // the file as UTF-8, every byte kept.
+      // What still bounds a prompt is the model's context window (#391):
+      // NARE_CONTEXT_WINDOW, which nare measures each turn against and stops
+      // at with stop reason context.
+      const promptPath = join(workDir, 'prompt.txt')
+      await writeFile(promptPath, request.prompt, { encoding: 'utf8', mode: 0o600 })
+      const argv = ['run', '--prompt-file', promptPath, '--yes', '--jsonl', '--contract', String(NARE_CONTRACT)]
       if (request.tools === undefined) argv.push('--tools', toolFlag(request.toolPolicy))
       else {
         // The exploration channel reaches the session through nare's own MCP

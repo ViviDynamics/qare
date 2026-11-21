@@ -477,11 +477,10 @@ test('a blocked run whose unverified criteria are all planner-unplannable or unr
   expect(execute).toContain('check could not start')
 })
 
-test('the planner reads the scrubbed, trimmed copy of the diff, never the raw one (nare#29)', () => {
-  // nare takes its prompt as one argument, so a change whose diff exceeds the
-  // Linux argument budget cannot reach the planner whole: collect produces the
-  // planner-sized copy beside the full diff, and the planner always reads that
-  // copy — the scrubbed one — never the raw diff.
+test('the planner reads the scrubbed, trimmed copy of the diff, never the raw one', () => {
+  // collect produces the planner's copy beside the full diff, scrubbed of the
+  // values the change adds and without the paths the caller left out, and the
+  // planner always reads that copy, never the raw diff.
   expect(section('collect')).toContain('change-planner.diff')
   const plan = section('plan')
   expect(plan).toContain('--diff change-planner.diff')

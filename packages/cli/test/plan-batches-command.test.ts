@@ -28,8 +28,8 @@ async function batchNare(cutOff: string[] = [], refused: string[] = []): Promise
   const log = join(dir, 'calls.jsonl')
   const script = [
     '#!/usr/bin/env node',
-    `import { appendFileSync } from 'node:fs'`,
-    `const prompt = process.argv[3] ?? ''`,
+    `import { appendFileSync, readFileSync } from 'node:fs'`,
+    `const prompt = readFileSync(process.argv[process.argv.indexOf('--prompt-file') + 1], 'utf8')`,
     `const list = (prompt.split('Criteria:\\n')[1] ?? '').split('\\n\\n')[0] ?? ''`,
     `const ids = [...list.matchAll(/^- (c\\d+): /gm)].map((match) => match[1])`,
     `appendFileSync(${JSON.stringify(log)}, JSON.stringify(ids) + '\\n')`,

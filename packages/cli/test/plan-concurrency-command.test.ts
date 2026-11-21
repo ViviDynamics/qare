@@ -28,10 +28,10 @@ async function meetingNare(together: number, waitMs: number): Promise<{ binary: 
   const log = join(dir, 'alive.jsonl')
   const script = [
     '#!/usr/bin/env node',
-    `import { appendFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'`,
+    `import { appendFileSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'`,
     `import { join } from 'node:path'`,
     `const dir = ${JSON.stringify(dir)}`,
-    `const prompt = process.argv[3] ?? ''`,
+    `const prompt = readFileSync(process.argv[process.argv.indexOf('--prompt-file') + 1], 'utf8')`,
     `const list = (prompt.split('Criteria:\\n')[1] ?? '').split('\\n\\n')[0] ?? ''`,
     `const ids = [...list.matchAll(/^- (c\\d+): /gm)].map((match) => match[1])`,
     `const mark = join(dir, 'alive-' + ids.join('-'))`,
