@@ -1,9 +1,35 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { registerHooks, stripTypeScriptTypes } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import './source.mjs'
+
+// qare-action's source too, the same way source.mjs loads core's: its
+// `@qare/core` is the checkout's core source, never the image's build.
+const actionSource = new URL('../../packages/action/src/', import.meta.url).href
+const coreIndex = new URL('../../packages/core/src/index.ts', import.meta.url).href
+registerHooks({
+  resolve(specifier, context, next) {
+    if (specifier === '@qare/core') return next(coreIndex, context)
+    if (specifier.endsWith('.js') && context.parentURL?.startsWith(actionSource)) {
+      const candidate = new URL(`${specifier.slice(0, -3)}.ts`, context.parentURL)
+      if (existsSync(fileURLToPath(candidate))) return next(candidate.href, context)
+    }
+    return next(specifier, context)
+  },
+  load(url, context, next) {
+    if (!url.startsWith(actionSource) || !url.endsWith('.ts')) return next(url, context)
+    return { format: 'module', shortCircuit: true, source: stripTypeScriptTypes(readFileSync(fileURLToPath(url), 'utf8'), { mode: 'transform', sourceUrl: url }) }
+  },
+})
+const posted = async (result, opts) => {
+  const { postEvidence } = await import('../../packages/action/src/post-evidence.ts')
+  const out = { comments: [], checkRuns: [] }
+  await postEvidence({ postComment: async (body) => { out.comments.push(body) }, createCheckRun: async (run) => { out.checkRuns.push(run) } }, result, opts)
+  return out
+}
 
 // Executable checks of the pipeline defaults (#380), run against the
 // checkout without a build: the workflow's own step scripts with docker and
@@ -21,12 +47,14 @@ const stepOf = (job, name) => {
   assert.ok(found, `${job} has no step ${name}`)
   return found.run
 }
-const tool = (dir, name, body) => {
-  writeFileSync(join(dir, name), `#!/bin/bash\n${body}\n`)
-  chmodSync(join(dir, name), 0o755)
+// The stubs are bash functions handed down in the environment, not files:
+// the scratch directory a contained check gets may not be executable.
+const stubs = {}
+const tool = (_dir, name, body) => {
+  stubs[`BASH_FUNC_${name}%%`] = `() { ${body}\n}`
 }
 const runScript = (script, dir, env) =>
-  spawnSync('bash', ['-c', script], { cwd: dir, encoding: 'utf8', env: { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: join(dir, 'summary'), ...env } })
+  spawnSync('bash', ['-c', script], { cwd: dir, encoding: 'utf8', env: { PATH: process.env.PATH, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: join(dir, 'summary'), ...stubs, ...env } })
 const after = (args, flag) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined)
 
 const check = process.argv[2]
@@ -38,7 +66,7 @@ try {
     assert.equal(inputs.quarantine.default, '.qa')
     // The execute step hands both to qare run, and reads the base's store, not the pull request's.
     tool(dir, 'docker', 'printf "%s\\n" "$@" > "$RUNNER_TEMP/calls"; mkdir -p evidence; echo "{}" > evidence/result.json')
-    tool(dir, 'git', 'if [ "$1" = worktree ]; then mkdir -p "$4/.qa"; echo base > "$4/.qa/quarantine.json"; fi; exit 0')
+    tool(dir, 'git', 'if [ "$1" = worktree ]; then mkdir -p "$4/.qa"; echo base > "$4/.qa/quarantine.json"; fi; return 0')
     writeFileSync(join(dir, 'qare-docker-access'), '')
     mkdirSync(join(dir, '.qa'))
     writeFileSync(join(dir, '.qa/quarantine.json'), 'pull request\n')
@@ -101,17 +129,28 @@ try {
     // The record is uploaded with the QA inputs, and publish hands it to the comment.
     assert.ok(collect.includes('> planner-diff-excluded.json'))
     assert.ok(stepOf('publish', 'Post the evidence on the pull request').includes('--planner-diff-excluded qa-inputs/planner-diff-excluded.json'))
-    const section = readFileSync(join(root, 'packages/action/src/post-evidence.ts'), 'utf8')
-    assert.ok(section.includes("'## Planner diff'"))
-    console.log(JSON.stringify({ check, patterns: patterns.length, plannerSaw: planner, leftOut: excluded }))
+    // The comment post-evidence writes from that record lists the pathspecs and the paths.
+    const leftOut = [...excluded, ...kept].filter((path) => !planner.includes(path))
+    const result = { schemaVersion: '1', verdict: 'passed', criteria: [{ id: 'c', outcome: 'proven', evidence: [] }] }
+    const { comments } = await posted(result, { plannerDiffExcluded: { patterns, paths: leftOut } })
+    const comment = comments[0]
+    const section = comment.slice(comment.indexOf('## Planner diff'))
+    assert.ok(comment.includes('## Planner diff'))
+    for (const path of leftOut) assert.ok(section.includes(`\`${path}\``), path)
+    for (const path of kept) assert.ok(!section.includes(`\`${path}\``), path)
+    console.log(JSON.stringify({ check, patterns: patterns.length, plannerSaw: planner, leftOut }))
+    console.log(section)
   } else if (check === 'blocked') {
     assert.equal(inputs['blocked-check'].default, 'neutral')
-    const { renderCheckRun } = await import('../../packages/core/src/index.ts')
+    // The check run post-evidence posts for a blocked verdict, by default and on opt-in.
     const blocked = { schemaVersion: '1', verdict: 'blocked', criteria: [{ id: 'c', outcome: 'unverified', reason: 'environment: down', evidence: [] }] }
-    const conclusions = { default: renderCheckRun(blocked).conclusion, optIn: renderCheckRun(blocked, { blocked: 'failure' }).conclusion }
-    assert.deepEqual(conclusions, { default: 'neutral', optIn: 'failure' })
+    const byDefault = (await posted(blocked, {})).checkRuns[0]
+    const optIn = (await posted(blocked, { blockedConclusion: 'failure' })).checkRuns[0]
+    const conclusions = { default: byDefault.conclusion, optIn: optIn.conclusion, optInSummary: optIn.summary }
+    assert.equal(conclusions.default, 'neutral')
+    assert.equal(conclusions.optIn, 'failure')
     // The publish step passes the opt-in through, passes nothing for neutral, and refuses a typo.
-    tool(dir, 'docker', 'if [ "$1" = run ] && printf "%s\\n" "$@" | grep -qx grep; then exit 0; fi; printf "%s\\n" "$@" > "$RUNNER_TEMP/calls"')
+    tool(dir, 'docker', 'if [ "$1" = run ] && printf "%s\\n" "$@" | grep -qx grep; then return 0; fi; printf "%s\\n" "$@" > "$RUNNER_TEMP/calls"')
     const post = stepOf('publish', 'Post the evidence on the pull request')
     const seen = {}
     for (const value of ['neutral', 'failure', 'red']) {
