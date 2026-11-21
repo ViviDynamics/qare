@@ -80,6 +80,8 @@ export interface BootOpts {
    */
   runCompose?: (args: string[], timeoutMs: number, env?: Record<string, string>) => Promise<{ code: number; stdout: string; stderr: string }>
   probe?: (url: string) => Promise<{ ok: boolean }>
+  /** Runs `docker` itself: how the base side pulls and inspects a prebuilt image (#381). The runner's docker by default. */
+  runDocker?: (args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>
   pollIntervalMs?: number
   /**
    * The run's compose isolation (#53): the `-p` project every call addresses.

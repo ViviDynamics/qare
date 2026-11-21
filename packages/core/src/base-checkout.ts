@@ -9,6 +9,8 @@ import { join } from 'node:path'
  */
 export interface BaseCheckout {
   path: string
+  /** The commit checked out, when the run made the checkout and so knows it (#381). */
+  commit?: string
   /** Remove what the run made. A checkout the caller handed in is left alone. */
   dispose: () => Promise<void>
 }
@@ -97,6 +99,7 @@ export async function prepareBaseCheckout(input: BaseCheckoutInput): Promise<Bas
   return {
     ok: true,
     checkout: {
+      commit: base.stdout,
       path: join(dir, prefix.stdout),
       dispose: async () => {
         const removed = await runGit(git, input.repoPath, ['worktree', 'remove', '--force', dir])

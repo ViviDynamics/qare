@@ -86,6 +86,7 @@ export type {
   RunResult,
   RunTarget,
   RunBase,
+  RunBaseImage,
   CriterionBase,
 } from './result.js'
 export {

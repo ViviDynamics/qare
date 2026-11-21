@@ -175,6 +175,21 @@ export interface RunBase {
   ref: string
   status: 'executed' | 'not-executed'
   reason?: string
+  /**
+   * The prebuilt images the profile named for the base side (#381), one per
+   * app that named one: the reference pulled, what it resolved to, the
+   * commit it says it was built from, and whether the base side ran it in
+   * place of building, with the reason when it did not.
+   */
+  images?: RunBaseImage[]
+}
+
+export interface RunBaseImage {
+  ref: string
+  used: boolean
+  digest?: string
+  revision?: string
+  reason?: string
 }
 
 /** One app of a several-app run (#55): its verdict, its criteria, the profile it was checked under, and what that profile required of the host (#76). */
@@ -676,10 +691,29 @@ function parseRunBase(value: unknown): RunBase | undefined {
   const ref = nonEmptyString(value.ref, 'base.ref', 'base ref')
   if (value.status !== 'executed' && value.status !== 'not-executed')
     fail('base.status', `unknown base status ${JSON.stringify(value.status)} (expected "executed" or "not-executed")`)
+  const images = value.images === undefined ? {} : { images: parseBaseImages(value.images) }
   if (value.status === 'executed')
-    return value.reason === undefined ? { ref, status: 'executed' } : { ref, status: 'executed', reason: nonEmptyString(value.reason, 'base.reason', 'reason') }
+    return value.reason === undefined ? { ref, status: 'executed', ...images } : { ref, status: 'executed', reason: nonEmptyString(value.reason, 'base.reason', 'reason'), ...images }
   if (value.reason === undefined) fail('base.reason', 'a base side that did not execute names why')
-  return { ref, status: 'not-executed', reason: nonEmptyString(value.reason, 'base.reason', 'reason') }
+  return { ref, status: 'not-executed', reason: nonEmptyString(value.reason, 'base.reason', 'reason'), ...images }
+}
+
+/** The base side's prebuilt images (#381): an image not used names why. */
+function parseBaseImages(value: unknown): RunBaseImage[] {
+  if (!Array.isArray(value)) fail('base.images', 'base.images must be an array of the images the base side was offered')
+  return value.map((entry, index) => {
+    const field = `base.images[${index}]`
+    if (!isRecord(entry)) fail(field, 'a base image must be a JSON object with ref and used')
+    if (typeof entry.used !== 'boolean') fail(`${field}.used`, 'used must be true or false')
+    if (!entry.used && entry.reason === undefined) fail(`${field}.reason`, 'a base image the base side did not use names why')
+    return {
+      ref: nonEmptyString(entry.ref, `${field}.ref`, 'image ref'),
+      used: entry.used,
+      ...(entry.digest === undefined ? {} : { digest: nonEmptyString(entry.digest, `${field}.digest`, 'digest') }),
+      ...(entry.revision === undefined ? {} : { revision: nonEmptyString(entry.revision, `${field}.revision`, 'revision') }),
+      ...(entry.reason === undefined ? {} : { reason: nonEmptyString(entry.reason, `${field}.reason`, 'reason') }),
+    }
+  })
 }
 
 /**
