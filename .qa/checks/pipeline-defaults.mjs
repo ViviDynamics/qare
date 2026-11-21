@@ -9,6 +9,9 @@ import './source.mjs'
 // Its compose is a stand-in, so the stack is booted uncontained: containment
 // is exercised by stack-egress.mjs (#382), and the run's image is not named here.
 delete process.env.QARE_IMAGE_REF
+// The ref and digest are a pair (environment.ts), so both go: main runs set both.
+delete process.env.QARE_IMAGE_DIGEST
+delete process.env.QARE_IMAGE_TAG
 
 // qare-action's source too, the same way source.mjs loads core's: its
 // `@qare/core` is the checkout's core source, never the image's build.
