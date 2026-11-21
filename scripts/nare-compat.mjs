@@ -162,7 +162,7 @@ try {
       message: { role: 'assistant', content: null, tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] },
       finish_reason: 'tool_calls',
     })
-    const toolText = (index) => requests[index].messages.filter((message) => message.role === 'tool').map((message) => String(message.content)).join('\n')
+    const toolText = (index) => String(requests[index].messages.filter((message) => message.role === 'tool').at(-1)?.content ?? '')
 
     reset(call('power', 'rig__power_on', { volts: 5 }), answer('{"verdict":"powered"}'))
     const powered = await runner.run({ ...base, mcp })

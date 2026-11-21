@@ -2390,13 +2390,17 @@ steps the server may run in:
 
 - **For the planner to look through (`steps: [plan]`), shipped (#93).** The plan
   step starts the servers its profile registers, speaks the MCP handshake, and
-  serves the allowed tools to the model session over one channel, the way the
-  exploration channel (#87) serves its four: only tool calls and their results
-  cross, each tool addressed as `server.tool` so two servers' tools cannot
-  collide, and every result treated as untrusted data. A server that cannot be
-  started or reached is reported, never silently skipped; the calls the planner
-  made, their arguments and their results are recorded with the run's evidence
-  as `mcp-calls.jsonl`.
+  serves the allowed tools to the model session through nare's own MCP client
+  (#399), the way the exploration channel (#87, #377) reaches it: each
+  registered server is its own alias in the `--mcp-config` nare is handed, and
+  `--tools` names only the allowed tools, as `server__tool`, so two servers'
+  tools cannot collide and nothing the profile did not allow is offered. Only
+  tool calls and their results cross, and every result is fenced as untrusted
+  data. A plan-step server or tool whose name nare cannot carry is refused when
+  the profile loads (ADR-0012). A server that cannot be started or reached is
+  reported, never silently skipped; the calls the planner made, their
+  arguments and their results are recorded with the run's evidence as
+  `mcp-calls.jsonl`.
 - **As a driver or a check, shipped (#94).** QARE's code calls the tools
   directly, with no model in between, by mapping its action vocabulary onto
   them. The rules do not change: references stay semantic, the harness records

@@ -83,4 +83,5 @@ not that.
   model as text, so a screenshot would arrive as a base64 string the size of
   the page.
 - The host MCP channel (#93) still reaches nare as environment no nare release
-  reads. That is its own follow-up, not this decision.
+  reads. That is its own follow-up, not this decision. #399 closed it the same
+  way; ADR-0012 records how.
