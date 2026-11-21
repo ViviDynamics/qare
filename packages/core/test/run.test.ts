@@ -1004,7 +1004,10 @@ test('a refused run keeps the timestamp the run started with, so the wall clock 
     return {
       ...actual,
       isolateRun: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 30))
+        // Longer than the 30 ms asserted below: a timer may fire a little
+        // early, and both timestamps are whole milliseconds, so a 30 ms wait
+        // could read as 29.
+        await new Promise((resolve) => setTimeout(resolve, 40))
         throw new Error('the compose project could not be minted')
       },
     }

@@ -94,18 +94,30 @@ try {
     // collect and main_collect run the published core image, never a source build.
     const out = {}
     for (const job of ['collect', 'main_collect']) {
-      const steps = workflow.jobs[job].steps
-      const text = JSON.stringify(steps)
-      assert.ok(!/pnpm install|pnpm build/.test(text), `${job} builds qare from source`)
-      const pull = stepOf(job, 'Pull the core image').run
-      assert.match(pull, /ref="ghcr\.io\/vividynamics\/qare-core:\$QARE_VERSION"/)
-      assert.match(pull, /docker pull "\$immutable"/)
-      const uses = steps.filter((step) => /"\$IMAGE_REF"/.test(step.run ?? '')).map((step) => step.name)
-      out[job] = { pullsByDigest: true, stepsRunningTheImage: uses, sourceBuild: false }
+      const names = workflow.jobs[job].steps.map((step) => step.name ?? step.uses)
+      const text = JSON.stringify(workflow.jobs[job].steps)
+      assert.ok(!/pnpm install|pnpm build|corepack/.test(text), `${job} builds qare from source`)
+      out[job] = { steps: names }
     }
-    // The tokens never reach the commands that only read files.
-    assert.match(stepOf('collect', 'Read the linked issue and the diff').run, /--network none/)
-    console.log(JSON.stringify({ check, ...out }))
+    // collect's own pull step, run: the version's tag resolved to its registry digest, and that digest pulled.
+    const DIGEST = `sha256:${'e'.repeat(64)}`
+    tool('docker', `printf '%s\\n' "$*" >> "$RUNNER_TEMP/docker-calls"; case "$1 $2" in "buildx version") return 0 ;; "buildx imagetools") echo "${DIGEST}" ;; esac; return 0`)
+    const output = join(dir, 'output')
+    writeFileSync(output, '')
+    const pulled = runScript(stepOf('collect', 'Pull the core image').run, dir, { QARE_VERSION: '2026.11.17', GITHUB_OUTPUT: output })
+    assert.equal(pulled.status, 0, pulled.stderr)
+    const imageRef = `ghcr.io/vividynamics/qare-core@${DIGEST}`
+    assert.equal(readFileSync(output, 'utf8').trim(), `digest=${imageRef}`)
+    const pullCalls = readFileSync(join(dir, 'docker-calls'), 'utf8').trim().split('\n')
+    assert.deepEqual(pullCalls.slice(-2), [`buildx imagetools inspect ghcr.io/vividynamics/qare-core:2026.11.17 --format {{.Manifest.Digest}}`, `pull ${imageRef}`])
+    // collect's own inputs step, run: qare is the image's, run with no network, on the pull request body as a file.
+    rmSync(join(dir, 'docker-calls'))
+    const ran = runScript(stepOf('collect', 'Read the linked issue and the diff').run, dir, { IMAGE_REF: imageRef, GH_TOKEN: 'token', PR_BODY: 'No issue here.', BASE_SHA: BASE, HEAD_SHA: 'b'.repeat(40), PR_NUMBER: '1', GITHUB_OUTPUT: output })
+    assert.equal(ran.status, 0, ran.stderr)
+    const qareCall = readFileSync(join(dir, 'docker-calls'), 'utf8').trim()
+    assert.match(qareCall, /^run --rm -u \S+ -e HOME=\/tmp --network none -v \S+ -w \S+ ghcr\.io\/vividynamics\/qare-core@sha256:e{64} qare linked-issues --body pr-body\.md$/)
+    assert.ok(!qareCall.includes('token'), 'the image is handed no token to read the body')
+    console.log(JSON.stringify({ check, ...out, pullStepCalls: pullCalls, imageOutput: readFileSync(output, 'utf8').trim().split('\n')[0], linkedIssuesCall: qareCall }))
   } else if (check === 'base-image') {
     // The base side pulls the profile's image and runs it only when it is the base commit's.
     const repo = (name) => {
