@@ -6,11 +6,37 @@ import { createSocket } from 'node:dgram'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { EventEmitter } from 'node:events'
-import { createRequire } from 'node:module'
 import './source.mjs'
 
-// The core's own YAML reader, as the core's package resolves it.
-const { parse } = createRequire(new URL('../../packages/core/package.json', import.meta.url))('yaml')
+/**
+ * An override as the run writes it: one JSON value per line, after the key
+ * it belongs to. Read without a YAML parser, since the check runs with no
+ * install: `services.<name>` is the service's own keys, or the one JSON
+ * value written on its line; `networks` is the top-level networks.
+ */
+function readOverride(text) {
+  const services = {}
+  const networks = {}
+  let section
+  let service
+  for (const line of text.split('\n')) {
+    const top = /^(\w+):$/.exec(line)
+    if (top !== null) {
+      section = top[1]
+      continue
+    }
+    const entry = /^  ("[^"]*"): ?(.*)$/.exec(line)
+    if (entry !== null) {
+      const name = JSON.parse(entry[1])
+      if (section === 'networks') networks[name] = JSON.parse(entry[2])
+      else services[(service = name)] = entry[2] === '' ? {} : JSON.parse(entry[2])
+      continue
+    }
+    const key = /^    (\w+): (?:!\w+ )?(.*)$/.exec(line)
+    if (key !== null && service !== undefined) services[service][key[1]] = JSON.parse(key[2])
+  }
+  return { services, networks }
+}
 
 // Executable checks of a contained stack that pins its addresses (#408), run
 // against the checkout's core source without a build. There is no docker
@@ -117,7 +143,7 @@ try {
     const { containmentOf } = await core('stack-egress.ts')
     const plan = containmentOf(PINNED, { image: IMAGE, stubs: STUBS })
     assert.equal(plan.kind, 'contained')
-    const override = parse(plan.override, { logLevel: 'error' })
+    const override = readOverride(plan.override)
     for (const [name, service] of Object.entries(PINNED.services)) {
       const own = service.networks ?? {}
       const added = override.services[name].networks
@@ -146,8 +172,8 @@ try {
     say(`boot outcome: ${outcome.kind}, egress ${JSON.stringify(outcome.egress)}`)
     for (const [index, line] of verbs(stack.calls, isolation.project).entries()) say(`compose call ${index + 1}: ${line}`)
     for (const [index, args] of docker.calls.entries()) say(`docker call ${index + 1}: ${args.join(' ')}`)
-    say(`resolver command in the containment override: ${JSON.stringify(parse(first, { logLevel: 'error' }).services['qare-egress-dns'].command)}`)
-    say(`relay command in the relay override: ${JSON.stringify(parse(relay, { logLevel: 'error' }).services['qare-egress-relay'].command)}`)
+    say(`resolver command in the containment override: ${JSON.stringify(readOverride(first).services['qare-egress-dns'].command)}`)
+    say(`relay command in the relay override: ${JSON.stringify(readOverride(relay).services['qare-egress-relay'].command)}`)
     stack.calls.length = 0
     await stopApp(profile(), { runCompose: stack.runCompose, isolation })
     say(`the down names: ${JSON.stringify(stack.calls[0].args.map((arg) => (arg.startsWith('/') ? arg.split('/').pop() : arg)))}`)
