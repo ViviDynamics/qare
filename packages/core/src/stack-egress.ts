@@ -31,6 +31,9 @@ export const INGRESS_NETWORK = 'qare-ingress'
 /** Where the relay listens for the first published port; each further port takes the next. */
 export const RELAY_FIRST_PORT = 20_000
 
+/** Why a stack booted where no image names the run's own is not contained. */
+export const NO_EGRESS_IMAGE = 'the sink and the relay run from the image the run is in, and QARE_IMAGE_REF names none (the pipeline execute step sets it)'
+
 /** Where the run writes a stack's containment override: named for the project, so no two runs share one. */
 export function containmentOverrideFile(project: string): string {
   return join(tmpdir(), `${project}.egress.yml`)
@@ -85,8 +88,7 @@ function flow(value: unknown): string {
 
 /** The containment of a stack, or why it cannot be contained. */
 export function containmentOf(config: ComposeConfig, opts: { image: string; stubs: readonly ProfileStub[] }): Containment {
-  if (opts.image === '')
-    return { kind: 'uncontained', reason: 'the sink and the relay run from the image the run is in, and QARE_IMAGE_REF names none (the pipeline execute step sets it)' }
+  if (opts.image === '') return { kind: 'uncontained', reason: NO_EGRESS_IMAGE }
   const services = Object.entries(config.services ?? {})
   for (const name of [EGRESS_DNS_SERVICE, EGRESS_RELAY_SERVICE])
     if (services.some(([service]) => service === name)) return { kind: 'uncontained', reason: `the stack has a service named ${name}, the name the run gives its own ${name === EGRESS_DNS_SERVICE ? 'resolver' : 'relay'}` }

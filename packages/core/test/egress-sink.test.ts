@@ -1,6 +1,5 @@
-import { createSocket } from 'node:dgram'
-import { connect, createServer, type AddressInfo, type Server } from 'node:net'
 import { afterEach, describe, expect, test } from 'vitest'
+import { ask, echoServer, readThrough, type Closable } from './egress-sockets.js'
 import { parseSinkRecord, startDnsSink, startRelay, type DnsSink, type Relay } from '../src/egress-sink.js'
 
 /** A DNS query for one name, as a stub resolver sends it. */
@@ -17,47 +16,13 @@ function query(name: string, type = 1, id = 0x1234): Buffer {
   return Buffer.concat([header, ...parts, Buffer.from([0]), tail])
 }
 
-interface Answer {
-  id: number
-  rcode: number
-  addresses: string[]
-}
-
-function ask(port: number, message: Buffer): Promise<Answer> {
-  return new Promise((resolve, reject) => {
-    const socket = createSocket('udp4')
-    const timer = setTimeout(() => {
-      socket.close()
-      reject(new Error('no answer'))
-    }, 2000)
-    socket.on('message', (reply) => {
-      clearTimeout(timer)
-      socket.close()
-      const count = reply.readUInt16BE(6)
-      // Skip the question: the name, then type and class.
-      let at = 12
-      while (reply[at] !== 0) at += (reply[at] as number) + 1
-      at += 5
-      const addresses: string[] = []
-      for (let index = 0; index < count; index += 1) {
-        at += 2 // a pointer to the question's name
-        const length = reply.readUInt16BE(at + 8)
-        addresses.push([...reply.subarray(at + 10, at + 10 + length)].join('.'))
-        at += 10 + length
-      }
-      resolve({ id: reply.readUInt16BE(0), rcode: reply[3]! & 0x0f, addresses })
-    })
-    socket.send(message, port, '127.0.0.1')
-  })
-}
-
 const sinks: DnsSink[] = []
 const relays: Relay[] = []
-const servers: Server[] = []
+const servers: Closable[] = []
 afterEach(async () => {
   for (const sink of sinks.splice(0)) await sink.stop()
   for (const relay of relays.splice(0)) await relay.stop()
-  for (const server of servers.splice(0)) await new Promise((resolve) => server.close(resolve))
+  for (const server of servers.splice(0)) await server.close()
 })
 
 async function sink(hosts: Record<string, string>, lines: string[], maxEntries?: number): Promise<DnsSink> {
@@ -123,19 +88,11 @@ describe('the DNS sink of a contained stack (#382)', () => {
 
 describe('the relay of a contained stack (#382)', () => {
   test('carries a connection on a published port to the service inside', async () => {
-    const server = createServer((socket) => socket.end('from the app'))
+    const server = await echoServer('from the app')
     servers.push(server)
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-    const target = (server.address() as AddressInfo).port
-    const relay = await startRelay({ forwards: [{ listen: 0, host: '127.0.0.1', port: target }], bind: '127.0.0.1' })
+    const relay = await startRelay({ forwards: [{ listen: 0, host: '127.0.0.1', port: server.port }], bind: '127.0.0.1' })
     relays.push(relay)
-    const got = await new Promise<string>((resolve, reject) => {
-      const socket = connect(relay.ports[0] as number, '127.0.0.1')
-      let text = ''
-      socket.on('data', (chunk) => (text += chunk.toString()))
-      socket.on('end', () => resolve(text))
-      socket.on('error', reject)
-    })
+    const got = await readThrough(relay.ports[0] as number)
     expect(got).toBe('from the app')
   })
 })

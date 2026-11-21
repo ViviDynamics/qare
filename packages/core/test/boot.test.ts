@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { expect, test, vi } from 'vitest'
 import { bootApp, loadProfile, stopApp, type QaProfile } from '../src/index.js'
+import { NO_EGRESS_IMAGE } from '../src/stack-egress.js'
 
 const fixtureDir = new URL('../fixtures/qa-valid/.qa', import.meta.url)
 const HEALTH_URL = ['http:', '//localhost:3000/up'].join('')
@@ -53,6 +54,8 @@ test('healthy boot polls health and reports up', async () => {
       project: expect.stringMatching(/^qare-/),
       startedAt: expect.any(String),
     },
+    // No image names the run's own, so the stack boots uncontained and says so (#382).
+    egress: { containment: 'uncontained', reason: NO_EGRESS_IMAGE },
   })
   // Every compose call opens with the run's own project (#53), and the
   // images are built before the up (#241).
@@ -163,6 +166,7 @@ test('watchdog blocks compose up that outlives the health deadline and attempts 
       project: expect.stringMatching(/^qare-/),
       startedAt: expect.any(String),
     },
+    egress: { containment: 'uncontained', reason: NO_EGRESS_IMAGE },
   })
   // The down waits for the in-flight up to settle first (#53): a runner that
   // never settles is drained for a grace only, then torn down.
