@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { CONTAINED_NETWORK } from './stack-egress.js'
 import { GATE_RELAY_PORT, type CarriedPort, type GateSummary } from './cell-gate.js'
 import {
   defaultCellDocker,
@@ -146,7 +147,10 @@ export async function startCommandCell(opts: CommandCellOptions): Promise<Comman
   let network = opts.network
   if (network === undefined && opts.composeProject !== undefined) {
     const asked = await docker.run(['network', 'ls', '--format', '{{.Name}}', '--filter', `label=com.docker.compose.project=${opts.composeProject}`])
-    const found = asked.stdout.trim().split('\n')[0]?.trim() ?? ''
+    const listed = asked.stdout.split('\n').map((name) => name.trim()).filter((name) => name !== '')
+    // A contained stack (#382) is reached on its contained network, the one
+    // its stubs and its relay share; any other stack on its first network.
+    const found = listed.find((name) => name === `${opts.composeProject}_${CONTAINED_NETWORK}`) ?? listed[0] ?? ''
     if (asked.code !== 0 || found === '') {
       throw new Error(`the cell could not be made: the network of the compose project ${opts.composeProject} is not known`)
     }

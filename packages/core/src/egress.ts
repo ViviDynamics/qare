@@ -89,3 +89,8 @@ function reasonPart(value: unknown): string {
 function sanitize(text: string): string {
   return text.replace(/[\r\n]+/g, ' ')
 }
+
+/** The reason a stack's missing stub carries (#382), in the shape the stub issues read. A lookup names no port. */
+export function missingStubReason(host: string): string {
+  return `refused: missing stub: ${host}:unknown (dns)`
+}

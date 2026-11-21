@@ -4,7 +4,7 @@ import { startCommandCell } from '../src/command-cell.js'
 import { type CellDocker, type CellProcess } from '../src/client-cell.js'
 
 /** A docker that records every call and plays the gate's and the command's containers. */
-function fakeDocker(script: { gateLines?: string[]; gateExit?: number; fail?: Record<string, string>; ps?: string; service?: string } = {}) {
+function fakeDocker(script: { gateLines?: string[]; gateExit?: number; fail?: Record<string, string>; ps?: string; service?: string; networks?: string } = {}) {
   const calls: string[][] = []
   const spawned: Array<{ args: string[]; process: FakeProcess }> = []
   class FakeProcess extends EventEmitter implements CellProcess {
@@ -22,7 +22,7 @@ function fakeDocker(script: { gateLines?: string[]; gateExit?: number; fail?: Re
       const [verb, sub] = args as [string, string]
       const failure = script.fail?.[verb]
       if (failure !== undefined) return { code: 1, stdout: '', stderr: failure }
-      if (verb === 'network' && sub === 'ls') return { code: 0, stdout: 'stack_default\n', stderr: '' }
+      if (verb === 'network' && sub === 'ls') return { code: 0, stdout: script.networks ?? 'stack_default\n', stderr: '' }
       if (verb === 'ps') return { code: 0, stdout: script.ps ?? 'stack-web-1\t127.0.0.1:34567->3000/tcp\n', stderr: '' }
       if (verb === 'inspect') return { code: 0, stdout: `${script.service ?? 'web'}\n`, stderr: '' }
       if (verb === 'stop') {
@@ -239,4 +239,11 @@ test('a gate that is never ready takes the cell down with it, and says what it w
     'the cell could not be made: the gate exited with code 125 before it was ready: no such image',
   )
   expect(calls.at(-1)).toEqual(['volume', 'rm', '-f', 'qare-cell-abc123', 'qare-cell-abc123-build'])
+})
+
+test('the gate joins a contained stack on its contained network, where the stubs and the relay both are (#382)', async () => {
+  const { docker, calls } = fakeDocker({ networks: 'stack_default\nstack_qare-ingress\nstack_qare-contained\n', ps: 'stack-qare-egress-relay-1\t127.0.0.1:34567->20000/tcp\n', service: 'qare-egress-relay' })
+  const cell = await startCommandCell({ ...OPTS, docker })
+  expect(calls.find((args) => args[0] === 'network' && args[1] === 'connect')).toEqual(['network', 'connect', 'stack_qare-contained', 'qare-cell-abc123-gate'])
+  await cell.dispose()
 })

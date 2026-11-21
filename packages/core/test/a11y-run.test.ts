@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
+import { NO_EGRESS_IMAGE } from '../src/stack-egress.js'
 import {
   FileLedgerStore,
   a11yConfigOf,
@@ -380,7 +381,8 @@ test('a change that adds a button with no accessible name fails the a11y check, 
   const { result } = await runJob(job, { ...recordingBoot(), flowSession: browser.session, base: { repoPath: trees.base } })
 
   expect(result.verdict).toBe('failed')
-  expect(result.base).toEqual({ ref: 'origin/main', status: 'executed' })
+  // The base booted a stack, uncontained where no image names the run's own (#382).
+  expect(result.base).toEqual({ ref: 'origin/main', status: 'executed', egress: { containment: 'uncontained', reason: NO_EGRESS_IMAGE } })
   const criterion = criterionOf(result, 'settings')
   // Clean enough at the base, failed at the head: the judge names it a regression.
   expect(criterion).toMatchObject({

@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
+import { NO_EGRESS_IMAGE } from '../src/stack-egress.js'
 import {
   DEFAULT_PROFILE_NAME,
   JobValidationError,
@@ -253,8 +254,8 @@ test('one run checks two apps under two isolations and reports a verdict per app
 
   expect(result.verdict).toBe('passed')
   expect(result.profiles).toEqual([
-    { name: 'admin', verdict: 'passed', criteria: ['admin-c1'], profile: { inline: APP_PROFILE } },
-    { name: 'storefront', verdict: 'passed', criteria: ['storefront-c1'], profile: { inline: APP_PROFILE } },
+    { name: 'admin', verdict: 'passed', criteria: ['admin-c1'], profile: { inline: APP_PROFILE }, egress: { containment: 'uncontained', reason: NO_EGRESS_IMAGE } },
+    { name: 'storefront', verdict: 'passed', criteria: ['storefront-c1'], profile: { inline: APP_PROFILE }, egress: { containment: 'uncontained', reason: NO_EGRESS_IMAGE } },
   ])
   expect(result.target).toBeUndefined()
   expect(result.criteria.map((criterion) => criterion.id)).toEqual(['admin-c1', 'storefront-c1'])
@@ -316,7 +317,7 @@ test('an app that declares a hosted target is refused in a several-app run, and 
   const { result } = await runJob(job, HEALTHY_BOOT)
   expect(result.profiles).toEqual([
     { name: 'targeted', verdict: 'refused', criteria: ['targeted-c1'], profile: { inline: targetedProfile } },
-    { name: 'admin', verdict: 'passed', criteria: ['admin-c1'], profile: { inline: APP_PROFILE } },
+    { name: 'admin', verdict: 'passed', criteria: ['admin-c1'], profile: { inline: APP_PROFILE }, egress: { containment: 'uncontained', reason: NO_EGRESS_IMAGE } },
   ])
   expect(result.verdict).toBe('blocked')
   expect(result.target).toBeUndefined()
@@ -434,7 +435,7 @@ test('a group whose profile is not there is refused for that app alone', async (
   const { result } = await runJob(job, HEALTHY_BOOT)
 
   expect(result.profiles).toEqual([
-    { name: 'admin', verdict: 'passed', criteria: ['admin-c1'], profile: { inline: APP_PROFILE } },
+    { name: 'admin', verdict: 'passed', criteria: ['admin-c1'], profile: { inline: APP_PROFILE }, egress: { containment: 'uncontained', reason: NO_EGRESS_IMAGE } },
     { name: 'ghost', verdict: 'refused', criteria: ['ghost-c1'], profile: { path: '.qa/ghost' } },
   ])
   expect(result.verdict).toBe('blocked')
