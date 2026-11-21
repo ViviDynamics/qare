@@ -608,7 +608,27 @@ async function profileWithMcp(dir: string, configLines: string[]): Promise<strin
   return join(dir, '.qa')
 }
 
-test('a registered host MCP server reaches the planner as an environment, and its calls land beside the plan (#93)', async () => {
+/** A nare stand-in that reads its MCP config and calls `alias`'s `tool` with `args` through it. */
+async function mcpNare(dir: string, seenPath: string, alias: string, tool: string, args: string): Promise<string> {
+  const nareFixture = fileURLToPath(new URL('./fixtures/fake-nare-mcp.mjs', import.meta.url))
+  const binary = join(dir, 'nare')
+  await writeFile(binary, `#!/bin/sh\nexec node ${nareFixture} ${seenPath} '${JSON.stringify(PLAN)}' ${alias} ${tool} '${args}' "$@"\n`, 'utf8')
+  const { chmod } = await import('node:fs/promises')
+  await chmod(binary, 0o755)
+  return binary
+}
+
+interface McpSeen {
+  argv: string[]
+  env: { tools: string | null; endpoint: string | null }
+  config?: Record<string, { url: string }>
+  init?: { serverInfo?: { name?: string } }
+  listed?: string[]
+  tool: string
+  isError?: boolean
+}
+
+test('a registered host MCP server reaches the planner through --mcp-config with only its allowed tools, and its calls land beside the plan (#93, #399)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'qare-plan-mcp-'))
   const criteriaPath = join(dir, 'criteria.json')
   const diffPath = join(dir, 'change.diff')
@@ -618,19 +638,15 @@ test('a registered host MCP server reaches the planner as an environment, and it
   const profilePath = await profileWithMcp(dir, [
     'mcp:',
     `  - name: rig`,
-    `    command: node ${await fakeMcpBinary(dir, [{ name: 'power_on', description: 'turn the rig on' }])}`,
+    `    command: node ${await fakeMcpBinary(dir, [{ name: 'power_on', description: 'turn the rig on' }, { name: 'wipe' }])}`,
     '    tools: [power_on]',
     '    steps: [plan]',
   ])
 
   const seenPath = join(dir, 'seen.json')
-  // The nare stand-in is a static fixture: it reads the MCP environment, calls
-  // one tool through the channel, records what it saw, and answers with PLAN.
-  const nareFixture = fileURLToPath(new URL('./fixtures/fake-nare-mcp.mjs', import.meta.url))
-  const binary = join(dir, 'nare')
-  await writeFile(binary, `#!/bin/sh\nexec node ${nareFixture} ${seenPath} '${JSON.stringify(PLAN)}' rig.power_on '{"volts":5}' "$@"\n`, 'utf8')
-  const { chmod } = await import('node:fs/promises')
-  await chmod(binary, 0o755)
+  // The nare stand-in is a static fixture: it reads the MCP config, speaks
+  // MCP to the server it names, records what it saw, and answers with PLAN.
+  const binary = await mcpNare(dir, seenPath, 'rig', 'power_on', '{"volts":5}')
   const out = capture()
 
   const code = await main(
@@ -640,17 +656,55 @@ test('a registered host MCP server reaches the planner as an environment, and it
   )
 
   expect(code).toBe(0)
-  const seen = JSON.parse(await readFile(seenPath, 'utf8')) as { tools?: string; endpoint?: string; exploration?: string; tool: string }
-  expect(seen.tools).toBe('rig.power_on')
-  expect(seen.endpoint).toMatch(/^http:/)
-  // Only the MCP channel is on: this is not the exploration channel (#87).
-  expect(seen.exploration).toBeUndefined()
-  expect(seen.tool).toBe('power_on saw {"volts":5}')
+  const seen = JSON.parse(await readFile(seenPath, 'utf8')) as McpSeen
+  // One alias, the registered server's own name, on loopback.
+  expect(Object.keys(seen.config ?? {})).toEqual(['rig'])
+  expect(seen.config?.rig?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/rig$/)
+  // --tools names the allowed tool alone: wipe is published, not allowed, and neither listed nor offered.
+  expect(seen.argv[seen.argv.indexOf('--tools') + 1]).toBe('rig__power_on')
+  expect(seen.argv.filter((arg) => arg === '--tools')).toHaveLength(1)
+  expect(seen.listed).toEqual(['power_on'])
+  expect(seen.init?.serverInfo?.name).toBe('qare-host-rig')
+  expect(seen.tool).toContain('power_on saw {"volts":5}')
+  expect(seen.tool).toContain('[untrusted tool result: produced by a host tool server.')
+  // The environment no nare release reads is not set.
+  expect(seen.env).toEqual({ tools: null, endpoint: null })
   const callsPath = join(dir, 'mcp-calls.jsonl')
   const records = (await readFile(callsPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
   expect(records).toHaveLength(1)
   expect(records[0]).toMatchObject({ server: 'rig', tool: 'power_on', arguments: { volts: 5 }, result: 'power_on saw {"volts":5}' })
   expect(out.lines.join('')).toContain(`recorded 1 host tool calls; ${callsPath}`)
+})
+
+test('a published tool the profile did not allow is not callable through the config either (#399)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-plan-mcp-'))
+  const criteriaPath = join(dir, 'criteria.json')
+  const diffPath = join(dir, 'change.diff')
+  const outPath = join(dir, 'plan.json')
+  await writeFile(criteriaPath, JSON.stringify(CRITERIA), 'utf8')
+  await writeFile(diffPath, 'diff --git a/login.ts b/login.ts', 'utf8')
+  const profilePath = await profileWithMcp(dir, [
+    'mcp:',
+    `  - name: rig`,
+    `    command: node ${await fakeMcpBinary(dir, [{ name: 'power_on' }, { name: 'wipe' }])}`,
+    '    tools: [power_on]',
+    '    steps: [plan]',
+  ])
+  const seenPath = join(dir, 'seen.json')
+  const binary = await mcpNare(dir, seenPath, 'rig', 'wipe', '{}')
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', outPath, '--nare', binary, '--profile', profilePath],
+    capture().writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  const seen = JSON.parse(await readFile(seenPath, 'utf8')) as McpSeen
+  expect(seen.isError).toBe(true)
+  expect(seen.tool).toContain('serves power_on, and not "wipe"')
+  // Nothing reached the host server, so nothing was recorded.
+  await expect(readFile(join(dir, 'mcp-calls.jsonl'), 'utf8')).rejects.toThrow()
 })
 
 test('a registered server that cannot be started is reported, and the plan is still written (#93)', async () => {
@@ -668,14 +722,20 @@ test('a registered server that cannot be started is reported, and the plan is st
     '    steps: [plan]',
   ])
   const out = capture()
+  const seenPath = join(dir, 'seen.json')
 
   const code = await main(
-    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', outPath, '--nare', await fakeNare(PLAN), '--profile', profilePath],
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', outPath, '--nare', await mcpNare(dir, seenPath, 'ghost', 'power_on', '{}'), '--profile', profilePath],
     out.writer,
     capture().writer,
   )
 
   expect(code).toBe(0)
+  // No server answered, so nare is handed no MCP config and --tools none (#399).
+  const seen = JSON.parse(await readFile(seenPath, 'utf8')) as McpSeen
+  expect(seen.argv).not.toContain('--mcp-config')
+  expect(seen.argv[seen.argv.indexOf('--tools') + 1]).toBe('none')
+  expect(seen.env).toEqual({ tools: null, endpoint: null })
   expect(out.lines.join('')).toContain("host mcp server 'ghost' is unreachable")
   expect(JSON.parse(await readFile(outPath, 'utf8'))).toEqual(PLAN)
   // Even the failure is evidence: the declared-but-unreachable server leaves a
@@ -707,18 +767,7 @@ test('the mcp call records are redacted like the evidence they are (#93)', async
   // The nare stand-in calls the tool with a secret in the arguments, the way
   // a model session's look could: what the model saw, and what the published
   // record keeps, are two different things.
-  const nareFixture = fileURLToPath(new URL('./fixtures/fake-nare-mcp.mjs', import.meta.url))
-  const binary = join(dir, 'nare')
-  await writeFile(
-    binary,
-    [
-      '#!/bin/sh',
-      `exec node ${nareFixture} ${seenPath} '${JSON.stringify(PLAN)}' rig.power_on '{"password":"hunter2","note":"the hunter2 vault"}' "$@"`,
-    ].join('\n'),
-    'utf8',
-  )
-  const { chmod } = await import('node:fs/promises')
-  await chmod(binary, 0o755)
+  const binary = await mcpNare(dir, seenPath, 'rig', 'power_on', '{"password":"hunter2","note":"the hunter2 vault"}')
   const out = capture()
 
   const code = await main(
@@ -731,7 +780,7 @@ test('the mcp call records are redacted like the evidence they are (#93)', async
   const seen = JSON.parse(await readFile(seenPath, 'utf8')) as { tool: string }
   // The model session read the tool's real answer; redaction is for what is
   // published, not for the session.
-  expect(seen.tool).toBe('power_on saw {"password":"hunter2","note":"the hunter2 vault"}')
+  expect(seen.tool).toContain('power_on saw {"password":"hunter2","note":"the hunter2 vault"}')
   const records = (await readFile(join(dir, 'mcp-calls.jsonl'), 'utf8'))
     .trim()
     .split('\n')
