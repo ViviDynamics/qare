@@ -263,6 +263,52 @@ Agent-written stubs are allowed only when flagged: any check that depends on a
 stub QARE wrote itself is shown as such and cannot count as `proven` without a
 human note.
 
+### Booting by command (#379)
+
+A project with no compose file boots by its start command instead:
+
+```yaml
+app:
+  boot: { command: "npm ci && npm start", image: "node:22", port: 3000 }  # build: { timeout: 25m } as for compose
+  health: { http: "http://localhost:{{run.app_port}}/up", timeout: 120s }
+  seed: { command: "docker compose -p qare-{{run.id}} exec -T app npm run seed:qa" }
+  login: { fixture: fixtures/users.yml, role: admin }
+stubs: []
+```
+
+`command` is a shell line, `image` is any image that carries `sh` and the
+app's runtime, and `port` is the port the app listens on inside it. The two
+forms do not mix: `app.boot` takes compose and service, or command, image
+and port.
+
+The run does not manage a process of its own for this. At boot it writes a
+compose project with one service, `app`, into the temp directory as
+`qare-<run id>.compose.json`, and boots that exactly as it boots a profile's
+compose file:
+
+- the image is built first, under `app.boot.build.timeout`, from the side's
+  checkout (the head's, or the base tree on the base side) on the named
+  image: `FROM <image>`, `COPY . /app`, `WORKDIR /app`. The checkout is
+  copied, never mounted, so the app runs the pull request's code and cannot
+  write to the runner's workspace, and the repository's `.dockerignore`
+  applies;
+- the service runs `sh -c <command>` with `PORT` set to `port`, and
+  publishes `port` on `127.0.0.1:${QARE_APP_PORT}`, the run's own port, so
+  `{{run.app_port}}` and the pinned health URL work as they do for compose;
+- the project is `qare-<run id>`, so concurrent runs never collide, a seed
+  or suite reaches the service as `docker compose -p qare-{{run.id}} exec -T
+  app ...` with no file named, a contained command check finds the app by
+  the project's labels, and the stop, a canceled run and `qare reap` down it
+  by name, with the file the run wrote removed.
+
+Every `$` in the command, image and path is escaped for compose, so nothing
+of the profile is interpolated; the run's `QARE_APP_PORT` is. The command,
+image and port come from the profile, which is reviewed like code, and no
+plan can change them. A command boot runs the app alone, so it takes no
+stubs: a profile that needs one boots from a compose file. With no stubs, it
+needs no `.qa/stubs/` directory either. `examples/command-app` is booted this
+way in qare's own CI.
+
 ### Several profiles (monorepo)
 
 A repository that holds several apps keeps one profile per app, in its own
@@ -2518,8 +2564,15 @@ caller workflow is left alone, and init prints what it would have written.
   because the run image carries none of the app's runtime (#374). A service
   that publishes a fixed port, or none, gets a placeholder naming the
   `${QARE_APP_PORT:-<port>}` entry that puts it on the run's port.
-- A repository with no compose file gets a target profile for
-  `--target <url>`. With neither, init writes nothing and names the flag.
+- A repository with no compose file but a start script (package.json's
+  `start`) gets a profile that boots by command (#379): the script, run
+  after installing with the package manager its lockfile names, in
+  `node:22` on port 3000, with placeholders asking a person to confirm the
+  image and the port. Suites run inside the one service as
+  `docker compose -p qare-{{run.id}} exec -T app <command>`. A compose file
+  wins when there is one.
+- A repository with neither gets a target profile for `--target <url>`.
+  Without that, init writes nothing and names the flag.
   The health check passes on a 200 alone, so `--health <path>` names a page
   that answers one; without it the path is `/` and a placeholder asks for it
   to be confirmed.

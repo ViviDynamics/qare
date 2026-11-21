@@ -44,9 +44,9 @@ The image, command and port come from the profile (repository configuration revi
 
 ## Tasks
 
-- [ ] 1. Profile: `app.boot` takes `{ command, image, port, build? }` or `{ compose, service, build? }`, refuses a mix, a bad port or image, and stubs on a command boot. Tests in profile.test.ts.
-- [ ] 2. Boot: `bootApp` writes the project file, builds, ups and health checks the command boot; `stopApp` downs it by project and removes the file. Tests in boot.test.ts with the compose seam, including `$` escaping and the base tree as context.
-- [ ] 3. Run wiring: the base side keeps the base tree as the command boot's context, a shard boot passes its root, readiness skips the compose file for a command boot. Tests in run and readiness suites.
-- [ ] 4. Example and CI: `examples/command-app` and the compose-boot job booting it through the execute steps (scripts/compose-boot.sh takes the example). Test: workflow test names the example; CI boots it.
-- [ ] 5. init: the command form when there is no compose file but there is a start script. Tests in init.test.ts.
-- [ ] 6. Docs: SPEC profile sketch and run isolation, pipeline.md.
+- [x] 1. Profile: `app.boot` takes `{ command, image, port, build? }` or `{ compose, service, build? }`, refuses a mix, a bad port or image, and stubs on a command boot. Tests in profile.test.ts.
+- [x] 2. Boot: `bootApp` writes the project file, builds, ups and health checks the command boot; `stopApp` downs it by project and removes the file. Tests in boot.test.ts with the compose seam, including `$` escaping and the base tree as context.
+- [x] 3. Run wiring: the base side keeps the base tree as the command boot's context, a shard boot passes its root, readiness skips the compose file for a command boot. Tests in run and readiness suites.
+- [x] 4. Example and CI: `examples/command-app` and the compose-boot job booting it through the execute steps (scripts/compose-boot.sh takes the example). Test: workflow test names the example; CI boots it.
+- [x] 5. init: the command form when there is no compose file but there is a start script. Tests in init.test.ts.
+- [x] 6. Docs: SPEC profile sketch and run isolation, pipeline.md.

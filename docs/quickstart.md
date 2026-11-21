@@ -26,8 +26,9 @@ owned by you. `qare` is on the image's `PATH`; the image contract is in
 docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" "$QARE" qare init
 ```
 
-`qare init` finds the compose file and the service that serves HTTP, and
-writes:
+`qare init` finds the compose file and the service that serves HTTP (or,
+with no compose file, the package.json start script, which it boots by
+command in an image you confirm), and writes:
 
 - `.qa/config.yml`, the profile: how the app boots, its health URL on the
   port each run allocates (`{{run.app_port}}`), the seed command, and any test
