@@ -3,6 +3,7 @@ import { constants } from 'node:os'
 import { startGate } from './cell-gate.js'
 import { startShim, type Shim, type ShimOptions } from './cell-shim.js'
 import { hostName } from './cell-wire.js'
+import { runEgressCommand } from './egress-sink.js'
 import { startVirtualDisplay, xvfbOnPath } from './flow-electron.js'
 
 /**
@@ -171,6 +172,8 @@ export interface CellCommandIo {
 /** `qare cell gate` and `qare cell launch`. Exit 4 is a call that was not understood, as elsewhere in the CLI. */
 export async function runCellCommand(argv: string[], io: CellCommandIo): Promise<number> {
   const [verb, ...rest] = argv
+  // A booted stack's resolver and relay (#382), run from the same image.
+  if (verb === 'egress-dns' || verb === 'egress-relay') return runEgressCommand(verb, rest, { ...io, signals: io.signals ?? process })
   if (verb !== 'gate' && verb !== 'launch') {
     io.err(USAGE)
     return 4
