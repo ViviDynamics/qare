@@ -726,3 +726,45 @@ test('app.boot.build.timeout bounds the image build, and is held to being a dura
   writeFileSync(join(dir, 'config.yml'), withBoot('boot: { compose: compose.qa.yaml, service: admin, build: { context: . } }'))
   expect((await profileError(() => loadProfile(dir))).field).toBe('app.boot.build.context')
 })
+
+/** The fixture's config with its one suite replaced by the given YAML entry (#376). */
+function withSuite(entry: string): string {
+  const dir = copiedProfile()
+  const config = fixtureConfig().replace(/suites:\n(?: {2}- .*\n)+/, `suites:\n${entry}\n`)
+  writeFileSync(join(dir, 'config.yml'), config)
+  return dir
+}
+
+const RSPEC_IN_WEB = 'docker compose -p qare-{{run.id}} -f compose.qa.yaml exec -T web bundle exec rspec {{test}} --format RspecJunitFormatter'
+
+test('a suite may name the placeholder that takes a test filter, and the report that reads it (#376)', async () => {
+  const dir = withSuite(`  - { name: rspec, command: "${RSPEC_IN_WEB}", kind: command, filter: test, report: junit-xml }`)
+  const profile = await loadProfile(dir)
+  expect(profile.suites).toEqual([{ name: 'rspec', command: RSPEC_IN_WEB, kind: 'command', filter: 'test', report: 'junit-xml' }])
+})
+
+test('a suite that names a filter must name the report that reads it, and the other way round (#376)', async () => {
+  const noReport = await profileError(() => loadProfile(withSuite(`  - { name: rspec, command: "${RSPEC_IN_WEB}", kind: command, filter: test }`)))
+  expect(noReport.field).toBe('suites[0]')
+  expect(noReport.message).toContain('needs a report')
+  const noFilter = await profileError(() => loadProfile(withSuite(`  - { name: rspec, command: "${RSPEC_IN_WEB}", kind: command, report: junit-xml }`)))
+  expect(noFilter.field).toBe('suites[0]')
+  expect(noFilter.message).toContain('needs a filter')
+})
+
+test("a suite's filter must be a placeholder of its own command, and its report one the runner reads (#376)", async () => {
+  const missing = await profileError(() =>
+    loadProfile(withSuite('  - { name: rspec, command: "bundle exec rspec", kind: command, filter: test, report: junit-xml }')),
+  )
+  expect(missing.field).toBe('suites[0]')
+  expect(missing.message).toContain('{{test}}')
+  const runValue = await profileError(() =>
+    loadProfile(withSuite(`  - { name: rspec, command: "${RSPEC_IN_WEB}", kind: command, filter: run.id, report: junit-xml }`)),
+  )
+  expect(runValue.field).toBe('suites[0]')
+  const unknown = await profileError(() =>
+    loadProfile(withSuite(`  - { name: rspec, command: "${RSPEC_IN_WEB}", kind: command, filter: test, report: rspec-json }`)),
+  )
+  expect(unknown.field).toBe('suites[0]')
+  expect(unknown.message).toContain('junit-xml')
+})

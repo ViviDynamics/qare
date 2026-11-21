@@ -201,6 +201,14 @@ export interface ProfileSuite {
    * instance of its own instead of the run's shared one.
    */
   isolated?: boolean
+  /**
+   * The placeholder of `command` that takes a test name or path (#376), so a
+   * plan's suite check can run one test instead of the whole suite. The value
+   * is the plan's, held to a fixed character set before it is substituted.
+   */
+  filter?: string
+  /** The machine-readable report the suite prints on stdout (#376), read to count what the filter selected. */
+  report?: ReportFormat
 }
 
 export interface ProfileCommand {
@@ -1231,12 +1239,34 @@ function parseSuite(value: unknown, index: number): ProfileSuite {
     fail(`${base}.kind`, `unknown suite kind ${JSON.stringify(kind)} (expected "command", "flow" or "visual")`)
   if (value.isolated !== undefined && typeof value.isolated !== 'boolean')
     fail(`${base}.isolated`, 'isolated must be a boolean')
+  const command = nonEmptyString(value.command, `${base}.command`, 'command')
   return {
     name: nonEmptyString(value.name, `${base}.name`, 'name'),
-    command: nonEmptyString(value.command, `${base}.command`, 'command'),
+    command,
     kind: kind as ProfileSuiteKind,
     ...(value.isolated === undefined ? {} : { isolated: value.isolated as boolean }),
+    ...suiteSelection(value, base, command),
   }
+}
+
+/**
+ * A suite's test filter and the report that reads it (#376): the same pair a
+ * declared command takes (#157), both or neither, because a filter whose
+ * selection cannot be counted could select nothing and still exit 0.
+ */
+function suiteSelection(value: Record<string, unknown>, base: string, command: string): Pick<ProfileSuite, 'filter' | 'report'> {
+  const filter = value.filter === undefined ? undefined : nonEmptyString(value.filter, `${base}.filter`, 'filter')
+  const report = value.report === undefined ? undefined : nonEmptyString(value.report, `${base}.report`, 'report')
+  if (filter === undefined && report === undefined) return {}
+  if (filter === undefined)
+    fail(base, `report ${JSON.stringify(report)} needs a filter to verify: name the placeholder of command that takes the test name or path`)
+  if (report === undefined)
+    fail(base, `filter ${JSON.stringify(filter)} needs a report to read: declare the machine-readable format the suite prints`)
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(filter) || !command.includes(`{{${filter}}}`))
+    fail(base, `filter ${JSON.stringify(filter)} must name a placeholder of command, which carries no {{${filter}}}`)
+  if (!REPORT_FORMATS.includes(report as ReportFormat))
+    fail(base, `report ${JSON.stringify(report)} must be one of the formats the runner reads: ${REPORT_FORMATS.join(', ')}`)
+  return { filter, report: report as ReportFormat }
 }
 
 function parseMail(value: unknown): ProfileMail {
