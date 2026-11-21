@@ -14,6 +14,26 @@ export interface AgentToolChannel {
   endpoint: string
 }
 
+/**
+ * One host MCP server the session may reach (#93), as nare's MCP client
+ * reaches it (#399): a Streamable HTTP endpoint the plan step serves, under
+ * an alias, with the tools the profile allowed there. The model calls each as
+ * `<alias>__<tool>`.
+ */
+export interface AgentMcpServer {
+  /** The name nare addresses the server by: the registered server's own name. */
+  alias: string
+  /** Where the server's MCP endpoint answers. */
+  url: string
+  /** The tools the session may call there, by the server's own names. */
+  tools: readonly string[]
+}
+
+/** The host's registered MCP servers a run may look through (#93). */
+export interface AgentMcpChannel {
+  servers: readonly AgentMcpServer[]
+}
+
 export interface AgentBudget {
   maxOutputTokens: number
 }
@@ -81,8 +101,8 @@ export interface AgentRunRequest {
   outputSchema: string
   budget: AgentBudget
   tools?: AgentToolChannel
-  /** The host's registered MCP servers (#93), addressed as server.tool. */
-  mcp?: AgentToolChannel
+  /** The host's registered MCP servers (#93), each its own alias in nare's MCP config. */
+  mcp?: AgentMcpChannel
   /**
    * Gives up on the run: when it fires, the runner stops waiting and kills
    * whatever it started. For work nothing may wait on forever (#150).
@@ -206,27 +226,46 @@ function toolFlag(policy: ToolPolicy): string {
 }
 
 /**
- * The host MCP channel reaches nare as environment (#93), carrying only the
- * tools the profile allowed, addressed as server.tool. The exploration
- * channel does not: it reaches nare as an MCP config on the command line
- * (#377), so its variables are cleared here, and a stale one in the ambient
- * environment says nothing to anyone.
+ * Every channel reaches nare through its own MCP client (#377, #399), so no
+ * channel rides the environment. The variables qare once set for them are
+ * cleared here, so a stale one in the ambient environment says nothing to
+ * anyone.
  */
-function channelEnv(
-  mcp: AgentToolChannel | undefined,
-  over: Record<string, string> | undefined,
-): Record<string, string | undefined> {
+function childEnv(over: Record<string, string> | undefined): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env, ...over }
   delete env.QARE_EXPLORATION_TOOLS
   delete env.QARE_EXPLORATION_ENDPOINT
-  if (mcp === undefined) {
-    delete env.QARE_MCP_TOOLS
-    delete env.QARE_MCP_ENDPOINT
-  } else {
-    env.QARE_MCP_TOOLS = mcp.allowlist.join(',')
-    env.QARE_MCP_ENDPOINT = mcp.endpoint
-  }
+  delete env.QARE_MCP_TOOLS
+  delete env.QARE_MCP_ENDPOINT
   return env
+}
+
+/**
+ * The MCP config and the allowlist a run's channels come to (#377, #399):
+ * the exploration bridge under its alias, each host server under its own,
+ * and every tool the session may call, named the way nare names it. A
+ * channel that would hand nare an alias twice, or a server with nothing on
+ * it, is refused here, before anything starts.
+ */
+function channelConfig(request: AgentRunRequest): { config: Record<string, { url: string }>; tools: string[] } | undefined {
+  if (request.tools === undefined && request.mcp === undefined) return undefined
+  const config: Record<string, { url: string }> = {}
+  const tools: string[] = []
+  const add = (alias: string, url: string, names: readonly string[]): void => {
+    if (Object.hasOwn(config, alias))
+      throw new NareRunnerError(`the run's channels name the MCP alias ${JSON.stringify(alias)} twice, so one of them would be unreachable`)
+    if (names.length === 0)
+      throw new NareRunnerError(`the MCP server ${JSON.stringify(alias)} carries no tools, so there would be nothing on it to call`)
+    config[alias] = { url }
+    for (const name of names) tools.push(`${alias}__${name}`)
+  }
+  if (request.tools !== undefined) add(EXPLORATION_BRIDGE_ALIAS, request.tools.endpoint, request.tools.allowlist)
+  if (request.mcp !== undefined) {
+    if (request.mcp.servers.length === 0)
+      throw new NareRunnerError('the host MCP channel names no servers, so there would be nothing on it to call')
+    for (const server of request.mcp.servers) add(server.alias, server.url, server.tools)
+  }
+  return { config, tools }
 }
 
 /**
@@ -265,16 +304,20 @@ export class NareAgentRunner implements AgentRunner {
       const promptPath = join(workDir, 'prompt.txt')
       await writeFile(promptPath, request.prompt, { encoding: 'utf8', mode: 0o600 })
       const argv = ['run', '--prompt-file', promptPath, '--yes', '--jsonl', '--contract', String(NARE_CONTRACT)]
-      if (request.tools === undefined) argv.push('--tools', toolFlag(request.toolPolicy))
+      const channels = channelConfig(request)
+      if (channels === undefined) argv.push('--tools', toolFlag(request.toolPolicy))
       else {
-        // The exploration channel reaches the session through nare's own MCP
-        // client (#377): one Streamable HTTP server under the bridge's alias,
-        // and an allowlist of its tools alone in place of the run's policy,
-        // so the session can call the channel and nothing else.
+        // The channels reach the session through nare's own MCP client
+        // (#377, #399): the exploration bridge and each host server as one
+        // Streamable HTTP server under its alias, and an allowlist of their
+        // tools alone in place of the run's policy, so the session can call
+        // the channels and nothing else. --tools is always named beside the
+        // config: left unset, nare offers every tool every configured server
+        // lists.
         const configPath = join(workDir, 'mcp.json')
-        await writeFile(configPath, JSON.stringify({ [EXPLORATION_BRIDGE_ALIAS]: { url: request.tools.endpoint } }), 'utf8')
+        await writeFile(configPath, JSON.stringify(channels.config), { encoding: 'utf8', mode: 0o600 })
         argv.push('--mcp-config', configPath)
-        argv.push('--tools', request.tools.allowlist.map((tool) => `${EXPLORATION_BRIDGE_ALIAS}__${tool}`).join(','))
+        argv.push('--tools', channels.tools.join(','))
       }
       // qare owns the persona, including an empty one. nare (since contract 2) adds
       // a default coding-agent prompt when read tools are enabled.
@@ -291,7 +334,7 @@ export class NareAgentRunner implements AgentRunner {
         await writeFile(schemaPath, request.outputSchema, 'utf8')
         argv.push('--schema', schemaPath)
       }
-      const { code, stdout } = await this.spawn(argv, request.mcp, request.signal)
+      const { code, stdout } = await this.spawn(argv, request.signal)
       return this.readOutcome(code, stdout)
     } finally {
       await rm(workDir, { recursive: true, force: true })
@@ -300,7 +343,6 @@ export class NareAgentRunner implements AgentRunner {
 
   private async spawn(
     argv: string[],
-    mcp?: AgentToolChannel,
     signal?: AbortSignal,
   ): Promise<{ code: number; stdout: string }> {
     const { spawn } = await import('node:child_process')
@@ -308,7 +350,7 @@ export class NareAgentRunner implements AgentRunner {
     return await new Promise((resolve, reject) => {
       const child = spawn(binary, argv, {
         cwd: this.options.cwd,
-        env: channelEnv(mcp, this.options.env),
+        env: childEnv(this.options.env),
         stdio: ['ignore', 'pipe', 'pipe'],
         // An aborted run kills the process: node sends it SIGTERM and reports
         // the abort as the spawn's error, which rejects below.

@@ -339,6 +339,28 @@ test('a profile registers a host MCP server to start or reach, with its allowlis
   rmSync(dir, { recursive: true })
 })
 
+test('a plan-step server or tool nare cannot carry to the model is refused when the profile loads, and an execute-only one is not (#399)', () => {
+  expect(() => validateProfileConfig({ target: MCP_HEALTH, mcp: [{ ...MCP_COMMAND_SERVER, name: 'device rig' }] })).toThrow(
+    /server name "device rig" is not one nare can address a server by/,
+  )
+  expect(() => validateProfileConfig({ target: MCP_HEALTH, mcp: [{ ...MCP_COMMAND_SERVER, tools: ['page.text'] }] })).toThrow(
+    /tool "page.text" on server "rig" is not one nare can offer a model/,
+  )
+  expect(() =>
+    validateProfileConfig({
+      target: MCP_HEALTH,
+      mcp: [
+        { ...MCP_COMMAND_SERVER, name: 'a_', tools: ['_b'] },
+        { ...MCP_COMMAND_SERVER, name: 'a', tools: ['__b'] },
+      ],
+    }),
+  ).toThrow(/nare would offer "a____b" twice/)
+  // The execute step calls its tools from qare's code, with no model and no nare between.
+  expect(() =>
+    validateProfileConfig({ target: MCP_HEALTH, mcp: [{ ...MCP_COMMAND_SERVER, name: 'device rig', tools: ['page.text'], steps: ['execute'] }] }),
+  ).not.toThrow()
+})
+
 test('a registered MCP server is refused when it says nothing about how to reach it, or both ways at once (#93)', async () => {
   expect(() => validateProfileConfig({ target: MCP_HEALTH, mcp: [{ name: 'rig', tools: ['x'], steps: ['plan'] }] })).toThrow(
     /must say how to start or reach it/,
@@ -384,8 +406,8 @@ test('two servers whose names and tools build the same channel name are refused 
     validateProfileConfig({
       target: MCP_HEALTH,
       mcp: [
-        { name: 'a', command: 'node a.mjs', tools: ['b.c'], steps: ['plan'] },
-        { name: 'a.b', command: 'node ab.mjs', tools: ['c'], steps: ['plan'] },
+        { name: 'a', command: 'node a.mjs', tools: ['b.c'], steps: ['execute'] },
+        { name: 'a.b', command: 'node ab.mjs', tools: ['c'], steps: ['execute'] },
       ],
     }),
   ).toThrow(/names "a\.b\.c" twice/)
@@ -394,8 +416,8 @@ test('two servers whose names and tools build the same channel name are refused 
     validateProfileConfig({
       target: MCP_HEALTH,
       mcp: [
-        { name: 'a', command: 'node a.mjs', tools: ['c'], steps: ['plan'] },
-        { name: 'a.b', command: 'node ab.mjs', tools: ['d'], steps: ['plan'] },
+        { name: 'a', command: 'node a.mjs', tools: ['c'], steps: ['execute'] },
+        { name: 'a.b', command: 'node ab.mjs', tools: ['d'], steps: ['execute'] },
       ],
     }),
   ).not.toThrow()

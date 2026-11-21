@@ -111,6 +111,8 @@ export type {
   AgentRunStatus,
   AgentStopReason,
   AgentToolChannel,
+  AgentMcpChannel,
+  AgentMcpServer,
   AgentUsage,
   NareAgentRunnerOptions,
   ToolPolicy,
@@ -134,6 +136,8 @@ export {
   McpUnreachable,
   callChannelTool,
   channelToolName,
+  nareNameProblem,
+  nareToolName,
   connectMcpDriver,
   connectMcpServer,
   mcpDriverCapabilities,
@@ -152,6 +156,7 @@ export type {
   McpTool,
   McpToolResult,
   McpToolServer,
+  McpServedServer,
   ConnectOptions,
 } from './mcp.js'
 export { IssueCriteriaError, criteriaFromIssue, criteriaFromIssues, criterionIdFor } from './issue-criteria.js'

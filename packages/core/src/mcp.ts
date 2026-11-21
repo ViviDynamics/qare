@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process'
-import { createServer, request, type IncomingMessage, type ServerResponse } from 'node:http'
+import { createServer, request } from 'node:http'
+import { untrustedToolResult } from './explore.js'
+import { respond, serveMcp, type McpServing } from './mcp-serve.js'
 import { redactValue, type RedactionRule } from './redact.js'
 import { describeElement, type FlowDriverCapabilities, type FlowElement, type FlowPage } from './flow.js'
 import type { ToolAssertion } from './plan.js'
@@ -109,6 +111,11 @@ export interface ConnectOptions {
 
 const HANDSHAKE_TIMEOUT_MS = 10_000
 const CALL_TIMEOUT_MS = 120_000
+
+// A result past the cap is refused before the process serving the channel
+// buffers it whole: the session reads text, and no look through a host tool
+// needs four mebibytes of it.
+const MAX_RESULT_BYTES = 4 * 1024 * 1024
 
 /**
  * The command the profile starts the server with, split the way command
@@ -566,65 +573,98 @@ export function channelToolName(server: string, tool: string): string {
   return `${server}.${tool}`
 }
 
+/**
+ * The name nare offers one registered tool to the model under (#399): the
+ * server is an alias in nare's MCP config, and nare joins alias and tool
+ * with a double underscore.
+ */
+export function nareToolName(server: string, tool: string): string {
+  return `${server}__${tool}`
+}
+
+// nare's own rules (nare.mcp, 2026.11.107): an alias starts with a letter and
+// holds letters, digits, _ and -, with no __; a tool, joined to its alias, is
+// letters, digits, _ and - alone, 64 at most. nare refuses anything else at
+// startup, so qare refuses it first, by name.
+const NARE_ALIAS = /^[A-Za-z][A-Za-z0-9_-]*$/
+const NARE_TOOL = /^[A-Za-z0-9_-]{1,64}$/
+
+/**
+ * Why nare could not carry a plan-step server, or one of its tools, to the
+ * model session (#399), or undefined when it can.
+ */
+export function nareNameProblem(server: string, tool?: string): string | undefined {
+  if (!NARE_ALIAS.test(server) || server.includes('__'))
+    return `server name ${JSON.stringify(server)} is not one nare can address a server by: it starts with a letter and holds only letters, digits, _ and -, with no __`
+  if (tool !== undefined && !NARE_TOOL.test(nareToolName(server, tool)))
+    return `tool ${JSON.stringify(tool)} on server ${JSON.stringify(server)} is not one nare can offer a model: ${nareToolName(server, tool)} must hold only letters, digits, _ and -, and 64 characters at most`
+  return undefined
+}
+
+/** One registered server as the model session reaches it: its own MCP endpoint. */
+export interface McpServedServer {
+  /** The server's registered name, which is its alias in nare's MCP config. */
+  name: string
+  /** Where its MCP endpoint answers. */
+  url: string
+  /** The allowed tools it lists, by its own names. */
+  tools: readonly string[]
+}
+
 export interface McpToolServer {
   /** The port the server answers on. */
   port: number
-  /** The URL the model session connects to. */
+  /** The base address. Each registered server answers MCP at `<url>/<server>`. */
   url: string
-  /** The namespaced tools this server serves, across every source. */
-  tools: readonly string[]
+  /** Every registered server it serves, with where it answers. */
+  servers: readonly McpServedServer[]
   /** Stop answering and release the port. */
   close(): Promise<void>
 }
 
-// Tool arguments are bounded like the exploration channel's bodies: the
-// channel carries a call, and a payload past the cap is refused rather than
-// buffered whole inside the process serving it.
-const MAX_BODY_BYTES = 64 * 1024
-
-// A result past the cap is refused before the process serving the channel
-// buffers it whole: the session reads text, and no look through a host tool
-// needs four mebibytes of it.
-const MAX_RESULT_BYTES = 4 * 1024 * 1024
-
 /**
- * Call one channel tool the way the model session does (#93): a POST of the
- * JSON arguments, answered with the tool's result. This is the client seam of
- * the channel, so callers — and the tests — exercise it through its real path
- * rather than by opening sockets of their own.
+ * Call one served tool the way the model session's MCP client does (#93,
+ * #399): a JSON-RPC tools/call posted to the server's endpoint, answered with
+ * the text the session reads. An error result, or a refusal, rejects. This
+ * is the client seam of the channel, so callers and the tests exercise it
+ * through its real path rather than by opening sockets of their own.
  */
-export function callChannelTool(server: McpToolServer, name: string, args?: unknown): Promise<string> {
+export function callChannelTool(server: McpToolServer, serverName: string, tool: string, args?: unknown): Promise<string> {
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify(args ?? {})
-    // The tool's name is encoded, so a name carrying URL syntax (?, #, a
-    // space) still addresses its route and nothing else.
-    const target = new URL(`${server.url}/${encodeURIComponent(name)}`)
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: tool, arguments: args ?? {} } })
+    const target = new URL(`${server.url}/${encodeURIComponent(serverName)}`)
     const outgoing = request(
       {
         hostname: target.hostname,
         ...(target.port === '' ? {} : { port: Number(target.port) }),
         path: target.pathname,
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          'content-length': Buffer.byteLength(body),
+        },
       },
       (incoming) => {
         let raw = ''
         incoming.on('data', (chunk) => (raw += String(chunk)))
         incoming.on('error', (error) => reject(new McpError(error.message)))
         incoming.on('end', () => {
-          if (incoming.statusCode !== 200) {
-            let message = raw
-            try {
-              message = String(JSON.parse(raw).error ?? raw)
-            } catch {}
-            reject(new McpError(message))
+          let parsed: { error?: unknown; result?: { content?: { text?: unknown }[]; isError?: unknown } }
+          try {
+            parsed = JSON.parse(raw)
+          } catch {
+            reject(new McpError('the tool channel answered with something that is not JSON-RPC'))
             return
           }
-          try {
-            resolve(JSON.parse(raw))
-          } catch {
-            reject(new McpError('the tool channel answered with something that is not the tool result'))
+          if (parsed.error !== undefined) {
+            const error = parsed.error as { message?: unknown } | string
+            reject(new McpError(typeof error === 'string' ? error : String(error.message ?? JSON.stringify(error))))
+            return
           }
+          const text = (parsed.result?.content ?? []).map((piece) => String(piece.text ?? '')).join('\n')
+          if (parsed.result?.isError === true) reject(new McpError(text))
+          else resolve(text)
         })
       },
     )
@@ -633,37 +673,72 @@ export function callChannelTool(server: McpToolServer, name: string, args?: unkn
   })
 }
 
+/** Who a host tool result came from, as its fence names it. */
+const HOST_PRODUCER = 'a host tool server'
+
 /**
- * Serve the registered servers' tools to the model session (#93): one HTTP
- * server answering `POST /<server>.<tool>` with the tool's result, the way
- * the exploration channel serves its own tools (#87). The servers are the
- * host's, so this side runs where they run, and the only traffic that
- * crosses is a tool call and its result.
+ * Serve the registered servers' tools to the model session (#93) as nare's
+ * MCP client reaches them (#399): one HTTP listener on loopback, where each
+ * registered server answers MCP Streamable HTTP at its own path, listing only
+ * the tools the profile allowed, with the schemas the server published. A
+ * call crosses to the host server through its own client, so it is recorded
+ * like every other, and the result comes back fenced as the untrusted data
+ * it is. The servers are the host's, so this side runs where they run, and
+ * the only traffic that crosses is a tool call and its result.
  */
 export async function startMcpToolServer(
   sources: readonly McpSource[],
   options: { host?: string; port?: number; advertise?: string } = {},
 ): Promise<McpToolServer> {
   const { host = '127.0.0.1', port = 0 } = options
-  const routed = new Map<string, { source: McpSource; tool: string }>()
-  for (const source of sources)
-    for (const tool of source.tools) {
-      // Two valid names can still build the same channel name (server "a"
-      // with tool "b.c" against server "a.b" with tool "c"): a route that
-      // would be ambiguous is refused, not silently overwritten.
-      const name = channelToolName(source.name, tool.name)
-      const existing = routed.get(name)
-      if (existing !== undefined)
-        throw new McpError(
-          `the channel names ${JSON.stringify(name)} twice: server ${JSON.stringify(existing.source.name)} tool ${JSON.stringify(existing.tool)} and server ${JSON.stringify(source.name)} tool ${JSON.stringify(tool.name)} both want it, so rename a server or a tool`,
-        )
-      routed.set(name, { source, tool: tool.name })
-    }
+  const routed = new Map<string, McpServing>()
+  for (const source of sources) {
+    // A name nare cannot carry would fail inside nare, after the servers
+    // started; it is refused here by name instead. The profile refuses it
+    // when it loads, so this only meets a caller that built its own sources.
+    for (const problem of [nareNameProblem(source.name), ...source.tools.map((tool) => nareNameProblem(source.name, tool.name))])
+      if (problem !== undefined) throw new McpError(problem)
+    if (routed.has(source.name)) throw new McpError(`two registered servers are named ${JSON.stringify(source.name)}, and each needs its own endpoint`)
+    const allowed = new Set(source.tools.map((tool) => tool.name))
+    routed.set(source.name, {
+      serverName: `qare-host-${source.name}`,
+      label: `the host tool server ${JSON.stringify(source.name)}`,
+      tools: source.tools.map((tool) => ({
+        name: tool.name,
+        ...(tool.description === undefined ? {} : { description: tool.description }),
+        // MCP requires a schema on every listed tool, and a server that
+        // published none takes an object of anything.
+        inputSchema: tool.inputSchema ?? { type: 'object' },
+      })),
+      call: async (name, args) => {
+        if (!allowed.has(name))
+          return { text: `the host tool server ${JSON.stringify(source.name)} serves ${[...allowed].join(', ')}, and not ${JSON.stringify(name)}`, isError: true }
+        try {
+          return { text: untrustedToolResult(await source.call(name, args), HOST_PRODUCER) }
+        } catch (error) {
+          // A failed call is a result the model can adapt to, and its words
+          // came from the host, so they are fenced like any other result.
+          return { text: untrustedToolResult(error instanceof Error ? error.message : String(error), HOST_PRODUCER), isError: true }
+        }
+      },
+    })
+  }
   return new Promise((resolve, reject) => {
-    const server = createServer((request, response) => {
+    const server = createServer((incoming, response) => {
       response.on('error', () => {})
-      handle(request, response, routed).catch((error) => {
-        refuse(response, 500, error instanceof Error ? error.message : String(error))
+      // The server is addressed by its raw name, URL-encoded.
+      let name = (incoming.url ?? '/').split('?')[0]!.slice(1)
+      try {
+        name = decodeURIComponent(name)
+      } catch {}
+      const serving = routed.get(name)
+      if (serving === undefined) {
+        incoming.resume()
+        respond(response, 404, { jsonrpc: '2.0', id: null, error: { code: -32601, message: `the channel serves ${[...routed.keys()].join(', ') || 'nothing'}, and ${JSON.stringify(name)} is not one of them` } })
+        return
+      }
+      serveMcp(incoming, response, serving).catch((error) => {
+        respond(response, 500, { jsonrpc: '2.0', id: null, error: { code: -32603, message: error instanceof Error ? error.message : String(error) } })
       })
     })
     server.on('error', reject)
@@ -675,83 +750,23 @@ export async function startMcpToolServer(
         reject(new McpError('the OS reported no port for the tool server'))
         return
       }
+      const url = options.advertise ?? `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${bound}`
       resolve({
         port: bound,
-        url: options.advertise ?? `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${bound}`,
-        tools: [...routed.keys()],
+        url,
+        servers: sources.map((source) => ({
+          name: source.name,
+          url: `${url}/${encodeURIComponent(source.name)}`,
+          tools: source.tools.map((tool) => tool.name),
+        })),
         close: () =>
           new Promise<void>((closeResolve, closeReject) => {
+            server.closeAllConnections?.()
             server.close((error) => (error === undefined ? closeResolve() : closeReject(error)))
           }),
       })
     })
   })
-}
-
-async function handle(
-  request: IncomingMessage,
-  response: ServerResponse,
-  routed: Map<string, { source: McpSource; tool: string }>,
-): Promise<void> {
-  const url = (request.url ?? '/').split('?')[0] ?? '/'
-  if (request.method !== 'POST') {
-    refuse(response, 404, `the tool channel serves the registered tools over POST, and ${url} is not one of them`)
-    return
-  }
-  // The caller addresses a tool by its raw name, URL-encoded; a tool name may
-  // carry any characters the server publishes, so the route is decoded first.
-  let routeName = url.slice(1)
-  try {
-    routeName = decodeURIComponent(routeName)
-  } catch {}
-  const route = routed.get(routeName)
-  if (route === undefined) {
-    refuse(response, 404, `the channel serves ${[...routed.keys()].join(', ') || 'nothing'}; ${url} registers no tool`)
-    return
-  }
-  const { body, over } = await readBody(request)
-  if (over) {
-    refuse(response, 413, 'the tool call carried a body past the 64 KiB cap')
-    return
-  }
-  let args: unknown
-  try {
-    args = body.trim() === '' ? undefined : JSON.parse(body)
-  } catch {
-    refuse(response, 400, 'the tool call arguments are not JSON')
-    return
-  }
-  reply(response, await route.source.call(route.tool, args))
-}
-
-function readBody(request: IncomingMessage): Promise<{ body: string; over: boolean }> {
-  return new Promise((resolve) => {
-    let body = ''
-    let bytes = 0
-    let over = false
-    request.on('data', (chunk) => {
-      bytes += chunk.length
-      if (bytes > MAX_BODY_BYTES) {
-        over = true
-        return
-      }
-      body += String(chunk)
-    })
-    request.on('error', () => {})
-    request.on('end', () => resolve({ body, over }))
-  })
-}
-
-function reply(response: ServerResponse, body: unknown): void {
-  response.writeHead(200, { 'content-type': 'application/json' })
-  response.end(JSON.stringify(body))
-}
-
-function refuse(response: ServerResponse, status: number, message: string): void {
-  if (response.writableEnded) return
-  response.statusCode = status
-  response.setHeader('content-type', 'application/json')
-  response.end(JSON.stringify({ error: message }))
 }
 
 /**

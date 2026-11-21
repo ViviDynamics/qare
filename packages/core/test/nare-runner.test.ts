@@ -240,20 +240,78 @@ test('a run with no exploration channel hands nare no MCP config (#377)', async 
   expect(argv[argv.indexOf('--tools') + 1]).toBe('none')
 })
 
-test('the host MCP channel reaches nare as environment, addressed as server.tool (#93)', async () => {
+test('the host MCP channel reaches nare through its MCP client, one alias per server, with only the allowed tools (#93, #399)', async () => {
   const nare = await fakeNare([ANSWER, result()])
 
   await new NareAgentRunner({ binary: nare.binary }).run({
     ...REQUEST,
-    mcp: { allowlist: ['rig.power_on', 'rig.read'], endpoint: url('mcp.internal:8081') },
+    mcp: {
+      servers: [
+        { alias: 'rig', url: url('127.0.0.1:8081/rig'), tools: ['power_on', 'read'] },
+        { alias: 'sim', url: url('127.0.0.1:8081/sim'), tools: ['tick'] },
+      ],
+    },
   })
 
+  const argv = await nare.argv()
+  expect(await nare.mcpConfigSeen()).toEqual({
+    rig: { url: url('127.0.0.1:8081/rig') },
+    sim: { url: url('127.0.0.1:8081/sim') },
+  })
+  // --tools is always set beside a config: left unset, nare offers every tool
+  // every configured server lists (its mcp_allow_all default).
+  expect(argv[argv.indexOf('--tools') + 1]).toBe('rig__power_on,rig__read,sim__tick')
+  expect(argv.filter((arg) => arg === '--tools')).toHaveLength(1)
+  expect(argv.filter((arg) => arg === '--mcp-config')).toHaveLength(1)
+  // The environment no nare release reads is not set.
   const seen = await nare.envSeen()
-  expect(seen.mcpTools).toBe('rig.power_on,rig.read')
-  expect(seen.mcpEndpoint).toBe(url('mcp.internal:8081'))
-  // The MCP channel is its own channel: it does not turn on the exploration one.
+  expect(seen.mcpTools).toBeNull()
+  expect(seen.mcpEndpoint).toBeNull()
   expect(seen.tools).toBeNull()
   expect(seen.endpoint).toBeNull()
+})
+
+test('the exploration and host channels share one MCP config, and --tools names both channels\' tools alone (#399)', async () => {
+  const nare = await fakeNare([ANSWER, result()])
+
+  await new NareAgentRunner({ binary: nare.binary }).run({
+    ...REQUEST,
+    tools: { allowlist: ['observe'], endpoint: url('127.0.0.1:8080/') },
+    mcp: { servers: [{ alias: 'rig', url: url('127.0.0.1:8081/rig'), tools: ['power_on'] }] },
+  })
+
+  const argv = await nare.argv()
+  expect(await nare.mcpConfigSeen()).toEqual({ explore: { url: url('127.0.0.1:8080/') }, rig: { url: url('127.0.0.1:8081/rig') } })
+  expect(argv[argv.indexOf('--tools') + 1]).toBe('explore__observe,rig__power_on')
+})
+
+test('a host server under the exploration bridge\'s alias, or one with no tools, is refused before nare starts (#399)', async () => {
+  const nare = await fakeNare([ANSWER, result()])
+  const runner = new NareAgentRunner({ binary: nare.binary })
+
+  await expect(
+    runner.run({
+      ...REQUEST,
+      tools: { allowlist: ['observe'], endpoint: url('127.0.0.1:8080/') },
+      mcp: { servers: [{ alias: 'explore', url: url('127.0.0.1:8081/explore'), tools: ['observe'] }] },
+    }),
+  ).rejects.toThrow(/alias "explore" twice/)
+  await expect(
+    runner.run({ ...REQUEST, mcp: { servers: [{ alias: 'rig', url: url('127.0.0.1:8081/rig'), tools: [] }] } }),
+  ).rejects.toThrow(/no tools/)
+  await expect(runner.run({ ...REQUEST, mcp: { servers: [] } })).rejects.toThrow(/no servers/)
+  await expect(nare.argv()).rejects.toThrow()
+})
+
+test('a run with no host server and no exploration channel hands nare no MCP config and --tools none (#399)', async () => {
+  const nare = await fakeNare([ANSWER, result()])
+  await new NareAgentRunner({ binary: nare.binary }).run(REQUEST)
+  const argv = await nare.argv()
+  expect(argv).not.toContain('--mcp-config')
+  expect(argv[argv.indexOf('--tools') + 1]).toBe('none')
+  const seen = await nare.envSeen()
+  expect(seen.mcpTools).toBeNull()
+  expect(seen.mcpEndpoint).toBeNull()
 })
 
 test('a run that named no channel gets none, even an ambient one (#87)', async () => {
