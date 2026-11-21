@@ -17,26 +17,32 @@ function capture(): { text: () => string; writer: Writer } {
 }
 
 /** The fixture profile, booted by compose, with extra lines appended to its config. */
-async function profile(extra: string): Promise<{ repo: string; dir: string }> {
+async function profile(extra: string, runPort = false): Promise<{ repo: string; dir: string }> {
   const repo = await mkdtemp(join(tmpdir(), 'qare-explore-'))
   const dir = join(repo, '.qa')
   await cp(FIXTURE, dir, { recursive: true })
   // A seed the test can run: the fixture's own names a Rails task.
-  const config = (await readFile(join(dir, 'config.yml'), 'utf8')).replace('bin/rails db:seed:qa', 'true')
+  let config = (await readFile(join(dir, 'config.yml'), 'utf8')).replace('bin/rails db:seed:qa', 'true')
+  if (runPort) config = config.replace('localhost:3000/up', 'localhost:{{run.app_port}}/up')
   await writeFile(join(dir, 'config.yml'), `${config}\n${extra}\n`)
   return { repo, dir }
 }
 
-function composeRecorder(up = 0): { calls: string[][]; boot: { runCompose: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>; probe: () => Promise<{ ok: boolean }>; pollIntervalMs: number } } {
+function composeRecorder(up = 0): { calls: string[][]; probed: string[]; boot: { runCompose: (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>; probe: (url: string) => Promise<{ ok: boolean }>; pollIntervalMs: number } } {
   const calls: string[][] = []
+  const probed: string[] = []
   return {
     calls,
+    probed,
     boot: {
       runCompose: async (args) => {
         calls.push(args)
         return { code: args.includes('up') ? up : 0, stdout: '', stderr: up !== 0 && args.includes('up') ? 'port is already allocated' : '' }
       },
-      probe: async () => ({ ok: true }),
+      probe: async (target) => {
+        probed.push(target)
+        return { ok: true }
+      },
       pollIntervalMs: 1,
     },
   }
@@ -44,7 +50,8 @@ function composeRecorder(up = 0): { calls: string[][]; boot: { runCompose: (args
 
 test('explore boot brings the base app up from the base tree, seeds it and says where it answers (#377)', async () => {
   // base.image is named, and still not used: exploration builds the base tree.
-  const { repo, dir } = await profile('flavour: web\nexplore: base\nbase: { image: "ghcr.io/example/app:{base}" }')
+  // The health check names the run's port by name, as examples/compose-app's does.
+  const { repo, dir } = await profile('flavour: web\nexplore: base\nbase: { image: "ghcr.io/example/app:{base}" }', true)
   const out = join(repo, 'explore-out')
   const compose = composeRecorder()
   const said = capture()
@@ -54,6 +61,9 @@ test('explore boot brings the base app up from the base tree, seeds it and says 
   const isolation = JSON.parse(await readFile(join(out, 'isolation.json'), 'utf8')) as { project: string; port: number }
   // The health check's fixed port is pinned to the one the boot allocated.
   expect(app.origin).toBe(url(`localhost:${isolation.port}`))
+  // The boot proves the app on the run's own port, with the run's values filled in.
+  expect(compose.probed.length).toBeGreaterThan(0)
+  expect(new Set(compose.probed)).toEqual(new Set([url(`localhost:${isolation.port}/up`)]))
   expect(app.project).toBe(isolation.project)
   expect(compose.calls.every((args) => args.includes(isolation.project))).toBe(true)
   // No override stands an image in for the base tree's build.

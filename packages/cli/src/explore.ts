@@ -6,6 +6,8 @@ import {
   detectExecution,
   explorationPageOf,
   isolateRun,
+  isolatedHealthUrl,
+  substituteValues,
   loadProfile,
   makePlaywrightFlowSession,
   mintRunValues,
@@ -99,9 +101,16 @@ async function exploreBoot(argv: string[], out: Writer, err: Writer, deps: Explo
   // base image is trusted by the revision label its pusher wrote, which is
   // enough where nothing is held; beside the job that holds the model key it
   // is not, so it is never asked for here, and neither is the build cache.
-  const app = { ...profile.app, boot: withoutPrebuilt(profile.app.boot) }
-  const booted: QaProfile = { ...profile, app }
   const isolation = await isolateRun()
+  const values = mintRunValues(runValuesOf(isolation))
+  // The health check is proven on the port this boot published the app on,
+  // with the run's values filled in, as a run proves its own app (#53).
+  const app = {
+    ...profile.app,
+    boot: withoutPrebuilt(profile.app.boot),
+    health: { ...profile.app.health, http: isolatedHealthUrl(substituteValues(profile.app.health.http, values), isolation.port) },
+  }
+  const booted: QaProfile = { ...profile, app }
   // Written before the boot, so a boot that fails half way is still reaped.
   await writeFile(join(outDir, EXPLORE_ISOLATION_FILE), `${JSON.stringify(isolation, null, 2)}\n`, 'utf8')
   const rules = [...redactionRules(profile.redact), ...valueRules([app.login?.totp?.secret, app.login?.backupCode?.value])]
@@ -116,7 +125,6 @@ async function exploreBoot(argv: string[], out: Writer, err: Writer, deps: Explo
     err.write(`the base app did not come up for exploration: ${boot.reason ?? 'no reason recorded'}\n`)
     return 1
   }
-  const values = mintRunValues(runValuesOf(isolation))
   const seeded = await (deps.seed ?? runSeed)(app, values, isolation, repo, detectExecution())
   log.push(seeded.log)
   await say()
