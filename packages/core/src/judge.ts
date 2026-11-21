@@ -616,6 +616,8 @@ export interface JudgeExecutedOptions {
   /** The verifier's model; absent to judge from the evidence alone. */
   verifier?: AgentRunner
   rules?: readonly RedactionRule[]
+  /** What the planning model spent on the plan (#373), carried onto the judged result. */
+  planUsage?: ModelUsage
 }
 
 /**
@@ -656,7 +658,19 @@ export async function judgeExecuted(
   // A refused run executed nothing, so there is nothing to judge: recomputing
   // it from all-unverified criteria would read it back as blocked.
   const verdict = executed.verdict === 'refused' ? 'refused' : verdictOf(criteria, judged.regressions, waived)
-  const result = redactResult(judgedResult(executed, verdict, criteria, evidenceById, regressed), opts.rules ?? BUILTIN_REDACTION_RULES)
+  const judgedRun = judgedResult(executed, verdict, criteria, evidenceById, regressed)
+  // Each criterion's words and the plan's spend ride the judged result
+  // (#373), so the comment says what was checked and what it cost. They are
+  // put on before the sweep, because the comment is public.
+  const described: RunResult = {
+    ...judgedRun,
+    criteria: judgedRun.criteria.map((criterion) => {
+      const text = Object.hasOwn(opts.texts, criterion.id) ? opts.texts[criterion.id]?.trim() : undefined
+      return text === undefined || text === '' ? criterion : { ...criterion, text }
+    }),
+    ...(opts.planUsage === undefined ? {} : { planUsage: opts.planUsage }),
+  }
+  const result = redactResult(described, opts.rules ?? BUILTIN_REDACTION_RULES)
   // What the verifier model spent (#51): part of the run's metrics, riding
   // the judged result the same way the plan's spend rides the plan.
   const full = { ...result, ...(judgeUsage === undefined ? {} : { judgeUsage }) }

@@ -1,5 +1,6 @@
 import { renderAdvisorySection } from './advisory-comment.js'
 import { describeHost, describeRequirements, type HostKind, type Requirements } from './placement.js'
+import type { ModelUsage } from './metrics.js'
 import type { CriterionResult, RunResult, RunVerdict } from './result.js'
 
 export interface CheckRunPayload {
@@ -52,15 +53,21 @@ function failedReason(criterion: CriterionResult): string {
   return ''
 }
 
-type UnverifiedCause = 'waived' | 'quarantine' | 'verifier' | 'environment'
+type UnverifiedCause = 'waived' | 'quarantine' | 'verifier' | 'thin' | 'environment'
 
-// judge names the cause at the start of the reason: a human waiver, or the
-// verifier being unable to check what the checks proved. Anything else is the
-// environment, which is where every other unverified criterion comes from.
+/** How the verifier starts a finding that left a proven criterion unverified (judge's consumeVerifierFindings). */
+const THIN_EVIDENCE_PREFIX = 'verifier: '
+
+// judge names the cause at the start of the reason: a human waiver, the
+// verifier being unable to check what the checks proved, or the verifier
+// finding the evidence too thin to prove it (#373), which is a gap in the
+// check. Anything else is the environment, which is where every other
+// unverified criterion comes from.
 function unverifiedCause(criterion: CriterionResult): UnverifiedCause {
   const reason = 'reason' in criterion && typeof criterion.reason === 'string' ? criterion.reason : ''
   if (reason.startsWith('waived by ')) return 'waived'
   if (reason.startsWith('quarantined (')) return 'quarantine'
+  if (reason.startsWith(THIN_EVIDENCE_PREFIX)) return 'thin'
   if (reason.startsWith('verifier ')) return 'verifier'
   return 'environment'
 }
@@ -71,6 +78,7 @@ function outcomeReason(criterion: CriterionResult): string {
     if (cause === 'waived') return `waived (human): ${criterion.reason}`
     if (cause === 'quarantine') return `quarantined (flake): ${criterion.reason}`
     if (cause === 'verifier') return `not independently checked: ${criterion.reason}`
+    if (cause === 'thin') return `thin evidence: ${criterion.reason.slice(THIN_EVIDENCE_PREFIX.length)}`
     return `could not verify (environment): ${criterion.reason}`
   }
   return failedReason(criterion)
@@ -235,6 +243,48 @@ function escapeHeading(text: string): string {
   )
 }
 
+/** The most of a criterion's text a row shows (#373): one line, so the table stays readable. */
+const CRITERION_TEXT_LIMIT = 100
+
+/** A criterion's text on one line, cut at the limit with an ellipsis. */
+function oneLine(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length <= CRITERION_TEXT_LIMIT ? flat : `${flat.slice(0, CRITERION_TEXT_LIMIT - 1).trimEnd()}…`
+}
+
+/** The criterion cell (#373): the id, and beside it the criterion's words when the result carries them. */
+function criterionCell(criterion: CriterionResult, cell: (text: string) => string): string {
+  const text = criterion.text === undefined ? '' : oneLine(criterion.text)
+  return text === '' ? cell(criterion.id) : `${cell(criterion.id)}: ${cell(text)}`
+}
+
+/** How a run's criteria came out, counted (#373); the check run states the same counts. */
+function outcomeCounts(result: RunResult): Record<CriterionResult['outcome'], number> {
+  const counts = { proven: 0, failed: 0, unverified: 0 }
+  for (const criterion of result.criteria) counts[criterion.outcome] += 1
+  return counts
+}
+
+function usagePhrase(usage: ModelUsage | undefined): string {
+  if (usage === undefined) return 'not recorded'
+  return `${usage.inputTokens.toLocaleString('en-US')} input and ${usage.outputTokens.toLocaleString('en-US')} output`
+}
+
+/**
+ * The summary under the heading (#373): how many criteria were proven,
+ * failed and left unverified, and what the plan and judge models spent. A
+ * spend nobody recorded is said to be not recorded, never zero.
+ */
+function summaryLines(result: RunResult): string[] {
+  const counts = outcomeCounts(result)
+  return [
+    `Criteria: ${counts.proven} proven, ${counts.failed} failed, ${counts.unverified} unverified.`,
+    '',
+    `Model tokens: plan ${usagePhrase(result.planUsage)}; judge ${usagePhrase(result.judgeUsage)}.`,
+    '',
+  ]
+}
+
 export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 'relative' }): string {
   const posted = links.kind === 'artifact'
   const cell = posted ? cellSpan : escapeCell
@@ -245,7 +295,7 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
     '| --- | --- | --- |',
     ...criteria.map(
       criterion =>
-        `| ${cell(criterion.id)} | ${criterion.outcome}${criterion.regression === true ? ' (regression)' : ''}${criterion.cached === true ? ' (cached)' : ''} | ${cell(reasonCell(criterion, baseRan))} |`,
+        `| ${criterionCell(criterion, cell)} | ${criterion.outcome}${criterion.regression === true ? ' (regression)' : ''}${criterion.cached === true ? ' (cached)' : ''} | ${cell(reasonCell(criterion, baseRan))} |`,
     ),
   ]
   // Two sides (#147): say which base the head was compared with, or that it
@@ -294,6 +344,7 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
   const lines = [
     `## QARE run: ${result.verdict}${job}`,
     '',
+    ...summaryLines(result),
     // One side only: say so, so nobody reads the table as base against head.
     // The URL stays a code span; a comment links only to uploaded files.
     ...(result.target === undefined
@@ -460,14 +511,18 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
       '',
       'Criteria not independently checked passed their checks, but the verifier could not review them, so they do not count as proven.',
     )
+  if (causes.has('thin'))
+    lines.push(
+      '',
+      'Criteria with thin evidence passed their checks, but the verifier found the evidence did not show the criterion was met: that is a gap in the check, not an environment failure.',
+    )
   if (causes.has('environment'))
     lines.push('', 'Unverified criteria could not verify (environment) — that is not a code defect.')
   return lines.join('\n')
 }
 
 export function renderCheckRun(result: RunResult): CheckRunPayload {
-  const counts = { proven: 0, failed: 0, unverified: 0 }
-  for (const criterion of result.criteria) counts[criterion.outcome] += 1
+  const counts = outcomeCounts(result)
   // Regressions are named apart from the failures they are among (#147).
   const regressions = result.criteria.filter((criterion) => criterion.regression === true).length
   const regressed = regressions === 0 ? '' : `; ${regressions} regression${regressions === 1 ? '' : 's'} against the base`

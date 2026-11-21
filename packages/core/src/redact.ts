@@ -404,6 +404,8 @@ export function redactResult(result: RunResult, rules: readonly RedactionRule[] 
     ...(result.base?.reason === undefined ? {} : { base: { ...result.base, reason: redactText(result.base.reason, rules) } }),
     criteria: result.criteria.map((criterion) => ({
       ...criterion,
+      // The criterion's words are shown in a public comment (#373).
+      ...(criterion.text === undefined ? {} : { text: redactText(criterion.text, rules) }),
       ...('reason' in criterion && typeof criterion.reason === 'string' ? { reason: redactText(criterion.reason, rules) } : {}),
       ...(criterion.base?.reason === undefined ? {} : { base: { ...criterion.base, reason: redactText(criterion.base.reason, rules) } }),
       // The message a mail check read is the app's own text (#65).

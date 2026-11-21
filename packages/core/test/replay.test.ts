@@ -57,6 +57,18 @@ describe('replayRun', () => {
     expect(report.result.verdict).toBe('failed')
   })
 
+  test('a stored verdict that carries the criterion text and plan spend replays as identical (#373)', async () => {
+    const executed = executedResult()
+    const planned: Plan = { ...plan, usage: { inputTokens: 40, outputTokens: 8 } }
+    const texts = Object.fromEntries(plan.criteria.map((criterion) => [criterion.id, criterion.text]))
+    const { result } = await judgeExecuted(executed, { texts, diff: NO_DIFF, rules: BUILTIN_REDACTION_RULES, planUsage: planned.usage })
+    const bytes = `${JSON.stringify(result, null, 2)}\n`
+    const report = await replayRun({ plan: planned, executed, stored: { bytes, result } })
+    expect(report.identical).toBe(true)
+    expect(report.bytes).toBe(bytes)
+    expect(report.result.criteria[0]?.text).toBe('the home page loads')
+  })
+
   test('a stored verdict the artifacts do not support is reported, not reproduced', async () => {
     const executed = executedResult()
     const bytes = await judgedBytes(executed)

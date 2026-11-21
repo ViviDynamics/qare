@@ -154,6 +154,10 @@ test('the rendered comment is pinned in full: regressions to order or wording fa
   expect(renderComment(mixed)).toBe(
     '## QARE run: failed (job job-9)\n' +
       '\n' +
+      'Criteria: 1 proven, 1 failed, 1 unverified.\n' +
+      '\n' +
+      'Model tokens: plan not recorded; judge not recorded.\n' +
+      '\n' +
       '| criterion | outcome | reason |\n' +
       '| --- | --- | --- |\n' +
       '| payout-1099-notice | proven |  |\n' +
@@ -561,4 +565,71 @@ test('an uploaded screenshot filename remains text in both evidence and advisory
   expect(body.split('[``pic` @a-team <b> .png``]')).toHaveLength(3)
   expect(body).toContain(['(<https:', '//example.test/raw/checks/c1/0/pic`%20@a-team%20%3Cb%3E%0A.png>)'].join(''))
   expect(body).not.toContain('<b>\n.png>')
+})
+
+test('each row shows the criterion text on one line beside its id (#373)', () => {
+  const long = `Exporting the ledger writes every row,\nwith   totals ${'and more detail '.repeat(10)}`
+  const body = renderComment(
+    result('passed', [
+      { id: 'c1', outcome: 'proven', evidence: [], text: 'The ledger exports to CSV.' },
+      { id: 'c2', outcome: 'proven', evidence: [], text: long },
+      { id: 'c3', outcome: 'proven', evidence: [] },
+    ]),
+  )
+  expect(body).toContain('| c1: The ledger exports to CSV. | proven |  |')
+  const row = body.split('\n').find((line) => line.startsWith('| c2: ')) ?? ''
+  const shown = row.slice('| c2: '.length, row.indexOf(' | proven'))
+  expect(shown.startsWith('Exporting the ledger writes every row, with totals and more detail')).toBe(true)
+  expect(shown.length).toBeLessThanOrEqual(100)
+  expect(shown.endsWith('…')).toBe(true)
+  // A criterion with no recorded text shows its id alone.
+  expect(body).toContain('| c3 | proven |  |')
+})
+
+test('on a pull request the criterion text is a code span beside the id, so nothing in it renders (#373)', () => {
+  const body = renderComment(
+    result('passed', [{ id: 'c1', outcome: 'proven', evidence: [], text: 'Links like [x](mailto:someone) | pipes stay text' }]),
+    { kind: 'artifact' },
+  )
+  expect(body).toContain('| `c1`: `Links like [x](mailto:someone) \\| pipes stay text` | proven |  |')
+})
+
+test('the summary line states the proven, failed and unverified counts and the token totals (#373)', () => {
+  const body = renderComment({
+    ...mixed,
+    planUsage: { inputTokens: 12000, outputTokens: 3400 },
+    judgeUsage: { inputTokens: 800, outputTokens: 50 },
+  })
+  const lines = body.split('\n')
+  expect(lines[2]).toBe('Criteria: 1 proven, 1 failed, 1 unverified.')
+  expect(lines[4]).toBe('Model tokens: plan 12,000 input and 3,400 output; judge 800 input and 50 output.')
+})
+
+test('a step whose spend was not recorded is said to be not recorded, never zero (#373)', () => {
+  const body = renderComment({ ...allProven, judgeUsage: { inputTokens: 5, outputTokens: 1 } })
+  expect(body).toContain('Model tokens: plan not recorded; judge 5 input and 1 output.')
+  expect(renderComment(allProven)).toContain('Model tokens: plan not recorded; judge not recorded.')
+})
+
+test('a criterion the verifier left unverified for thin evidence is labelled thin evidence, not the environment (#373)', () => {
+  const body = renderComment(
+    result('blocked', [unverified('c1', 'verifier: the output shows the URL, not the article')]),
+  )
+  expect(body).toContain('| c1 | unverified | thin evidence: the output shows the URL, not the article |')
+  expect(body).not.toContain('could not verify (environment)')
+  expect(body).toContain('Criteria with thin evidence passed their checks, but the verifier found the evidence did not show the criterion was met: that is a gap in the check, not an environment failure.')
+})
+
+test('a judged result keeps the criterion text and the plan spend through a load, and an empty text is refused (#373)', () => {
+  const loaded = parseResult({
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'passed',
+    criteria: [{ id: 'c1', outcome: 'proven', evidence: ['c1/out.txt'], text: 'The ledger exports to CSV.' }],
+    planUsage: { inputTokens: 10, outputTokens: 2 },
+  })
+  expect(loaded.criteria[0]?.text).toBe('The ledger exports to CSV.')
+  expect(loaded.planUsage).toEqual({ inputTokens: 10, outputTokens: 2 })
+  expect(() =>
+    parseResult({ schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [{ id: 'c1', outcome: 'proven', evidence: ['c1/out.txt'], text: ' ' }] }),
+  ).toThrow(/criteria\[0\]\.text/)
 })

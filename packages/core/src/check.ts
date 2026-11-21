@@ -134,6 +134,7 @@ export async function checkCriteria(opts: CheckOptions): Promise<CheckOutcome> {
     texts: Object.fromEntries(criteria.map((criterion) => [criterion.id, criterion.text])),
     diff: NO_DIFF,
     rules,
+    ...(plan.usage === undefined ? {} : { planUsage: plan.usage }),
     ...(opts.verifier === 'none' ? {} : { verifier: opts.verifier(opts.evidenceDir) }),
   })
   // The verifier, not the run, changed these: say so, as qare judge does.

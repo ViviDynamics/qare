@@ -153,3 +153,22 @@ test('a store file that exists but cannot be read is an error the caller names, 
     await rm(dir, { recursive: true })
   }
 })
+
+test('the summary states the proven-or-failed rate of every recorded criterion outcome (#373)', () => {
+  const lines = metricsSummaryLines(
+    summarizeMetrics({
+      runs: [
+        { ...BASE_RECORD, criteria: { selected: [{ id: 'a', outcome: 'proven' }, { id: 'b', outcome: 'failed' }, { id: 'c', outcome: 'unverified' }], counts: {} } },
+        { ...BASE_RECORD, runId: 'r2', criteria: { selected: [{ id: 'a', outcome: 'unverified' }, { id: 'b', outcome: 'unverified' }, { id: 'c', outcome: 'unverified' }, { id: 'd', outcome: 'proven' }], counts: {} } },
+      ].map((run) => ({ schemaVersion: METRICS_SCHEMA_VERSION, recordedAt: '2026-11-20T00:00:00.000Z', ...run })),
+      notes: [],
+      malformed: 0,
+    }),
+  )
+  expect(lines).toContain('proven or failed: 3 of 7 criterion outcomes (42.9%)')
+})
+
+test('with no criterion outcome recorded the rate is not stated as zero (#373)', () => {
+  const lines = metricsSummaryLines(summarizeMetrics({ runs: [], notes: [], malformed: 0 }))
+  expect(lines).toContain('proven or failed: no criterion outcomes recorded')
+})

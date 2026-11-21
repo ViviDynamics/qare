@@ -88,6 +88,16 @@ named.
 A run against a target (#122) has one side by definition and says so, and so
 does `qare check`, which checks the app as it runs.
 
+What the comment says about a judged run (#373). Under its heading it counts
+the criteria proven, failed and unverified, and states the plan and judge
+models' input and output tokens, saying "not recorded" for a step whose spend
+was not recorded. Each row shows the criterion's text, on one line and
+redacted like every other piece of run text, beside its id. A criterion the
+verifier left unverified because the evidence did not show it was met is
+labelled thin evidence, a gap in the check, not an environment failure. The
+standing report's metrics section states how many of the recorded criterion
+outcomes were proven or failed, as a rate.
+
 Not evaluated (#203). A pipeline that fails before it records a verdict
 (a tool that will not install, an image that will not pull, or a planner
 that will not answer) evaluated no criterion, so it has

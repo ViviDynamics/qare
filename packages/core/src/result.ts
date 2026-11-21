@@ -38,6 +38,12 @@ export interface CriterionBase {
  * was compared.
  */
 interface CriterionComparison {
+  /**
+   * The criterion's own words (#373), as the plan carried them, redacted with
+   * the rest of the result. The comment shows them beside the id so a reader
+   * can tell what was checked. Absent when the plan had no text for it.
+   */
+  text?: string
   base?: CriterionBase
   regression?: boolean
   /**
@@ -225,6 +231,11 @@ export interface RunResult {
    */
   judgeUsage?: ModelUsage
   /**
+   * What the planning model spent on this run's plan (#373), copied from the
+   * plan when the run is judged, so the comment can state both sides' totals.
+   */
+  planUsage?: ModelUsage
+  /**
    * What the advisory UX review reported (#150): a model's findings for a
    * person to read. It is a key of its own because it is no part of the
    * verdict: nothing that computes an outcome or a verdict reads it.
@@ -323,6 +334,7 @@ export function parseResult(input: unknown): RunResult {
   const requirements = parseRequirements(input.requirements, 'requirements')
   const timestamps = parseTimestamps(input)
   const judgeUsage = parseModelUsage(input.judgeUsage, 'judgeUsage')
+  const planUsage = parseModelUsage(input.planUsage, 'planUsage')
   const advisory = parseAdvisory(input.advisory)
 
   return {
@@ -339,6 +351,7 @@ export function parseResult(input: unknown): RunResult {
     ...(requirements === undefined ? {} : { requirements }),
     ...(timestamps === undefined ? {} : { startedAt: timestamps.startedAt, finishedAt: timestamps.finishedAt }),
     ...(judgeUsage === undefined ? {} : { judgeUsage }),
+    ...(planUsage === undefined ? {} : { planUsage }),
     ...(advisory === undefined ? {} : { advisory }),
   }
 }
@@ -739,7 +752,8 @@ function parseCriterionResult(value: unknown, index: number): CriterionResult {
   const comparison = parseComparison(value, base, outcome as CriterionOutcome)
   const a11y = value.a11y === undefined ? undefined : parseA11yCounts(value.a11y, `${base}.a11y`)
   const mail = value.mail === undefined ? undefined : parseMailProofs(value.mail, `${base}.mail`)
-  const withCached = <T>(record: T): T => ({ ...record, ...(cached ?? {}), ...comparison, ...(a11y === undefined ? {} : { a11y }), ...(mail === undefined ? {} : { mail }) })
+  const text = value.text === undefined ? undefined : nonEmptyString(value.text, `${base}.text`, 'text')
+  const withCached = <T>(record: T): T => ({ ...record, ...(text === undefined ? {} : { text }), ...(cached ?? {}), ...comparison, ...(a11y === undefined ? {} : { a11y }), ...(mail === undefined ? {} : { mail }) })
 
   switch (outcome as CriterionOutcome) {
     case 'proven':
