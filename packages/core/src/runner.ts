@@ -44,9 +44,33 @@ export function outputBudget(env: Record<string, string | undefined> = process.e
  * secret sweep reads that as a token and its value, and the message is
  * published in a pull request comment, where the word after it was redacted.
  */
-export function stopDetail(stopReason: AgentStopReason, budget: AgentBudget): string {
+export function stopDetail(
+  stopReason: AgentStopReason,
+  budget: AgentBudget,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  if (stopReason === 'context') return contextDetail(env)
   if (stopReason !== 'max_tokens') return stopReason
   return `max_tokens, the turn was cut off at its budget of ${budget.maxOutputTokens} output tokens, which ${MAX_OUTPUT_TOKENS_ENV} raises (max-output-tokens in the pipeline)`
+}
+
+/**
+ * The window nare measures a turn's context against (#391). nare reads it from
+ * this variable, else asks the backend, else assumes 32000; behind an
+ * OpenAI-compatible proxy the backend says nothing, so the fallback is what a
+ * caller gets unless it names the window. qare passes the variable through
+ * untouched and keeps no estimate of its own, so the value it reads here is
+ * the one nare was given.
+ */
+export const CONTEXT_WINDOW_ENV = 'NARE_CONTEXT_WINDOW'
+const NARE_FALLBACK_CONTEXT_WINDOW = 32000
+
+function contextDetail(env: Record<string, string | undefined>): string {
+  const window = env[CONTEXT_WINDOW_ENV]?.trim() ?? ''
+  const raise = 'nare-context-window in the pipeline'
+  if (window === '')
+    return `context, the turn's context estimate reached the window nare fell back to (the backend's own, else ${NARE_FALLBACK_CONTEXT_WINDOW} tokens) because ${CONTEXT_WINDOW_ENV} was not set, and ${raise} sets the model's real window`
+  return `context, the turn's context estimate reached the window of ${window} tokens that ${CONTEXT_WINDOW_ENV} set, which ${raise} raises`
 }
 
 export interface AgentRunRequest {
@@ -67,7 +91,7 @@ export interface AgentRunRequest {
 
 export type AgentRunStatus = 'completed' | 'failed'
 
-export type AgentStopReason = 'end_turn' | 'max_tokens' | 'cancelled' | 'error'
+export type AgentStopReason = 'end_turn' | 'max_tokens' | 'context' | 'cancelled' | 'error'
 
 export interface AgentUsage {
   inputTokens: number
@@ -159,6 +183,9 @@ const STOP_REASONS: Record<string, AgentStopReason> = {
   tool_use: 'end_turn',
   stop_sequence: 'end_turn',
   max_tokens: 'max_tokens',
+  // The context estimate reached the window after elision (#391): a limit the
+  // caller sets, so it is kept apart from error.
+  context: 'context',
 }
 
 interface NareEvent {

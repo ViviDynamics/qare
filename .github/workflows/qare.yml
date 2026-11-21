@@ -66,6 +66,9 @@ jobs:
       qare-ref: ${{ github.event.pull_request.base.sha || github.sha }}
       nare-base-url: https://llm.vividynamics.com/v1
       nare-model: claude-haiku
+      # The proxy reports no window, so nare would fall back to 32000 (#391):
+      # Claude Haiku models take 200000 tokens of context.
+      nare-context-window: '200000'
       # The planner's prompt travels as one argument (nare#29): its copy of
       # the diff keeps the change's source and spec and leaves these out.
       planner-diff-exclude: packages/*/test/* .agents .claude

@@ -134,6 +134,8 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
     'max-output-tokens',
     'model-key-env',
     'nare-base-url',
+    // #391: the window nare measures a turn against, empty by default.
+    'nare-context-window',
     'nare-model',
     'nare-provider',
     'nare-stream',
@@ -191,6 +193,33 @@ test('the streaming choice reaches the plan and judge containers', () => {
   expect([...text.matchAll(/NARE_STREAM: \$\{\{ inputs\.nare-stream \}\}/g)].length, 'plan, judge and main_judge all set NARE_STREAM').toBe(3)
   // ...and the docker boundary forwards it, or nare never sees it.
   expect([...text.matchAll(/model_env\+=\(-e NARE_STREAM\)/g)].length, 'plan, judge and main_judge all forward it into their containers').toBe(3)
+})
+
+// #391: behind a proxy nare cannot learn the model's window and falls back to
+// 32000, so the caller names it, and every step that asks the model hands it
+// across the docker boundary under the name nare reads.
+test('nare-context-window reaches the plan and judge containers of both lanes, and only when set', () => {
+  expect(call.inputs['nare-context-window']?.default).toBe('')
+  const text = readFileSync(join(repoRoot, PIPELINE), 'utf8')
+  // As many steps set it as set the model itself: no step that asks nare is left on the fallback.
+  const asking = [...text.matchAll(/NARE_MODEL: \$\{\{ inputs\.nare-model \}\}/g)].length
+  expect(asking, 'plan, judge and main_judge ask the model').toBe(3)
+  expect([...text.matchAll(/NARE_CONTEXT_WINDOW: \$\{\{ inputs\.nare-context-window \}\}/g)].length, 'every step that sets NARE_MODEL sets it').toBe(asking)
+  for (const [job, name] of [['plan', 'Plan the QA run'], ['judge', 'Judge the result'], ['main_judge', 'Judge the result on main']] as const) {
+    const step = pipeline.jobs[job]?.steps?.find((candidate) => candidate.name === name)
+    expect(step?.env?.NARE_CONTEXT_WINDOW, name).toBe('${{ inputs.nare-context-window }}')
+    const run = step?.run?.replace(/\s+/g, ' ') ?? ''
+    expect(run, name).toContain('model_env+=(-e NARE_CONTEXT_WINDOW)')
+    // Checked before the container that asks the model is started (rule 6).
+    expect(run.indexOf('nare-context-window must be'), name).toBeGreaterThan(-1)
+    expect(run.indexOf('nare-context-window must be'), name).toBeLessThan(run.indexOf('docker run'))
+  }
+  const docs = readFileSync(join(repoRoot, 'docs', 'pipeline.md'), 'utf8')
+  const row = docs.split('\n').find((line) => line.startsWith('| `nare-context-window` |')) ?? ''
+  expect(row).toMatch(/\| `nare-context-window` \| empty \| /)
+  expect(row).toContain('32000')
+  expect(row).toContain('`NARE_CONTEXT_WINDOW`')
+  expect(row).toMatch(/proxy/)
 })
 
 // #254: the output budget is the caller's to raise, and it has to cross the
@@ -435,6 +464,10 @@ test("qare's own workflow calls the pipeline it ships", () => {
   // the pushed revision on a push.
   expect(job.with?.['qare-ref']).toBe('${{ github.event.pull_request.base.sha || github.sha }}')
   expect((job.secrets as Record<string, string>)['model-key']).toBe('${{ secrets.QARE_PLANNER_KEY }}')
+  // #391: the proxy reports no window, so qare's own caller names its model's:
+  // Claude Haiku models take 200000 tokens of context.
+  expect(job.with?.['nare-model']).toBe('claude-haiku')
+  expect(job.with?.['nare-context-window']).toBe('200000')
   // The identity (#61), by the names #155 stores the App under: until those
   // secrets exist each is empty and qare posts as the workflow run, and
   // setting them is the whole switch.

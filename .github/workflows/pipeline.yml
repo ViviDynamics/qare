@@ -142,6 +142,14 @@ on:
         description: The endpoint of an OpenAI-compatible model service. Empty means the provider's own.
         type: string
         default: ''
+      nare-context-window:
+        description: >-
+          The context window of nare-model, in tokens. nare measures every
+          planner and verifier turn against it, and without it asks the
+          backend, which an OpenAI-compatible proxy does not answer, so it
+          falls back to 32000. Empty keeps nare's own choice.
+        type: string
+        default: ''
       nare-stream:
         description: >-
           Set to true to stream the planner's and the verifier's model turns,
@@ -735,6 +743,7 @@ jobs:
           NARE_PROVIDER: ${{ inputs.nare-provider }}
           NARE_BASE_URL: ${{ inputs.nare-base-url }}
           NARE_MODEL: ${{ inputs.nare-model }}
+          NARE_CONTEXT_WINDOW: ${{ inputs.nare-context-window }}
           NARE_STREAM: ${{ inputs.nare-stream }}
           QARE_MAX_OUTPUT_TOKENS: ${{ inputs.max-output-tokens }}
           QARE_PLAN_BATCH_SIZE: ${{ inputs.plan-batch-size }}
@@ -752,6 +761,12 @@ jobs:
             echo "model-key-env must be the name of an environment variable (got '$MODEL_KEY_ENV')" | tee -a "$GITHUB_STEP_SUMMARY" >&2
             exit 1
           fi
+          # The window nare measures each turn against (#391), checked before
+          # any model call: nare would refuse it only once its container ran.
+          if [ -n "$NARE_CONTEXT_WINDOW" ] && [[ ! "$NARE_CONTEXT_WINDOW" =~ ^[1-9][0-9]{0,8}$ ]]; then
+            echo "nare-context-window must be a whole number of tokens above zero, at most nine digits (got '$NARE_CONTEXT_WINDOW')" | tee -a "$GITHUB_STEP_SUMMARY" >&2
+            exit 1
+          fi
           # The key travels to the container in a file only this step can
           # read, outside the workspace, under the variable the provider
           # reads: never as an argument, and never as a variable of this
@@ -766,6 +781,9 @@ jobs:
           model_env=(--env-file "$key_file" -e NARE_PROVIDER -e NARE_MODEL)
           if [ -n "$NARE_STREAM" ]; then
             model_env+=(-e NARE_STREAM)
+          fi
+          if [ -n "$NARE_CONTEXT_WINDOW" ]; then
+            model_env+=(-e NARE_CONTEXT_WINDOW)
           fi
           if [ -n "$QARE_MAX_OUTPUT_TOKENS" ]; then
             model_env+=(-e QARE_MAX_OUTPUT_TOKENS)
@@ -1450,6 +1468,7 @@ jobs:
           NARE_PROVIDER: ${{ inputs.nare-provider }}
           NARE_BASE_URL: ${{ inputs.nare-base-url }}
           NARE_MODEL: ${{ inputs.nare-model }}
+          NARE_CONTEXT_WINDOW: ${{ inputs.nare-context-window }}
           NARE_STREAM: ${{ inputs.nare-stream }}
           QARE_MAX_OUTPUT_TOKENS: ${{ inputs.max-output-tokens }}
           QARE_VERIFY_BATCH_SIZE: ${{ inputs.verify-batch-size }}
@@ -1464,6 +1483,12 @@ jobs:
             echo "model-key-env must be the name of an environment variable (got '$MODEL_KEY_ENV')" | tee -a "$GITHUB_STEP_SUMMARY" >&2
             exit 1
           fi
+          # The window nare measures each turn against (#391), checked before
+          # any model call: nare would refuse it only once its container ran.
+          if [ -n "$NARE_CONTEXT_WINDOW" ] && [[ ! "$NARE_CONTEXT_WINDOW" =~ ^[1-9][0-9]{0,8}$ ]]; then
+            echo "nare-context-window must be a whole number of tokens above zero, at most nine digits (got '$NARE_CONTEXT_WINDOW')" | tee -a "$GITHUB_STEP_SUMMARY" >&2
+            exit 1
+          fi
           # In a file, never in this shell: see the plan step.
           key_file="$(mktemp "$RUNNER_TEMP/model-key.XXXXXX")"
           trap 'rm -f "$key_file"' EXIT
@@ -1472,6 +1497,9 @@ jobs:
           model_env=(--env-file "$key_file" -e NARE_PROVIDER -e NARE_MODEL)
           if [ -n "$NARE_STREAM" ]; then
             model_env+=(-e NARE_STREAM)
+          fi
+          if [ -n "$NARE_CONTEXT_WINDOW" ]; then
+            model_env+=(-e NARE_CONTEXT_WINDOW)
           fi
           if [ -n "$QARE_MAX_OUTPUT_TOKENS" ]; then
             model_env+=(-e QARE_MAX_OUTPUT_TOKENS)
@@ -2815,6 +2843,7 @@ jobs:
           NARE_PROVIDER: ${{ inputs.nare-provider }}
           NARE_BASE_URL: ${{ inputs.nare-base-url }}
           NARE_MODEL: ${{ inputs.nare-model }}
+          NARE_CONTEXT_WINDOW: ${{ inputs.nare-context-window }}
           NARE_STREAM: ${{ inputs.nare-stream }}
           QARE_MAX_OUTPUT_TOKENS: ${{ inputs.max-output-tokens }}
           QARE_VERIFY_BATCH_SIZE: ${{ inputs.verify-batch-size }}
@@ -2830,6 +2859,12 @@ jobs:
             echo "model-key-env must be the name of an environment variable (got '$MODEL_KEY_ENV')" | tee -a "$GITHUB_STEP_SUMMARY" >&2
             exit 1
           fi
+          # The window nare measures each turn against (#391), checked before
+          # any model call: nare would refuse it only once its container ran.
+          if [ -n "$NARE_CONTEXT_WINDOW" ] && [[ ! "$NARE_CONTEXT_WINDOW" =~ ^[1-9][0-9]{0,8}$ ]]; then
+            echo "nare-context-window must be a whole number of tokens above zero, at most nine digits (got '$NARE_CONTEXT_WINDOW')" | tee -a "$GITHUB_STEP_SUMMARY" >&2
+            exit 1
+          fi
           # In a file, never in this shell: see the plan step.
           key_file="$(mktemp "$RUNNER_TEMP/model-key.XXXXXX")"
           trap 'rm -f "$key_file"' EXIT
@@ -2838,6 +2873,9 @@ jobs:
           model_env=(--env-file "$key_file" -e NARE_PROVIDER -e NARE_MODEL)
           if [ -n "$NARE_STREAM" ]; then
             model_env+=(-e NARE_STREAM)
+          fi
+          if [ -n "$NARE_CONTEXT_WINDOW" ]; then
+            model_env+=(-e NARE_CONTEXT_WINDOW)
           fi
           if [ -n "$QARE_MAX_OUTPUT_TOKENS" ]; then
             model_env+=(-e QARE_MAX_OUTPUT_TOKENS)
