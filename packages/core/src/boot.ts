@@ -1,11 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import http from 'node:http'
 import https from 'node:https'
-import { realpath, stat } from 'node:fs/promises'
-import { dirname, isAbsolute, relative, resolve } from 'node:path'
+import { realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { clientCellProblem, startClientCell, type ClientCell } from './client-cell.js'
 import { electronDisplayProblem, type ElectronHost } from './flow-electron.js'
-import { clientExecutableName, type ProfileApp, type ProfileClient, type QaProfile } from './profile.js'
+import { clientExecutableName, isCommandBoot, type CommandBoot, type ComposeBoot, type ProfileApp, type ProfileClient, type QaProfile } from './profile.js'
 import { VERSION } from './version.js'
 import { parseDurationMs } from './duration.js'
 import { composeEnv, hasMintedProject, mintIsolation, type RunIsolation } from './isolation.js'
@@ -250,7 +251,63 @@ function defaultProbe(url: string, timeoutMs: number): Promise<{ ok: boolean }> 
   })
 }
 
-async function captureComposeLogs(app: ProfileApp, opts: BootOpts, isolation: RunIsolation): Promise<string> {
+/** An app whose boot is a compose file: the profile's own, or the one a command boot is written to. */
+type ComposeApp = ProfileApp & { boot: ComposeBoot }
+
+/** The service a command boot runs as (#379), the one service of its project. */
+export const COMMAND_BOOT_SERVICE = 'app'
+/** Where a command boot's checkout lands in its image, and where its command runs. */
+export const COMMAND_BOOT_WORKDIR = '/app'
+
+/** Where the run writes a command boot's compose project (#379): named for the project, so no two runs share one. */
+export function commandBootFile(project: string): string {
+  return join(tmpdir(), `${project}.compose.json`)
+}
+
+/** A string compose reads as itself: every `$` doubled, so no profile text is interpolated. */
+function composeLiteral(text: string): string {
+  return text.replaceAll('$', '$$$$')
+}
+
+/**
+ * The compose project a command boot runs as (#379): one service, built
+ * from the side's checkout on the named image, running the command from a
+ * copy of the checkout with `PORT` set to the port it listens on, and
+ * published on the run's port as a compose boot is. The image is built,
+ * not mounted, so the app is the pull request's code and cannot write to
+ * the runner's workspace. JSON, which compose reads as YAML. The run's
+ * `QARE_APP_PORT` is the only thing compose interpolates.
+ */
+export function commandBootCompose(boot: CommandBoot, root: string): string {
+  const port = String(boot.port)
+  return `${JSON.stringify(
+    {
+      services: {
+        [COMMAND_BOOT_SERVICE]: {
+          build: { context: composeLiteral(root), dockerfile_inline: composeLiteral(`FROM ${boot.image}\nCOPY . ${COMMAND_BOOT_WORKDIR}\nWORKDIR ${COMMAND_BOOT_WORKDIR}\n`) },
+          command: ['sh', '-c', composeLiteral(boot.command)],
+          environment: { PORT: port },
+          ports: [`127.0.0.1:\${QARE_APP_PORT:-${port}}:${port}`],
+        },
+      },
+    },
+    null,
+    2,
+  )}\n`
+}
+
+/**
+ * The app as the compose boot runs it: a compose boot as it is, and a
+ * command boot written to its project file first (#379).
+ */
+async function composeAppOf(app: ProfileApp, root: string, isolation: RunIsolation): Promise<ComposeApp> {
+  if (!isCommandBoot(app.boot)) return app as ComposeApp
+  const file = commandBootFile(isolation.project)
+  await writeFile(file, commandBootCompose(app.boot, resolve(root)), { mode: 0o600 })
+  return { ...app, boot: { compose: file, service: COMMAND_BOOT_SERVICE, ...(app.boot.build === undefined ? {} : { build: app.boot.build }) } }
+}
+
+async function captureComposeLogs(app: ComposeApp, opts: BootOpts, isolation: RunIsolation): Promise<string> {
   const runCompose = opts.runCompose ?? defaultRunCompose
   const logs = await runCompose(['-p', isolation.project, '-f', app.boot.compose, 'logs', '--no-color', app.boot.service], NO_DEADLINE_MS, composeEnv(isolation))
   return logs.stdout + logs.stderr
@@ -446,7 +503,7 @@ function flagUnknown(result: ComposeResult): boolean {
  * logs are what the build wrote.
  */
 async function buildImages(
-  app: ProfileApp,
+  app: ComposeApp,
   runCompose: NonNullable<BootOpts['runCompose']>,
   isolation: RunIsolation,
   env: Record<string, string> | undefined,
@@ -508,7 +565,6 @@ async function buildImages(
 export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<BootOutcome> {
   if (profile.client !== undefined) return probeClient(profile.client, opts)
   if (profile.app === undefined) return probeTarget(profile, opts)
-  const app = profile.app
   const runCompose = opts.runCompose ?? defaultRunCompose
   // One project per boot (#53): the caller's isolation when it carries one, a
   // minted one otherwise, so concurrent boots never share a project name,
@@ -527,6 +583,14 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
     }
   }
   const env = composeEnv(isolation)
+  // A command boot is written to a compose project of its own (#379), and
+  // from here on it is booted as any compose boot is.
+  let app: ComposeApp
+  try {
+    app = await composeAppOf(profile.app, opts.root ?? process.cwd(), isolation)
+  } catch (error) {
+    return { kind: 'blocked', reason: `the command boot's compose project could not be written: ${error instanceof Error ? error.message : String(error)}`, logs: '', isolation }
+  }
   let timeoutMs: number
   try {
     timeoutMs = parseDurationMs(app.health.timeout)
@@ -616,9 +680,23 @@ export async function stopApp(profile: QaProfile, opts: BootOpts = {}): Promise<
     return
   }
   const runCompose = opts.runCompose ?? defaultRunCompose
+  const boot = profile.app.boot
+  if (isCommandBoot(boot)) {
+    // A command boot's project is the run's alone (#379): downed by its
+    // name, as reap downs it, with the file the run wrote for it removed.
+    // Without an isolation there is no project a down could address.
+    if (opts.isolation === undefined) return
+    try {
+      await runCompose(['-p', opts.isolation.project, 'down', '--volumes'], opts.downTimeoutMs ?? NO_DEADLINE_MS, composeEnv(opts.isolation))
+    } catch (error) {
+      console.error(`compose down failed: ${String(error)}`)
+    }
+    await rm(commandBootFile(opts.isolation.project), { force: true }).catch(() => {})
+    return
+  }
   try {
     await runCompose(
-      [...(opts.isolation === undefined ? [] : ['-p', opts.isolation.project]), '-f', profile.app.boot.compose, 'down'],
+      [...(opts.isolation === undefined ? [] : ['-p', opts.isolation.project]), '-f', boot.compose, 'down'],
       opts.downTimeoutMs ?? NO_DEADLINE_MS,
       composeEnv(opts.isolation),
     )

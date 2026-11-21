@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# Run the pipeline's execute steps against the example profile that boots a
-# compose app (examples/compose-app), and hold the result to a real boot
+# Run the pipeline's execute steps against an example profile that boots its
+# app (examples/compose-app by default), and hold the result to a real boot
 # (#209). The steps are the ones .github/workflows/pipeline.yml ships, run as
 # the scripts they are: a caller's pipeline and this check cannot drift apart.
 #
-#   scripts/compose-boot.sh <image>
+#   scripts/compose-boot.sh <image> [example]
 #
 # <image> is the qare image the run executes in. CI passes the core image it
-# built from this tree. The base side is the commit before HEAD, which the
-# checkout must carry (fetch-depth: 2 in a workflow).
+# built from this tree. [example] is the example directory, holding .qa/ and
+# plan.json: examples/compose-app boots from a compose file, and
+# examples/command-app from a start command (#379), which the run turns into
+# a compose project of its own. The base side is the commit before HEAD,
+# which the checkout must carry (fetch-depth: 2 in a workflow).
 set -euo pipefail
 
-image="${1:?usage: scripts/compose-boot.sh <image>}"
+image="${1:?usage: scripts/compose-boot.sh <image> [example]}"
+example="${2:-examples/compose-app}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
@@ -21,7 +25,8 @@ export RUNNER_TEMP GITHUB_STEP_SUMMARY
 mkdir -p "$RUNNER_TEMP"
 
 rm -rf evidence
-cp examples/compose-app/plan.json plan.json
+cp "$example/plan.json" plan.json
+criteria="$(jq '.criteria | length' "$example/plan.json")"
 # A base worktree an earlier run left behind would refuse the new one.
 git worktree remove --force "$RUNNER_TEMP/qare-base" 2>/dev/null || true
 cleanup() {
@@ -42,7 +47,7 @@ IMAGE_DIGEST="${image}@local" \
 BASE_SHA="$(git rev-parse 'HEAD^1')" \
 HEAD_SHA="$(git rev-parse HEAD)" \
 PR_NUMBER=0 \
-PROFILE=examples/compose-app/.qa \
+PROFILE="$example/.qa" \
 FLAKE_ATTEMPTS=2 \
 QUARANTINE=.qa \
   step 'Run the plan' || code=$?
@@ -73,12 +78,12 @@ fi
 jq '{verdict, base: .base.status, criteria: [.criteria[] | {id, outcome, reason}]}' evidence/result.json
 # Passed, with every criterion proven by a check that really ran: a blocked
 # boot leaves them unverified, and that is the failure this exists to catch.
-if [ "$code" -ne 0 ] || ! jq -e '
+if [ "$code" -ne 0 ] || ! jq -e --argjson criteria "$criteria" '
   .verdict == "passed" and
-  (.criteria | length) == 2 and
+  (.criteria | length) == $criteria and
   ([.criteria[] | .outcome == "proven"] | all)
 ' evidence/result.json > /dev/null; then
-  echo "the execute step exited $code: the compose app did not boot, or a check against it did not pass" >&2
+  echo "the execute step exited $code: the $example app did not boot, or a check against it did not pass" >&2
   exit 1
 fi
 if [ -z "${project// /}" ] || [ -z "$up_after_run" ]; then
@@ -90,7 +95,7 @@ if [ -n "$left" ]; then
   echo "the teardown step left a compose project of the run ($project) running: $left" >&2
   exit 1
 fi
-echo "compose boot: the execute step booted the app, both checks reached it, and the teardown step took the stack down"
+echo "compose boot: the execute step booted $example, all $criteria checks reached it, and the teardown step took the stack down"
 
 # The pipeline's defaults ran (#380): one retry and a quarantine store. Every
 # check passed its first attempt, so the store the run wrote, uploaded with
@@ -114,6 +119,9 @@ if ! jq -e --arg runner "${RUNNER_ENVIRONMENT:-}" '
 fi
 echo "compose boot: the evidence names the host kind: $(jq -c '.environment.host' evidence/result.json)"
 
+# An example with no profile that requires macOS is done here.
+[ -d "$example/needs-macos" ] || exit 0
+
 # The same app under a profile that requires macOS (#76), on this Linux
 # runner: the run is refused by name before anything is provisioned. The
 # step treats a refusal as the outcome it is and exits 0; what it leaves is
@@ -121,7 +129,7 @@ echo "compose boot: the evidence names the host kind: $(jq -c '.environment.host
 booted="$RUNNER_TEMP/qare-compose-boot-evidence"
 rm -rf "$booted"
 mv evidence "$booted"
-cp examples/compose-app/plan.json plan.json
+cp "$example/plan.json" plan.json
 git worktree remove --force "$RUNNER_TEMP/qare-base" 2>/dev/null || true
 code=0
 IMAGE_REF="$image" \
@@ -130,7 +138,7 @@ IMAGE_DIGEST="${image}@local" \
 BASE_SHA="$(git rev-parse 'HEAD^1')" \
 HEAD_SHA="$(git rev-parse HEAD)" \
 PR_NUMBER=0 \
-PROFILE=examples/compose-app/needs-macos \
+PROFILE="$example/needs-macos" \
 FLAKE_ATTEMPTS=1 \
 QUARANTINE= \
   step 'Run the plan' || code=$?

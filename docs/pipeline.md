@@ -432,7 +432,9 @@ Later jobs resolve their own image; this does not replace release immutability.
 
 A profile that boots its application (`app.boot`) also needs, on the runner
 execute lands on, the docker compose v2 plugin, and the buildx plugin if the
-compose file builds an image. The runner's user must be able to run
+compose file builds an image. A profile that boots by command
+(`app.boot: { command, image, port }`, #379) always builds one, its image on
+top of a copy of the checkout, so it needs buildx too. The runner's user must be able to run
 `docker compose` itself: execute hands the run exactly the docker that user
 has. A runner with no compose plugin says so in the job summary.
 

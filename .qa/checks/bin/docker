@@ -1,0 +1,25 @@
+#!/usr/bin/env node
+// A stand-in for the docker CLI, for .qa/checks/command-boot.mjs run (#379):
+// the image has no docker daemon. It answers exactly what a profile's seed and
+// suites say to a command-booted app, `docker compose -p <project> exec -T app
+// <command>`, by running the command in the started container's filesystem,
+// which command-boot.mjs keeps under .qa/checks/scratch/containers (a seed runs
+// with the minimal environment, so the place is fixed). A project that was
+// never started, any other service and any other docker call are refused.
+import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const args = process.argv.slice(2)
+const refuse = (why) => {
+  console.error(`docker stand-in: ${why}: docker ${args.join(' ')}`)
+  process.exit(125)
+}
+if (args[0] !== 'compose' || args[1] !== '-p' || args[3] !== 'exec' || args[4] !== '-T') refuse('only compose -p <project> exec -T is answered')
+const [project, service, ...command] = [args[2], args[5], ...args.slice(6)]
+const root = join(fileURLToPath(new URL('../scratch/containers/', import.meta.url)), project ?? '')
+if (!project?.startsWith('qare-') || !existsSync(join(root, 'running'))) refuse(`no running project ${project}`)
+if (service !== 'app') refuse(`project ${project} has no service ${service}`)
+const run = spawnSync(command[0], command.slice(1), { cwd: join(root, 'app'), stdio: 'inherit' })
+process.exit(run.status ?? 1)

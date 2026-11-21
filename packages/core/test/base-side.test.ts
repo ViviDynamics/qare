@@ -147,6 +147,32 @@ test('the two sides boot under isolations of their own, and the base is torn dow
   expect(JSON.parse(await readFile(join(job.evidenceDir, 'head/isolation.json'), 'utf8')).project).toBe(headUp?.project)
 })
 
+test('a command boot is built from each side\'s own checkout, under each side\'s own project (#379)', async () => {
+  const trees = await twoTrees({ base: ['old.txt'], head: ['old.txt'] })
+  const contexts: { project: string | undefined; verb: string | undefined; context?: string }[] = []
+  const profile: QaProfile = { ...APP_PROFILE, app: { ...(APP_PROFILE.app as NonNullable<QaProfile['app']>), boot: { command: 'npm start', image: 'node:22', port: 3000 } } }
+  const job = jobFor(trees.head, [fileCheck('kept', 'old.txt')], profile)
+  const { result } = await runJob(job, {
+    runCompose: async (args) => {
+      const at = args.indexOf('-f')
+      const file = at === -1 ? undefined : (JSON.parse(await readFile(args[at + 1] as string, 'utf8')) as { services: { app: { build: { context: string } } } })
+      contexts.push({ project: args[1], verb: args.find((arg) => arg === 'build' || arg === 'up' || arg === 'down'), ...(file === undefined ? {} : { context: file.services.app.build.context }) })
+      return { code: 0, stdout: '', stderr: '' }
+    },
+    probe: async () => ({ ok: true }),
+    pollIntervalMs: 1,
+    base: { repoPath: trees.base },
+  })
+  expect(result.verdict).toBe('passed')
+  expect(contexts.map((call) => call.verb)).toEqual(['build', 'up', 'down', 'build', 'up'])
+  const [baseBuild, , baseDown, headBuild] = contexts
+  expect(baseBuild?.context).toBe(trees.base)
+  expect(headBuild?.context).toBe(trees.head)
+  // The base is downed by its project alone, so the down reads no file.
+  expect(baseDown).toEqual({ project: baseBuild?.project, verb: 'down' })
+  expect(headBuild?.project).not.toBe(baseBuild?.project)
+})
+
 test('a base that will not boot is reported as such, and nothing becomes a regression (#147)', async () => {
   const trees = await twoTrees({ base: ['old.txt'], head: [] })
   const job = jobFor(trees.head, [fileCheck('old-behaviour', 'old.txt')])

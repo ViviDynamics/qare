@@ -2,7 +2,7 @@ import { lstat, readFile, readdir, stat } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { matchesStub } from './egress.js'
-import { clientExecutableName, loadProfile } from './profile.js'
+import { clientExecutableName, isCommandBoot, loadProfile } from './profile.js'
 import { hasContainedCommand, UNCONTAINED_COMMAND_NOTICE } from './placement.js'
 
 export const READINESS_MAX_FILES = 2000
@@ -41,6 +41,8 @@ export interface ReadinessProfileInfo {
   client?: { driver: string; executable: string; artefact?: { kind: string; head: string; base?: string } }
   /** The compose file and service a booted profile names (#146). */
   boot?: { compose: string; service: string }
+  /** The start command, image and port a profile boots by command instead (#379): no compose file is needed. */
+  commandBoot?: { command: string; image: string; port: number }
   stubs: Array<{ service: string; hosts: string[]; composeService?: string }>
 }
 
@@ -394,7 +396,11 @@ async function loadProfileInfo(repo: string): Promise<ReadinessProfileInfo> {
                   }),
             },
           }),
-      ...(profile.app === undefined ? {} : { boot: { compose: profile.app.boot.compose, service: profile.app.boot.service } }),
+      ...(profile.app === undefined
+        ? {}
+        : isCommandBoot(profile.app.boot)
+          ? { commandBoot: { command: profile.app.boot.command, image: profile.app.boot.image, port: profile.app.boot.port } }
+          : { boot: { compose: profile.app.boot.compose, service: profile.app.boot.service } }),
       stubs: (profile.stubs ?? []).map((stub) => ({
         service: stub.service,
         hosts: [...stub.hosts],
@@ -438,8 +444,11 @@ function gapsOf(
   // A client profile launches a build the project made (#72): nothing boots
   // and nothing is stubbed there either.
   if (profile.present && profile.loadError === undefined && profile.client !== undefined) return gaps
-  if (boot.length === 0) gaps.push('no compose file found: qare cannot boot this repo for a QA run')
-  for (const file of boot) {
+  // A command boot runs the app from its start command (#379): it needs no
+  // compose file, and one kept beside it for other uses is not what boots.
+  const composeBooted = profile.commandBoot === undefined
+  if (composeBooted && boot.length === 0) gaps.push('no compose file found: qare cannot boot this repo for a QA run')
+  for (const file of composeBooted ? boot : []) {
     for (const service of file.services) {
       if (!service.healthcheck) {
         gaps.push(`service ${JSON.stringify(service.name)} in ${file.file} has no healthcheck`)
@@ -510,6 +519,9 @@ export function buildReadinessReport(inventory: ReadinessInventory): string {
           : `- base side: the build installed from ${client.artefact.base}, so a criterion that worked there and fails at the head is a regression`,
       )
     }
+  } else if (inventory.profile.commandBoot !== undefined) {
+    const command = inventory.profile.commandBoot
+    lines.push(`- command ${JSON.stringify(command.command)} in ${command.image}, listening on ${command.port}: booted by the run as a compose project of its own`)
   } else if (inventory.boot.length === 0) {
     lines.push('- no compose file found')
   } else {

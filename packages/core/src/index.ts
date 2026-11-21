@@ -36,7 +36,8 @@ export {
   loadResult,
   parseResult,
 } from './result.js'
-export { ProfileMissingError, ProfileValidationError, loadProfile, pathOnTarget, validateProfileConfig } from './profile.js'
+export { ProfileMissingError, ProfileValidationError, isCommandBoot, loadProfile, pathOnTarget, validateProfileConfig } from './profile.js'
+export type { CommandBoot, ComposeBoot, ProfileBoot } from './profile.js'
 export {
   BUILTIN_REDACTION_RULES,
   REDACTED,
@@ -178,7 +179,7 @@ export { inboxSource, mailpitSource, mailReader, mailSourceOf, MAIL_SOURCE_KINDS
 export type { MailSource, MailFilter, MailRef, DeclaredMailSource, MailSourceKind } from './mail-source.js'
 export { Artefacts } from './artefacts.js'
 export type { ArtefactField } from './artefacts.js'
-export { bootApp, stopApp } from './boot.js'
+export { bootApp, commandBootCompose, commandBootFile, stopApp } from './boot.js'
 export type { BootOutcome, BootOpts } from './boot.js'
 export { isolatedHealthUrl, isolateRun, mintIsolation } from './isolation.js'
 export type { RunIsolation } from './isolation.js'

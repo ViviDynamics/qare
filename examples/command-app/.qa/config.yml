@@ -1,0 +1,21 @@
+app:
+  # No compose file: qare runs the command, from a copy of the checkout at
+  # /app, in the image named, and publishes the port on the run's own
+  # (#379). The app reads the port it listens on from PORT.
+  boot: { command: "httpd -f -p $PORT -h examples/command-app/site", image: "busybox:1.36", port: 3000 }
+  health: { http: "http://localhost:{{run.app_port}}/up", timeout: 180s }
+  # The seed reaches the service by the run's project alone: a command
+  # boot's one service is named app.
+  seed: { command: "docker compose -p qare-{{run.id}} exec -T app touch /tmp/seeded" }
+  login: { fixture: fixtures/users.yml, role: reader }
+stubs: []
+visual:
+  widths: [1440]
+  themes: [light]
+suites:
+  - name: in-service
+    command: "docker compose -p qare-{{run.id}} exec -T app grep -q Hello-from-command /app/examples/command-app/site/index.html"
+    kind: flow
+  - name: seeded
+    command: "docker compose -p qare-{{run.id}} exec -T app test -f /tmp/seeded"
+    kind: flow

@@ -1,4 +1,5 @@
-import { defaultRunCompose } from './boot.js'
+import { rm } from 'node:fs/promises'
+import { commandBootFile, defaultRunCompose } from './boot.js'
 
 /**
  * What reaping found: the qare projects torn down, and the ones compose could
@@ -92,10 +93,14 @@ export async function reapProjects(opts: ReapOpts = {}): Promise<ReapOutcome> {
 
 // Reap never waits forever on a compose call, so the down is bounded (#53); a
 // call the deadline killed resolves with a non-zero code and no output.
-function down(runCompose: NonNullable<ReapOpts['runCompose']>, project: string): Promise<{ code: number; stdout: string; stderr: string }> {
-  return runCompose(['-p', project, 'down', '--volumes'], REAP_CALL_TIMEOUT_MS).catch((error: unknown) => ({
+// A project downed takes the file a command boot wrote for it along (#379);
+// a compose boot's project has none, and nothing else is touched.
+async function down(runCompose: NonNullable<ReapOpts['runCompose']>, project: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  const outcome = await runCompose(['-p', project, 'down', '--volumes'], REAP_CALL_TIMEOUT_MS).catch((error: unknown) => ({
     code: -1,
     stdout: '',
     stderr: String(error),
   }))
+  if (outcome.code === 0) await rm(commandBootFile(project), { force: true }).catch(() => {})
+  return outcome
 }

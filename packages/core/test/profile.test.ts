@@ -2,6 +2,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parse as parseYamlConfig } from 'yaml'
 import { expect, test } from 'vitest'
 import { ProfileValidationError, loadProfile, validateProfileConfig } from '../src/index.js'
 
@@ -725,6 +726,57 @@ test('app.boot.build.timeout bounds the image build, and is held to being a dura
 
   writeFileSync(join(dir, 'config.yml'), withBoot('boot: { compose: compose.qa.yaml, service: admin, build: { context: . } }'))
   expect((await profileError(() => loadProfile(dir))).field).toBe('app.boot.build.context')
+})
+
+/** The fixture's config booted by a command (#379): no stubs, since a command boot runs one service. */
+function commandConfig(boot: string): string {
+  const config = fixtureConfig().replace('boot: { compose: compose.qa.yaml, service: admin }', boot)
+  return config.replace(/^stubs:\n(?: {2}.*\n)+/m, 'stubs: []\n')
+}
+
+test('app.boot may name a command, an image and a port in place of a compose file (#379)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), commandConfig('boot: { command: "npm start", image: "node:22", port: 3000 }'))
+  expect((await loadProfile(dir)).app?.boot).toEqual({ command: 'npm start', image: 'node:22', port: 3000 })
+
+  writeFileSync(join(dir, 'config.yml'), commandConfig('boot: { command: "npm start", image: "node:22", port: 3000, build: { timeout: 25m } }'))
+  expect((await loadProfile(dir)).app?.boot).toEqual({ command: 'npm start', image: 'node:22', port: 3000, build: { timeout: '25m' } })
+
+  // A command boot needs no stubs directory: it has no stubs to keep there.
+  rmSync(join(dir, 'stubs'), { recursive: true, force: true })
+  expect((await loadProfile(dir)).app?.boot).toMatchObject({ command: 'npm start' })
+})
+
+test('a command boot is refused when it is incomplete, mixed with compose, or badly formed (#379)', async () => {
+  const dir = copiedProfile()
+  const refused = async (boot: string): Promise<ProfileValidationError> => {
+    writeFileSync(join(dir, 'config.yml'), commandConfig(boot))
+    return profileError(() => loadProfile(dir))
+  }
+  expect((await refused('boot: { command: "npm start", port: 3000 }')).field).toBe('app.boot.image')
+  expect((await refused('boot: { command: "npm start", image: "node:22" }')).field).toBe('app.boot.port')
+  expect((await refused('boot: { command: "", image: "node:22", port: 3000 }')).field).toBe('app.boot.command')
+  expect((await refused('boot: { command: "npm start", image: "node 22", port: 3000 }')).field).toBe('app.boot.image')
+  for (const port of ['0', '65536', '3000.5', '"3000"'])
+    expect((await refused(`boot: { command: "npm start", image: "node:22", port: ${port} }`)).field).toBe('app.boot.port')
+  const mixed = await refused('boot: { command: "npm start", image: "node:22", port: 3000, compose: compose.qa.yaml }')
+  expect(mixed.field).toBe('app.boot')
+  expect(mixed.message).toContain('either compose and service, or command, image and port')
+  expect((await refused('boot: { command: "npm start", image: "node:22", port: 3000, service: web }')).field).toBe('app.boot')
+  expect((await refused('boot: { command: "npm start", image: "node:22", port: 3000, user: root }')).field).toBe('app.boot.user')
+})
+
+test('a command boot takes no stubs: a stub is a compose service beside the app (#379)', () => {
+  const config = parseYamlConfig(fixtureConfig().replace('boot: { compose: compose.qa.yaml, service: admin }', 'boot: { command: "npm start", image: "node:22", port: 3000 }'))
+  try {
+    validateProfileConfig(config)
+  } catch (error) {
+    expect(error).toBeInstanceOf(ProfileValidationError)
+    expect((error as ProfileValidationError).field).toBe('stubs')
+    expect((error as ProfileValidationError).message).toContain('compose')
+    return
+  }
+  throw new Error('expected a command boot with stubs to be refused')
 })
 
 /** The fixture's config with its one suite replaced by the given YAML entry (#376). */
