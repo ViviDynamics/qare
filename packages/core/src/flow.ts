@@ -22,7 +22,7 @@ import { totpCode, totpWindow, windowRemaining } from './totp.js'
  * driver that declares the same set; the driver resolves element references
  * against the page, and nothing here names a selector.
  */
-export type FlowElement = { role: string; name: string; at?: string } | { testId: string }
+export type FlowElement = { role: string; name: string; at?: string; page?: string } | { testId: string }
 
 export type FlowAction =
   | { action: 'open'; url: string }

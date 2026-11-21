@@ -668,6 +668,7 @@ function parseFlowElement(value: unknown, base: string): FlowElement {
     if (hasRole || hasName)
       fail(base, 'an element reference is a test id or a role with its accessible name, not both')
     if (value.at !== undefined) fail(`${base}.at`, 'a test-id reference carries no snapshot path: a test id needs no repair')
+    if (value.page !== undefined) fail(`${base}.page`, 'a test-id reference names no explored page: a snapshot shows roles and names, never a test id')
     return { testId: nonEmptyString(value.testId, `${base}.testId`, 'test id') }
   }
   if (!hasRole || !hasName)
@@ -694,11 +695,39 @@ function parseFlowElement(value: unknown, base: string): FlowElement {
     if (terminal.role !== role || terminal.name !== name)
       fail(`${base}.at`, 'a snapshot path ends on the element the reference names: its last role and accessible name must match the role and accessible name beside it')
   }
+  // The explored page the element was read from (#377): a path on the app,
+  // because the run boots the app on a port of its own.
+  const page = value.page === undefined ? undefined : explorePage(value.page, `${base}.page`)
   return {
     role,
     name,
     ...(at === undefined ? {} : { at }),
+    ...(page === undefined ? {} : { page }),
   }
+}
+
+const MAX_PAGE_LENGTH = 512
+
+/**
+ * A page an element was read from while the planner explored (#377): the
+ * path and query of a URL on the app, starting with one `/`, with no space,
+ * control character or fragment. Never an origin: the run boots the app on a
+ * port of its own, and a page elsewhere is not a page of the app.
+ */
+export function isExplorePage(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length <= MAX_PAGE_LENGTH &&
+    value.startsWith('/') &&
+    !value.startsWith('//') &&
+    !/[\s#\x00-\x1f\x7f\\]/.test(value)
+  )
+}
+
+function explorePage(value: unknown, field: string): string {
+  if (!isExplorePage(value))
+    fail(field, `an explored page is a path on the app, such as /settings, starting with one "/", at most ${MAX_PAGE_LENGTH} characters, with no space or fragment`)
+  return value
 }
 
 function parseInferred(value: unknown, field: string): boolean | undefined {

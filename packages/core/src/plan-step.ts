@@ -567,6 +567,7 @@ function planSchemaOver(checkKinds: string[], kinds: string[]) {
                           name: { type: 'string' },
                           testId: { type: 'string' },
                           at: { type: 'string' },
+                          page: { type: 'string' },
                         },
                       },
                       value: { type: 'string' },
