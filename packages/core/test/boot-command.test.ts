@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, test } from 'vitest'
-import { bootApp, loadProfile, stopApp, type QaProfile, type RunIsolation } from '../src/index.js'
+import { bootApp, loadProfile, reapProjects, stopApp, type QaProfile, type RunIsolation } from '../src/index.js'
 
 const fixtureDir = new URL('../fixtures/qa-valid/.qa', import.meta.url)
 
@@ -126,4 +126,17 @@ test('a command boot with no isolation to stop has nothing a down could address 
   const { calls, runCompose } = recorder()
   await stopApp(await commandProfile(), { runCompose })
   expect(calls).toEqual([])
+})
+
+test('reaping a command boot downs its project and removes the file the run wrote for it (#379)', async () => {
+  const run = isolation()
+  const file = join(tmpdir(), `${run.project}.compose.json`)
+  const { calls, runCompose } = recorder()
+  await bootApp(await commandProfile(), { runCompose, probe: async () => ({ ok: true }), pollIntervalMs: 1, isolation: run, root: await checkout() })
+  expect(existsSync(file)).toBe(true)
+  calls.length = 0
+  const outcome = await reapProjects({ projects: [run.project], runCompose })
+  expect(outcome).toEqual({ reaped: [run.project], failures: [] })
+  expect(calls.map((call) => call.args)).toEqual([['-p', run.project, 'down', '--volumes']])
+  expect(existsSync(file)).toBe(false)
 })

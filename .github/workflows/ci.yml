@@ -91,12 +91,21 @@ jobs:
         run: docker build -f images/core/Dockerfile -t qare-core:ci .
       - name: Boot the example compose app through the pipeline's execute steps
         run: scripts/compose-boot.sh qare-core:ci
+      # The same steps against an app booted from a start command in a stock
+      # image, with no compose file (#379). The compose app's evidence is
+      # set aside first, so both are uploaded.
+      - name: Boot the example command app through the pipeline's execute steps
+        run: |
+          mv evidence evidence-compose-app
+          scripts/compose-boot.sh qare-core:ci examples/command-app
       - name: Upload the run's evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: compose-boot-evidence
-          path: evidence/
+          path: |
+            evidence/
+            evidence-compose-app/
           if-no-files-found: ignore
 
   # A real mail catcher (#65): the pipeline's execute steps run against

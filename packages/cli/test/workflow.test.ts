@@ -847,5 +847,15 @@ test("CI boots a compose app through the pipeline's own execute steps (#209)", (
     expect(script).toMatch(new RegExp(`step ["']${name}["']`))
     expect(execute).toContain(`- name: ${name}\n`)
   }
-  expect(script).toContain('PROFILE=examples/compose-app/.qa')
+  expect(script).toContain('example="${2:-examples/compose-app}"')
+  expect(script).toContain('PROFILE="$example/.qa"')
+})
+
+test("CI boots an app from a start command through the same execute steps (#379)", () => {
+  const ci = readFileSync(join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8')
+  expect(ci).toContain('scripts/compose-boot.sh qare-core:ci examples/command-app')
+  const config = readFileSync(join(repoRoot, 'examples', 'command-app', '.qa', 'config.yml'), 'utf8')
+  expect(config).toMatch(/boot: \{ command: .*, image: .*, port: \d+ \}/)
+  // No compose file: the run writes the project the command boots as.
+  expect(existsSync(join(repoRoot, 'examples', 'command-app', 'compose.yaml'))).toBe(false)
 })
