@@ -13,6 +13,7 @@ import './source.mjs'
 // model fixture on loopback. Scratch is restricted to .qa/checks/scratch.
 
 const { NareAgentRunner } = await import('../../packages/core/src/runner.ts')
+const root = fileURLToPath(new URL('../../', import.meta.url))
 const scratch = fileURLToPath(new URL('./scratch/', import.meta.url))
 mkdirSync(scratch, { recursive: true })
 
@@ -86,7 +87,18 @@ async function runner() {
 async function nare() {
   const found = spawnSync('nare', ['--version'], { encoding: 'utf8' })
   assert.equal(found.status, 0, 'nare is not installed here, so its real CLI cannot be exercised')
-  console.log(`nare: ${found.stdout.trim()}`)
+  // Which image this is and which nare it ships: the image's own record, and
+  // the nare on PATH held to the version the checkout's core image pins.
+  const record = '/opt/qare/config/IMAGE.json'
+  assert.ok(existsSync(record), `${record} is missing, so this is not a qare image`)
+  const image = JSON.parse(readFileSync(record, 'utf8'))
+  const pinned = /nare\/releases\/download\/([^/]+)\//.exec(readFileSync(join(root, 'images/core/Dockerfile'), 'utf8'))?.[1]
+  const where = spawnSync('sh', ['-c', 'command -v nare'], { encoding: 'utf8' }).stdout.trim()
+  console.log(`image record ${record}: ${JSON.stringify({ name: image.name, flavour: image.flavour, qare: image.qare, nare: image.nare })}`)
+  console.log(`nare on PATH: ${where}, ${found.stdout.trim()}; images/core/Dockerfile pins ${pinned}; QARE_CONTAINER=${process.env.QARE_CONTAINER}`)
+  if (image.flavour !== 'core') console.log(`the ${image.flavour} image is built FROM the core image (images/${image.flavour}/Dockerfile), so its nare is the core image's`)
+  assert.equal(image.nare, pinned)
+  assert.ok(found.stdout.includes(pinned))
   let replies = []
   let requests = []
   const server = createServer(async (request, response) => {
@@ -140,7 +152,59 @@ async function nare() {
   }
 }
 
-const checks = { runner, nare }
+async function ci() {
+  // CI's images job builds the core image from the checkout and runs
+  // scripts/nare-compat.mjs inside it; that script carries the large prompt case.
+  const { parse } = await import('yaml')
+  const workflow = parse(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8'))
+  const steps = workflow.jobs.images.steps
+  const build = steps.find((step) => step.name === 'Build the core image')
+  const compat = steps.find((step) => step.name === 'Exercise the installed nare through qare')
+  console.log(`ci.yml images job: ${build.name}: ${build.run}`)
+  console.log(`ci.yml images job: ${compat.name}: ${compat.run}`)
+  assert.match(build.run, /docker build -f images\/core\/Dockerfile -t qare-core:ci \./)
+  assert.match(compat.run, /docker run --rm -i qare-core:ci node --input-type=module < scripts\/nare-compat\.mjs/)
+  assert.ok(steps.indexOf(build) < steps.indexOf(compat))
+  const script = readFileSync(join(root, 'scripts/nare-compat.mjs'), 'utf8')
+  const lines = script.split('\n').map((line, at) => `${at + 1}: ${line.trim()}`)
+  for (const needle of ['> 131071', 'const big = await wide.run', 'assert.equal(userText(), large + suffix)', "assert.equal(narrow.stopReason, 'context')", 'PASS: a prompt past'])
+    console.log(`scripts/nare-compat.mjs ${lines.find((line) => line.includes(needle)) ?? `missing: ${needle}`}`)
+  for (const needle of ['> 131071', 'assert.equal(userText(), large + suffix)', "assert.equal(narrow.stopReason, 'context')"]) assert.ok(script.includes(needle), needle)
+}
+
+async function citations() {
+  // No source, workflow, script or doc still cites nare#29 as a limit: every
+  // file under these roots is searched, and any hit is printed and fails.
+  const { readdirSync, statSync } = await import('node:fs')
+  const tag = ['nare', '#29'].join('')
+  const self = fileURLToPath(import.meta.url)
+  const roots = ['packages', '.github', 'docs', 'scripts', 'images', '.qa', 'README.md', 'AGENTS.md', 'CONSTITUTION.md']
+  const files = []
+  const walk = (path) => {
+    if (/(^|\/)(node_modules|dist|scratch)(\/|$)/.test(path)) return
+    if (statSync(path).isDirectory()) for (const entry of readdirSync(path)) walk(join(path, entry))
+    else files.push(path)
+  }
+  for (const r of roots) if (existsSync(join(root, r))) walk(join(root, r))
+  const hits = []
+  for (const file of files) {
+    if (file === self) continue
+    readFileSync(file, 'utf8').split('\n').forEach((line, at) => {
+      if (line.includes(tag) || /MAX_ARG_BYTES|can carry on Linux|argument budget/.test(line)) hits.push(`${file.slice(root.length)}:${at + 1}: ${line.trim()}`)
+    })
+  }
+  console.log(`searched ${files.length} files under ${roots.join(', ')} for ${tag}, MAX_ARG_BYTES, "can carry on Linux" and "argument budget"`)
+  console.log(`hits: ${hits.length}`)
+  for (const hit of hits) console.log(hit)
+  for (const [file, needle] of [['packages/core/src/runner.ts', '--prompt-file'], ['.github/workflows/pipeline.yml', 'reaches nare by file (#401)'], ['docs/pipeline.md', 'reaches nare by file'], ['docs/images.md', '--prompt-file']]) {
+    const line = readFileSync(join(root, file), 'utf8').split('\n').findIndex((text) => text.includes(needle))
+    console.log(`${file}:${line + 1} carries "${needle}"`)
+    assert.ok(line >= 0)
+  }
+  assert.equal(hits.length, 0)
+}
+
+const checks = { runner, nare, ci, citations }
 const name = process.argv[2]
 assert.ok(name in checks, `check is one of ${Object.keys(checks).join(', ')}`)
 await checks[name]()
