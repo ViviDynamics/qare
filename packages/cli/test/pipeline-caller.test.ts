@@ -455,13 +455,14 @@ test('the documented caller fits the interface and pins the current release', ()
     expect(id).toBe('qare')
   }
   // The promise the issue makes is the smallest caller: a calling job of
-  // about ten lines, in a workflow file a little longer.
+  // about ten lines, in a workflow file a little longer. The file holds the
+  // concurrency group too (#374), so a superseded run is cancelled.
   const sizes = callers.map((block) => {
     const lines = block.split('\n').filter((line) => line.trim() !== '')
     return { file: lines.length, job: lines.length - lines.indexOf('  qare:') }
   })
   expect(Math.min(...sizes.map((size) => size.job))).toBeLessThanOrEqual(12)
-  expect(Math.min(...sizes.map((size) => size.file))).toBeLessThanOrEqual(16)
+  expect(Math.min(...sizes.map((size) => size.file))).toBeLessThanOrEqual(19)
   // Every input and every secret is documented by name.
   for (const name of [...Object.keys(call.inputs), ...Object.keys(call.secrets)]) expect(doc).toContain(`\`${name}\``)
 })

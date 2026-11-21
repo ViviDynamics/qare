@@ -1,6 +1,7 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
 import { parse } from 'yaml'
 import { INIT_WORKFLOW_PATH, InitError, VERSION, callerWorkflow, loadProfile, planInit, readinessInventory } from '../src/index.js'
@@ -61,7 +62,9 @@ test('a repository with a compose file gets a profile that boots its application
   // The service built from the repository, not the database beside it, and
   // the health check its own healthcheck asks for, on the port it publishes.
   expect(profile.app?.boot).toEqual({ compose: 'docker-compose.yml', service: 'web' })
-  expect(profile.app?.health).toEqual({ http: url('http', 'localhost:8080/up'), timeout: '120s' })
+  // The port is the run's own (#374): each run publishes the app on a port it
+  // allocates, so a number read from the compose file names no run's app.
+  expect(profile.app?.health).toEqual({ http: url('http', 'localhost:{{run.app_port}}/up'), timeout: '120s' })
   expect(profile.stubs).toEqual([
     { service: 'api-billing-vendor-example', hosts: ['api.billing-vendor.example'], provided_by: { compose_service: 'api-billing-vendor-example-stub' } },
     { service: 'smtp-mail-vendor-example', hosts: ['smtp.mail-vendor.example'], provided_by: { compose_service: 'smtp-mail-vendor-example-stub' } },
@@ -92,8 +95,27 @@ test('a health URL init had to guess is marked for a person to confirm', async (
   const repo = await repoWith({ 'compose.yaml': 'services:\n  api:\n    image: api:latest\n' })
   const plan = await planInit(repo)
   const config = plan.profile.find((file) => file.path === '.qa/config.yml')?.content ?? ''
-  expect(config).toContain(`http: ${JSON.stringify(url('http', 'localhost:3000/'))}`)
-  expect(config).toContain('TODO(qare init): the service "api" publishes no port: publish one, and correct the health URL')
+  expect(config).toContain(`http: ${JSON.stringify(url('http', 'localhost:{{run.app_port}}/'))}`)
+  expect(config).toContain(
+    'TODO(qare init): the service "api" publishes no port, and each run publishes the app on its own: in compose.yaml give it ports: ["127.0.0.1:${QARE_APP_PORT:-3000}:3000"], then remove this line',
+  )
+})
+
+test('a fixed published port is named with the compose change that puts the app on the run port (#374)', async () => {
+  const repo = await repoWith({
+    'compose.yaml': `services:\n  web:\n    build: .\n    ports: ["8080:3000"]\n    healthcheck: { test: "curl -f ${url('http', 'localhost:3000/up')}" }\n`,
+  })
+  await write(repo, await planInit(repo))
+  expect((await loadProfile(join(repo, '.qa'))).app?.health.http).toBe(url('http', 'localhost:{{run.app_port}}/up'))
+  expect((await readinessInventory(repo)).gaps).toContain(
+    '.qa/config.yml is not filled in: the service "web" publishes the fixed port 8080, and each run publishes the app on its own: in compose.yaml give it ports: ["127.0.0.1:${QARE_APP_PORT:-8080}:3000"], then remove this line',
+  )
+  // A port the run hands to compose needs no change, with or without a default.
+  for (const ports of ['["${QARE_APP_PORT}:3000"]', '["127.0.0.1:${QARE_APP_PORT:-4000}:3000"]', '[{ target: 3000, published: "${QARE_APP_PORT:-4000}" }]']) {
+    const own = await repoWith({ 'compose.yaml': `services:\n  web:\n    build: .\n    ports: ${ports}\n` })
+    const config = (await planInit(own)).profile[0]?.content ?? ''
+    expect(config, ports).not.toContain('TODO(qare init): the service')
+  }
 })
 
 test('the health URL keeps the scheme the healthcheck asks with', async () => {
@@ -101,7 +123,7 @@ test('the health URL keeps the scheme the healthcheck asks with', async () => {
     'compose.yaml': `services:\n  web:\n    ports: ["8443:8443"]\n    healthcheck: { test: "curl -kf ${url('https', 'localhost:8443/up')}" }\n`,
   })
   await write(repo, await planInit(repo))
-  expect((await loadProfile(join(repo, '.qa'))).app?.health.http).toBe(url('https', 'localhost:8443/up'))
+  expect((await loadProfile(join(repo, '.qa'))).app?.health.http).toBe(url('https', 'localhost:{{run.app_port}}/up'))
 })
 
 test('a target profile that is already there holds, whatever compose file lies beside it', async () => {
@@ -125,7 +147,7 @@ test('the application service can be named, and a name the compose file does not
   )
 })
 
-test('the suites init recognises are written as suites', async () => {
+test('the suites init recognises run inside the booted service, where their runtime is (#374)', async () => {
   const repo = await composeRepo({
     'playwright.config.ts': 'export default {}\n',
     'features/checkout/pay.feature': 'Feature: pay\n',
@@ -133,15 +155,19 @@ test('the suites init recognises are written as suites', async () => {
     'spec/system/login_spec.rb': '# spec\n',
   })
   await write(repo, await planInit(repo))
+  // The run image has no npm, Ruby or project dependencies: the service does.
+  const exec = 'docker compose -p qare-{{run.id}} -f docker-compose.yml exec -T web'
   expect((await loadProfile(join(repo, '.qa'))).suites).toEqual([
-    { name: 'cucumber', command: 'bundle exec cucumber', kind: 'command' },
-    { name: 'playwright', command: 'npx playwright test', kind: 'command' },
-    { name: 'rspec-system', command: 'bundle exec rspec spec/system', kind: 'command' },
+    { name: 'cucumber', command: `${exec} bundle exec cucumber`, kind: 'command' },
+    { name: 'playwright', command: `${exec} npx playwright test`, kind: 'command' },
+    { name: 'rspec-system', command: `${exec} bundle exec rspec spec/system`, kind: 'command' },
   ])
   // Without a Gemfile, Cucumber is the JavaScript one.
-  const js = await repoWith({ 'compose.yml': 'services:\n  web: {}\n', 'features/a.feature': 'Feature: a\n' })
+  const js = await repoWith({ 'compose.yml': 'services:\n  app: {}\n', 'features/a.feature': 'Feature: a\n' })
   await write(js, await planInit(js))
-  expect((await loadProfile(join(js, '.qa'))).suites).toEqual([{ name: 'cucumber', command: 'npx cucumber-js', kind: 'command' }])
+  expect((await loadProfile(join(js, '.qa'))).suites).toEqual([
+    { name: 'cucumber', command: 'docker compose -p qare-{{run.id}} -f compose.yml exec -T app npx cucumber-js', kind: 'command' },
+  ])
 })
 
 test('a repository with no compose file gets a target profile from the URL it is given', async () => {
@@ -174,7 +200,7 @@ test('a health path that is named is written, and is not left for a person to co
 
   const booted = await composeRepo()
   await write(booted, await planInit(booted, { health: '/healthz' }))
-  expect((await loadProfile(join(booted, '.qa'))).app?.health.http).toBe(url('http', 'localhost:8080/healthz'))
+  expect((await loadProfile(join(booted, '.qa'))).app?.health.http).toBe(url('http', 'localhost:{{run.app_port}}/healthz'))
   await expect(planInit(booted, { health: 'healthz' })).rejects.toThrow(/--health "healthz" is not a path/)
 })
 
@@ -227,6 +253,11 @@ test('the caller workflow pins this release, and re-queues refused pull requests
   expect(workflow.jobs.qare.with).toEqual({ 'nare-model': 'some-model' })
   expect(workflow.jobs.qare.secrets).toEqual({ 'model-key': '${{ secrets.OPENAI_API_KEY }}' })
   expect(workflow.on.push).toEqual({ branches: ['trunk'], paths: ['.qa/**'] })
+  // A newer push to a pull request supersedes the run of the older one (#374).
+  expect((parse(app.workflow.content) as { concurrency: unknown }).concurrency).toEqual({
+    group: 'qare-${{ github.event.pull_request.number || github.ref }}',
+    'cancel-in-progress': true,
+  })
   expect(app.secret).toBe('OPENAI_API_KEY')
 
   // A branch or a model named like a YAML keyword or a number stays a string.
@@ -240,4 +271,27 @@ test('the caller workflow pins this release, and re-queues refused pull requests
   // What is written into a workflow file is never taken as YAML of its own.
   expect(() => callerWorkflow({ model: 'a\nb: c' })).toThrow(InitError)
   expect(() => callerWorkflow({ model: 'm', requeue: { branch: 'a b' } })).toThrow(InitError)
+})
+
+test('the profile init writes for a compose example runs as written: readiness names only what a person knows (#374)', async () => {
+  const examples = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'examples')
+  for (const example of ['compose-app', 'mail-app']) {
+    const repo = await mkdtemp(join(tmpdir(), `qare-init-${example}-`))
+    await cp(join(examples, example), repo, { recursive: true, filter: (source) => !source.split(sep).includes('.qa') })
+    await write(repo, await planInit(repo))
+    const profile = await loadProfile(join(repo, '.qa'))
+    expect(profile.app?.health.http, example).toBe(url('http', 'localhost:{{run.app_port}}/'))
+    // Every gap is a TODO(qare init) line only a person can fill, or the
+    // compose file's own missing healthcheck, which the profile does not need:
+    // nothing about booting, the port, the stubs or the suites.
+    expect((await readinessInventory(repo)).gaps, example).toEqual([
+      '.qa/QA.md is not filled in: say what this app is, in a sentence or two',
+      '.qa/QA.md is not filled in: say what matters most, so the planner knows what a regression would cost',
+      '.qa/QA.md is not filled in: list the pages the flow and visual checks should cover',
+      '.qa/QA.md is not filled in: say how to sign in, or that there is no login',
+      '.qa/config.yml is not filled in: name the command that seeds the QA data, in place of "true"',
+      '.qa/config.yml is not filled in: describe the user QA signs in as in .qa/fixtures/users.yml, and name its role here',
+      ...(example === 'compose-app' ? ['service "web" in ./compose.yaml has no healthcheck'] : ['service "mailpit" in ./compose.yaml has no healthcheck', 'service "web" in ./compose.yaml has no healthcheck']),
+    ])
+  }
 })

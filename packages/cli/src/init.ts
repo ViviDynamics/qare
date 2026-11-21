@@ -163,7 +163,9 @@ export async function initCommand(argv: string[], out: Writer, err: Writer, deps
     const inventory = await readinessInventory(repo)
     const steps = [
       ...inventory.gaps,
-      ...(caller === undefined ? [`add the repository secret ${plan.secret}: the workflow reads the model key from it`] : []),
+      ...(caller === undefined
+        ? [`add the repository secret ${plan.secret}, which the workflow reads the model key from: gh secret set ${plan.secret}`]
+        : []),
     ]
     out.write('next steps\n')
     for (const step of steps) out.write(`- ${step}\n`)
