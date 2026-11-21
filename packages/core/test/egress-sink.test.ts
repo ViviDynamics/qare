@@ -30,7 +30,7 @@ async function sink(hosts: Record<string, string>, lines: string[], maxEntries?:
     hosts,
     port: 0,
     bind: '127.0.0.1',
-    resolveService: async (service) => (service === 'billing-stub' ? ['10.1.2.3'] : service === 'mail-stub' ? ['10.1.2.4', '10.1.2.5'] : []),
+    resolveService: async (service) => (service === 'billing-stub' ? ['192.0.2.13'] : service === 'mail-stub' ? ['192.0.2.14', '192.0.2.15'] : []),
     write: (line) => lines.push(line),
     ...(maxEntries === undefined ? {} : { maxEntries }),
   })
@@ -43,14 +43,14 @@ describe('the DNS sink of a contained stack (#382)', () => {
     const lines: string[] = []
     const started = await sink({ 'api.billing-vendor.example': 'billing-stub' }, lines)
     const answer = await ask(started.port, query('API.Billing-Vendor.example'))
-    expect(answer).toEqual({ id: 0x1234, rcode: 0, addresses: ['10.1.2.3'] })
+    expect(answer).toEqual({ id: 0x1234, rcode: 0, addresses: ['192.0.2.13'] })
     expect(lines.map((line) => JSON.parse(line))).toEqual([{ event: 'lookup', host: 'api.billing-vendor.example', declared: true }])
   })
 
   test('a wildcard stub answers one label under it, and nothing deeper', async () => {
     const lines: string[] = []
     const started = await sink({ '*.mail.example': 'mail-stub' }, lines)
-    expect((await ask(started.port, query('smtp.mail.example'))).addresses).toEqual(['10.1.2.4', '10.1.2.5'])
+    expect((await ask(started.port, query('smtp.mail.example'))).addresses).toEqual(['192.0.2.14', '192.0.2.15'])
     expect((await ask(started.port, query('a.b.mail.example'))).rcode).toBe(3)
   })
 
@@ -101,7 +101,7 @@ describe('reading the sink record back (#382)', () => {
   test('keeps the lookups and drops whatever is not the sink speaking', () => {
     const record = parseSinkRecord(
       [
-        '{"event":"ready","address":"10.9.0.2"}',
+        '{"event":"ready","address":"192.0.2.2"}',
         '{"event":"lookup","host":"api.stripe.com","declared":false}',
         'not json',
         '{"event":"lookup","host":"Bad Host","declared":false}',
@@ -110,7 +110,7 @@ describe('reading the sink record back (#382)', () => {
       ].join('\n'),
     )
     expect(record).toEqual({
-      address: '10.9.0.2',
+      address: '192.0.2.2',
       lookups: [
         { host: 'api.stripe.com', declared: false },
         { host: 'api.billing-vendor.example', declared: true },

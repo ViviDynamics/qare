@@ -10,7 +10,7 @@ import { NO_EGRESS_IMAGE } from '../src/stack-egress.js'
 
 const HEALTH_URL = ['http:', '//localhost:3000/up'].join('')
 const IMAGE = 'ghcr.io/vividynamics/qare-core:2026.11.21'
-const READY = '{"event":"ready","address":"10.9.0.2","port":53}'
+const READY = '{"event":"ready","address":"192.0.2.2","port":53}'
 const lookup = (host: string, declared: boolean): string => JSON.stringify({ event: 'lookup', host, declared })
 
 const PROFILE: QaProfile = {

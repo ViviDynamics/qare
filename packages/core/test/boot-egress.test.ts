@@ -32,7 +32,7 @@ const CONFIG = JSON.stringify({
     'billing-stub': { networks: { default: null } },
   },
 })
-const READY = '{"event":"ready","address":"10.9.0.2","port":53}\n'
+const READY = '{"event":"ready","address":"192.0.2.2","port":53}\n'
 
 interface Call {
   args: string[]
@@ -74,7 +74,7 @@ test('a stack boots contained: read, its resolver started alone, then the stack 
   ])
   // The resolver is handed the stub map; every service resolves through it.
   expect(calls[2]?.files[first]).toContain('"egress-dns","--host","api.billing-vendor.example=billing-stub"')
-  expect(calls[4]?.files[second]).toContain('dns: !override ["10.9.0.2"]')
+  expect(calls[4]?.files[second]).toContain('dns: !override ["192.0.2.2"]')
   // The down names the overrides, so the resolver and the relay go with the stack.
   calls.length = 0
   await stopApp(await profile(), { runCompose, isolation: run })
@@ -141,7 +141,7 @@ test('a command boot is contained like any compose boot, and its down and reap t
 test('the record is read back from the resolver log, and a log that is not its log is no record (#382)', async () => {
   const run = isolation()
   const { calls, runCompose } = recorder({ logs: [`${READY}{"event":"lookup","host":"api.stripe.com","declared":false}\n`] })
-  expect(await readStackEgress(run, { runCompose })).toEqual({ address: '10.9.0.2', lookups: [{ host: 'api.stripe.com', declared: false }], capped: false })
+  expect(await readStackEgress(run, { runCompose })).toEqual({ address: '192.0.2.2', lookups: [{ host: 'api.stripe.com', declared: false }], capped: false })
   expect(calls[0]?.args).toEqual(['-p', run.project, 'logs', '--no-color', '--no-log-prefix', EGRESS_DNS_SERVICE])
   expect(await readStackEgress(run, { runCompose: recorder({ logs: ['no such service'] }).runCompose })).toBeUndefined()
   expect(await readStackEgress(run, { runCompose: async () => ({ code: 1, stdout: READY, stderr: '' }) })).toBeUndefined()

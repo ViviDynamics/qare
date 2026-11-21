@@ -50,9 +50,9 @@ describe('the containment of a booted stack (#382)', () => {
   })
 
   test('the second override points every service of the stack at the sink, replacing any resolver it named', () => {
-    const text = dnsOverride(['web', 'mailpit'], '10.9.0.2')
+    const text = dnsOverride(['web', 'mailpit'], '192.0.2.2')
     const override = parse(text, { logLevel: 'error' })
-    expect(override).toEqual({ services: { web: { dns: ['10.9.0.2'] }, mailpit: { dns: ['10.9.0.2'] } } })
+    expect(override).toEqual({ services: { web: { dns: ['192.0.2.2'] }, mailpit: { dns: ['192.0.2.2'] } } })
     expect(text).toContain('dns: !override')
   })
 
