@@ -94,6 +94,18 @@ export interface BootOutcome {
    * boot that booted no stack.
    */
   egress?: StackEgress
+  /**
+   * Each service of a stack that did not come up (#407), with the last
+   * lines of its log, read before anything took the stack down. Absent when
+   * the boot came up or nothing of the stack could be read.
+   */
+  services?: ServiceLog[]
+  /**
+   * What a contained stack that did not come up looked up before it failed
+   * (#407), read from its resolver before anything took it down. Absent when
+   * the stack was not contained or its record could not be read.
+   */
+  lookups?: SinkRecord
 }
 
 /** How a booted stack's egress was held (#382). */
@@ -166,6 +178,8 @@ export interface BootOpts {
   egressImage?: string
   /** How long the stack's resolver has to say where it answers (#382); 30 seconds by default. */
   egressReadyTimeoutMs?: number
+  /** How long each `ps` or `logs` call reading a failed stack's services may take (#407); 15 seconds by default. */
+  serviceLogTimeoutMs?: number
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 500
@@ -612,6 +626,120 @@ export async function readStackEgress(isolation: RunIsolation, opts: Pick<BootOp
   }
 }
 
+/**
+ * One service of a stack that did not come up (#407): its state as compose
+ * says (`running`, `exited`, `restarting`, ...), its exit code and health
+ * when compose gives them, and the last lines of its log.
+ */
+export interface ServiceLog {
+  service: string
+  state: string
+  exitCode?: number
+  health?: string
+  log: string
+}
+
+/** How many lines of each service's log a failed boot keeps (#407). */
+export const SERVICE_LOG_LINES = 200
+/** The most services a failed boot reads logs for: a stack is bounded like any other evidence. */
+const MAX_SERVICE_LOGS = 32
+/** How long one `ps` or `logs` call of the capture may take before the capture goes on without it. */
+const DEFAULT_SERVICE_LOG_TIMEOUT_MS = 15_000
+
+interface ServiceState {
+  service: string
+  state: string
+  exitCode?: number
+  health?: string
+}
+
+/**
+ * The services `compose ps -a --format json` lists, one entry per service:
+ * a compose that prints one object per line and one that prints an array
+ * are both read. A service with several containers is the one that failed,
+ * when one did. The run's own resolver and relay are not the stack's.
+ */
+export function parseComposePs(stdout: string): ServiceState[] {
+  const text = stdout.trim()
+  if (text === '') return []
+  let entries: unknown[] = []
+  try {
+    const parsed: unknown = JSON.parse(text)
+    entries = Array.isArray(parsed) ? parsed : [parsed]
+  } catch {
+    for (const line of text.split('\n')) {
+      try {
+        entries.push(JSON.parse(line))
+      } catch {
+        // A line that is not an object of compose's says nothing about a service.
+      }
+    }
+  }
+  const found = new Map<string, ServiceState>()
+  for (const entry of entries) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const record = entry as Record<string, unknown>
+    const service = record.Service
+    if (typeof service !== 'string' || service === '' || service === EGRESS_DNS_SERVICE || service === EGRESS_RELAY_SERVICE) continue
+    const state: ServiceState = {
+      service,
+      state: typeof record.State === 'string' && record.State !== '' ? record.State : 'unknown',
+      ...(typeof record.ExitCode === 'number' && Number.isInteger(record.ExitCode) ? { exitCode: record.ExitCode } : {}),
+      ...(typeof record.Health === 'string' && record.Health !== '' ? { health: record.Health } : {}),
+    }
+    const seen = found.get(service)
+    if (seen === undefined || (!serviceFailed(seen) && serviceFailed(state))) found.set(service, state)
+  }
+  return [...found.values()]
+}
+
+/** Whether a service did not come up (#407): exited with a code other than 0, unhealthy, or in any state but running. */
+export function serviceFailed(service: Pick<ServiceState, 'state' | 'exitCode' | 'health'>): boolean {
+  if (service.health === 'unhealthy') return true
+  if (service.state === 'running') return false
+  return !(service.state === 'exited' && service.exitCode === 0)
+}
+
+/** A call that may never settle, bounded: undefined when it did not answer in time or threw. */
+async function bounded<T>(call: () => Promise<T>, timeoutMs: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), timeoutMs)
+  })
+  try {
+    const started = call()
+    void started.catch(() => {})
+    return await Promise.race([started.catch(() => undefined), late])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Every service of a project that did not come up, with the last lines of
+ * its log (#407), read before anything takes the stack down. The project is
+ * addressed by name alone, as `compose logs` reads the resolver's record, so
+ * a stack booted from any overrides is read the same way. A capture that
+ * cannot read the stack returns nothing: it never stops the run.
+ */
+export async function captureServiceLogs(isolation: RunIsolation, opts: Pick<BootOpts, 'runCompose' | 'serviceLogTimeoutMs'> = {}): Promise<ServiceLog[]> {
+  const runCompose = opts.runCompose ?? defaultRunCompose
+  const timeoutMs = opts.serviceLogTimeoutMs ?? DEFAULT_SERVICE_LOG_TIMEOUT_MS
+  const env = composeEnv(isolation)
+  const listed = await bounded(() => runCompose(['-p', isolation.project, 'ps', '-a', '--format', 'json'], timeoutMs, env), timeoutMs)
+  if (listed === undefined || listed.code !== 0) return []
+  const services = parseComposePs(listed.stdout).slice(0, MAX_SERVICE_LOGS)
+  const captured: ServiceLog[] = []
+  for (const service of services) {
+    const logs = await bounded(
+      () => runCompose(['-p', isolation.project, 'logs', '--no-color', '--no-log-prefix', '--tail', String(SERVICE_LOG_LINES), service.service], timeoutMs, env),
+      timeoutMs,
+    )
+    captured.push({ ...service, log: logs === undefined ? '' : `${logs.stdout}${logs.stderr}` })
+  }
+  return captured
+}
+
 /** The containment overrides a stack was booted with (#382), the ones its down must name too. */
 function containmentFiles(project: string): string[] {
   return [containmentOverrideFile(project), dnsOverrideFile(project), relayOverrideFile(project)].filter((file) => existsSync(file))
@@ -938,8 +1066,18 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   if (unbuilt !== undefined) return { kind: 'blocked', ...unbuilt, isolation }
 
   // The stack's egress (#382): contained before anything of it starts.
+  // A stack that did not come up is read before anything takes it down
+  // (#407): each service's state and the last lines of its log, and when it
+  // was contained, what it looked up before it failed.
+  const failed = async (outcome: BootOutcome): Promise<BootOutcome> => {
+    const services = await captureServiceLogs(isolation, { runCompose, ...(opts.serviceLogTimeoutMs === undefined ? {} : { serviceLogTimeoutMs: opts.serviceLogTimeoutMs }) })
+    const lookups =
+      outcome.egress?.containment === 'contained' ? await bounded(() => readStackEgress(isolation, { runCompose }), opts.serviceLogTimeoutMs ?? DEFAULT_SERVICE_LOG_TIMEOUT_MS) : undefined
+    return { ...outcome, ...(services.length === 0 ? {} : { services }), ...(lookups === undefined ? {} : { lookups }) }
+  }
+
   const contained = await containStack(app, profile, opts, runCompose, isolation, env, timeoutMs)
-  if ('blocked' in contained) return { kind: 'blocked', reason: contained.blocked, logs: contained.logs, isolation }
+  if ('blocked' in contained) return failed({ kind: 'blocked', reason: contained.blocked, logs: contained.logs, isolation })
   const plain = app
   app = contained.app
   let egress = contained.egress
@@ -966,10 +1104,10 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   // A contained stack's relay starts once the stack is up, so the daemon can say where each service it carries to is (#408).
   if ('up' in booted && booted.up !== 'watchdog' && booted.up.code === 0 && contained.forwards !== undefined) {
     const relayed = await startStackRelay(app, contained.forwards, opts, runCompose, isolation, env)
-    if ('blocked' in relayed) return { kind: 'blocked', reason: relayed.blocked, logs: relayed.logs, isolation, egress }
+    if ('blocked' in relayed) return failed({ kind: 'blocked', reason: relayed.blocked, logs: relayed.logs, isolation, egress })
     if ('uncontained' in relayed) {
       const left = await abandonContainment(app, isolation, runCompose, env)
-      if (left !== undefined) return { kind: 'blocked', reason: `${relayed.uncontained}, and ${left.problem}`, logs: left.logs, isolation, egress }
+      if (left !== undefined) return failed({ kind: 'blocked', reason: `${relayed.uncontained}, and ${left.problem}`, logs: left.logs, isolation, egress })
       app = plain
       egress = { containment: 'uncontained', reason: relayed.uncontained }
       booted = await upStack(app)
@@ -979,6 +1117,8 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   const { up, started } = booted
 
   if (up === 'watchdog') {
+    // What the stack got as far as is read before the down is scheduled (#407).
+    const read = await failed({ kind: 'blocked', reason: 'boot watchdog: compose up exceeded the health deadline', logs: '', isolation, egress })
     // The losing branch is drained before the down: a compose up that is
     // still provisioning must not resurrect the project after the down has
     // run (#53). The default runner kills its child at the deadline, so the
@@ -991,30 +1131,30 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
     void Promise.race([started.then(() => undefined, () => undefined), drained]).then(() => {
       void stopApp(profile, { ...opts, isolation })
     })
-    return { kind: 'blocked', reason: 'boot watchdog: compose up exceeded the health deadline', logs: '', isolation, egress }
+    return read
   }
 
   if (up.code !== 0) {
     const logs = `${up.stdout}${up.stderr}`
-    return {
+    return failed({
       kind: 'blocked',
       reason: `compose up exited ${up.code}`,
       logs: logs || (await captureComposeLogs(app, opts, isolation)),
       isolation,
       egress,
-    }
+    })
   }
 
   if (await waitForHealth(app.health.http, timeoutMs, opts)) return { kind: 'up', logs: up.stdout, isolation, egress }
 
   const logs = `${up.stdout}${up.stderr}`
-  return {
+  return failed({
     kind: 'blocked',
     reason: `health check at ${app.health.http} did not pass within ${app.health.timeout}`,
     logs: logs || (await captureComposeLogs(app, opts, isolation)),
     isolation,
     egress,
-  }
+  })
 }
 
 /**

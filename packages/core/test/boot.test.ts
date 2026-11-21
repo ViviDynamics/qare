@@ -155,6 +155,8 @@ test('watchdog blocks compose up that outlives the health deadline and attempts 
       return new Promise<{ code: number; stdout: string; stderr: string }>(() => {})
     },
     pollIntervalMs: 1,
+    // The services are read before the down (#407); a compose that never answers is not waited on past this.
+    serviceLogTimeoutMs: 20,
   })
 
   expect(outcome).toEqual({
@@ -174,13 +176,14 @@ test('watchdog blocks compose up that outlives the health deadline and attempts 
     () => {
       expect(composeArgs).toEqual([
         ['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'up', '-d', '--wait', 'admin'],
+        ['-p', expect.stringMatching(/^qare-/), 'ps', '-a', '--format', 'json'],
         ['-p', expect.stringMatching(/^qare-/), '-f', 'compose.qa.yaml', 'down'],
       ])
     },
     { timeout: 5000 },
   )
   // The watchdog downs the very project the up booted (#53).
-  expect(composeArgs[1]?.[1]).toBe(composeArgs[0]?.[1])
+  expect(composeArgs[2]?.[1]).toBe(composeArgs[0]?.[1])
 })
 
 test('probe errors keep polling until the deadline', async () => {
