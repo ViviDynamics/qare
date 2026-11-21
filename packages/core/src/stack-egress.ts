@@ -158,7 +158,13 @@ export function containmentOf(config: ComposeConfig, opts: { image: string; stub
   return { kind: 'contained', override: `${lines.join('\n')}\n`, services: joined }
 }
 
-/** The second override: every service resolves through the sink, at the address it said it answers on. */
+/**
+ * The second override: every service resolves through the sink, at the
+ * address it said it answers on, with no search domain. A container takes
+ * the host's search domains by default, and a resolver that is told a name
+ * does not exist tries it again under each one, so the record would list
+ * the runner's own domain beside every refused name.
+ */
 export function dnsOverride(services: readonly string[], address: string): string {
-  return `services:\n${services.map((name) => `  ${flow(name)}:\n    dns: !override ${flow([address])}\n`).join('')}`
+  return `services:\n${services.map((name) => `  ${flow(name)}:\n    dns: !override ${flow([address])}\n    dns_search: !override ${flow(['.'])}\n`).join('')}`
 }

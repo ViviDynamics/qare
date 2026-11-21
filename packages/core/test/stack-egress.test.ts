@@ -52,8 +52,10 @@ describe('the containment of a booted stack (#382)', () => {
   test('the second override points every service of the stack at the sink, replacing any resolver it named', () => {
     const text = dnsOverride(['web', 'mailpit'], '192.0.2.2')
     const override = parse(text, { logLevel: 'error' })
-    expect(override).toEqual({ services: { web: { dns: ['192.0.2.2'] }, mailpit: { dns: ['192.0.2.2'] } } })
+    // No search domain either: the runner's own would turn one refused name into a second, the runner's (#382).
+    expect(override).toEqual({ services: { web: { dns: ['192.0.2.2'], dns_search: ['.'] }, mailpit: { dns: ['192.0.2.2'], dns_search: ['.'] } } })
     expect(text).toContain('dns: !override')
+    expect(text).toContain('dns_search: !override ["."]')
   })
 
   test('a service that shares another service network is contained by that one, and gets no network or resolver of its own', () => {
