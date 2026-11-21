@@ -23,6 +23,9 @@ Save this as `.github/workflows/qare.yml`:
 name: QARE
 on:
   pull_request:
+concurrency:
+  group: qare-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   qare:
     permissions:
@@ -42,11 +45,9 @@ That is the whole installation, beside the profile in `.qa/` that says how
 your application boots and what its suites are. `qare init` writes both: this
 workflow, pinned to the release of the qare that ran it, and a starting
 profile, and it lists what is left for you to fill in, ending with the
-`gh secret set` command for the model key the workflow reads. The workflow it
-writes also carries a concurrency group,
-`qare-${{ github.event.pull_request.number || github.ref }}` with
-`cancel-in-progress: true`, so a newer push to a pull request cancels the run
-of the older one instead of paying for both. It adds the push
+`gh secret set` command for the model key the workflow reads. The
+concurrency group lets a newer push to a pull request cancel the run of the
+older one instead of paying for both. It adds the push
 trigger described under "Triggers" when the profile boots an application.
 On GitHub-hosted runners, no extra runner setup is needed.
 
