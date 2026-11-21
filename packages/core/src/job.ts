@@ -5,6 +5,7 @@ import { isUnsafeProfileName, type QaProfile } from './profile.js'
 import { suiteFilterViolation } from './suite-filter.js'
 import { MAX_VISUAL_WIDTH, PlanValidationError, parseFlowActions, parseToolAssertions, parseToolArgs, type FlowActionStep, type ToolAssertion } from './plan.js'
 import { DEFAULT_PROFILE_NAME } from './monorepo.js'
+import { parseHttpFields, type HttpCheckFields } from './http-check.js'
 
 export type JobProfileRef = { path: string } | { inline: QaProfile }
 
@@ -94,7 +95,13 @@ export interface JobA11yCheck {
   timeoutMs?: number
 }
 
-export type JobCheck = JobCommandCheck | JobMailCheck | JobFlowCheck | JobToolCheck | JobVisualCheck | JobA11yCheck
+/** Sends one request to the app under test and judges the response by its matchers (#378). */
+export interface JobHttpCheck extends HttpCheckFields {
+  kind: 'http'
+  name?: string
+}
+
+export type JobCheck = JobCommandCheck | JobMailCheck | JobFlowCheck | JobToolCheck | JobVisualCheck | JobA11yCheck | JobHttpCheck
 
 export interface JobCriterion {
   id: string
@@ -417,8 +424,12 @@ function parseCheck(value: unknown, base: string): JobCheck {
   if (value.kind === 'tool') return parseToolCheck(value, base)
   if (value.kind === 'visual') return parseVisualCheck(value, base)
   if (value.kind === 'a11y') return parseA11yCheck(value, base)
+  if (value.kind === 'http') {
+    const name = value.name === undefined ? undefined : nonEmptyString(value.name, `${base}.name`, 'name')
+    return { kind: 'http', ...(name === undefined ? {} : { name }), ...parseHttpFields(value, base, fail) }
+  }
   if (value.kind !== 'command')
-    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(value.kind)} (job checks are command, mail, flow, tool, visual or a11y checks, expected "command", "mail", "flow", "tool", "visual" or "a11y")`)
+    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(value.kind)} (job checks are command, mail, flow, tool, visual, a11y or http checks, expected "command", "mail", "flow", "tool", "visual", "a11y" or "http")`)
   const run = nonEmptyString(value.run, `${base}.run`, 'run command')
   const cwd = value.cwd === undefined ? undefined : nonEmptyString(value.cwd, `${base}.cwd`, 'working directory')
   const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)

@@ -55,6 +55,20 @@ function runnable(check: PlanCheck): JobCheck | undefined {
         assert: check.assert,
         ...(check.timeoutMs === undefined ? {} : { timeoutMs: check.timeoutMs }),
       }
+    case 'http': {
+      // The request and its matchers travel as planned (#378).
+      const { kind, name, method, path, headers, body, timeoutMs, expect } = check
+      return {
+        kind,
+        name,
+        method,
+        path,
+        ...(headers === undefined ? {} : { headers }),
+        ...(body === undefined ? {} : { body }),
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        expect,
+      }
+    }
     case 'visual':
       // The widths and themes the plan chose travel with the check (#143). A
       // plan that chose none, or an empty list, takes the profile's `visual`
@@ -106,7 +120,7 @@ export function jobFromPlan(plan: Plan, context: RunContext): { job: Job; notes:
     const skipped = criterion.checks.filter((check) => runnable(check) === undefined)
     if (skipped.length > 0)
       notes.push(
-        `${criterion.id}: ${skipped.length} check(s) not run, because the runner executes command, mail, flow, tool, visual and a11y checks only` +
+        `${criterion.id}: ${skipped.length} check(s) not run, because the runner executes command, mail, flow, tool, visual, a11y and http checks only` +
           ` (${[...new Set(skipped.map((check) => check.kind))].join(', ')})`,
       )
     const kinds = [...new Set(skipped.map((check) => check.kind))].join(', ')

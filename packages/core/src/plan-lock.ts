@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Plan, PlanCheck, PlanCriterion } from './plan.js'
 
-const CHECK_FIELDS = ['kind', 'name', 'command', 'suite', 'filter', 'actions', 'screenshot', 'url', 'widths', 'themes', 'address', 'from', 'subject', 'body', 'code', 'timeoutMs', 'singleUse', 'authentication', 'placement', 'tool', 'args', 'assert', 'inferred']
+const CHECK_FIELDS = ['kind', 'name', 'command', 'suite', 'filter', 'actions', 'screenshot', 'url', 'widths', 'themes', 'address', 'from', 'subject', 'body', 'code', 'timeoutMs', 'singleUse', 'authentication', 'placement', 'tool', 'args', 'assert', 'method', 'path', 'headers', 'expect', 'inferred']
 
 export interface PlanComparison {
   matches: boolean
@@ -42,6 +42,13 @@ function canonicalCheck(check: PlanCheck): PlanCheck {
     if (check.args !== undefined) canonical.args = { ...check.args }
     canonical.assert = [...check.assert]
     if (check.timeoutMs !== undefined) canonical.timeoutMs = check.timeoutMs
+  } else if (check.kind === 'http') {
+    canonical.method = check.method
+    canonical.path = check.path
+    if (check.headers !== undefined) canonical.headers = { ...check.headers }
+    if (check.body !== undefined) canonical.body = check.body
+    if (check.timeoutMs !== undefined) canonical.timeoutMs = check.timeoutMs
+    canonical.expect = check.expect
   } else if (check.kind === 'visual') {
     canonical.screenshot = check.screenshot
     if (check.url !== undefined) canonical.url = check.url
@@ -213,6 +220,7 @@ function describeCheck(check: PlanCheck): string {
   }
   if (check.kind === 'mail') return `mail "${check.name}" (${check.address})`
   if (check.kind === 'tool') return `tool "${check.name}" (tool ${check.tool})`
+  if (check.kind === 'http') return `http "${check.name}" (${check.method} ${check.path})`
   if (check.kind === 'a11y')
     return check.actions !== undefined ? `a11y "${check.name}" (actions ${JSON.stringify(check.actions)})` : `a11y "${check.name}" (page ${check.url ?? '/'})`
   return `visual "${check.name}" (screenshot ${check.screenshot})`
