@@ -91,6 +91,19 @@ test('blocked, refused and waived map to neutral check runs', () => {
   expect(renderCheckRun(result('waived', [])).conclusion).toBe('neutral')
 })
 
+test('a caller can opt in to a blocked verdict failing its check run, and nothing else moves (#380)', () => {
+  expect(renderCheckRun(blocked, { blocked: 'neutral' }).conclusion).toBe('neutral')
+  const gated = renderCheckRun(blocked, { blocked: 'failure' })
+  expect(gated.conclusion).toBe('failure')
+  // The summary says why a run that disproved nothing is red.
+  expect(gated.summary).toContain('blocked is reported as failing by the caller')
+  expect(renderCheckRun(blocked).summary).not.toContain('caller')
+  for (const verdict of ['refused', 'waived'] as const)
+    expect(renderCheckRun(result(verdict, []), { blocked: 'failure' }).conclusion).toBe('neutral')
+  expect(renderCheckRun(allProven, { blocked: 'failure' }).conclusion).toBe('success')
+  expect(renderCheckRun(mixed, { blocked: 'failure' }).conclusion).toBe('failure')
+})
+
 test('evidence links reference only files from the evidence arrays', () => {
   const body = renderComment(mixed)
   expect(body).toContain(

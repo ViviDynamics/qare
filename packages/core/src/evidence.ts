@@ -521,15 +521,28 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
   return lines.join('\n')
 }
 
-export function renderCheckRun(result: RunResult): CheckRunPayload {
+/**
+ * How a check run reports a blocked verdict (#380). A blocked run disproved
+ * nothing but verified less than it was asked to, so it is neutral by
+ * default; a caller that wants a run that verified nothing to stop a merge
+ * opts in to `failure`. No other verdict's conclusion moves.
+ */
+export type BlockedConclusion = 'neutral' | 'failure'
+
+export interface CheckRunOptions {
+  blocked?: BlockedConclusion
+}
+
+export function renderCheckRun(result: RunResult, opts: CheckRunOptions = {}): CheckRunPayload {
   const counts = outcomeCounts(result)
+  const gated = result.verdict === 'blocked' && opts.blocked === 'failure'
   // Regressions are named apart from the failures they are among (#147).
   const regressions = result.criteria.filter((criterion) => criterion.regression === true).length
   const regressed = regressions === 0 ? '' : `; ${regressions} regression${regressions === 1 ? '' : 's'} against the base`
   return {
     title: 'QARE',
-    summary: `verdict ${result.verdict}: ${counts.proven} proven, ${counts.failed} failed, ${counts.unverified} unverified${regressed}`,
-    conclusion: CHECK_RUN_CONCLUSIONS[result.verdict],
+    summary: `verdict ${result.verdict}: ${counts.proven} proven, ${counts.failed} failed, ${counts.unverified} unverified${regressed}${gated ? '; blocked is reported as failing by the caller' : ''}`,
+    conclusion: gated ? 'failure' : CHECK_RUN_CONCLUSIONS[result.verdict],
   }
 }
 
