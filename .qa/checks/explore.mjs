@@ -149,7 +149,8 @@ try {
         console.log(`an element the session did not see (${JSON.stringify(element)}) is ${refused}`)
       }
       // Without exploration, the same element with no page is planned as before, and no tool is handed over.
-      const { exploration: _off, ...blind } = inputs
+      const blind = { ...inputs }
+      delete blind.exploration
       const runner = new FakeAgentRunner([completed(flowPlan({ role: 'button', name: 'Save' }))])
       const plain = await planRun(runner, blind)
       assert.equal(runner.requests.length, 1)

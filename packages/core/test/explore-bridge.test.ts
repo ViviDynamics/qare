@@ -59,7 +59,16 @@ async function started(): Promise<{ bridge: ExplorationBridge; server: Explorati
   return { bridge, server, navigated: app.navigated }
 }
 
-async function rpc(bridge: ExplorationBridge, method: string, params?: unknown): Promise<{ result?: any; error?: { code: number; message: string } }> {
+/** The fields of an MCP answer these tests read. */
+interface RpcResult {
+  protocolVersion?: string
+  capabilities?: unknown
+  tools?: { name: string; inputSchema: { type: string } }[]
+  content?: { type: string; text: string }[]
+  isError?: boolean
+}
+
+async function rpc(bridge: ExplorationBridge, method: string, params?: unknown): Promise<{ result?: RpcResult; error?: { code: number; message: string } }> {
   const answer = await post(bridge.url, { jsonrpc: '2.0', id: 7, method, ...(params === undefined ? {} : { params }) })
   expect(answer.status).toBe(200)
   expect(answer.type).toContain('application/json')
