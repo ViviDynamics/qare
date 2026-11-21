@@ -194,23 +194,34 @@ try {
       say(`${label}: relay started ${stack.calls.some((call) => call.args.includes('qare-egress-relay'))}`)
     }
   } else if (check === 'sink') {
-    // The checkout's real resolver and relay commands on loopback, where the stub's service name resolves nowhere.
+    // The checkout's real resolver on loopback, on a daemon that resolves no service name: its lookup always fails,
+    // so it answers a stub host only from the map that the checkout's real qare cell egress-dns-map writes.
+    const { startDnsSink } = await core('egress-sink.ts')
     const { runCellCommand } = await core('cell-launch.ts')
     const map = join(dir, 'services.json')
-    const out = []
-    const signals = new EventEmitter()
-    const sinking = runCellCommand(['egress-dns', '--port', '0', '--bind', '127.0.0.1', '--map', map, '--host', 'api.billing-vendor.example=qare-no-such-service-408'], { out: (line) => out.push(line), err: () => {}, signals })
-    while (out.length === 0) await new Promise((resolve) => setTimeout(resolve, 10))
-    const port = JSON.parse(out[0]).port
-    const before = await ask(port, 'api.billing-vendor.example')
-    const mapped = await runCellCommand(['egress-dns-map', '--map', map, '--service', 'qare-no-such-service-408=198.18.0.3'], { out: () => {}, err: (line) => say(line) })
-    const after = await ask(port, 'api.billing-vendor.example')
-    signals.emit('SIGTERM')
-    await sinking
-    assert.equal(after.rcode, 0)
-    say(`before the map: api.billing-vendor.example answered rcode ${before.rcode} (the service name resolves nowhere)`)
+    const looked = []
+    const sink = await startDnsSink({
+      hosts: { 'api.billing-vendor.example': 'billing-stub' },
+      port: 0,
+      bind: '127.0.0.1',
+      map,
+      resolveService: async (service) => {
+        looked.push(service)
+        throw new Error(`no embedded DNS answers ${service}`)
+      },
+      write: () => {},
+    })
+    const before = await ask(sink.port, 'api.billing-vendor.example')
+    const mapped = await runCellCommand(['egress-dns-map', '--map', map, '--service', 'billing-stub=198.18.0.3'], { out: () => {}, err: (line) => say(line) })
+    const after = await ask(sink.port, 'api.billing-vendor.example')
+    await sink.stop()
+    assert.equal(before.rcode, 2)
+    assert.deepEqual(after, { rcode: 0, addresses: ['198.18.0.3'] })
+    assert.deepEqual(looked, ['billing-stub'])
+    say(`before the map: api.billing-vendor.example answered rcode ${before.rcode} (SERVFAIL), the service name billing-stub resolving nowhere`)
     say(`qare cell egress-dns-map exited ${mapped}; the map holds ${readFileSync(map, 'utf8').trim()}`)
     say(`after the map: api.billing-vendor.example answered rcode ${after.rcode} with ${after.addresses.join(',')}`)
+    say(`name lookups the resolver attempted: ${JSON.stringify(looked)} (only before the map existed)`)
     const app = createServer((socket) => socket.end('from the app by address'))
     await new Promise((resolve) => app.listen(0, '127.0.0.1', resolve))
     const free = createServer()
@@ -233,6 +244,35 @@ try {
     await new Promise((resolve) => app.close(resolve))
     assert.equal(got, 'from the app by address')
     say(`the relay forwarding to the address 127.0.0.1, with no name to look up, carried: ${got}`)
+  } else if (check === 'unit') {
+    // The unit test that covers the merge, printed from the checkout with its lines, then its own fixture run through the checkout's containmentOf.
+    const file = 'packages/core/test/stack-egress.test.ts'
+    const lines = readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8').split('\n')
+    const start = lines.findIndex((line) => line.includes('a service with no declared networks keeps the implicit default beside one with a static address on a custom subnet (#408)'))
+    assert.ok(start >= 0)
+    let end = start + 1
+    while (end < lines.length && lines[end] !== '  })') end += 1
+    for (let index = start; index <= end; index += 1) say(`${file}:${index + 1}: ${lines[index]}`)
+    const { containmentOf } = await core('stack-egress.ts')
+    const fixture = {
+      networks: { default: { name: 'qare-run_default', ipam: { config: [{ subnet: '198.18.89.0/24' }] } } },
+      services: {
+        web: { extra_hosts: ['db=198.18.89.10'], networks: { default: null }, ports: [{ target: 3000, published: '41234', protocol: 'tcp' }] },
+        db: { networks: { default: { ipv4_address: '198.18.89.10' } } },
+        'billing-stub': { networks: { default: { ipv4_address: '198.18.89.20' }, backend: { aliases: ['billing'] } } },
+        worker: {},
+      },
+    }
+    const plan = containmentOf(fixture, { image: IMAGE, stubs: STUBS })
+    assert.equal(plan.kind, 'contained')
+    const override = readOverride(plan.override)
+    assert.deepEqual(override.services.web.networks, { default: {}, 'qare-contained': {} })
+    assert.deepEqual(override.services.db.networks, { default: {}, 'qare-contained': {} })
+    assert.deepEqual(override.services['billing-stub'].networks, { default: {}, backend: {}, 'qare-contained': {} })
+    assert.deepEqual(override.services.worker.networks, { default: {}, 'qare-contained': {} })
+    for (const name of Object.keys(fixture.services)) say(`the test's fixture through the checkout's containmentOf: ${name} networks ${JSON.stringify(override.services[name].networks)}`)
+    say(`the test's fixture, top-level networks: ${JSON.stringify(override.networks)}`)
+    say('every assertion of the test held against the checkout')
   } else if (check === 'ci') {
     // Where the real boot is proven: the CI step, the example's pinned stack, and what its script holds the run to.
     const at = (lines, text) => lines.findIndex((line) => line.includes(text))
@@ -258,7 +298,7 @@ try {
       say(`scripts/pinned-boot.sh:${line + 1}: ${script[line].trim()}`)
     }
   } else {
-    throw new Error(`unknown check ${JSON.stringify(check)}: merge, boot, uncontained, sink or ci`)
+    throw new Error(`unknown check ${JSON.stringify(check)}: merge, unit, boot, uncontained, sink or ci`)
   }
 } finally {
   await rm(dir, { recursive: true, force: true })
