@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -92,40 +93,95 @@ try {
     await stopApp(profile, { runCompose: compose.runCompose, isolation })
     console.log(JSON.stringify({ check, loaded, refused, project: isolation.project, port: isolation.port, composeCalls: [build.args, up.args], composeEnv: up.env, service, healthProbed: probed, stop: compose.calls.map((call) => call.args) }, null, 2))
   } else if (check === 'run') {
-    // A whole run against a command-booted app, on the checkout's runJob:
-    // the health check, the seed, a command check and a suite all run
-    // against it, as they do against a compose boot.
+    // A whole run against a live command-booted app, on the checkout's
+    // runJob. Compose is a stand-in that does what the project file the run
+    // wrote says: build copies the checkout into the container's filesystem
+    // (COPY . /app), up runs the command there with sh -c, PORT set and the
+    // port published on the run's own, down stops it. The health check and a
+    // command check reach the app over loopback, and the seed and a suite are
+    // the profile's own `docker compose -p qare-{{run.id}} exec -T app`
+    // lines, answered by a docker stand-in only for the run's project.
     const { runJob } = await core('run.ts')
     const repo = join(dir, 'repo')
     mkdirSync(repo)
-    writeFileSync(join(repo, 'seed.mjs'), "import { writeFileSync } from 'node:fs'\nwriteFileSync('seeded', process.env.QARE_APP_PORT ?? '')\n")
-    writeFileSync(join(repo, 'suite.mjs'), "import { readFileSync } from 'node:fs'\nconsole.log('suite saw seed for port', readFileSync('seeded', 'utf8'))\n")
-    writeFileSync(join(repo, 'page.mjs'), "console.log('page check ran against', process.argv[2])\n")
-    const compose = composeRecorder()
-    const probed = []
-    const inline = {
-      ...appProfile({ suites: [{ name: 'in-service', command: 'node suite.mjs', kind: 'flow' }] }),
-      app: { ...appProfile().app, seed: { command: 'node seed.mjs' } },
+    writeFileSync(join(repo, 'server.mjs'), [
+      "import { createServer } from 'node:http'",
+      "import { existsSync } from 'node:fs'",
+      "createServer((req, res) => {",
+      "  if (req.url === '/up') return res.end('ok')",
+      "  res.end(existsSync('seeded') ? 'Hello, seeded shop' : 'Hello, empty shop')",
+      "}).listen(Number(process.env.PORT), '127.0.0.1')",
+      '',
+    ].join('\n'))
+    writeFileSync(join(repo, 'seed.mjs'), "import { writeFileSync } from 'node:fs'\nwriteFileSync('seeded', 'yes')\nconsole.log('seeded inside', process.cwd())\n")
+    writeFileSync(join(repo, 'suite.mjs'), "import { readFileSync } from 'node:fs'\nconsole.log('suite inside', process.cwd(), 'saw seeded =', readFileSync('seeded', 'utf8'))\n")
+    writeFileSync(join(repo, 'page.mjs'), "const body = await (await fetch(process.argv[2])).text()\nconsole.log(body)\nprocess.exit(body.includes('seeded') ? 0 : 1)\n")
+    // Where the docker stand-in finds a started container's filesystem.
+    const containers = join(scratch, 'containers')
+    mkdirSync(containers, { recursive: true })
+    const started = new Map()
+    const calls = []
+    const runCompose = async (args, _timeoutMs, env) => {
+      calls.push(args)
+      const project = args[1]
+      const root = join(containers, project)
+      const at = args.indexOf('-f')
+      const service = at === -1 ? undefined : JSON.parse(readFileSync(args[at + 1], 'utf8')).services.app
+      if (args.includes('build')) {
+        // FROM <image>, COPY . /app, WORKDIR /app: the checkout is copied, so the app never writes to it.
+        assert.match(service.build.dockerfile_inline, /^FROM node:22\nCOPY \. \/app\nWORKDIR \/app\n$/)
+        cpSync(service.build.context, join(root, 'app'), { recursive: true })
+      } else if (args.includes('up')) {
+        const [sh, flag, line] = service.command
+        const published = /^127\.0\.0\.1:\$\{QARE_APP_PORT:-(\d+)\}:(\d+)$/.exec(service.ports[0])
+        assert.equal(published[2], String(service.environment.PORT))
+        // The run's port stands in for the published one: no daemon maps it here.
+        const child = spawn(sh, [flag, line.replaceAll('$$', '$')], { cwd: join(root, 'app'), env: { PATH: process.env.PATH, PORT: env.QARE_APP_PORT }, stdio: 'ignore' })
+        started.set(project, child)
+        writeFileSync(join(root, 'running'), '')
+      } else if (args.includes('down')) {
+        started.get(project)?.kill()
+        rmSync(join(root, 'running'), { force: true })
+      }
+      return { code: 0, stdout: '', stderr: '' }
     }
-    const { result, isolation } = await runJob(
-      {
-        id: 'command-boot', repoPath: repo, baseRef: 'main', headRef: 'HEAD', post: 'none', evidenceDir: join(repo, 'evidence'),
-        profile: { inline },
-        criteria: [
-          { id: 'page', text: 'the page answers on the run port', checks: [{ kind: 'command', run: `node page.mjs ${HEALTH}` }] },
-          { id: 'suite', text: 'a suite runs against the seeded app', checks: [{ kind: 'flow', suite: 'in-service' }] },
-        ],
-      },
-      { runCompose: compose.runCompose, probe: async (url) => (probed.push(url), { ok: true }), pollIntervalMs: 1, execution: 'native' },
-    )
+    process.env.PATH = `${fileURLToPath(new URL('./bin/', import.meta.url))}:${process.env.PATH}`
+    const exec = 'docker compose -p qare-{{run.id}} exec -T app'
+    const inline = {
+      ...appProfile({ suites: [{ name: 'in-service', command: `${exec} node suite.mjs`, kind: 'flow' }] }),
+      app: { ...appProfile().app, boot: { command: 'node server.mjs', image: 'node:22', port: 3000 }, seed: { command: `${exec} node seed.mjs` } },
+    }
+    let ran
+    try {
+      ran = await runJob(
+        {
+          id: 'command-boot', repoPath: repo, baseRef: 'main', headRef: 'HEAD', post: 'none', evidenceDir: join(dir, 'evidence'),
+          profile: { inline },
+          criteria: [
+            { id: 'page', text: 'the seeded page answers on the run port', checks: [{ kind: 'command', run: `node page.mjs ${['http:', '//localhost:{{run.app_port}}/'].join('')}` }] },
+            { id: 'suite', text: 'a suite runs inside the seeded service', checks: [{ kind: 'flow', suite: 'in-service' }] },
+          ],
+        },
+        { runCompose, pollIntervalMs: 50, execution: 'native' },
+      )
+    } finally {
+      for (const child of started.values()) child.kill()
+    }
+    const cleanup = () => rm(containers, { recursive: true, force: true })
+    const { result, isolation } = ran
     const outcomes = Object.fromEntries(result.criteria.map((criterion) => [criterion.id, criterion.outcome]))
+    const stdout = (id) => readFileSync(join(dir, 'evidence/checks', id, '0', 'stdout.txt'), 'utf8').trim()
+    const seedLog = readFileSync(join(dir, 'evidence', 'seed.log'), 'utf8')
+    if (result.verdict !== 'passed') console.error(JSON.stringify({ verdict: result.verdict, criteria: result.criteria, seed: seedLog }, null, 2))
+    // The seed wrote inside the container's copy, never into the checkout.
+    assert.equal(existsSync(join(containers, isolation.project, 'app', 'seeded')), true)
+    assert.equal(existsSync(join(repo, 'seeded')), false)
     assert.deepEqual(outcomes, { page: 'proven', suite: 'proven' })
-    assert.equal(readFileSync(join(repo, 'seeded'), 'utf8'), String(isolation.port))
-    assert.deepEqual(probed, [['http:', `//localhost:${isolation.port}/up`].join('')])
-    const service = compose.calls.find((call) => call.project !== undefined).project.services.app
-    assert.equal(service.build.context, repo)
-    const stdout = (id) => readFileSync(join(repo, 'evidence/checks', id, '0', 'stdout.txt'), 'utf8').trim()
-    console.log(JSON.stringify({ check, verdict: result.verdict, outcomes, project: isolation.project, port: isolation.port, healthProbed: probed, seededWith: readFileSync(join(repo, 'seeded'), 'utf8'), pageCheck: stdout('page'), suite: stdout('suite'), composeCalls: compose.calls.map((call) => call.args), image: service.build.dockerfile_inline }, null, 2))
+    // Another project is refused: the exec reaches the run's app and no other.
+    const other = spawnSync('docker', ['compose', '-p', 'qare-someone-else', 'exec', '-T', 'app', 'true'], { encoding: 'utf8' })
+    assert.notEqual(other.status, 0)
+    console.log(JSON.stringify({ check, verdict: result.verdict, outcomes, project: isolation.project, port: isolation.port, seed: seedLog.trim(), pageCheck: stdout('page'), suite: stdout('suite'), checkoutUntouched: !existsSync(join(repo, 'seeded')), otherProject: other.stderr.trim(), composeCalls: calls }, null, 2))
+    await cleanup()
   } else if (check === 'isolation') {
     // Two command boots at once never share a project, a port or a file,
     // and reap downs each by name and removes the file the run wrote.
