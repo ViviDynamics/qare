@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "qare.metrics.v1",
+  "recordedAt": "2026-11-21T18:04:05.083Z",
+  "runId": "pr-403",
+  "startedAt": "2026-11-21T18:02:57.870Z",
+  "finishedAt": "2026-11-21T18:03:14.938Z",
+  "wallMs": 17068,
+  "verdict": "passed",
+  "criteria": {
+    "selected": [
+      {
+        "id": "c-28368e17335ff53e",
+        "outcome": "proven"
+      },
+      {
+        "id": "c-77258dec7bfdd894",
+        "outcome": "proven"
+      },
+      {
+        "id": "c-5d777a22b1dd739e",
+        "outcome": "proven"
+      },
+      {
+        "id": "c-c4273312d8b4d8d9",
+        "outcome": "proven"
+      }
+    ],
+    "counts": {
+      "proven": 4
+    }
+  },
+  "model": {
+    "plan": {
+      "inputTokens": 191927,
+      "outputTokens": 4964
+    },
+    "judge": {
+      "inputTokens": 377972,
+      "outputTokens": 2882
+    }
+  },
+  "context": {
+    "pr": 403
+  },
+  "jobs": [
+    {
+      "name": "collect (GitHub token only)",
+      "startedAt": "2026-11-21T18:01:05Z",
+      "completedAt": "2026-11-21T18:01:27Z",
+      "wallMs": 22000
+    },
+    {
+      "name": "plan (model key only)",
+      "startedAt": "2026-11-21T18:01:29Z",
+      "completedAt": "2026-11-21T18:02:10Z",
+      "wallMs": 41000
+    },
+    {
+      "name": "execute (no secrets)",
+      "startedAt": "2026-11-21T18:02:12Z",
+      "completedAt": "2026-11-21T18:03:26Z",
+      "wallMs": 74000
+    },
+    {
+      "name": "judge (model key only)",
+      "startedAt": "2026-11-21T18:03:27Z",
+      "completedAt": "2026-11-21T18:04:07Z",
+      "wallMs": 40000
+    }
+  ]
+}
