@@ -22,6 +22,7 @@ async function fakeNare(
   binary: string
   argv: () => Promise<string[]>
   schemaSeen: () => Promise<string>
+  mcpConfigSeen: () => Promise<unknown>
   envSeen: () => Promise<{
     tools: string | null
     endpoint: string | null
@@ -34,6 +35,7 @@ async function fakeNare(
   const argvPath = join(dir, 'argv.json')
   const schemaPath = join(dir, 'schema-seen.json')
   const envPath = join(dir, 'env-seen.json')
+  const mcpPath = join(dir, 'mcp-config-seen.json')
   const binary = join(dir, 'nare')
   const script = [
     '#!/usr/bin/env node',
@@ -44,6 +46,8 @@ async function fakeNare(
     // directory up afterwards, which is what a caller should be able to rely on.
     `const at = argv.indexOf('--schema')`,
     `if (at !== -1) writeFileSync(${JSON.stringify(schemaPath)}, readFileSync(argv[at + 1], 'utf8'))`,
+    `const mcpAt = argv.indexOf('--mcp-config')`,
+    `if (mcpAt !== -1) writeFileSync(${JSON.stringify(mcpPath)}, readFileSync(argv[mcpAt + 1], 'utf8'))`,
     `writeFileSync(${JSON.stringify(envPath)}, JSON.stringify({ tools: process.env.QARE_EXPLORATION_TOOLS ?? null, endpoint: process.env.QARE_EXPLORATION_ENDPOINT ?? null, mcpTools: process.env.QARE_MCP_TOOLS ?? null, mcpEndpoint: process.env.QARE_MCP_ENDPOINT ?? null, contextWindow: process.env.NARE_CONTEXT_WINDOW ?? null }))`,
     `for (const line of ${JSON.stringify(lines)}) console.log(JSON.stringify(line))`,
     `process.exit(${exitCode})`,
@@ -55,6 +59,7 @@ async function fakeNare(
     binary,
     argv: async () => JSON.parse(await readFile(argvPath, 'utf8')) as string[],
     schemaSeen: async () => await readFile(schemaPath, 'utf8'),
+    mcpConfigSeen: async () => JSON.parse(await readFile(mcpPath, 'utf8')) as unknown,
     envSeen: async () => JSON.parse(await readFile(envPath, 'utf8')) as {
       tools: string | null
       endpoint: string | null
@@ -194,17 +199,33 @@ test('no schema means no --schema flag', async () => {
   expect(await nare.argv()).not.toContain('--schema')
 })
 
-test('an explicit exploration channel reaches nare as environment (#87)', async () => {
+test('an explicit exploration channel reaches nare through its MCP client, with only its tools allowed (#87, #377)', async () => {
   const nare = await fakeNare([ANSWER, result()])
 
   await new NareAgentRunner({ binary: nare.binary }).run({
     ...REQUEST,
-    tools: { allowlist: ['observe', 'snapshot'], endpoint: url('sandbox.internal:8080') },
+    tools: { allowlist: ['observe', 'snapshot'], endpoint: url('127.0.0.1:8080/') },
   })
 
+  const argv = await nare.argv()
+  // nare's general MCP client is what connects a session to tools: the
+  // endpoint is one Streamable HTTP server, under the alias the tools carry.
+  expect(await nare.mcpConfigSeen()).toEqual({ explore: { url: url('127.0.0.1:8080/') } })
+  // The allowlist replaces the run's tool policy, so nothing but the channel's tools is callable.
+  expect(argv[argv.indexOf('--tools') + 1]).toBe('explore__observe,explore__snapshot')
+  expect(argv.filter((arg) => arg === '--tools')).toHaveLength(1)
+  // The environment no nare release reads is not set.
   const seen = await nare.envSeen()
-  expect(seen.tools).toBe('observe,snapshot')
-  expect(seen.endpoint).toBe(url('sandbox.internal:8080'))
+  expect(seen.tools).toBeNull()
+  expect(seen.endpoint).toBeNull()
+})
+
+test('a run with no exploration channel hands nare no MCP config (#377)', async () => {
+  const nare = await fakeNare([ANSWER, result()])
+  await new NareAgentRunner({ binary: nare.binary }).run(REQUEST)
+  const argv = await nare.argv()
+  expect(argv).not.toContain('--mcp-config')
+  expect(argv[argv.indexOf('--tools') + 1]).toBe('none')
 })
 
 test('the host MCP channel reaches nare as environment, addressed as server.tool (#93)', async () => {

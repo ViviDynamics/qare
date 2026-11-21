@@ -1,3 +1,4 @@
+import { EXPLORATION_BRIDGE_ALIAS } from './explore-bridge.js'
 export type ToolPolicy = 'none' | 'read-only'
 
 /**
@@ -211,27 +212,19 @@ function toolFlag(policy: ToolPolicy): string {
 }
 
 /**
- * The model tool channels reach nare as environment (#87, #93), the way a
- * registered tool server is handed to the step that may look through it.
- * nare's own tool flags stay untouched: the exploration channel carries a
- * read-only allowlist, and the MCP channel carries only the tools the profile
- * allowed, addressed as server.tool.
+ * The host MCP channel reaches nare as environment (#93), carrying only the
+ * tools the profile allowed, addressed as server.tool. The exploration
+ * channel does not: it reaches nare as an MCP config on the command line
+ * (#377), so its variables are cleared here, and a stale one in the ambient
+ * environment says nothing to anyone.
  */
 function channelEnv(
-  exploration: AgentToolChannel | undefined,
   mcp: AgentToolChannel | undefined,
   over: Record<string, string> | undefined,
 ): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env, ...over }
-  if (exploration === undefined) {
-    // The channels are opt-in per run: a run that named none gets none, even
-    // when the ambient environment carries a stale one.
-    delete env.QARE_EXPLORATION_TOOLS
-    delete env.QARE_EXPLORATION_ENDPOINT
-  } else {
-    env.QARE_EXPLORATION_TOOLS = exploration.allowlist.join(',')
-    env.QARE_EXPLORATION_ENDPOINT = exploration.endpoint
-  }
+  delete env.QARE_EXPLORATION_TOOLS
+  delete env.QARE_EXPLORATION_ENDPOINT
   if (mcp === undefined) {
     delete env.QARE_MCP_TOOLS
     delete env.QARE_MCP_ENDPOINT
@@ -276,7 +269,17 @@ export class NareAgentRunner implements AgentRunner {
     const workDir = await mkdtemp(join(tmpdir(), 'qare-nare-'))
     try {
       const argv = ['run', request.prompt, '--yes', '--jsonl', '--contract', String(NARE_CONTRACT)]
-      argv.push('--tools', toolFlag(request.toolPolicy))
+      if (request.tools === undefined) argv.push('--tools', toolFlag(request.toolPolicy))
+      else {
+        // The exploration channel reaches the session through nare's own MCP
+        // client (#377): one Streamable HTTP server under the bridge's alias,
+        // and an allowlist of its tools alone in place of the run's policy,
+        // so the session can call the channel and nothing else.
+        const configPath = join(workDir, 'mcp.json')
+        await writeFile(configPath, JSON.stringify({ [EXPLORATION_BRIDGE_ALIAS]: { url: request.tools.endpoint } }), 'utf8')
+        argv.push('--mcp-config', configPath)
+        argv.push('--tools', request.tools.allowlist.map((tool) => `${EXPLORATION_BRIDGE_ALIAS}__${tool}`).join(','))
+      }
       // qare owns the persona, including an empty one. nare (since contract 2) adds
       // a default coding-agent prompt when read tools are enabled.
       argv.push('--system', request.system)
@@ -292,7 +295,7 @@ export class NareAgentRunner implements AgentRunner {
         await writeFile(schemaPath, request.outputSchema, 'utf8')
         argv.push('--schema', schemaPath)
       }
-      const { code, stdout } = await this.spawn(argv, request.tools, request.mcp, request.signal)
+      const { code, stdout } = await this.spawn(argv, request.mcp, request.signal)
       return this.readOutcome(code, stdout)
     } finally {
       await rm(workDir, { recursive: true, force: true })
@@ -301,7 +304,6 @@ export class NareAgentRunner implements AgentRunner {
 
   private async spawn(
     argv: string[],
-    exploration?: AgentToolChannel,
     mcp?: AgentToolChannel,
     signal?: AbortSignal,
   ): Promise<{ code: number; stdout: string }> {
@@ -310,7 +312,7 @@ export class NareAgentRunner implements AgentRunner {
     return await new Promise((resolve, reject) => {
       const child = spawn(binary, argv, {
         cwd: this.options.cwd,
-        env: channelEnv(exploration, mcp, this.options.env),
+        env: channelEnv(mcp, this.options.env),
         stdio: ['ignore', 'pipe', 'pipe'],
         // An aborted run kills the process: node sends it SIGTERM and reports
         // the abort as the spawn's error, which rejects below.
