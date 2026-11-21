@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { registerHooks, stripTypeScriptTypes } from 'node:module'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import './source.mjs'
 
 // Executable checks of the host MCP channel reaching nare by --mcp-config
@@ -11,8 +12,9 @@ import './source.mjs'
 // it observed. check=runner hands a run's host servers to a stand-in nare that
 // records what it was given; check=nare hands a registered host server to the
 // nare the image installs, with a model fixture on loopback; check=profile
-// loads profiles whose plan-step names nare cannot carry. Scratch is
-// restricted to .qa/checks/scratch.
+// loads profiles whose plan-step names nare cannot carry; check=record runs
+// the checkout's own qare plan command and reads mcp-calls.jsonl from beside
+// the plan it wrote. Scratch is restricted to .qa/checks/scratch.
 
 const { NareAgentRunner } = await import('../../packages/core/src/runner.ts')
 const { connectMcpServer, mcpRecordsFile, startMcpToolServer } = await import('../../packages/core/src/mcp.ts')
@@ -226,7 +228,131 @@ async function docs() {
   assert.equal(sets.length, 0)
 }
 
-const checks = { runner, nare, profile, docs }
+/**
+ * Load the checkout's CLI and action source too, not only core's: source.mjs
+ * maps core, and these hooks map @qare/core and @qare/action to their source
+ * and run each package's .ts as source.mjs does, so qare plan is the
+ * checkout's, with no build.
+ */
+function cliSource() {
+  const packages = new URL('../../packages/', import.meta.url).href
+  const entry = { '@qare/core': 'core', '@qare/action': 'action' }
+  registerHooks({
+    resolve(specifier, context, next) {
+      if (entry[specifier] !== undefined) return next(`${packages}${entry[specifier]}/src/index.ts`, context)
+      if (specifier.endsWith('.js') && context.parentURL?.startsWith(packages) && specifier.startsWith('.')) {
+        const candidate = new URL(`${specifier.slice(0, -3)}.ts`, context.parentURL)
+        if (existsSync(fileURLToPath(candidate))) return next(candidate.href, context)
+      }
+      return next(specifier, context)
+    },
+    load(url, context, next) {
+      if (!url.startsWith(packages) || !url.endsWith('.ts')) return next(url, context)
+      return { format: 'module', shortCircuit: true, source: stripTypeScriptTypes(readFileSync(fileURLToPath(url), 'utf8'), { mode: 'transform', sourceUrl: url }) }
+    },
+  })
+}
+
+async function record() {
+  cliSource()
+  const { main } = await import(pathToFileURL(join(root, 'packages/cli/src/index.ts')).href)
+  const dir = mkdtempSync(join(scratch, 'host-mcp-plan-'))
+  // One criterion, so the plan is one batch and one model session.
+  const criteria = [{ id: 'c1', text: 'the login form rejects an empty password' }]
+  const plan = {
+    schemaVersion: '1',
+    usage: { inputTokens: 1, outputTokens: 1 },
+    criteria: [{ id: 'c1', text: criteria[0].text, checks: [{ kind: 'command', name: 'login', command: 'node --version' }] }],
+  }
+  const host = hostServer(dir)
+  mkdirSync(join(dir, '.qa', 'fixtures'), { recursive: true })
+  mkdirSync(join(dir, '.qa', 'stubs'), { recursive: true })
+  writeFileSync(join(dir, '.qa', 'QA.md'), '# QA\n')
+  writeFileSync(join(dir, '.qa', 'fixtures', 'seed.sql'), '')
+  writeFileSync(join(dir, '.qa', 'config.yml'), [
+    'app:',
+    '  boot: { compose: compose.yml, service: app }',
+    `  health: { http: ${['http:', '', '127.0.0.1:1', 'health'].join('/')}, timeout: 1s }`,
+    '  seed: { command: "true" }',
+    '  login: { fixture: seed.sql, role: admin }',
+    'stubs: []',
+    'visual:',
+    '  widths: [390]',
+    '  themes: [light]',
+    'suites: []',
+    'mcp:',
+    '  - name: rig',
+    `    command: ${host.command}`,
+    '    tools: [power_on, read_led]',
+    '    steps: [plan]',
+  ].join('\n'))
+  writeFileSync(join(dir, 'criteria.json'), JSON.stringify(criteria))
+  writeFileSync(join(dir, 'change.diff'), 'diff --git a/login.ts b/login.ts')
+  // The nare stand-in reads the --mcp-config the plan command hands it,
+  // speaks MCP to the rig alias as nare's client does (initialize, list, one
+  // call), records what it saw, and answers with the plan. The command spawns
+  // `node run ...` from this directory, so the stand-in needs no executable bit.
+  const seen = join(dir, 'seen.json')
+  writeFileSync(join(dir, 'run'), [
+    'void (async () => {',
+    "const { readFileSync, writeFileSync } = await import('node:fs')",
+    "const { request } = await import('node:http')",
+    'const argv = process.argv.slice(2)',
+    "const config = JSON.parse(readFileSync(argv[argv.indexOf('--mcp-config') + 1], 'utf8'))",
+    'const rpc = (method, params) => new Promise((resolve, reject) => {',
+    '  const target = new URL(config.rig.url)',
+    "  const out = request({ hostname: target.hostname, port: target.port, path: target.pathname, method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' } }, (res) => { let raw = ''; res.on('data', (c) => (raw += c)); res.on('end', () => resolve(JSON.parse(raw))) })",
+    "  out.on('error', reject)",
+    "  out.end(JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }))",
+    '})',
+    "await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'stand-in', version: '0' } })",
+    "const listed = (await rpc('tools/list', {})).result.tools.map((tool) => tool.name)",
+    "const called = (await rpc('tools/call', { name: 'power_on', arguments: { volts: 5 } })).result",
+    `writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ tools: argv[argv.indexOf('--tools') + 1], config, listed, called }))`,
+    `const plan = ${JSON.stringify(plan)}`,
+    "console.log(JSON.stringify({ type: 'output', text: JSON.stringify(plan) }))",
+    "console.log(JSON.stringify({ type: 'result', status: 'done', stop_reason: 'end_turn', usage: { input: 1, output: 1 }, contract: 3, output: plan, error: null, questions: [] }))",
+    '})()',
+  ].join('\n'))
+  const lines = []
+  const writer = { write: (text) => { lines.push(String(text)); return true } }
+  const was = process.cwd()
+  process.chdir(dir)
+  let code
+  try {
+    code = await main(
+      ['plan', '--criteria', join(dir, 'criteria.json'), '--diff', join(dir, 'change.diff'), '--out', join(dir, 'out', 'plan.json'), '--nare', process.execPath, '--profile', join(dir, '.qa')],
+      writer,
+      writer,
+    )
+  } finally {
+    process.chdir(was)
+  }
+  try {
+    const what = JSON.parse(readFileSync(seen, 'utf8'))
+    console.log(`qare plan (the checkout's packages/cli/src/index.ts, no build) exited ${code}; it said:`)
+    for (const line of lines.join('').trim().split('\n')) console.log(`  ${line.replace(dir, '<dir>')}`)
+    console.log(`the stand-in nare was handed --tools ${what.tools} and an --mcp-config naming ${Object.keys(what.config).join(', ')}`)
+    console.log(`through it, the rig server listed ${what.listed.join(', ')}, and power_on answered ${JSON.stringify(what.called.content[0].text.split('\n')[1])}`)
+    const planPath = join(dir, 'out', 'plan.json')
+    const callsPath = join(dir, 'out', 'mcp-calls.jsonl')
+    console.log(`files in <dir>/out beside the plan: ${['plan.json', 'mcp-calls.jsonl'].filter((file) => existsSync(join(dir, 'out', file))).join(', ')}`)
+    const calls = readFileSync(callsPath, 'utf8')
+    console.log(`<dir>/out/mcp-calls.jsonl, as the plan command wrote it:`)
+    process.stdout.write(calls)
+    assert.equal(code, 0)
+    assert.ok(existsSync(planPath))
+    assert.equal(JSON.parse(readFileSync(planPath, 'utf8')).criteria[0].checks[0].name, 'login')
+    assert.equal(what.tools, 'rig__power_on,rig__read_led')
+    const records = calls.trim().split('\n').map((line) => JSON.parse(line))
+    assert.deepEqual(records, [{ server: 'rig', tool: 'power_on', arguments: { volts: 5 }, result: 'power_on saw {"volts":5}' }])
+    assert.ok(lines.join('').includes(`recorded 1 host tool calls; ${callsPath}`))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+const checks = { runner, nare, profile, docs, record }
 const name = process.argv[2]
 assert.ok(name in checks, `check is one of ${Object.keys(checks).join(', ')}`)
 await checks[name]()
