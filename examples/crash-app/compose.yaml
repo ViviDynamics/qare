@@ -1,0 +1,17 @@
+# The stack the crash example boots (#407): one service that looks up its
+# database by a name no stub declares, prints why it cannot go on, and exits
+# 1. The run must save its log and name it, its exit code and its last lines.
+# The DATABASE_URL line carries a password, which the evidence must redact.
+services:
+  web:
+    image: busybox:1.36
+    ports:
+      - "127.0.0.1:${QARE_APP_PORT:-3000}:3000"
+    command:
+      - sh
+      - -c
+      - |
+        wget -q -T 3 -O /dev/null http://db.crash-app.example/ 2>/dev/null || true
+        echo "DATABASE_URL=postgres://app:crash-app-secret-407@db.crash-app.example/app"
+        echo "crash-app: cannot reach db.crash-app.example, giving up"
+        exit 1

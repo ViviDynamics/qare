@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "1",
+  "criteria": [
+    {
+      "id": "app-up",
+      "text": "The app answers on its health page",
+      "checks": [
+        {
+          "kind": "command",
+          "name": "health-answers",
+          "command": "node examples/compose-app/page-has.mjs http://localhost:{{run.app_port}}/up ok"
+        }
+      ]
+    }
+  ]
+}

@@ -116,9 +116,17 @@ jobs:
       # The opt-in build cache (#381), through the pipeline's own steps: the
       # main lane's run writes the compose app's layers, and a pull request's
       # run reads them and writes none.
-      - name: Boot the example compose app with the build cache
+      # A service that exits during the boot (#407): it looks up a name no
+      # stub declares, prints a known line and exits 1. The run is blocked,
+      # the service's redacted log is in the evidence, and the comment names
+      # the service, its exit code and the line it printed.
+      - name: Prove a boot failure leaves the service's log in the evidence
         run: |
           mv evidence evidence-pinned-app
+          scripts/crash-boot.sh qare-core:ci
+      - name: Boot the example compose app with the build cache
+        run: |
+          mv evidence evidence-crash-app
           scripts/build-cache-boot.sh qare-core:ci
       - name: Upload the run's evidence
         if: always()
@@ -131,6 +139,7 @@ jobs:
             evidence-command-app/
             evidence-egress-app/
             evidence-pinned-app/
+            evidence-crash-app/
           if-no-files-found: ignore
 
   # A real mail catcher (#65): the pipeline's execute steps run against

@@ -1,0 +1,12 @@
+app:
+  boot: { compose: examples/crash-app/compose.yaml, service: web }
+  health: { http: "http://localhost:{{run.app_port}}/up", timeout: 60s }
+  seed: { command: "true" }
+  login: { fixture: fixtures/users.yml, role: reader }
+# No stub: the database the app looks up is declared nowhere, so the run's
+# resolver refuses it and records the name.
+stubs: []
+visual:
+  widths: [1440]
+  themes: [light]
+suites: []
