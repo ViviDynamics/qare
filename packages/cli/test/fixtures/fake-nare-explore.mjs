@@ -15,7 +15,9 @@ if (at !== -1) {
   const endpoint = config.explore.url
   seen.init = await rpc(endpoint, 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'fake-nare', version: '0' } })
   seen.listed = (await rpc(endpoint, 'tools/list')).result.tools.map((tool) => tool.name)
-  for (const [name, args] of [['navigate', { url: '/settings' }], ['snapshot', {}]])
+  // The page to explore: /settings unless the caller names another.
+  const page = process.env.FAKE_NARE_PAGE || '/settings'
+  for (const [name, args] of [['navigate', { url: page }], ['snapshot', {}]])
     seen.calls.push({ name, result: (await rpc(endpoint, 'tools/call', { name, arguments: args })).result })
 }
 writeFileSync(seenPath, JSON.stringify(seen))
