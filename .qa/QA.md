@@ -60,7 +60,9 @@ each service, its exit code and its last 20 lines, the names a contained
 stack looked up before it failed recorded in `egress`, and the comment
 naming the service, its exit code and its last lines are proven by
 `node -- .qa/checks/boot-failure.mjs <check>`, the declared
-boot-failure-check command, with check `boot`, `run`, `base`, `seed` or
+boot-failure-check command, with check `boot`, `health` (health check and
+watchdog paths), `run`, `base`, `seed`, `example` (the crash-app example's
+own service command, run for real, and the comment showing its line) or
 `ci`. They run the checkout's core source without a build, with compose
 standing in, so they need no daemon, network, model or credentials. Choose
 them for those criteria, never a grep of the source. The real docker boot of

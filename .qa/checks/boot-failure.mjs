@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -163,6 +164,79 @@ try {
     say(`a seed that exited 1: verdict ${result.verdict}, reason ${JSON.stringify(result.criteria[0].reason)}`)
     say(`boot in result.json: ${JSON.stringify(result.boot.services.map((service) => ({ ...service, tail: undefined })))}`)
     say(`egress in result.json: ${JSON.stringify(result.egress)}`)
+  } else if (check === 'health') {
+    // A stack whose up succeeds but whose health check never passes, and
+    // one whose up outlives the health deadline (the watchdog): both are
+    // read before any down, and the run writes each service's log.
+    const { bootApp } = await core('boot.ts')
+    const { isolateRun } = await core('isolation.ts')
+    const { runJob, renderComment } = await core('index.ts')
+    const healthy = compose({ failUp: () => false })
+    const unhealthy = await bootApp(profile(), { runCompose: healthy.runCompose, probe: async () => ({ ok: false }), pollIntervalMs: 1, isolation: await isolateRun(), egressImage: '' })
+    assert.ok(unhealthy.reason.includes('did not pass within'))
+    assert.deepEqual(unhealthy.services.map((service) => service.service), ['web', 'db'])
+    assert.ok(!healthy.calls.some((args) => args.includes('down')))
+    say(`health check never passed: blocked, reason ${JSON.stringify(unhealthy.reason)}; services read before any down: ${unhealthy.services.map((service) => `${service.service} ${service.state} (exit code ${service.exitCode})`).join(', ')}`)
+    const hung = compose()
+    const stuck = (args) => (args.includes('up') && args.includes('--wait') ? new Promise(() => {}) : hung.runCompose(args))
+    const watchdog = await bootApp(profile(), { runCompose: stuck, pollIntervalMs: 1, isolation: await isolateRun(), egressImage: '', serviceLogTimeoutMs: 2000 })
+    assert.equal(watchdog.reason, 'boot watchdog: compose up exceeded the health deadline')
+    assert.equal(watchdog.services[0].exitCode, 1)
+    assert.ok(watchdog.services[0].log.includes(SAID))
+    const order = hung.calls.map((args) => (args.includes('ps') ? 'ps' : args.includes('down') ? 'down' : '')).filter(Boolean)
+    say(`watchdog fired: blocked, reason ${JSON.stringify(watchdog.reason)}; web read with exit code ${watchdog.services[0].exitCode} and its line ${JSON.stringify(SAID)}; ps before any down: ${order[0] === 'ps'}`)
+    const repo = join(dir, 'repo')
+    mkdirSync(repo)
+    const job = { id: 'boot-failure-health', repoPath: repo, baseRef: 'main', headRef: 'HEAD', post: 'none', evidenceDir: join(repo, 'evidence'), profile: { inline: profile() }, criteria: [{ id: 'up', text: 'the app comes up', checks: [{ kind: 'command', run: 'true' }] }] }
+    const { result } = await runJob(job, { runCompose: compose({ failUp: () => false }).runCompose, probe: async () => ({ ok: false }), pollIntervalMs: 1, execution: 'native', egressImage: '' })
+    const log = readFileSync(join(repo, 'evidence', 'services', 'web.log'), 'utf8')
+    assert.ok(log.includes(SAID) && !log.includes(SECRET))
+    const comment = renderComment(result, { kind: 'artifact' })
+    assert.ok(comment.includes('`web` exited with code 1') && comment.includes(SAID))
+    say(`runJob on the health path: verdict ${result.verdict}, reason ${JSON.stringify(result.criteria[0].reason)}`)
+    say(`evidence/services/web.log written (${log.split('\n').filter(Boolean).length} lines, password redacted), evidence/services/db.log written: ${existsSync(join(repo, 'evidence', 'services', 'db.log'))}`)
+    say(`the comment names: ${comment.split('\n').find((line) => line.includes('did not come up'))}`)
+  } else if (check === 'example') {
+    // The example itself (#407): examples/crash-app's profile is loaded by
+    // the checkout's loader, and its web service's own command, as its
+    // compose file writes it, is run for real with sh. The stand-in compose
+    // answers ps and logs with what that command printed and the code it
+    // exited with, so the run and the comment are held to the example's own
+    // output. The real docker boot is CI's crash-boot.sh (check ci).
+    const { runJob, renderComment, loadProfile } = await core('index.ts')
+    const root = fileURLToPath(new URL('../../', import.meta.url))
+    const composeText = readFileSync(join(root, 'examples/crash-app/compose.yaml'), 'utf8').split('\n')
+    const start = composeText.findIndex((line) => line.trim() === '- |')
+    const script = composeText.slice(start + 1).filter((line) => line.startsWith('        ')).map((line) => line.slice(8)).join('\n')
+    assert.ok(script.includes('exit 1'))
+    const ran = spawnSync('sh', ['-c', script], { encoding: 'utf8', timeout: 30_000 })
+    assert.equal(ran.status, 1)
+    assert.ok(ran.stdout.includes(SAID))
+    say(`examples/crash-app web's own command, run with sh: exit code ${ran.status}, ${ran.stdout.split('\n').filter(Boolean).length} lines printed, the last ${JSON.stringify(ran.stdout.trim().split('\n').at(-1))}`)
+    const loaded = await loadProfile(join(root, 'examples/crash-app/.qa'))
+    say(`examples/crash-app/.qa loaded by the checkout's loader: boot ${JSON.stringify(loaded.app.boot)}`)
+    const example = async (args) => {
+      if (args.includes('ps')) return { code: 0, stdout: JSON.stringify({ Service: 'web', State: 'exited', ExitCode: ran.status }), stderr: '' }
+      if (args.includes('logs')) return { code: 0, stdout: ran.stdout, stderr: ran.stderr }
+      if (args.includes('up') && args.includes('--wait')) return { code: 1, stdout: '', stderr: `container web-1 exited (${ran.status})\n` }
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    const repo = join(dir, 'repo')
+    mkdirSync(repo)
+    const job = { id: 'boot-failure-example', repoPath: repo, baseRef: 'main', headRef: 'HEAD', post: 'none', evidenceDir: join(repo, 'evidence'), profile: { inline: loaded }, criteria: [{ id: 'app-up', text: 'The app answers on its health page', checks: [{ kind: 'command', run: 'true' }] }] }
+    const { result } = await runJob(job, { runCompose: example, probe: async () => ({ ok: true }), pollIntervalMs: 1, execution: 'native', egressImage: '' })
+    const log = readFileSync(join(repo, 'evidence', 'services', 'web.log'), 'utf8')
+    const comment = renderComment(result, { kind: 'artifact' })
+    assert.equal(result.verdict, 'blocked')
+    assert.ok(log.includes(SAID) && !log.includes(SECRET))
+    assert.ok(comment.includes('`web` exited with code 1') && comment.includes(SAID) && !comment.includes(SECRET))
+    say(`runJob on the example's profile: verdict ${result.verdict}, reason ${JSON.stringify(result.criteria[0].reason)}`)
+    say(`evidence/services/web.log: ${JSON.stringify(log)}`)
+    say('the comment as it is posted, its boot section:')
+    const lines = comment.split('\n')
+    const from = lines.findIndex((line) => line.includes('did not come up'))
+    const to = lines.findIndex((line, index) => index > from && line.startsWith("Every service's"))
+    for (const line of lines.slice(from, to + 1)) say(`  ${line}`)
   } else if (check === 'ci') {
     // Where the real boot is proven: the CI step, and what its script holds the run to.
     const ci = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8').split('\n')
@@ -184,7 +258,7 @@ try {
       say(`scripts/crash-boot.sh:${line + 1}: ${script[line].trim()}`)
     }
   } else {
-    throw new Error(`unknown check ${JSON.stringify(check)}: boot, run, base, seed or ci`)
+    throw new Error(`unknown check ${JSON.stringify(check)}: boot, health, run, base, seed, example or ci`)
   }
 } finally {
   await rm(dir, { recursive: true, force: true })
