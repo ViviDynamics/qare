@@ -2491,8 +2491,16 @@ One TypeScript codebase, one core, thin adapters:
 
 Model access: qare shells out to `nare run` and consumes its typed JSONL
 events and session files. Model, provider and sampling flags are nare's
-concern. Claude only at first, because model variance is what makes verdicts
-unstable.
+concern, so qare supports the providers nare does: `anthropic` (Anthropic's
+API), `bedrock` (Claude on Amazon Bedrock), and `openai`, which is any service
+that speaks Chat Completions (OpenAI, a LiteLLM proxy, vLLM, Ollama). The
+pipeline's inputs name a provider, a model, an endpoint and one key variable,
+which is what `anthropic` and `openai` read; `bedrock` reads AWS credentials
+and a region from nare's environment instead, so it is for callers that run
+nare where those are set. The workflow `qare init` writes uses the default
+provider, `openai`, with `gpt-4.1-mini` and the `OPENAI_API_KEY` secret. Model
+variance is what makes verdicts unstable, so a caller pins one model, and
+verdicts stay decided in code whichever provider planned the checks.
 
 Capabilities qare needs from nare, each an issue on nare when it is missing:
 schema-constrained output for `plan.json`, a read-only tool set for the
@@ -2554,7 +2562,6 @@ generator, Argos for visual review, API before/after on Go services.
 ## Out of scope for now
 
 - Merging or approving PRs.
-- Models other than Claude.
 - Recording production traffic.
 - Replacing unit and integration suites; QARE runs them, it does not own them.
 

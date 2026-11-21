@@ -4,6 +4,10 @@
 
 # QAre
 
+**New here? Start with the [quickstart](docs/quickstart.md):** one `docker run`
+of a released image, `qare init`, and a pull request to a first evidence
+comment.
+
 A QA agent harness. Given a pull request and the issue it closes, qare boots the
 app before and after the change against stubbed services, checks every
 acceptance criterion, and posts the evidence on the pull request: a
@@ -37,7 +41,10 @@ project when no run is left working.
 Every model call qare makes goes through nare. That rule, and the others that
 hold for every change here, are in [CONSTITUTION.md](CONSTITUTION.md).
 
-Status: design. See [docs/SPEC.md](docs/SPEC.md).
+Status: in use and released. qare checks its own pull requests through the
+same pipeline a caller uses, and every release publishes a CalVer tag and the
+image family on ghcr. Interfaces can still change between releases, so pin
+one. The design is in [docs/SPEC.md](docs/SPEC.md).
 
 ## Writing criteria
 
@@ -49,7 +56,8 @@ what `qare ingest` can and cannot infer, is in
 
 ## Running it in your repository
 
-The pull request pipeline is a reusable workflow: a repository calls it from a
+The [quickstart](docs/quickstart.md) is the short path. The pull request
+pipeline is a reusable workflow: a repository calls it from a
 workflow of about ten lines, pinned to a qare release tag. The caller
 workflow, its inputs, its secrets, the identity qare posts as and how to upgrade are in
 [docs/pipeline.md](docs/pipeline.md).
