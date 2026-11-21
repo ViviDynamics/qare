@@ -252,7 +252,8 @@ function defaultProbe(url: string, timeoutMs: number): Promise<{ ok: boolean }> 
 }
 
 /** An app whose boot is a compose file: the profile's own, or the one a command boot is written to. */
-type ComposeApp = ProfileApp & { boot: ComposeBoot }
+/** An app as compose boots it, with the override files the run adds (#381). */
+type ComposeApp = ProfileApp & { boot: ComposeBoot; overrides?: string[] }
 
 /** The service a command boot runs as (#379), the one service of its project. */
 export const COMMAND_BOOT_SERVICE = 'app'
@@ -280,11 +281,17 @@ function composeLiteral(text: string): string {
  */
 export function commandBootCompose(boot: CommandBoot, root: string): string {
   const port = String(boot.port)
+  // A prebuilt image of the base (#381) is the build's result already: it
+  // runs as it is, pulled by the run before the boot, never again here.
+  const image =
+    boot.prebuilt === undefined
+      ? { build: { context: composeLiteral(root), dockerfile_inline: composeLiteral(`FROM ${boot.image}\nCOPY . ${COMMAND_BOOT_WORKDIR}\nWORKDIR ${COMMAND_BOOT_WORKDIR}\n`) } }
+      : { image: composeLiteral(boot.prebuilt), pull_policy: 'never' }
   return `${JSON.stringify(
     {
       services: {
         [COMMAND_BOOT_SERVICE]: {
-          build: { context: composeLiteral(root), dockerfile_inline: composeLiteral(`FROM ${boot.image}\nCOPY . ${COMMAND_BOOT_WORKDIR}\nWORKDIR ${COMMAND_BOOT_WORKDIR}\n`) },
+          ...image,
           command: ['sh', '-c', composeLiteral(boot.command)],
           environment: { PORT: port },
           ports: [`127.0.0.1:\${QARE_APP_PORT:-${port}}:${port}`],
@@ -296,12 +303,40 @@ export function commandBootCompose(boot: CommandBoot, root: string): string {
   )}\n`
 }
 
+/** Where the run writes a compose boot's base image override (#381): named for the project, so no two runs share one. */
+export function baseImageOverrideFile(project: string): string {
+  return join(tmpdir(), `${project}.base-image.yml`)
+}
+
+/**
+ * The override that runs a prebuilt image as a compose boot's service
+ * (#381): its image, its build reset (`!reset`, compose 2.24 or later), and
+ * no pull, because the run pulled the image by its reference before it
+ * checked whose commit it is. YAML, because JSON has no `!reset`; each value
+ * is a JSON string, which YAML reads as the same string, with every `$`
+ * doubled so compose interpolates nothing.
+ */
+export function baseImageOverride(service: string, image: string): string {
+  return `services:\n  ${JSON.stringify(composeLiteral(service))}:\n    image: ${JSON.stringify(composeLiteral(image))}\n    pull_policy: never\n    build: !reset null\n`
+}
+
+/** The compose files a boot names, in order: the app's own, then the run's base image override. */
+function composeFiles(app: ComposeApp): string[] {
+  return ['-f', app.boot.compose, ...(app.overrides ?? []).flatMap((file) => ['-f', file])]
+}
+
 /**
  * The app as the compose boot runs it: a compose boot as it is, and a
- * command boot written to its project file first (#379).
+ * command boot written to its project file first (#379). A compose boot
+ * with a prebuilt image gets the override that runs it (#381).
  */
 async function composeAppOf(app: ProfileApp, root: string, isolation: RunIsolation): Promise<ComposeApp> {
-  if (!isCommandBoot(app.boot)) return app as ComposeApp
+  if (!isCommandBoot(app.boot)) {
+    if (app.boot.prebuilt === undefined) return app as ComposeApp
+    const override = baseImageOverrideFile(isolation.project)
+    await writeFile(override, baseImageOverride(app.boot.service, app.boot.prebuilt), { mode: 0o600 })
+    return { ...(app as ComposeApp), overrides: [override] }
+  }
   const file = commandBootFile(isolation.project)
   await writeFile(file, commandBootCompose(app.boot, resolve(root)), { mode: 0o600 })
   return { ...app, boot: { compose: file, service: COMMAND_BOOT_SERVICE, ...(app.boot.build === undefined ? {} : { build: app.boot.build }) } }
@@ -309,7 +344,7 @@ async function composeAppOf(app: ProfileApp, root: string, isolation: RunIsolati
 
 async function captureComposeLogs(app: ComposeApp, opts: BootOpts, isolation: RunIsolation): Promise<string> {
   const runCompose = opts.runCompose ?? defaultRunCompose
-  const logs = await runCompose(['-p', isolation.project, '-f', app.boot.compose, 'logs', '--no-color', app.boot.service], NO_DEADLINE_MS, composeEnv(isolation))
+  const logs = await runCompose(['-p', isolation.project, ...composeFiles(app), 'logs', '--no-color', app.boot.service], NO_DEADLINE_MS, composeEnv(isolation))
   return logs.stdout + logs.stderr
 }
 
@@ -522,7 +557,7 @@ async function buildImages(
     const watchdog = new Promise<'watchdog'>((resolve) => {
       timer = setTimeout(() => resolve('watchdog'), remainingMs)
     })
-    const started = runCompose(['-p', isolation.project, '-f', app.boot.compose, 'build', ...args], remainingMs, env)
+    const started = runCompose(['-p', isolation.project, ...composeFiles(app), 'build', ...args], remainingMs, env)
     void started.catch(() => {})
     try {
       const first = await Promise.race([watchdog, started])
@@ -615,7 +650,7 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   let up: { code: number; stdout: string; stderr: string } | 'watchdog'
   let started: Promise<{ code: number; stdout: string; stderr: string }>
   try {
-    started = runCompose(['-p', isolation.project, '-f', app.boot.compose, 'up', '-d', '--wait', app.boot.service], timeoutMs, env)
+    started = runCompose(['-p', isolation.project, ...composeFiles(app), 'up', '-d', '--wait', app.boot.service], timeoutMs, env)
     // The losing branch of the race is drained, so a compose up that settles
     // late after the watchdog does not crash the process unhandled.
     void started.catch(() => {})
@@ -703,4 +738,6 @@ export async function stopApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   } catch (error) {
     console.error(`compose down failed: ${String(error)}`)
   }
+  // The base image override goes with the stack it booted (#381).
+  if (opts.isolation !== undefined) await rm(baseImageOverrideFile(opts.isolation.project), { force: true }).catch(() => {})
 }

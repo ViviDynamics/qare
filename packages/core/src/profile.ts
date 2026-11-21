@@ -33,6 +33,12 @@ export interface ComposeBoot {
   compose: string
   service: string
   build?: { timeout: string }
+  /**
+   * The image the service runs in place of its build (#381): set by the run
+   * on the base side, from `base.image` once the image is shown to be the
+   * base commit's. The loader never reads it from a profile.
+   */
+  prebuilt?: string
 }
 
 /**
@@ -46,6 +52,8 @@ export interface CommandBoot {
   image: string
   port: number
   build?: { timeout: string }
+  /** As a compose boot's (#381): the image run in place of the build, set by the run on the base side. */
+  prebuilt?: string
 }
 
 export type ProfileBoot = ComposeBoot | CommandBoot
