@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -227,7 +227,7 @@ done
     const result = run(dir, script(job, job === 'judge' ? 'Judge the result' : 'Judge the result on main'), {
       PATH: `${bin}:${process.env.PATH ?? ''}`, RUNNER_TEMP: dir, IMAGE_REF: 'fixture-image',
       MODEL_KEY: 'test-only', MODEL_KEY_ENV: 'MODEL_TEST_KEY', NARE_PROVIDER: '', NARE_MODEL: '',
-      NARE_STREAM: '', NARE_BASE_URL: '', QARE_MAX_OUTPUT_TOKENS: '', QARE_VERIFY_BATCH_SIZE: '',
+      NARE_STREAM: '', NARE_BASE_URL: '', NARE_CONTEXT_WINDOW: '', QARE_MAX_OUTPUT_TOKENS: '', QARE_VERIFY_BATCH_SIZE: '',
       PROFILE: '.qa', QARE_ARGS_FILE: argsFile, JUDGE_OUTPUT: temporary('qare-judge-output-'),
     })
     expect(result.status).toBe(0)
@@ -235,5 +235,45 @@ done
     expect(args[args.indexOf('--plan') + 1]).toBe(plan)
     if (job === 'judge') expect(args[args.indexOf('--diff') + 1]).toBe('qa-inputs/change-planner.diff')
     expect(readFileSync(join(dir, plan), 'utf8')).toBe('{}')
+  })
+}
+
+// #391: a window nare cannot use stops the step by name before the container
+// that asks the model starts, and a usable one crosses into it.
+const MODEL_STEPS = [['plan', 'Plan the QA run'], ['judge', 'Judge the result'], ['main_judge', 'Judge the result on main']] as const
+function modelStepEnv(dir: string, window: string): Record<string, string> {
+  const bin = join(dir, 'bin')
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(join(bin, 'docker'), `#!/bin/bash\nprintf '%s\\0' "$@" > "$QARE_ARGS_FILE"\n`, { mode: 0o755 })
+  for (const file of ['change.diff', 'change-planner.diff', 'qa-inputs/change.diff', 'qa-inputs/change-planner.diff', 'qa-plan/plan.json', 'qa-inputs/plan.json']) {
+    mkdirSync(dirname(join(dir, file)), { recursive: true })
+    writeFileSync(join(dir, file), file.endsWith('.json') ? '{}' : '')
+  }
+  return {
+    PATH: `${bin}:${process.env.PATH ?? ''}`, RUNNER_TEMP: dir, IMAGE_REF: 'fixture-image',
+    MODEL_KEY: 'test-only', MODEL_KEY_ENV: 'MODEL_TEST_KEY', NARE_PROVIDER: '', NARE_MODEL: '',
+    NARE_STREAM: '', NARE_BASE_URL: '', NARE_CONTEXT_WINDOW: window, QARE_MAX_OUTPUT_TOKENS: '',
+    QARE_VERIFY_BATCH_SIZE: '', QARE_PLAN_BATCH_SIZE: '', QARE_PLAN_CONCURRENCY: '',
+    PROFILE: '.qa', QARE_ARGS_FILE: join(dir, 'docker-args'), JUDGE_OUTPUT: temporary('qare-judge-output-'),
+  }
+}
+for (const [job, name] of MODEL_STEPS) {
+  test(`${job} refuses a context window that is not a whole number above zero, before any model call`, () => {
+    for (const window of ['abc', '0', '-5', '12.5', '8k', ' 200000', '200000\n']) {
+      const dir = fixture()
+      const result = run(dir, script(job, name), modelStepEnv(dir, window))
+      expect(result.status, JSON.stringify(window)).not.toBe(0)
+      expect(existsSync(join(dir, 'docker-args')), `${JSON.stringify(window)}: docker must not start`).toBe(false)
+      expect(summary(dir), JSON.stringify(window)).toContain('nare-context-window must be a whole number of tokens above zero')
+    }
+  })
+  test(`${job} hands a set context window to the container under the name nare reads, and an empty one not at all`, () => {
+    const set = fixture()
+    expect(run(set, script(job, name), modelStepEnv(set, '200000')).status).toBe(0)
+    const args = readFileSync(join(set, 'docker-args'), 'utf8').split('\0')
+    expect(args[args.indexOf('NARE_CONTEXT_WINDOW') - 1]).toBe('-e')
+    const unset = fixture()
+    expect(run(unset, script(job, name), modelStepEnv(unset, '')).status).toBe(0)
+    expect(readFileSync(join(unset, 'docker-args'), 'utf8').split('\0')).not.toContain('NARE_CONTEXT_WINDOW')
   })
 }
