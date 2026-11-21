@@ -76,15 +76,19 @@ if [ ! -f evidence/result.json ]; then
   exit 1
 fi
 
-jq '{verdict, base: .base.status, criteria: [.criteria[] | {id, outcome, reason}]}' evidence/result.json
+jq '{verdict, egress, base: .base.status, criteria: [.criteria[] | {id, outcome, reason}]}' evidence/result.json
 # Passed, with every criterion proven by a check that really ran: a blocked
 # boot leaves them unverified, and that is the failure this exists to catch.
+# The stack ran contained (#382), on internal networks with the run's
+# resolver, and looked up nothing no stub declares.
 if [ "$code" -ne 0 ] || ! jq -e --argjson criteria "$criteria" '
   .verdict == "passed" and
   (.criteria | length) == $criteria and
-  ([.criteria[] | .outcome == "proven"] | all)
+  ([.criteria[] | .outcome == "proven"] | all) and
+  .egress.containment == "contained" and
+  .egress.undeclared == []
 ' evidence/result.json > /dev/null; then
-  echo "the execute step exited $code: the $example app did not boot, or a check against it did not pass" >&2
+  echo "the execute step exited $code: the $example app did not boot contained, or a check against it did not pass" >&2
   exit 1
 fi
 if [ -z "${project// /}" ] || [ -z "$up_after_run" ]; then

@@ -1,0 +1,15 @@
+app:
+  boot: { compose: examples/egress-app/compose.yaml, service: web }
+  health: { http: "http://localhost:{{run.app_port}}/up", timeout: 180s }
+  seed: { command: "true" }
+  login: { fixture: fixtures/users.yml, role: reader }
+# The one vendor the app may reach: its host is answered by the stub
+# service beside the app. Anything else the app looks up is a missing stub.
+stubs:
+  - service: billing
+    hosts: ["api.billing-vendor.example"]
+    provided_by: { compose_service: billing-stub }
+visual:
+  widths: [1440]
+  themes: [light]
+suites: []
