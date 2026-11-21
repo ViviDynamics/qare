@@ -646,3 +646,53 @@ test('a judged result keeps the criterion text and the plan spend through a load
     parseResult({ schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [{ id: 'c1', outcome: 'proven', evidence: ['c1/out.txt'], text: ' ' }] }),
   ).toThrow(/criteria\[0\]\.text/)
 })
+
+const CRASHED = {
+  services: [
+    { service: 'web', state: 'exited', exitCode: 1, log: 'services/web.log', tail: ['booting', 'ActiveRecord::ConnectionNotEstablished: Network is unreachable'] },
+    { service: 'db', state: 'running', health: 'healthy', log: 'services/db.log' },
+  ],
+}
+
+test('a stack that did not come up names the service that exited, its exit code and its last lines (#407)', () => {
+  const body = renderComment({ ...result('blocked', [{ id: 'c1', outcome: 'unverified', reason: 'compose up exited 1' }]), boot: CRASHED })
+  expect(body).toContain('The booted stack did not come up: `web` exited with code 1.')
+  expect(body).toContain("The last 2 lines of `web`'s log, from `services/web.log`:\n\n```text\nbooting\nActiveRecord::ConnectionNotEstablished: Network is unreachable\n```")
+  expect(body).toContain("Every service's last 200 log lines are in `services/`.")
+  // The service that came up is not named as one that failed.
+  expect(body).not.toContain('`db` exited')
+})
+
+test('a boot failure on both sides is named at the head and at the base, with each side\'s paths (#407)', () => {
+  const body = renderComment({
+    ...result('blocked', [{ id: 'c1', outcome: 'unverified', reason: 'compose up exited 1' }]),
+    boot: CRASHED,
+    base: { ref: 'origin/main', status: 'not-executed', reason: 'compose up exited 1', boot: CRASHED },
+  })
+  expect(body).toContain('At the head, the booted stack did not come up: `web` exited with code 1.')
+  expect(body).toContain("of `web`'s log, from `head/services/web.log`:")
+  expect(body).toContain('At the base, the booted stack did not come up: `web` exited with code 1.')
+  expect(body).toContain("of `web`'s log, from `base/services/web.log`:")
+})
+
+test('a log line cannot close the fence it is shown in (#407)', () => {
+  const body = renderComment({ ...result('blocked', []), boot: { services: [{ service: 'web', state: 'exited', exitCode: 2, tail: ['```', 'injected **markdown**'] }] } })
+  expect(body).toContain('````text\n```\ninjected **markdown**\n````')
+})
+
+test('a health check that never passed shows the waited-on service and says nothing stopped (#407)', () => {
+  const body = renderComment({ ...result('blocked', []), boot: { services: [{ service: 'web', state: 'running', tail: ['listening on 0.0.0.0:3001'] }] } })
+  expect(body).toContain('The booted stack did not come up, and no service of it had stopped.')
+  expect(body).toContain("The last line of `web`'s log:")
+})
+
+test('the names a contained stack looked up before it failed are shown, and refused no run (#407)', () => {
+  const body = renderComment({
+    ...result('blocked', []),
+    boot: CRASHED,
+    egress: { containment: 'contained', declared: [], undeclared: ['db.crash-app.example'] },
+  })
+  expect(body).toContain("Before it stopped, it looked up a name no stub declares, which the run's resolver refused: a lookup the app needed may be why it did not come up.")
+  expect(body).toContain('- `refused: missing stub: db.crash-app.example:unknown (dns)`')
+  expect(body).not.toContain('which refused the run')
+})

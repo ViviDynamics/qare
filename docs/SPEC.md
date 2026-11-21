@@ -1974,6 +1974,20 @@ installed it records each step: the artefact's size and SHA-256, the
 installer's own output, what the build wrote while the health check launched
 it, and the teardown.
 
+A booted stack that does not come up (#407), because `compose up` exits, the
+boot outlives its health deadline, the health check never passes, a step of
+its containment blocks the boot, or its seed fails, is read before anything
+takes it down. The run lists every service with `compose ps -a` and reads
+each one's last 200 log lines with `compose logs --tail 200`, and writes each
+log, redacted, to `<side>/services/<service>.log`. `result.json` carries
+`boot.services` (`base.boot` for the base side): each service with its state,
+exit code and health, the path of its log, and for each service that failed
+its last 20 redacted lines. The comment names the service that stopped, its
+exit code and those lines. When the stack was contained, the run's resolver
+is read too, so `egress` lists the names the stack looked up before it
+failed: a boot that died on a refused lookup says so. A failed boot is still
+`blocked`; what it looked up decides nothing more.
+
 A profile names an artefact in its `client` section:
 
 ```yaml

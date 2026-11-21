@@ -496,3 +496,33 @@ test('the base side reads the build cache and never writes it: the head\'s build
   expect(builds[0]?.env).not.toHaveProperty('BUILDX_BAKE_ENTITLEMENTS_FS')
   expect(builds[1]?.env).toMatchObject({ BUILDX_BAKE_ENTITLEMENTS_FS: '0' })
 })
+
+test('a base whose service exits during the boot keeps its services and its logs under base/ (#407)', async () => {
+  const trees = await twoTrees({ base: ['old.txt'], head: ['old.txt'] })
+  const job = jobFor(trees.head, [fileCheck('old-behaviour', 'old.txt')])
+  let ups = 0
+  const { result } = await runJob(job, {
+    runCompose: async (args) => {
+      if (args.includes('ps')) return { code: 0, stdout: JSON.stringify({ Service: 'admin', State: 'exited', ExitCode: 1 }), stderr: '' }
+      if (args.includes('logs') && args.includes('--tail')) return { code: 0, stdout: 'base admin: cannot reach its database\n', stderr: '' }
+      if (args.includes('up')) {
+        ups += 1
+        if (ups === 1) return { code: 1, stdout: '', stderr: 'container admin-1 exited (1)' }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    },
+    probe: async () => ({ ok: true }),
+    pollIntervalMs: 1,
+    base: { repoPath: trees.base },
+  })
+  expect(result.base).toMatchObject({ status: 'not-executed', reason: expect.stringContaining('compose up exited 1') })
+  expect(result.base?.boot).toEqual({
+    services: [{ service: 'admin', state: 'exited', exitCode: 1, log: 'services/admin.log', tail: ['base admin: cannot reach its database'] }],
+  })
+  expect(result.base?.egress).toEqual({ containment: 'uncontained', reason: NO_EGRESS_IMAGE })
+  expect(await readFile(join(job.evidenceDir, 'base', 'services', 'admin.log'), 'utf8')).toBe('base admin: cannot reach its database\n')
+  // The head came up, so it records no boot failure.
+  expect(result.boot).toBeUndefined()
+  // The published result loads with the record.
+  expect(loadResult(await readFile(join(job.evidenceDir, 'result.json'), 'utf8')).base?.boot).toEqual(result.base?.boot)
+})

@@ -2,7 +2,7 @@ import { renderAdvisorySection } from './advisory-comment.js'
 import { describeHost, describeRequirements, type HostKind, type Requirements } from './placement.js'
 import type { ModelUsage } from './metrics.js'
 import { missingStubReason } from './egress.js'
-import type { CriterionResult, RunEgress, RunResult, RunVerdict } from './result.js'
+import { serviceFailed, type CriterionResult, type RunBootFailure, type RunBootService, type RunEgress, type RunResult, type RunVerdict } from './result.js'
 
 export interface CheckRunPayload {
   title: string
@@ -382,10 +382,15 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
             '',
           ]),
     ...baseLines,
+    // A stack that did not come up (#407): the service that failed, its exit
+    // code and the last lines of its log, at the head and at the base.
+    ...bootLines(result.boot, result.base === undefined ? 'The booted stack' : 'At the head, the booted stack', result.base === undefined ? '' : 'head/'),
+    ...bootLines(result.base?.boot, 'At the base, the booted stack', 'base/'),
     // What the booted stack reached for (#382): contained or not, and every
-    // name no stub declares, at the head and at the base.
-    ...(result.profiles === undefined ? egressLines(result.egress, 'The booted stack') : []),
-    ...egressLines(result.base?.egress, 'At the base, the booted stack'),
+    // name no stub declares, at the head and at the base. A name looked up
+    // by a stack that did not come up refused no run (#407).
+    ...(result.profiles === undefined ? egressLines(result.egress, 'The booted stack', result.verdict === 'refused') : []),
+    ...egressLines(result.base?.egress, 'At the base, the booted stack', result.base?.status === 'executed'),
     // Where the run executed and what it ran with (issue #91): a host run and
     // an image run are readable side by side.
     ...environment,
@@ -562,7 +567,7 @@ export function renderCheckRun(result: RunResult, opts: CheckRunOptions = {}): C
  * stub it is; or that it was not contained, and why. A stack that boots is
  * never left to read as contained when it was not.
  */
-function egressLines(egress: RunEgress | undefined, who: string): string[] {
+function egressLines(egress: RunEgress | undefined, who: string, refused = true): string[] {
   if (egress === undefined) return []
   if (egress.containment === 'uncontained')
     return [`${who}'s egress was not contained (${codeSpan(egress.reason ?? 'no reason recorded')}): what it reached was not recorded, and nothing held it to the declared stubs.`, '']
@@ -574,10 +579,58 @@ function egressLines(egress: RunEgress | undefined, who: string): string[] {
     } A connection to a literal address names no host, so the internal network refuses it and the record cannot list it.`,
     '',
   ]
+  const names = undeclared.length === 1 ? 'a name' : `${undeclared.length} names`
   if (undeclared.length > 0)
-    lines.push(`It looked up ${undeclared.length === 1 ? 'a name' : `${undeclared.length} names`} no stub declares, which refused the run:`, '', ...undeclared.map((host) => `- ${codeSpan(missingStubReason(host))}`), '')
+    lines.push(
+      refused
+        ? `It looked up ${names} no stub declares, which refused the run:`
+        : `Before it stopped, it looked up ${names} no stub declares, which the run's resolver refused: a lookup the app needed may be why it did not come up.`,
+      '',
+      ...undeclared.map((host) => `- ${codeSpan(missingStubReason(host))}`),
+      '',
+    )
   if (egress.capped === true) lines.push('The record was cut at its bound: names looked up past it were not recorded.', '')
   if (egress.unread !== undefined) lines.push(`Its record could not be read (${codeSpan(egress.unread)}), so the run cannot say the stack reached for nothing, and it does not pass.`, '')
+  return lines
+}
+
+/** What a failed service was left as (#407): its exit code, its health, or its state. */
+function serviceState(service: RunBootService): string {
+  if (service.state === 'exited') return service.exitCode === undefined ? 'exited' : `exited with code ${service.exitCode}`
+  if (service.health === 'unhealthy') return 'was unhealthy'
+  const state = service.state === 'running' ? 'was running' : `was left ${codeSpan(service.state)}`
+  return service.exitCode === undefined || service.exitCode === 0 ? state : `${state}, its last exit code ${service.exitCode}`
+}
+
+/** A fence no line of the log can close: one backtick longer than the longest run in it. */
+function fenceFor(lines: readonly string[]): string {
+  const longest = Math.max(0, ...lines.flatMap((line) => (line.match(/`+/g) ?? []).map((run) => run.length)))
+  return '`'.repeat(Math.max(3, longest + 1))
+}
+
+/**
+ * A stack that did not come up (#407), in words: each service that failed,
+ * with its exit code and the last lines of its log (redacted by the run, at
+ * most 20), and where every service's log is in the evidence. A health check
+ * that never passed against a running stack shows the service it waited on.
+ */
+function bootLines(boot: RunBootFailure | undefined, who: string, prefix: string): string[] {
+  if (boot === undefined || boot.services.length === 0) return []
+  const failing = boot.services.filter(serviceFailed)
+  const shown = boot.services.filter((service) => service.tail !== undefined && service.tail.length > 0)
+  const lines = [
+    failing.length === 0
+      ? `${who} did not come up, and no service of it had stopped.`
+      : `${who} did not come up: ${failing.map((service) => `${codeSpan(service.service)} ${serviceState(service)}`).join('; ')}.`,
+    '',
+  ]
+  for (const service of shown) {
+    const tail = service.tail ?? []
+    const from = service.log === undefined ? '' : `, from ${codeSpan(`${prefix}${service.log}`)}`
+    const fence = fenceFor(tail)
+    lines.push(`The last ${tail.length === 1 ? 'line' : `${tail.length} lines`} of ${codeSpan(service.service)}'s log${from}:`, '', `${fence}text`, ...tail, fence, '')
+  }
+  if (boot.services.some((service) => service.log !== undefined)) lines.push(`Every service's last 200 log lines are in ${codeSpan(`${prefix}services/`)}.`, '')
   return lines
 }
 

@@ -52,6 +52,23 @@ so they need no daemon, network, model or credentials. Choose them for
 those criteria, never a grep of the source. The real docker boot of
 examples/pinned-app is CI's compose-boot job (`ci` prints that step).
 
+Executable boot failure checks (#407): a booted stack that did not come up
+(compose up exited, health, watchdog, containment, seed) read before any
+down, each service's last 200 log lines saved redacted at
+`<side>/services/<service>.log`, result.json `boot` and `base.boot` naming
+each service, its exit code and its last 20 lines, the names a contained
+stack looked up before it failed recorded in `egress`, and the comment
+naming the service, its exit code and its last lines are proven by
+`node -- .qa/checks/boot-failure.mjs <check>`, the declared
+boot-failure-check command, with check `boot`, `health` (health check and
+watchdog paths), `run`, `base`, `seed`, `example` (the crash-app example's
+own service command, run for real, and the comment showing its line) or
+`ci`. They run the checkout's core source without a build, with compose
+standing in, so they need no daemon, network, model or credentials. Choose
+them for those criteria, never a grep of the source. The real docker boot of
+examples/crash-app, whose service prints a known line and exits 1, is CI's
+compose-boot job (`ci` prints that step).
+
 Executable command boot checks (#379): booting an app by `app.boot: { command,
 image, port }`, its run against health, seed, checks and suites, isolation of
 concurrent runs with reap, and `qare init` offering the command form are proven

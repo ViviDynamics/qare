@@ -2,7 +2,7 @@ import { lstat, readdir, readFile, writeFile } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import type { RunAdvisory } from './advisory.js'
 import { DEFAULT_CODE_PATTERN } from './mailbox.js'
-import { loadResult, type RunResult } from './result.js'
+import { BOOT_TAIL_LINES, loadResult, type RunBootFailure, type RunResult } from './result.js'
 
 /**
  * Evidence is published on pull requests, so qare redacts it before it leaves
@@ -393,6 +393,16 @@ export function redactAdvisory(advisory: RunAdvisory, rules: readonly RedactionR
  * legally read `token:1`, and redacting it would detach the result from its
  * plan and its files.
  */
+/** A stack that did not come up (#407): each service's last lines are the application's own output. */
+function redactBootFailure(boot: RunBootFailure, rules: readonly RedactionRule[]): RunBootFailure {
+  return {
+    services: boot.services.map((service) => ({
+      ...service,
+      ...(service.tail === undefined ? {} : { tail: service.tail.flatMap((line) => redactText(line, rules).split('\n')).slice(-BOOT_TAIL_LINES) }),
+    })),
+  }
+}
+
 export function redactResult(result: RunResult, rules: readonly RedactionRule[] = BUILTIN_REDACTION_RULES): RunResult {
   return {
     ...result,
@@ -400,8 +410,18 @@ export function redactResult(result: RunResult, rules: readonly RedactionRule[] 
     ...(result.advisory === undefined ? {} : { advisory: redactAdvisory(result.advisory, rules) }),
     // A target URL can carry credentials in its userinfo or query.
     ...(result.target === undefined ? {} : { target: { ...result.target, url: redactText(result.target.url, rules) } }),
-    // Why a base side did not run quotes what stopped it (#147).
-    ...(result.base?.reason === undefined ? {} : { base: { ...result.base, reason: redactText(result.base.reason, rules) } }),
+    // Why a base side did not run quotes what stopped it (#147), and a stack
+    // that did not come up quotes its services' logs (#407).
+    ...(result.base === undefined
+      ? {}
+      : {
+          base: {
+            ...result.base,
+            ...(result.base.reason === undefined ? {} : { reason: redactText(result.base.reason, rules) }),
+            ...(result.base.boot === undefined ? {} : { boot: redactBootFailure(result.base.boot, rules) }),
+          },
+        }),
+    ...(result.boot === undefined ? {} : { boot: redactBootFailure(result.boot, rules) }),
     criteria: result.criteria.map((criterion) => ({
       ...criterion,
       // The criterion's words are shown in a public comment (#373).

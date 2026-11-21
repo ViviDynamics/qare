@@ -709,6 +709,13 @@ through the pipeline's execute steps, seeds it, holds every check to
 passing, and reads the live stack to show the relay and the resolver were
 handed addresses, not service names.
 
+[`examples/crash-app`](../examples/crash-app) is a stack whose only service
+looks up a database no stub declares, prints why it cannot go on, and exits
+1 (#407). qare's CI boots it through the pipeline's execute steps and holds
+the evidence to explaining that: the service's redacted log at
+`<side>/services/web.log`, and a comment that names `web`, its exit code 1,
+the line it printed and the name it looked up.
+
 [`examples/compose-app`](../examples/compose-app) is a small profile of this
 shape. qare's CI runs the pipeline's own execute steps against it on every
 change, so this path is exercised and not only described.

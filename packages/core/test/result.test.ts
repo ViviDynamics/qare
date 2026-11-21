@@ -501,3 +501,25 @@ test('a client result says whether the build was contained, and a result from be
   expect(parseResult({ ...base, client }).client).toEqual(client)
   expect(resultError(() => parseResult({ ...base, client: { ...client, egress: 'open' } })).message).toContain('unknown client egress "open"')
 })
+
+test('a stack that did not come up loads service by service, at the head and at the base (#407)', () => {
+  const boot = { services: [{ service: 'web', state: 'exited', exitCode: 1, log: 'services/web.log', tail: ['boom'] }, { service: 'db', state: 'running', health: 'healthy' }] }
+  const result = parseResult({
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'blocked',
+    criteria: [],
+    boot,
+    base: { ref: 'main', status: 'not-executed', reason: 'compose up exited 1', boot },
+  })
+  expect(result.boot).toEqual(boot)
+  expect(result.base?.boot).toEqual(boot)
+})
+
+test('a boot record is held to its shape: a log inside the evidence, an integer exit code, a bounded tail (#407)', () => {
+  const load = (service: Record<string, unknown>) => () => parseResult({ schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria: [], boot: { services: [{ service: 'web', state: 'exited', ...service }] } })
+  expect(resultError(load({ log: '../secrets.log' })).field).toBe('boot.services[0].log')
+  expect(resultError(load({ log: '/etc/passwd' })).field).toBe('boot.services[0].log')
+  expect(resultError(load({ exitCode: 1.5 })).field).toBe('boot.services[0].exitCode')
+  expect(resultError(load({ tail: Array.from({ length: 21 }, () => 'line') })).field).toBe('boot.services[0].tail')
+  expect(resultError(() => parseResult({ schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria: [], boot: [] })).field).toBe('boot')
+})

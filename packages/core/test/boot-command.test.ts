@@ -103,7 +103,8 @@ test('a command boot that does not come up is blocked with the service log, read
   const { calls, runCompose } = recorder()
   const outcome = await bootApp(await commandProfile(), { runCompose, probe: async () => ({ ok: false }), pollIntervalMs: 1, isolation: run, root })
   expect(outcome).toMatchObject({ kind: 'blocked', logs: 'app-1 | listening' })
-  expect(calls.at(-1)?.args).toEqual(['-p', run.project, '-f', join(tmpdir(), `${run.project}.compose.json`), 'logs', '--no-color', 'app'])
+  // The service's log is read through the file the run wrote; the per-service capture after it (#407) addresses the project alone.
+  expect(calls.find((call) => call.args.includes('logs'))?.args).toEqual(['-p', run.project, '-f', join(tmpdir(), `${run.project}.compose.json`), 'logs', '--no-color', 'app'])
 })
 
 test('stopping a command boot downs its project by name and removes the file the run wrote (#379)', async () => {

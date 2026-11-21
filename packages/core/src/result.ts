@@ -184,6 +184,43 @@ export interface RunBase {
   images?: RunBaseImage[]
   /** What the base side's stack reached for (#382), when it booted one. */
   egress?: RunEgress
+  /** Each service of the base side's stack, when it did not come up (#407). */
+  boot?: RunBootFailure
+}
+
+/**
+ * A booted stack that did not come up (#407): each of its services, read
+ * before anything took the stack down.
+ */
+export interface RunBootFailure {
+  services: RunBootService[]
+}
+
+/**
+ * One service of a stack that did not come up (#407): its state as compose
+ * said, its exit code and health when compose gave them, where its log is in
+ * the side's evidence, and for a service that failed the last lines of that
+ * log, redacted like everything else the run writes.
+ */
+export interface RunBootService {
+  service: string
+  state: string
+  exitCode?: number
+  health?: string
+  /** The service's log in the side's evidence: `services/<service>.log`. */
+  log?: string
+  /** The last lines of the log, at most BOOT_TAIL_LINES, for a service that failed. */
+  tail?: string[]
+}
+
+/** How many lines of a failed service's log the result, and so the comment, carries (#407). */
+export const BOOT_TAIL_LINES = 20
+
+/** Whether a service did not come up (#407): exited with a code other than 0, unhealthy, or in any state but running. */
+export function serviceFailed(service: Pick<RunBootService, 'state' | 'exitCode' | 'health'>): boolean {
+  if (service.health === 'unhealthy') return true
+  if (service.state === 'running') return false
+  return !(service.state === 'exited' && service.exitCode === 0)
 }
 
 export interface RunBaseImage {
@@ -239,6 +276,8 @@ export interface RunResult {
    * before stacks were contained.
    */
   egress?: RunEgress
+  /** Each service of the run's booted stack, when it did not come up (#407). */
+  boot?: RunBootFailure
   /** Where and with which versions this run executed (issue #91). */
   environment?: RunEnvironment
   /**
@@ -379,6 +418,7 @@ export function parseResult(input: unknown): RunResult {
   const planUsage = parseModelUsage(input.planUsage, 'planUsage')
   const advisory = parseAdvisory(input.advisory)
   const egress = parseEgress(input.egress, 'egress')
+  const boot = parseBootFailure(input.boot, 'boot')
 
   return {
     schemaVersion,
@@ -397,6 +437,32 @@ export function parseResult(input: unknown): RunResult {
     ...(planUsage === undefined ? {} : { planUsage }),
     ...(advisory === undefined ? {} : { advisory }),
     ...(egress === undefined ? {} : { egress }),
+    ...(boot === undefined ? {} : { boot }),
+  }
+}
+
+/** A stack that did not come up (#407), read service by service. */
+function parseBootFailure(value: unknown, field: string): RunBootFailure | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value) || !Array.isArray(value.services)) fail(field, `result.json ${field} must be a JSON object with services`)
+  return {
+    services: value.services.map((entry, index) => {
+      const at = `${field}.services[${index}]`
+      if (!isRecord(entry)) fail(at, 'a service must be a JSON object with service and state')
+      if (entry.exitCode !== undefined && (typeof entry.exitCode !== 'number' || !Number.isInteger(entry.exitCode))) fail(`${at}.exitCode`, 'exitCode must be an integer')
+      const log = entry.log === undefined ? undefined : nonEmptyString(entry.log, `${at}.log`, 'log path')
+      if (log !== undefined && (log.startsWith('/') || log.split('/').includes('..'))) fail(`${at}.log`, 'a log path is a path inside the evidence')
+      if (entry.tail !== undefined && (!Array.isArray(entry.tail) || entry.tail.some((line) => typeof line !== 'string') || entry.tail.length > BOOT_TAIL_LINES))
+        fail(`${at}.tail`, `tail must be an array of at most ${BOOT_TAIL_LINES} lines`)
+      return {
+        service: nonEmptyString(entry.service, `${at}.service`, 'service name'),
+        state: nonEmptyString(entry.state, `${at}.state`, 'service state'),
+        ...(entry.exitCode === undefined ? {} : { exitCode: entry.exitCode as number }),
+        ...(entry.health === undefined ? {} : { health: nonEmptyString(entry.health, `${at}.health`, 'service health') }),
+        ...(log === undefined ? {} : { log }),
+        ...(entry.tail === undefined ? {} : { tail: entry.tail as string[] }),
+      }
+    }),
   }
 }
 
@@ -753,7 +819,12 @@ function parseRunBase(value: unknown): RunBase | undefined {
   if (value.status !== 'executed' && value.status !== 'not-executed')
     fail('base.status', `unknown base status ${JSON.stringify(value.status)} (expected "executed" or "not-executed")`)
   const egress = parseEgress(value.egress, 'base.egress')
-  const images = { ...(value.images === undefined ? {} : { images: parseBaseImages(value.images) }), ...(egress === undefined ? {} : { egress }) }
+  const boot = parseBootFailure(value.boot, 'base.boot')
+  const images = {
+    ...(value.images === undefined ? {} : { images: parseBaseImages(value.images) }),
+    ...(egress === undefined ? {} : { egress }),
+    ...(boot === undefined ? {} : { boot }),
+  }
   if (value.status === 'executed')
     return value.reason === undefined ? { ref, status: 'executed', ...images } : { ref, status: 'executed', reason: nonEmptyString(value.reason, 'base.reason', 'reason'), ...images }
   if (value.reason === undefined) fail('base.reason', 'a base side that did not execute names why')

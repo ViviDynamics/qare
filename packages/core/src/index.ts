@@ -32,6 +32,7 @@ export type { LanePlan } from './shards.js'
 export {
   RESULT_SCHEMA_VERSION,
   RUN_VERDICTS,
+  BOOT_TAIL_LINES,
   ResultValidationError,
   loadResult,
   parseResult,
@@ -88,6 +89,8 @@ export type {
   RunTarget,
   RunBase,
   RunEgress,
+  RunBootFailure,
+  RunBootService,
   RunBaseImage,
   CriterionBase,
 } from './result.js'
@@ -191,8 +194,8 @@ export { inboxSource, mailpitSource, mailReader, mailSourceOf, MAIL_SOURCE_KINDS
 export type { MailSource, MailFilter, MailRef, DeclaredMailSource, MailSourceKind } from './mail-source.js'
 export { Artefacts } from './artefacts.js'
 export type { ArtefactField } from './artefacts.js'
-export { bootApp, commandBootCompose, commandBootFile, readStackEgress, stopApp } from './boot.js'
-export type { BootOutcome, BootOpts, StackEgress } from './boot.js'
+export { bootApp, captureServiceLogs, commandBootCompose, commandBootFile, readStackEgress, serviceFailed, stopApp } from './boot.js'
+export type { BootOutcome, BootOpts, ServiceLog, StackEgress } from './boot.js'
 export { isolatedHealthUrl, isolateRun, mintIsolation } from './isolation.js'
 export type { RunIsolation } from './isolation.js'
 export { reapProjects } from './reap.js'
