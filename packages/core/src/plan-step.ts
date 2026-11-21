@@ -1102,18 +1102,35 @@ const GREP_LONG_VALUE_OPTIONS = new Set([
 ])
 const GREP_LONG_PATTERN_OPTIONS = new Set(['regexp', 'file'])
 
+/** grep's options that choose how the pattern is read; the last one given decides (#393). */
+const GREP_SHORT_SYNTAX_OPTIONS: Record<string, GrepSyntax> = { G: 'basic', E: 'extended', P: 'perl', F: 'fixed' }
+const GREP_LONG_SYNTAX_OPTIONS: Record<string, GrepSyntax> = {
+  'basic-regexp': 'basic', 'extended-regexp': 'extended', 'perl-regexp': 'perl', 'fixed-strings': 'fixed',
+}
+type GrepSyntax = 'basic' | 'extended' | 'perl' | 'fixed'
+
+interface GrepArguments {
+  /** What grep would open as files: option files, then the operands after the pattern. */
+  files: string[]
+  /** The patterns given on the command line, by -e and --regexp or as the first operand; never a -f file's. */
+  patterns: string[]
+  syntax: GrepSyntax
+}
+
 /**
- * What grep would open as files: option files and operands after the pattern, read by
- * grep's own option grammar. Short options cluster (`-ni`), and one that
- * takes a value takes the rest of its cluster (`-m1`, `-eA`) or, when it
- * ends the cluster, the next token (`-m 1`, `-e A`). A pattern given by an
- * option leaves every operand a file.
+ * A grep command read by grep's own option grammar. Short options cluster
+ * (`-ni`), and one that takes a value takes the rest of its cluster (`-m1`,
+ * `-eA`) or, when it ends the cluster, the next token (`-m 1`, `-e A`). A
+ * pattern given by an option leaves every operand a file. Options may follow
+ * operands, as grep reads them, until `--`.
  */
-function grepFileOperands(tokens: string[]): string[] {
+function grepArguments(tokens: string[]): GrepArguments {
   const operands: string[] = []
   const optionFiles: string[] = []
+  const optionPatterns: string[] = []
   let patternGiven = false
   let optionsEnded = false
+  let syntax: GrepSyntax = 'basic'
   for (let index = 1; index < tokens.length; index += 1) {
     const token = tokens[index]!
     if (optionsEnded || token === '-' || !token.startsWith('-')) {
@@ -1128,28 +1145,111 @@ function grepFileOperands(tokens: string[]): string[] {
       const [name = '', value] = token.slice(2).split(/=(.*)/s, 2)
       const isPattern = GREP_LONG_PATTERN_OPTIONS.has(name)
       if (isPattern) patternGiven = true
-      if (name === 'file' || name === 'exclude-from') {
-        const file = value ?? tokens[index + 1]
-        if (file !== undefined) optionFiles.push(file)
-      }
+      syntax = GREP_LONG_SYNTAX_OPTIONS[name] ?? syntax
+      const given = value ?? tokens[index + 1]
+      if (given !== undefined && (name === 'file' || name === 'exclude-from')) optionFiles.push(given)
+      if (given !== undefined && name === 'regexp') optionPatterns.push(given)
       if ((isPattern || GREP_LONG_VALUE_OPTIONS.has(name)) && value === undefined) index += 1
       continue
     }
     for (let at = 1; at < token.length; at += 1) {
       const letter = token[at]!
+      syntax = GREP_SHORT_SYNTAX_OPTIONS[letter] ?? syntax
       const isPattern = GREP_SHORT_PATTERN_OPTIONS.includes(letter)
       if (!isPattern && !GREP_SHORT_VALUE_OPTIONS.includes(letter)) continue
       if (isPattern) patternGiven = true
-      if (letter === 'f') {
-        const file = token.slice(at + 1) || tokens[index + 1]
-        if (file !== undefined) optionFiles.push(file)
-      }
+      const given = token.slice(at + 1) || tokens[index + 1]
+      if (given !== undefined && letter === 'f') optionFiles.push(given)
+      if (given !== undefined && letter === 'e') optionPatterns.push(given)
       // The value is the rest of the cluster, or the next token when the letter ends it.
       if (at === token.length - 1) index += 1
       break
     }
   }
-  return [...optionFiles, ...(patternGiven ? operands : operands.slice(1))]
+  return {
+    files: [...optionFiles, ...(patternGiven ? operands : operands.slice(1))],
+    patterns: patternGiven ? optionPatterns : operands.slice(0, 1),
+    syntax,
+  }
+}
+
+function grepFileOperands(tokens: string[]): string[] {
+  return grepArguments(tokens).files
+}
+
+/**
+ * The first piece of extended syntax in a pattern grep reads as basic syntax
+ * (#393): an unescaped `+`, `?` or `|`, an interval such as `{0,8}`, or a
+ * `(...)` group. In basic syntax each is the character itself (their escaped
+ * forms are the operators), so a pattern written in extended syntax matches
+ * only text that spells it out. A bracket expression is skipped, so `[+]` is
+ * how a character meant as itself is written.
+ */
+function extendedSyntax(pattern: string): string | undefined {
+  let openGroup = false
+  for (let at = 0; at < pattern.length; at += 1) {
+    const character = pattern[at]!
+    if (character === '\\') {
+      at += 1
+      continue
+    }
+    if (character === '[') {
+      at = bracketEnd(pattern, at)
+      continue
+    }
+    if (character === '+' || character === '?' || character === '|') return character
+    if (character === '{') {
+      const interval = /^\{(\d+(,\d*)?|,\d+)\}/.exec(pattern.slice(at))?.[0]
+      if (interval !== undefined) return interval
+    }
+    if (character === '(') openGroup = true
+    if (character === ')' && openGroup) return '(...)'
+  }
+  return undefined
+}
+
+/** Where the bracket expression opened at `start` ends: a `]` first in it is a member, as are `[:class:]` and its kin. */
+function bracketEnd(pattern: string, start: number): number {
+  let at = start + 1
+  if (pattern[at] === '^') at += 1
+  if (pattern[at] === ']') at += 1
+  for (; at < pattern.length; at += 1) {
+    const character = pattern[at]!
+    if (character === ']') return at
+    const kind = pattern[at + 1]
+    if (character === '[' && (kind === ':' || kind === '.' || kind === '=')) {
+      const close = pattern.indexOf(`${kind}]`, at + 2)
+      if (close !== -1) at = close + 1
+    }
+  }
+  return pattern.length
+}
+
+/**
+ * A grep that reads its pattern as basic syntax though the pattern is written
+ * in extended syntax (#393). It cannot match what it was written to find, so
+ * a satisfied criterion would be recorded failed. Where the profile declares
+ * the grep, its form passes no -E, so the planner is told to write the
+ * pattern without.
+ */
+function grepSyntaxGap(tokens: string[], where: string, declaredForm: boolean): string | undefined {
+  const { patterns, syntax } = grepArguments(tokens)
+  if (syntax !== 'basic') return undefined
+  for (const pattern of patterns) {
+    const construct = extendedSyntax(pattern)
+    if (construct === undefined) continue
+    const reading =
+      `${where}: the pattern ${JSON.stringify(pattern)} uses extended syntax (${JSON.stringify(construct)}), and grep without -E, -P or -F reads it as basic syntax, ` +
+      'where that is the character itself, so the pattern cannot match what it was written to find. '
+    return declaredForm
+      ? reading +
+          'The declared form passes no -E, so write the pattern without extended syntax: a run of characters as * ([0-9][0-9]* for a number), ' +
+          'and each character meant as itself in brackets ([+], [?], [{]0,8[}]); or mark the criterion unplannable'
+      : reading +
+          'Pass -E when it is meant as extended syntax, or -F when the pattern is text to find as written; ' +
+          'a character meant as itself may be written in brackets ([+], [?], [{])'
+  }
+  return undefined
 }
 
 /**
@@ -1179,7 +1279,11 @@ function grepGap(plan: Plan, inputs: PlanInputs): string | undefined {
           const template = command.run.split(/\s+/).filter((token) => token !== '')
           return template.length === tokens.length && template.every((token, index) => tokenFillsTemplate(token, tokens[index]))
         })
-        if (fits) continue
+        if (fits) {
+          const syntax = grepSyntaxGap(tokens, where, true)
+          if (syntax !== undefined) return syntax
+          continue
+        }
         const forms = declared.map(([name, command]) => `${name} (${command.run})`).join(' or ')
         return (
           `${where}: the profile declares grep as the command ${forms}, and the planned command does not have that form. ` +
@@ -1187,6 +1291,8 @@ function grepGap(plan: Plan, inputs: PlanInputs): string | undefined {
           'write the pattern as one token (one word, or a regular expression with .* between its words) in the declared form, or mark the criterion unplannable'
         )
       }
+      const syntax = grepSyntaxGap(tokens, where, false)
+      if (syntax !== undefined) return syntax
       if (inputs.repoPath === undefined) continue
       for (const operand of grepFileOperands(tokens)) {
         if (operand === '-') continue

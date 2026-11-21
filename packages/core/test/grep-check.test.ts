@@ -329,3 +329,116 @@ test('only grep is read this way: another program that exits 2 still fails its c
 
   expect(result.criteria[0]).toMatchObject({ outcome: 'failed' })
 })
+
+// #393: on #392 the planner wrote `grep -n -- [1-9][0-9]{0,8}
+// .github/workflows/pipeline.yml`. Without -E grep reads its pattern as basic
+// syntax, where {0,8} is four literal characters, so the pattern could not
+// match the line it was written for: grep exited 1 and a satisfied criterion
+// was recorded failed. Extended syntax without -E, -P or -F is caught at the
+// plan step, where the planner can still write what it means.
+
+/** The validation line of .github/workflows/pipeline.yml at #392's head 290f552, which the criterion was about. */
+const CONTEXT_WINDOW_LINE = '          if [ -n "$NARE_CONTEXT_WINDOW" ] && [[ ! "$NARE_CONTEXT_WINDOW" =~ ^[1-9][0-9]{0,8}$ ]]; then'
+const PLANNED_392 = 'grep -n -- [1-9][0-9]{0,8} .github/workflows/pipeline.yml'
+
+async function pipelineCheckout(): Promise<string> {
+  const root = await checkout()
+  await mkdir(join(root, '.github', 'workflows'), { recursive: true })
+  await writeFile(join(root, '.github', 'workflows', 'pipeline.yml'), `jobs:\n${CONTEXT_WINDOW_LINE}\n`)
+  return root
+}
+
+test.each([
+  ['an interval', 'grep -n -- [1-9][0-9]{0,8} docs/SPEC.md', '{0,8}'],
+  ['an interval with one bound', 'grep -n a{2} docs/SPEC.md', '{2}'],
+  ['an open interval', 'grep -n [0-9]{,3} docs/SPEC.md', '{,3}'],
+  ['a +', 'grep -n flows+ docs/SPEC.md', '+'],
+  ['a ?', 'grep -n flows? docs/SPEC.md', '?'],
+  ['options in a cluster that select no syntax', 'grep -ni flows+ docs/SPEC.md', '+'],
+  ['a pattern given with -e', 'grep -n -e flows+ docs/SPEC.md', '+'],
+  ['a pattern given with --regexp=', 'grep --regexp=flows+ docs/SPEC.md', '+'],
+  ['a pattern given with --regexp and the next token', 'grep --regexp flows+ docs/SPEC.md', '+'],
+  ['a pattern attached to -e in a cluster', 'grep -neflows+ docs/SPEC.md', '+'],
+  ['a second pattern given with -e', 'grep -e flow -e flows+ docs/SPEC.md', '+'],
+  ['--basic-regexp', 'grep --basic-regexp -n flows+ docs/SPEC.md', '+'],
+  ['-G after -E, the last syntax option deciding', 'grep -E -G -n flows+ docs/SPEC.md', '+'],
+])('a grep in basic syntax whose pattern uses extended syntax is corrected, naming -E: %s', async (_label, command, construct) => {
+  const runner = new FakeAgentRunner([completed(planWith(command)), completed(planWith('grep -nE flows+ docs/SPEC.md'))])
+
+  const plan = await planRun(runner, await inputs())
+
+  expect(runner.requests).toHaveLength(2)
+  const correction = runner.requests[1]?.prompt ?? ''
+  expect(correction).toContain('criterion c1 command check "spec says so"')
+  expect(correction).toContain(`uses extended syntax (${JSON.stringify(construct)})`)
+  expect(correction).toContain('-E')
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ command: 'grep -nE flows+ docs/SPEC.md' }] })
+})
+
+test('a plan that still holds extended syntax without -E after its correction is refused', async () => {
+  const runner = new FakeAgentRunner([completed(planWith('grep -n flows+ docs/SPEC.md')), completed(planWith('grep -n flows+ docs/SPEC.md'))])
+
+  const error = await planRun(runner, await inputs()).catch((caught: unknown) => caught)
+
+  expect(error).toBeInstanceOf(PlanStepError)
+  expect(String(error)).toContain('uses extended syntax ("+")')
+})
+
+test.each([
+  ['-E', 'grep -E -n flows+ docs/SPEC.md'],
+  ['-E in a cluster after another option', 'grep -nE [0-9]{0,8} docs/SPEC.md'],
+  ['-E in a cluster before another option', 'grep -En [0-9]{0,8} docs/SPEC.md'],
+  ['-P', 'grep -nP flows? docs/SPEC.md'],
+  ['-F, which reads the pattern as text', 'grep -nF -- [1-9][0-9]{0,8} docs/SPEC.md'],
+  ['--extended-regexp', 'grep --extended-regexp -n flows+ docs/SPEC.md'],
+  ['--perl-regexp', 'grep --perl-regexp flows? docs/SPEC.md'],
+  ['--fixed-strings', 'grep --fixed-strings -n a{2} docs/SPEC.md'],
+  ['-E with the pattern given by -e', 'grep -E -e flows+ docs/SPEC.md'],
+  ['-E after the pattern, which grep still reads as an option', 'grep -n flows+ -E docs/SPEC.md'],
+  ['a + and ? meant literally, written in brackets', 'grep -n flows[+][?] docs/SPEC.md'],
+  ['braces in a bracket expression', 'grep -n [{]0,8[}] docs/SPEC.md'],
+  ['a run value, whose braces are no interval', 'grep -n {{run.id}} docs/SPEC.md'],
+  ['braces that are no interval', 'grep -n {flow} docs/SPEC.md'],
+  ['a pattern read from a file with -f', 'grep -n -f docs/SPEC.md packages/core/src/runner.ts'],
+])('a grep with extended syntax it reads as meant is left alone: %s', async (_label, command) => {
+  const runner = new FakeAgentRunner([completed(planWith(command))])
+
+  const plan = await planRun(runner, await inputs())
+
+  expect(runner.requests).toHaveLength(1)
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ command }] })
+})
+
+test('where the profile declares grep without -E, a pattern in extended syntax is corrected, and the planner is told to write it without', async () => {
+  const runner = new FakeAgentRunner([completed(planWith('grep -n -- flows+ docs/SPEC.md')), completed(planWith('grep -n -- flows docs/SPEC.md'))])
+
+  const plan = await planRun(runner, await inputs({ commands: SOURCE }))
+
+  expect(runner.requests).toHaveLength(2)
+  const correction = runner.requests[1]?.prompt ?? ''
+  expect(correction).toContain('uses extended syntax ("+")')
+  expect(correction).toContain('-E')
+  expect(correction).toContain('The declared form passes no -E')
+  expect(correction).toMatch(/in brackets/)
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ command: 'grep -n -- flows docs/SPEC.md' }] })
+})
+
+test('#392\'s planned grep is corrected at the plan step, and the pattern it is steered to finds the line its criterion was about', async () => {
+  const repoPath = await pipelineCheckout()
+  const steered = 'grep -n -- NARE_CONTEXT_WINDOW.*[[]0-9[]][{]0,8[}] .github/workflows/pipeline.yml'
+  const runner = new FakeAgentRunner([completed(planWith(PLANNED_392)), completed(planWith(steered))])
+
+  // qare's own profile declares grep as this form, which is how #392 was planned.
+  const plan = await planRun(runner, { criteria: CRITERIA, diff: 'diff --git a/.github/workflows/pipeline.yml b/.github/workflows/pipeline.yml', repoPath, commands: SOURCE })
+
+  expect(runner.requests).toHaveLength(2)
+  expect(runner.requests[1]?.prompt).toContain('uses extended syntax ("{0,8}")')
+  expect(plan.criteria[0]).toMatchObject({ checks: [{ command: steered }] })
+
+  // With the real grep: the planned pattern finds nothing in the line it was written for, the steered one finds it.
+  const run = (command: string) => spawnSync('grep', command.split(/\s+/).slice(1), { cwd: repoPath, encoding: 'utf8' })
+  expect(run(PLANNED_392).status).toBe(1)
+  const found = run(steered)
+  expect(found.status).toBe(0)
+  expect(found.stdout).toContain('NARE_CONTEXT_WINDOW')
+})
