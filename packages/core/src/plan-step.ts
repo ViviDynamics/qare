@@ -10,6 +10,7 @@ import { existsSync, statSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 import { redactText, redactionRules, type ProfileRedaction, type RedactionRule } from './redact.js'
 import { suiteFilterViolation } from './suite-filter.js'
+import { HTTP_METHODS, MAX_HTTP_BODY_BYTES, MAX_HTTP_HEADERS } from './http-check.js'
 
 export interface PlanCriterionInput {
   id: string
@@ -493,6 +494,8 @@ export function planOutputSchema(
   driver?: FlowDriverCapabilities,
   /** No browser where the checks run (#258): whether a suite is there for a flow to name. */
   browserless?: { suites: boolean },
+  /** The profile boots an app or names a target an http check can address (#378). */
+  http = false,
 ) {
   const base = driver === undefined ? FLOW_ACTION_KINDS : FLOW_ACTION_KINDS.filter((kind) => driver.actions.includes(kind))
   const kinds = [...new Set([...base, ...extraFlowActions])]
@@ -502,13 +505,26 @@ export function planOutputSchema(
     browserless === undefined
       ? ['command', 'flow', 'visual', 'mail', 'a11y'].filter((kind) => !unserved.includes(kind))
       : ['command', ...(browserless.suites ? ['flow'] : []), 'mail']
-  const schema = planSchemaOver(checkKinds, kinds)
+  const schema = planSchemaOver(http ? [...checkKinds, 'http'] : checkKinds, kinds)
+  if (!http) for (const field of HTTP_CHECK_FIELDS) delete (schema.properties.criteria.items.properties.checks.items.properties as Record<string, unknown>)[field]
   if (browserless === undefined) return schema
   // Without a browser a flow is a suite and nothing else, so the fields only
   // a browser check carries are not in the schema at all (#258).
   const properties = schema.properties.criteria.items.properties.checks.items.properties as Record<string, unknown>
   for (const field of BROWSER_CHECK_FIELDS) delete properties[field]
   return schema
+}
+
+/** What only an http check carries (#378). */
+const HTTP_CHECK_FIELDS = ['method', 'path', 'headers', 'expect']
+
+/**
+ * Whether the planner may plan an http check (#378): only where there is an
+ * app to send the request to, the one the run boots or the target the
+ * profile names. A desktop build has no address.
+ */
+function httpOffered(inputs: PlanInputs): boolean {
+  return inputs.client === undefined && (inputs.app !== undefined || inputs.target !== undefined)
 }
 
 /** What only an action flow, a visual check or an a11y check carries. */
@@ -577,6 +593,44 @@ function planSchemaOver(checkKinds: string[], kinds: string[]) {
                   },
                 },
                 placement: { type: 'string' },
+                method: { type: 'string', enum: [...HTTP_METHODS] },
+                path: { type: 'string' },
+                headers: { type: 'object' },
+                expect: {
+                  type: 'object',
+                  properties: {
+                    status: { description: 'a status code, or a list of status codes' },
+                    headers: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          name: { type: 'string' },
+                          equals: { type: 'string' },
+                          contains: { type: 'string' },
+                          matches: { type: 'string' },
+                          exists: { type: 'boolean' },
+                        },
+                        required: ['name'],
+                      },
+                    },
+                    json: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          path: { type: 'string' },
+                          equals: { description: 'any JSON value' },
+                          contains: { type: 'string' },
+                          matches: { type: 'string' },
+                          exists: { type: 'boolean' },
+                        },
+                        required: ['path'],
+                      },
+                    },
+                  },
+                  required: ['status'],
+                },
                 inferred: { type: 'boolean' },
               },
               required: ['kind', 'name'],
@@ -669,7 +723,14 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     ...(unserved.includes('visual') ? [] : ['- visual: {"kind":"visual","name":...,"screenshot":"name","url":"/the/page","widths":[390],"themes":["light"]}']),
     '- mail: {"kind":"mail","name":...,"address":"{{run.mail_address}}","subject":"a substring to match", "timeoutMs":60000}',
     ...(unserved.includes('a11y') ? [] : ['- a11y: {"kind":"a11y","name":...,"url":"/the/page"}']),
+    ...(httpOffered(inputs)
+      ? [
+          '- http: {"kind":"http","name":...,"method":"POST","path":"/orders","headers":{"content-type":"application/json"},"body":"{\\"items\\":[]}",' +
+            '"expect":{"status":422,"headers":[{"name":"content-type","contains":"json"}],"json":[{"path":"error.code","equals":"empty_order"}]}}',
+        ]
+      : []),
     '',
+    ...(httpOffered(inputs) ? httpGuidance() : []),
     ...(unserved.includes('visual')
       ? []
       : [
@@ -868,6 +929,48 @@ function coverage(plan: Plan, inputs: PlanInputs): string | undefined {
 }
 
 /**
+ * What the planner is told of the http check (#378): where it may send its
+ * request, what it may carry, and that code judges the answer. Placed beside
+ * the suite guidance: a request shows what the running app answers, a named
+ * test shows what the code does inside, and a grep shows only text.
+ */
+function httpGuidance(): string[] {
+  return [
+    'An http check sends one request to the app under test and judges the answer in code, with no browser. Its path is a path on',
+    'the app, such as /orders?draft=1, which the run sends to the app it booted or to the target, and never a URL or another host.',
+    `Its method is one of ${HTTP_METHODS.join(', ')}. headers is an object of at most ${MAX_HTTP_HEADERS} string values, and body is a string`,
+    `of at most ${MAX_HTTP_BODY_BYTES} bytes: a JSON body is written as its text, with a content-type header. A GET or HEAD carries no body.`,
+    'expect always names the status, one code or a list of codes, and may name header matchers ({"name":...} with one of equals,',
+    'contains, matches or exists) and JSON matchers (a dot path into the body, such as error.code or items.0.id, with one of equals,',
+    'contains, matches or exists). Only these matchers decide; nothing else about the answer is judged.',
+    'Plan an http check for a criterion about what an API or a backend endpoint of the running app answers: a status, a header, a',
+    'JSON value. Prefer it to a command and to a grep of the source for that behaviour. A named test from a suite stays the check for',
+    'behaviour inside the code that no request shows. The run adds no credential to a request and none may be written into one:',
+    'a criterion that only a signed-in request can show is planned with a declared suite or command, or marked unplannable.',
+    '',
+  ]
+}
+
+/**
+ * An http check in a plan whose profile has no app it can address (#378):
+ * refused here, where the planner can still choose another check.
+ */
+function httpGap(plan: Plan, inputs: PlanInputs): string | undefined {
+  if (httpOffered(inputs)) return undefined
+  for (const criterion of plan.criteria) {
+    if (!('checks' in criterion)) continue
+    for (const check of criterion.checks)
+      if (check.kind === 'http')
+        return (
+          `criterion ${criterion.id} http check "${check.name}" sends a request, and ` +
+          (inputs.client !== undefined ? 'the app is a desktop build with no address' : 'the profile boots no app and names no target') +
+          ', so there is nothing to send it to'
+        )
+  }
+  return undefined
+}
+
+/**
  * A check that drives a browser, in a plan for an image that ships none
  * (#258): refused here, naming the flavour and the setting that changes it,
  * instead of ending unverified at `browserType.launch` once the run is paid for.
@@ -878,7 +981,8 @@ function browserGap(plan: Plan, inputs: PlanInputs): string | undefined {
   for (const criterion of plan.criteria) {
     if (!('checks' in criterion)) continue
     for (const check of criterion.checks) {
-      if (check.kind === 'command' || check.kind === 'mail') continue
+      // An http check sends a request and opens no page (#378).
+      if (check.kind === 'command' || check.kind === 'mail' || check.kind === 'http') continue
       if (check.kind === 'flow' && check.suite !== undefined) continue
       return (
         `criterion ${criterion.id} ${check.kind} check "${check.name}" drives a browser, and the checks run in the qare-${flavour} image ` +
@@ -1450,6 +1554,7 @@ async function planTurns(
           inputs.flowActions ?? [],
           inputs.driver,
           inputs.noBrowser === undefined ? undefined : { suites: (inputs.suites?.length ?? 0) > 0 },
+          httpOffered(inputs),
         ),
       ),
       budget,
@@ -1496,6 +1601,11 @@ async function planTurns(
         `${browser}. Until then, plan the criterion with ` +
         (inputs.suites?.length ? `a declared suite (${inputs.suites.map(suiteName).join(', ')}) or a command` : 'a command') +
         ', or mark it unplannable.'
+      continue
+    }
+    const http = httpGap(plan, inputs)
+    if (http !== undefined) {
+      correction = `${http}. Plan the criterion with a command or a declared suite, or mark it unplannable.`
       continue
     }
     const filterGap = suiteFilterGap(plan, inputs)

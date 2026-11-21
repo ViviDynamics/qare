@@ -34,5 +34,5 @@ Out:
 - [x] 2. Address resolution: `httpCheckUrl` resolves a path on the booted app or the target and refuses everything else. Tests: app origin with the run port, target base path, climbing paths, no app.
 - [x] 3. Execution and evidence: `runHttpCheckJob` sends the request, reads the capped body, evaluates the matchers and writes redacted `http.json`. Tests: pass, status mismatch, header and JSON mismatch, non-JSON body, redirect not followed, timeout unverified, secrets redacted, body excerpt capped.
 - [x] 4. Run wiring: `runCriterion` branch, run value substitution and plan-time validation. Test: a job against a target runs an http check end to end and the criterion is proven or failed by the matchers alone.
-- [ ] 5. Planner: schema field and kind, prompt text, offered only with an app or a target, kept on a browserless profile, corrected when there is nothing to address. Tests in plan-step and plan-browserless suites.
+- [x] 5. Planner: schema field and kind, prompt text, offered only with an app or a target, kept on a browserless profile, corrected when there is nothing to address. Tests in plan-step and plan-browserless suites.
 - [ ] 6. Docs: SPEC section on the http check.
