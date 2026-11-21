@@ -53,6 +53,8 @@ BASE_SHA="$(git rev-parse 'HEAD^1')" \
 HEAD_SHA="$(git rev-parse HEAD)" \
 PR_NUMBER=0 \
 PROFILE=examples/mail-app/.qa \
+FLAKE_ATTEMPTS=1 \
+QUARANTINE= \
   step 'Run the plan' || code=$?
 # The stack outlives the run: taking it down is the pipeline's step, and it
 # runs whatever the run came to, so nothing it booted outlives a failure.

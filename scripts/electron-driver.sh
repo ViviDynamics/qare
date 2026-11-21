@@ -101,6 +101,8 @@ run() {
   HEAD_SHA="$(git rev-parse HEAD)" \
   PR_NUMBER=0 \
   PROFILE="$profile" \
+  FLAKE_ATTEMPTS=1 \
+  QUARANTINE= \
     step 'Run the plan' || code=$?
   if [ ! -f evidence/result.json ]; then
     echo "$name: the execute step exited $code and recorded no evidence/result.json" >&2
@@ -129,6 +131,8 @@ refused() {
   HEAD_SHA="$(git rev-parse HEAD)" \
   PR_NUMBER=0 \
   PROFILE="$profile" \
+  FLAKE_ATTEMPTS=1 \
+  QUARANTINE= \
     step 'Run the plan' || code=$?
   if [ ! -f evidence/result.json ]; then
     echo "$name: the execute step exited $code and recorded no evidence/result.json" >&2
@@ -157,6 +161,8 @@ failing() {
   HEAD_SHA="$(git rev-parse HEAD)" \
   PR_NUMBER=0 \
   PROFILE="$profile" \
+  FLAKE_ATTEMPTS=1 \
+  QUARANTINE= \
     step 'Run the plan' || code=$?
   if [ ! -f evidence/result.json ]; then
     echo "$name: the execute step exited $code and recorded no evidence/result.json" >&2

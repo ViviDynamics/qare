@@ -1172,6 +1172,9 @@ jobs:
                 exit 1
                 ;;
             esac
+            # Fresh every run: a store an earlier job left on a runner that
+            # outlived it is never read.
+            rm -rf "$quarantine_dir"
             mkdir -p "$quarantine_dir"
             # The store is the base revision's (#380): a pull request cannot
             # quarantine its own failing check. Without a base checkout the
@@ -2593,6 +2596,9 @@ jobs:
                 exit 1
                 ;;
             esac
+            # Fresh every run: a store an earlier job left on a runner that
+            # outlived it is never read.
+            rm -rf "$quarantine_dir"
             mkdir -p "$quarantine_dir"
             # The default branch is reviewed, so its own copy is the store.
             if [ -f "$PWD/$QUARANTINE/quarantine.json" ]; then

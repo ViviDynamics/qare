@@ -43,6 +43,8 @@ BASE_SHA="$(git rev-parse 'HEAD^1')" \
 HEAD_SHA="$(git rev-parse HEAD)" \
 PR_NUMBER=0 \
 PROFILE=examples/compose-app/.qa \
+FLAKE_ATTEMPTS=2 \
+QUARANTINE=.qa \
   step 'Run the plan' || code=$?
 
 # Every project the run named: the head's, and the base's when the base
@@ -90,6 +92,14 @@ if [ -n "$left" ]; then
 fi
 echo "compose boot: the execute step booted the app, both checks reached it, and the teardown step took the stack down"
 
+# The pipeline's defaults ran (#380): one retry and a quarantine store. Every
+# check passed its first attempt, so the store the run wrote, uploaded with
+# the evidence, holds nothing.
+if ! jq -e '.schemaVersion == "1" and (.records | length) == 0' evidence/quarantine.json > /dev/null; then
+  echo "the run with the pipeline's default quarantine left no empty store in evidence/quarantine.json" >&2
+  exit 1
+fi
+
 # The evidence names the kind of host that produced the result (#76): the
 # run's container is Linux, and on a GitHub Actions runner the step hands in
 # what the runner says it is.
@@ -121,6 +131,8 @@ BASE_SHA="$(git rev-parse 'HEAD^1')" \
 HEAD_SHA="$(git rev-parse HEAD)" \
 PR_NUMBER=0 \
 PROFILE=examples/compose-app/needs-macos \
+FLAKE_ATTEMPTS=1 \
+QUARANTINE= \
   step 'Run the plan' || code=$?
 refusal='refused: unmet requirement: a macos host (requires.os): this host is linux. Nothing was provisioned.'
 left_by_refusal="$(ls -A evidence 2>/dev/null | tr '\n' ' ')"
