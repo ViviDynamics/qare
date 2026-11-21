@@ -10,3 +10,5 @@ visual:
   widths: [1440]
   themes: [light]
 suites: []
+# Both sides boot the same stack, so both name the service that stopped.
+base: { criteria: all }
