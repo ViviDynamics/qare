@@ -27,6 +27,7 @@ async function fakeNare(
     endpoint: string | null
     mcpTools: string | null
     mcpEndpoint: string | null
+    contextWindow: string | null
   }>
 }> {
   const dir = await mkdtemp(join(tmpdir(), 'qare-nare-'))
@@ -43,7 +44,7 @@ async function fakeNare(
     // directory up afterwards, which is what a caller should be able to rely on.
     `const at = argv.indexOf('--schema')`,
     `if (at !== -1) writeFileSync(${JSON.stringify(schemaPath)}, readFileSync(argv[at + 1], 'utf8'))`,
-    `writeFileSync(${JSON.stringify(envPath)}, JSON.stringify({ tools: process.env.QARE_EXPLORATION_TOOLS ?? null, endpoint: process.env.QARE_EXPLORATION_ENDPOINT ?? null, mcpTools: process.env.QARE_MCP_TOOLS ?? null, mcpEndpoint: process.env.QARE_MCP_ENDPOINT ?? null }))`,
+    `writeFileSync(${JSON.stringify(envPath)}, JSON.stringify({ tools: process.env.QARE_EXPLORATION_TOOLS ?? null, endpoint: process.env.QARE_EXPLORATION_ENDPOINT ?? null, mcpTools: process.env.QARE_MCP_TOOLS ?? null, mcpEndpoint: process.env.QARE_MCP_ENDPOINT ?? null, contextWindow: process.env.NARE_CONTEXT_WINDOW ?? null }))`,
     `for (const line of ${JSON.stringify(lines)}) console.log(JSON.stringify(line))`,
     `process.exit(${exitCode})`,
   ].join('\n')
@@ -288,6 +289,40 @@ test('a truncated run fails closed and keeps its stop reason', async () => {
 
   expect(run.status).toBe('failed')
   expect(run.stopReason).toBe('max_tokens')
+})
+
+// #391: nare stops a turn whose context estimate reaches the window with the
+// typed stop reason context. It is its own outcome, never flattened into error,
+// so the caller can say which window was in force and what sets it.
+test('a run stopped at the context window fails closed and says so by its stop reason', async () => {
+  const nare = await fakeNare(
+    [result({ status: 'error', stop_reason: 'context', output: null, error: 'context estimate 34000 reaches window 32000' })],
+    1,
+  )
+
+  const run = await new NareAgentRunner({ binary: nare.binary }).run(REQUEST)
+
+  expect(run.status).toBe('failed')
+  expect(run.stopReason).toBe('context')
+  expect(run.error).toBe('context estimate 34000 reaches window 32000')
+})
+
+// #391: the window is nare's to read from NARE_CONTEXT_WINDOW. The runner adds
+// no --context-window of its own and drops nothing, so the caller's value is the
+// one nare measures against.
+test('the context window the caller set reaches nare untouched, and no flag overrides it', async () => {
+  const nare = await fakeNare([result()])
+  const before = process.env.NARE_CONTEXT_WINDOW
+  process.env.NARE_CONTEXT_WINDOW = '200000'
+  try {
+    await new NareAgentRunner({ binary: nare.binary }).run(REQUEST)
+  } finally {
+    if (before === undefined) delete process.env.NARE_CONTEXT_WINDOW
+    else process.env.NARE_CONTEXT_WINDOW = before
+  }
+
+  expect((await nare.envSeen()).contextWindow).toBe('200000')
+  expect(await nare.argv()).not.toContain('--context-window')
 })
 
 test('a schema violation is a failure, not an answer', async () => {

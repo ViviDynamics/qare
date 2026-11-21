@@ -88,6 +88,7 @@ export type {
   CriterionBase,
 } from './result.js'
 export {
+  CONTEXT_WINDOW_ENV,
   DEFAULT_MAX_OUTPUT_TOKENS,
   FakeAgentRunner,
   FakeAgentRunnerError,
