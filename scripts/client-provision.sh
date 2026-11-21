@@ -107,6 +107,7 @@ run() {
   PROFILE="$profile" \
   FLAKE_ATTEMPTS=1 \
   QUARANTINE= \
+  BUILD_CACHE= \
     step 'Run the plan' || code=$?
   [ -f evidence/result.json ] || fail "$name: the execute step exited $code and recorded no evidence/result.json"
   mv evidence "$collected/provisioned-$name"

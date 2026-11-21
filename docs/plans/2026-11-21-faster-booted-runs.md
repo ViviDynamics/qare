@@ -21,7 +21,7 @@ Out:
 
 The publish job reads the run's own jobs from the Actions API (`actions: read`, which the caller's permission ceiling already grants) and adds them to the run's metrics record before post-evidence pushes it to `qa-assets`: `jobs: [{ name, startedAt, completedAt, wallMs }]`, for every job of this run attempt that has completed. publish and report themselves are still running, so they are not in it. The names drop the caller's prefix (`qare / execute (no secrets)` becomes `execute (no secrets)`), so every caller's report reads the same.
 
-The merge is jq in the publish job, not a new CLI flag: publish runs the published image, and a flag added here would not be in the image a pull request's own run pulls until the next release.
+The merge is a short node script in the publish job (node is already set up there for the minting step), not a new CLI flag: publish runs the published image, and a flag added here would not be in the image a pull request's own run pulls until the next release.
 
 The metrics summary reads the optional `jobs` field. The standing report gets one line per job: the median wall clock over the latest ten runs that recorded it, and over the ten before them, so a change in run time shows as two numbers side by side. A record with no `jobs` (every record before this change) counts for nothing in those lines and is still a run.
 
@@ -60,7 +60,7 @@ The scope, which is what keeps it safe:
 - It holds no secrets: the jobs that write and read it hold none, and the cache holds image layers built from the checkout.
 - No token-holding job restores it; the #305 rule and its test stand.
 
-How the build uses it: a pipeline step creates a `docker-container` buildx builder (the default `docker` driver cannot export a cache) and the run's container is handed it. `qare run --build-cache <dir>` makes the boot read the services that build, from `docker compose config`, and write an override that adds `cache_from: type=local,src=<dir>/<service>` for each, and on main also `cache_to: type=local,dest=...,mode=max`. Off by default.
+How the build uses it: a pipeline step creates a `docker-container` buildx builder (the default `docker` driver cannot export a cache) and the run's container is handed it. `qare run --build-cache-from <dir> [--build-cache-to <dir>]` makes the boot read the services that build, from `docker compose config`, and write an override that adds `cache_from: type=local,src=<dir>/<service>` for each that has a cache, and on main also `cache_to: type=local,dest=<dir>/<service>,mode=max`. Compose that builds through bake needs `BUILDX_BAKE_ENTITLEMENTS_FS=0` to export outside the build context, so only the writing build (main's) is given it. The base side only reads. Off by default.
 
 ## Assumptions
 
@@ -91,6 +91,6 @@ PR 2:
 - [x] 10. Docs. The no-build check for the QARE self-run lands with the last pull request, the one that closes #381.
 
 PR 3:
-- [ ] 11. `qare run --build-cache`: the boot's override with cache_from and cache_to. Tests in boot.test.ts.
-- [ ] 12. Pipeline: `build-cache` input, builder step, restore in execute, restore and save in main_execute. Workflow tests.
-- [ ] 13. Docs.
+- [x] 11. `qare run --build-cache`: the boot's override with cache_from and cache_to. Tests in boot.test.ts.
+- [x] 12. Pipeline: `build-cache` input, builder step, restore in execute, restore and save in main_execute. Workflow tests.
+- [x] 13. Docs, and a no-build check for the QARE self-run (`.qa/checks/faster-runs.mjs`) covering all five criteria.

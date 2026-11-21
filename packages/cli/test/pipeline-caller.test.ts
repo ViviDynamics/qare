@@ -122,6 +122,8 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
     'artefacts',
     // #380: a blocked verdict is a neutral check unless the caller opts in.
     'blocked-check',
+    // #381: the buildx layer cache, off by default.
+    'build-cache',
     'ephemeral-runners',
     'execute-runs-on',
     // #380: one retry for a failing check by default.
@@ -166,6 +168,7 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
   expect(call.inputs['ephemeral-runners']?.default).toBe('')
   expect(call.inputs['model-key-env']?.default).toBe('OPENAI_API_KEY')
   expect(call.inputs['main-lane']?.default).toBe('')
+  expect(call.inputs['build-cache']?.default).toBe('')
   expect(call.inputs['main-lane-dry-run']?.default).toBe('true')
   expect(call.inputs['main-lane-record-passes']?.default).toBe('')
   // A JSON string, because an input cannot be a list: one label or several.

@@ -115,6 +115,7 @@ UX review".
 | `planner-diff-default-exclude` | `true` | Whether the planner's copy of the diff also leaves out lockfiles and common generated paths, on top of `planner-diff-exclude`. `false` keeps them in. The evidence comment lists every path left out. See "Defaults for real repositories". |
 | `flake-attempts` | `2` | How many times execute runs a failing check before it judges it: one retry by default. A check that fails and then passes is quarantined and its criterion reported unverified, never proven. `1` turns retries off. See "Defaults for real repositories". |
 | `quarantine` | `.qa` | The directory, relative to the repository root, that holds the quarantine store (`quarantine.json`), the ledger directory by default. A pull request run reads the base revision's store, never the pull request's. Empty turns quarantine off. See "Defaults for real repositories". |
+| `build-cache` | empty | `true` gives the images execute and main_execute build a buildx layer cache (#381). Only main_execute, on your default branch, saves it; a pull request's run only reads it. See "The build cache". |
 | `blocked-check` | `neutral` | How the `QARE verdict` check run reports a blocked verdict. `failure` makes a run that disproved nothing but left a criterion unverified a failing check. See "Defaults for real repositories". |
 | `artefacts` | empty | The name of a workflow artifact that holds the builds a client profile installs, uploaded by an earlier job of your workflow. execute downloads it into `qare-artefacts/` at the repository root before the run. See "Profiles that install a build". |
 | `main-lane` | empty | `true` runs the main lane: on a push to your default branch, on a schedule or on a manual run, the pipeline boots the app, runs the suites the ledger records for its active criteria, judges them, and hands the result to `main-findings`. Empty, none of it runs. See "Findings on main". |
@@ -689,6 +690,55 @@ still built. For a command boot the project the run writes names the image
 in place of its build, so the image must hold the app as the build would:
 the checkout at `/app` on top of `app.boot.image`. The head is always built
 from the pull request.
+
+### The build cache
+
+A booted app's images are built on fresh hosted runners with no layer
+cache, at the base and at the head. `build-cache: 'true'` gives those builds
+a buildx layer cache (#381), kept with `actions/cache`:
+
+```yaml
+    with:
+      build-cache: 'true'
+```
+
+How it runs. execute and main_execute restore the newest cache under the key
+`qare-build-cache-<runner os>-`, make a `docker-container` buildx builder of
+their own (the default `docker` driver cannot use a local cache), and hand it
+to the run. The run asks compose which services build and writes an override
+that reads each one's layers from the restored cache. main_execute also
+exports the layers of its build, and saves them under a new key once the run
+ends. A builder that will not start, or a compose that cannot list its
+services, leaves the images to build with no cache: the cache saves time and
+never gates a run.
+
+Why the scope is safe. A cache a pull request could write would be read by
+main or by another pull request, and execute runs the pull request's code.
+So:
+
+- Only main_execute saves the cache, and only on your default branch (a
+  push, a schedule or a manual run of it). What it saves are layers of code
+  that was merged.
+- A pull request's execute only restores. GitHub lets a pull request's run
+  restore its own ref's caches and its base branch's, and nothing in that
+  run saves one, so what it reads was written on the default branch.
+- execute owns the runner's docker (see "Profiles that boot an
+  application"), so a pull request's code could reach the runner's cache
+  token and write an entry itself. GitHub scopes that write to the pull
+  request's own ref (`refs/pull/<n>/merge`), which only later runs of the
+  same pull request restore. Main and every other pull request never see it.
+  What it could poison is that pull request's own later runs, whose code it
+  already controls, and its base side, which cannot raise a verdict.
+- It holds no secrets: the jobs that write and read it hold none, and what it
+  holds is image layers built from a checkout.
+- No job that holds a secret or a token restores it (#305).
+
+On compose that builds through bake, exporting a cache to a directory
+outside the build context needs a file system entitlement, so the main lane's
+build is run with `BUILDX_BAKE_ENTITLEMENTS_FS=0`. A pull request's build
+only reads and is not given it. Off by default: a cache costs storage (10 GB
+a repository on GitHub-hosted runners, the oldest entries evicted first) and
+pays only for images that take long to build.
 
 ## Profiles that install a build
 

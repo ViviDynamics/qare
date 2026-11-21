@@ -281,6 +281,17 @@ on:
           installs nothing the pipeline has to fetch.
         type: string
         default: ''
+      build-cache:
+        description: >-
+          Set to 'true' to give the images execute and main_execute build a
+          buildx layer cache, kept with actions/cache. Only main_execute, on
+          your default branch, writes it: a pull request's run only reads it,
+          so no pull request reads anything another pull request wrote, and
+          main never reads anything a pull request wrote. It holds image
+          layers only, and the jobs that write and read it hold no secret.
+          Empty, the default, builds with no cache.
+        type: string
+        default: ''
       main-lane:
         description: >-
           Set to 'true' to run the main lane: on a push to your default
@@ -1087,6 +1098,19 @@ jobs:
         with:
           name: plan.json
           path: .
+      # The opt-in build cache (#381), restored before anything of the run
+      # starts. A pull request's run only reads it: GitHub
+      # lets it restore its own ref's caches and its base branch's, and this
+      # job never saves one, so what it reads was written on the default
+      # branch by main_execute, from merged code. This job holds no secret,
+      # and neither did the one that wrote the cache.
+      - name: Restore the build cache
+        if: inputs.build-cache == 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/qare-build-cache
+          key: qare-build-cache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: qare-build-cache-${{ runner.os }}-
       # The runner's docker (#209): a profile that boots its app does it with
       # `docker compose` against the runner's daemon, so the run is handed the
       # runner's docker CLI, the compose and buildx plugins that CLI names,
@@ -1149,6 +1173,29 @@ jobs:
           esac
           # One argument a line, for the steps that start the run's container.
           printf '%s\n' "${docker_access[@]}" > "$RUNNER_TEMP/qare-docker-access"
+      # The opt-in build cache (#381): the images a boot builds read their
+      # layers from the cache restored above. The runner's default docker
+      # driver cannot use a local cache, so the builds run on a
+      # docker-container builder this job makes for itself, handed to the
+      # run's container with the docker access found above. A builder that
+      # will not start leaves the images to build with no cache: the cache
+      # only saves time, and never gates a run.
+      - name: Make the build cache's builder
+        if: inputs.build-cache == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "$RUNNER_TEMP/qare-buildx-builder"
+          config="$RUNNER_TEMP/qare-buildx"
+          builder="qare-cache-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          rm -rf "$config"
+          mkdir -p "$config" "$RUNNER_TEMP/qare-build-cache" "$RUNNER_TEMP/qare-build-cache-new"
+          if ! BUILDX_CONFIG="$config" docker buildx create --name "$builder" --driver docker-container --bootstrap > /dev/null; then
+            echo "::warning::the build cache's builder could not be made, so the images build with no cache; the run is unaffected"
+            exit 0
+          fi
+          printf '%s\n' "$builder" > "$RUNNER_TEMP/qare-buildx-builder"
+          printf '%s\n' -e "BUILDX_CONFIG=$config" -e "BUILDX_BUILDER=$builder" -v "$config:$config" >> "$RUNNER_TEMP/qare-docker-access"
       - name: Run the plan
         shell: bash
         env:
@@ -1161,6 +1208,7 @@ jobs:
           PROFILE: ${{ inputs.profile }}
           FLAKE_ATTEMPTS: ${{ inputs.flake-attempts }}
           QUARANTINE: ${{ inputs.quarantine }}
+          BUILD_CACHE: ${{ inputs.build-cache }}
         run: |
           set -uo pipefail
           # The run's own facts come from here rather than from the plan: a
@@ -1232,6 +1280,14 @@ jobs:
             quarantine_args=(--quarantine "$quarantine_dir")
             quarantine_mount=(-v "$quarantine_dir:$quarantine_dir")
           fi
+          # The build cache (#381), read and never written: a pull request's
+          # run saves nothing.
+          cache_args=()
+          cache_mount=()
+          if [ "${BUILD_CACHE:-}" = "true" ] && [ -f "$RUNNER_TEMP/qare-buildx-builder" ]; then
+            cache_args=(--build-cache-from "$RUNNER_TEMP/qare-build-cache")
+            cache_mount=(-v "$RUNNER_TEMP/qare-build-cache:$RUNNER_TEMP/qare-build-cache")
+          fi
           mapfile -t docker_access < "$RUNNER_TEMP/qare-docker-access"
           safety_mount=()
           if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ]; then
@@ -1252,6 +1308,7 @@ jobs:
             -v "$PWD:$PWD" -w "$PWD" \
             "${base_mount[@]}" \
             "${quarantine_mount[@]}" \
+            "${cache_mount[@]}" \
             "${docker_access[@]}" \
             "$IMAGE_REF" qare run --plan plan.json \
             --id "pr-${PR_NUMBER}" \
@@ -1262,6 +1319,7 @@ jobs:
             "${base_args[@]}" \
             --flake-attempts "$FLAKE_ATTEMPTS" \
             "${quarantine_args[@]}" \
+            "${cache_args[@]}" \
             --evidence evidence || code=$?
           # The store the run wrote goes up with the evidence, for a person
           # to commit where the quarantine input points.
@@ -1358,6 +1416,16 @@ jobs:
               "$IMAGE_REF" qare reap "${projects[@]}"; then
             echo "::warning::qare reap failed: a compose project this run booted may still be running on the runner (${projects[*]}); the verdict is unaffected"
           fi
+      # The builder goes with the job that made it (#381).
+      - name: Remove the build cache's builder
+        if: always() && inputs.build-cache == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -f "$RUNNER_TEMP/qare-buildx-builder" ] || exit 0
+          BUILDX_CONFIG="$RUNNER_TEMP/qare-buildx" docker buildx rm "$(cat "$RUNNER_TEMP/qare-buildx-builder")" > /dev/null 2>&1 \
+            || echo "::warning::the build cache's builder could not be removed"
+          rm -f "$RUNNER_TEMP/qare-buildx-builder"
       # Evidence is published, so it is redacted before it leaves this
       # machine, and a redaction that fails uploads nothing (#52). The run
       # already redacts what it writes; this also covers files a crashed run
@@ -1783,8 +1851,8 @@ jobs:
       # them with the run's own read-only token: every job that completed
       # and ran (a skipped job ran nothing, and this job and report are still
       # running), by the name its workflow gives it, without the caller's
-      # prefix. jq does it here rather than a flag of the image, which a pull
-      # request's run would not have until the next release. The numbers
+      # prefix. node does it here rather than a flag of the image, which a
+      # pull request's run would not have until the next release. The numbers
       # describe the run and never gate it: a read that fails leaves the
       # record as judge wrote it.
       - name: Add each job's wall clock to the run's metrics
@@ -1811,16 +1879,28 @@ jobs:
             echo "::warning::the run's jobs could not be read, so its metrics record carries no job wall clock; the verdict is unaffected"
             exit 0
           fi
-          if ! jq --slurpfile api "$jobs_file" '. + {jobs: [
-                $api[0].jobs[]
-                | select(.status == "completed" and .conclusion != "skipped")
-                | {
-                    name: (.name | split(" / ") | last),
-                    startedAt: .started_at,
-                    completedAt: .completed_at,
-                    wallMs: ([((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601)) * 1000, 0] | max)
-                  }
-              ]}' "$record" > "$timed"; then
+          # node, which this job set up for the minting step, merges them.
+          if ! node - "$jobs_file" "$record" "$timed" <<'MERGE'; then
+          const fs = require('node:fs')
+          const [jobsFile, recordFile, outFile] = process.argv.slice(2)
+          const api = JSON.parse(fs.readFileSync(jobsFile, 'utf8'))
+          if (!Array.isArray(api?.jobs)) throw new Error('the answer carries no jobs')
+          const time = (value) => {
+            const ms = typeof value === 'string' ? Date.parse(value) : Number.NaN
+            if (Number.isNaN(ms)) throw new Error(`not a time: ${value}`)
+            return ms
+          }
+          const jobs = api.jobs
+            .filter((job) => job.status === 'completed' && job.conclusion !== 'skipped')
+            .map((job) => ({
+              name: String(job.name).split(' / ').pop(),
+              startedAt: job.started_at,
+              completedAt: job.completed_at,
+              wallMs: Math.max(0, time(job.completed_at) - time(job.started_at)),
+            }))
+          const record = JSON.parse(fs.readFileSync(recordFile, 'utf8'))
+          fs.writeFileSync(outFile, `${JSON.stringify({ ...record, jobs }, null, 2)}\n`)
+          MERGE
             echo "::warning::the run's jobs were not in the shape the Actions API promises, so its metrics record carries no job wall clock; the verdict is unaffected"
             exit 0
           fi
@@ -2632,6 +2712,17 @@ jobs:
         with:
           name: main-inputs
           path: .
+      # The opt-in build cache (#381), restored before anything of the run
+      # starts. main_execute runs on the default branch alone,
+      # so it restores, and saves below, in that branch's scope, which every
+      # pull request may read and none may write.
+      - name: Restore the build cache
+        if: inputs.build-cache == 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/qare-build-cache
+          key: qare-build-cache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: qare-build-cache-${{ runner.os }}-
       # The runner's docker, found exactly as execute finds it (#209, #256).
       - name: Find the runner's docker
         shell: bash
@@ -2678,6 +2769,29 @@ jobs:
           esac
           # One argument a line, for the steps that start the run's container.
           printf '%s\n' "${docker_access[@]}" > "$RUNNER_TEMP/qare-docker-access"
+      # The opt-in build cache (#381): the images a boot builds read their
+      # layers from the cache restored above. The runner's default docker
+      # driver cannot use a local cache, so the builds run on a
+      # docker-container builder this job makes for itself, handed to the
+      # run's container with the docker access found above. A builder that
+      # will not start leaves the images to build with no cache: the cache
+      # only saves time, and never gates a run.
+      - name: Make the build cache's builder
+        if: inputs.build-cache == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "$RUNNER_TEMP/qare-buildx-builder"
+          config="$RUNNER_TEMP/qare-buildx"
+          builder="qare-cache-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          rm -rf "$config"
+          mkdir -p "$config" "$RUNNER_TEMP/qare-build-cache" "$RUNNER_TEMP/qare-build-cache-new"
+          if ! BUILDX_CONFIG="$config" docker buildx create --name "$builder" --driver docker-container --bootstrap > /dev/null; then
+            echo "::warning::the build cache's builder could not be made, so the images build with no cache; the run is unaffected"
+            exit 0
+          fi
+          printf '%s\n' "$builder" > "$RUNNER_TEMP/qare-buildx-builder"
+          printf '%s\n' -e "BUILDX_CONFIG=$config" -e "BUILDX_BUILDER=$builder" -v "$config:$config" >> "$RUNNER_TEMP/qare-docker-access"
       - name: Run the plan on main
         shell: bash
         env:
@@ -2690,6 +2804,7 @@ jobs:
           PROFILE: ${{ inputs.profile }}
           FLAKE_ATTEMPTS: ${{ inputs.flake-attempts }}
           QUARANTINE: ${{ inputs.quarantine }}
+          BUILD_CACHE: ${{ inputs.build-cache }}
         run: |
           set -uo pipefail
           # One revision, so one side: the base and the head are the same
@@ -2726,6 +2841,14 @@ jobs:
             quarantine_args=(--quarantine "$quarantine_dir")
             quarantine_mount=(-v "$quarantine_dir:$quarantine_dir")
           fi
+          # The build cache (#381): read from what was restored, and the
+          # layers of this run's build exported for the step that saves them.
+          cache_args=()
+          cache_mount=()
+          if [ "${BUILD_CACHE:-}" = "true" ] && [ -f "$RUNNER_TEMP/qare-buildx-builder" ]; then
+            cache_args=(--build-cache-from "$RUNNER_TEMP/qare-build-cache" --build-cache-to "$RUNNER_TEMP/qare-build-cache-new")
+            cache_mount=(-v "$RUNNER_TEMP/qare-build-cache:$RUNNER_TEMP/qare-build-cache" -v "$RUNNER_TEMP/qare-build-cache-new:$RUNNER_TEMP/qare-build-cache-new")
+          fi
           mapfile -t docker_access < "$RUNNER_TEMP/qare-docker-access"
           safety_mount=()
           if [ "${RUNNER_ENVIRONMENT:-}" = "self-hosted" ]; then
@@ -2745,6 +2868,7 @@ jobs:
             -e QARE_EPHEMERAL_RUNNERS="${QARE_EPHEMERAL_RUNNERS:-}" \
             -v "$PWD:$PWD" -w "$PWD" \
             "${quarantine_mount[@]}" \
+            "${cache_mount[@]}" \
             "${docker_access[@]}" \
             "$IMAGE_REF" qare run --plan plan.json \
             --id "main-${RUN_ID}-${RUN_ATTEMPT}" \
@@ -2754,6 +2878,7 @@ jobs:
             --profile "$PROFILE" \
             --flake-attempts "$FLAKE_ATTEMPTS" \
             "${quarantine_args[@]}" \
+            "${cache_args[@]}" \
             --evidence evidence || code=$?
           # The store the run wrote goes up with the evidence, for a person
           # to commit where the quarantine input points.
@@ -2826,6 +2951,16 @@ jobs:
               "$IMAGE_REF" qare reap "${projects[@]}"; then
             echo "::warning::qare reap failed: a compose project this run booted may still be running on the runner (${projects[*]}); the verdict is unaffected"
           fi
+      # The builder goes with the job that made it (#381).
+      - name: Remove the build cache's builder
+        if: always() && inputs.build-cache == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -f "$RUNNER_TEMP/qare-buildx-builder" ] || exit 0
+          BUILDX_CONFIG="$RUNNER_TEMP/qare-buildx" docker buildx rm "$(cat "$RUNNER_TEMP/qare-buildx-builder")" > /dev/null 2>&1 \
+            || echo "::warning::the build cache's builder could not be removed"
+          rm -f "$RUNNER_TEMP/qare-buildx-builder"
       # Evidence is published, so it is redacted before it leaves this
       # machine, and a redaction that fails uploads nothing (#52).
       - name: Redact the evidence
@@ -2852,6 +2987,20 @@ jobs:
           name: main-evidence
           path: evidence/
           if-no-files-found: ignore
+      # The cache the build just wrote (#381), saved in the default branch's
+      # scope for the next run on main and for every pull request to read.
+      # Only this job saves it, and only on the default branch: a pull
+      # request's run never writes a cache another run reads.
+      - name: Save the build cache
+        if: >-
+          always() && inputs.build-cache == 'true' &&
+          github.event_name != 'pull_request' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+          hashFiles(format('{0}/qare-build-cache-new/**', runner.temp)) != ''
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/qare-build-cache-new
+          key: qare-build-cache-${{ runner.os }}-${{ github.run_id }}
 
   # label: main_judge (model key only)
   main_judge:

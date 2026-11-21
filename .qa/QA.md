@@ -50,6 +50,17 @@ network, model or credentials. Choose them for those criteria, never a grep of
 the source: a grep shows that a string exists, not that the boot works. The
 real docker boot of examples/command-app is CI's compose-boot job.
 
+Executable faster booted run checks (#381): each job's wall clock in the
+metrics record and the standing report, collect running the published image,
+a prebuilt base image, `base.criteria` defaulting to `ledger`, and the opt-in
+build cache are proven by `node -- .qa/checks/faster-runs.mjs <check>`, the
+declared faster-runs-check command, with check `jobs`, `collect`,
+`base-image`, `ledger-default` or `build-cache`. They run the workflow's own
+step scripts and the checkout's core source without a build, with curl,
+docker and compose standing in, so they need no daemon, network, model or
+credentials. Choose them for those criteria, never a grep of the source: a
+grep shows that a string exists, not that the base side or the cache works.
+
 qare repository QA profile (self-run target).
 
 What this is: the profile qare's own self-run executes, so a pull request

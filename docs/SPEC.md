@@ -93,7 +93,10 @@ the limit named. `image: ghcr.io/acme/app:{base}` (#381) runs a prebuilt
 image as the app's service at the base in place of building it, only when
 its `org.opencontainers.image.revision` label is the base commit; otherwise
 the base is built as before. `base.images` in the result says which image
-the base side used, and why one was not.
+the base side used, and why one was not. A pipeline caller can also opt in to a buildx
+layer cache for the images a boot builds (`build-cache`, #381), which only
+the main lane writes and a pull request's run only reads (docs/pipeline.md,
+"The build cache").
 
 A run against a target (#122) has one side by definition and says so, and so
 does `qare check`, which checks the app as it runs.

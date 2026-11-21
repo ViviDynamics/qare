@@ -103,6 +103,7 @@ run() {
   PROFILE="$profile" \
   FLAKE_ATTEMPTS=1 \
   QUARANTINE= \
+  BUILD_CACHE= \
     step 'Run the plan' || code=$?
   if [ ! -f evidence/result.json ]; then
     echo "$name: the execute step exited $code and recorded no evidence/result.json" >&2
@@ -133,6 +134,7 @@ refused() {
   PROFILE="$profile" \
   FLAKE_ATTEMPTS=1 \
   QUARANTINE= \
+  BUILD_CACHE= \
     step 'Run the plan' || code=$?
   if [ ! -f evidence/result.json ]; then
     echo "$name: the execute step exited $code and recorded no evidence/result.json" >&2
@@ -163,6 +165,7 @@ failing() {
   PROFILE="$profile" \
   FLAKE_ATTEMPTS=1 \
   QUARANTINE= \
+  BUILD_CACHE= \
     step 'Run the plan' || code=$?
   if [ ! -f evidence/result.json ]; then
     echo "$name: the execute step exited $code and recorded no evidence/result.json" >&2

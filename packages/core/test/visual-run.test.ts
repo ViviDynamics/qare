@@ -398,7 +398,12 @@ test('a change that moves an element fails the visual criterion, with base, head
   expect(origins[0]).toMatch(APP_ORIGIN)
   expect(origins[0]).toBe(origins[1])
   expect(origins[2]).toBe(origins[3])
-  expect(origins[2]).not.toBe(origins[0])
+  // Each side reached the port its own isolation was given. The base is torn
+  // down before the head boots, so the head may be given the same port again:
+  // what holds is that each side used its own, not that the two differ.
+  const portOf = async (side: string) => String((await readJson(join(job.evidenceDir, side, 'isolation.json')) as { port: number }).port)
+  expect(new URL(origins[0] ?? '').port).toBe(await portOf('base'))
+  expect(new URL(origins[2] ?? '').port).toBe(await portOf('head'))
   expect(backend.captures.every((capture) => new URL(capture.url).pathname === '/dashboard')).toBe(true)
 
   const record = await readJson(join(job.evidenceDir, 'head/checks/dashboard/0/visual.json'))

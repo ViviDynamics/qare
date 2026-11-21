@@ -875,3 +875,23 @@ test("CI boots an app from a start command through the same execute steps (#379)
   // No compose file: the run writes the project the command boots as.
   expect(existsSync(join(repoRoot, 'examples', 'command-app', 'compose.yaml'))).toBe(false)
 })
+
+test("CI runs the build cache through the pipeline's own steps: main writes it, a pull request reads it (#381)", () => {
+  const ci = readFileSync(join(repoRoot, '.github', 'workflows', 'ci.yml'), 'utf8')
+  expect(ci).toContain('scripts/build-cache-boot.sh qare-core:ci')
+  const script = readFileSync(join(repoRoot, 'scripts', 'build-cache-boot.sh'), 'utf8')
+  expect(script).toContain('node scripts/run-pipeline-step.mjs "$1" "$2"')
+  for (const [job, name] of [
+    ['main_execute', "Find the runner's docker"],
+    ['main_execute', "Make the build cache's builder"],
+    ['main_execute', 'Run the plan on main'],
+    ['execute', 'Run the plan'],
+    ['main_execute', "Remove the build cache's builder"],
+  ] as const) {
+    expect(script).toMatch(new RegExp(`step ${job} ["']${name}["']`))
+    expect(section(job)).toContain(`- name: ${name}\n`)
+  }
+  // Both runs hold to the scope: main's writes the layers, the pull request's writes none.
+  expect(script).toContain('"$written/web/index.json"')
+  expect(script).toContain("only the main lane may write one")
+})

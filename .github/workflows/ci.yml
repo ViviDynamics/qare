@@ -98,6 +98,13 @@ jobs:
         run: |
           mv evidence evidence-compose-app
           scripts/compose-boot.sh qare-core:ci examples/command-app
+      # The opt-in build cache (#381), through the pipeline's own steps: the
+      # main lane's run writes the compose app's layers, and a pull request's
+      # run reads them and writes none.
+      - name: Boot the example compose app with the build cache
+        run: |
+          mv evidence evidence-command-app
+          scripts/build-cache-boot.sh qare-core:ci
       - name: Upload the run's evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -106,6 +113,7 @@ jobs:
           path: |
             evidence/
             evidence-compose-app/
+            evidence-command-app/
           if-no-files-found: ignore
 
   # A real mail catcher (#65): the pipeline's execute steps run against

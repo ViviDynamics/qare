@@ -50,6 +50,7 @@ PR_NUMBER=0 \
 PROFILE="$example/.qa" \
 FLAKE_ATTEMPTS=2 \
 QUARANTINE=.qa \
+BUILD_CACHE= \
   step 'Run the plan' || code=$?
 
 # Every project the run named: the head's, and the base's when the base
@@ -141,6 +142,7 @@ PR_NUMBER=0 \
 PROFILE="$example/needs-macos" \
 FLAKE_ATTEMPTS=1 \
 QUARANTINE= \
+BUILD_CACHE= \
   step 'Run the plan' || code=$?
 refusal='refused: unmet requirement: a macos host (requires.os): this host is linux. Nothing was provisioned.'
 left_by_refusal="$(ls -A evidence 2>/dev/null | tr '\n' ' ')"
