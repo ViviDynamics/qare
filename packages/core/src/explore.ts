@@ -321,6 +321,23 @@ export async function callExplorationTool(
   tool: string,
   input: { url?: string } = {},
 ): Promise<string> {
+  const parsed = await requestExplorationTool(endpoint, tool, input)
+  const encoded = JSON.stringify(parsed)
+  if (encoded === undefined) throw new ExplorationError('the exploration server answered something that cannot be carried')
+  return untrustedToolResult(encoded)
+}
+
+/**
+ * The same call as callExplorationTool, answered with the parsed result
+ * rather than its fenced text (#377): the bridge that serves the channel to
+ * nare reads a snapshot's paths to record what the session saw, then fences
+ * the result itself before the model reads it. A refusal is still fenced.
+ */
+export async function requestExplorationTool(
+  endpoint: string,
+  tool: string,
+  input: { url?: string } = {},
+): Promise<unknown> {
   let target: URL
   try {
     target = new URL(`${endpoint.replace(/\/+$/, '')}/${tool}`)
@@ -374,12 +391,7 @@ export async function callExplorationTool(
             reject(new ExplorationError('the exploration server answered a tool call with nothing'))
             return
           }
-          const encoded = JSON.stringify(parsed)
-          if (encoded === undefined) {
-            reject(new ExplorationError('the exploration server answered something that cannot be carried'))
-            return
-          }
-          resolve(untrustedToolResult(encoded))
+          resolve(parsed)
         })
       },
     )

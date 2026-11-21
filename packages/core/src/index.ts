@@ -118,6 +118,7 @@ export type {
 export {
   EXPLORATION_TOOLS,
   callExplorationTool,
+  requestExplorationTool,
   needsSandboxSplit,
   sandboxEnvironment,
   startExplorationServer,
@@ -126,6 +127,8 @@ export {
   ExplorationError,
 } from './explore.js'
 export type { ExplorationPage, ExplorationSource, ExplorationTool } from './explore.js'
+export { EXPLORATION_BRIDGE_ALIAS, EXPLORATION_BRIDGE_TOOLS, startExplorationBridge } from './explore-bridge.js'
+export type { ExplorationBridge, ExploredPage } from './explore-bridge.js'
 export {
   McpError,
   McpUnreachable,
