@@ -21,7 +21,7 @@ Out:
 
 The publish job reads the run's own jobs from the Actions API (`actions: read`, which the caller's permission ceiling already grants) and adds them to the run's metrics record before post-evidence pushes it to `qa-assets`: `jobs: [{ name, startedAt, completedAt, wallMs }]`, for every job of this run attempt that has completed. publish and report themselves are still running, so they are not in it. The names drop the caller's prefix (`qare / execute (no secrets)` becomes `execute (no secrets)`), so every caller's report reads the same.
 
-The merge is jq in the publish job, not a new CLI flag: publish runs the published image, and a flag added here would not be in the image a pull request's own run pulls until the next release.
+The merge is a short node script in the publish job (node is already set up there for the minting step), not a new CLI flag: publish runs the published image, and a flag added here would not be in the image a pull request's own run pulls until the next release.
 
 The metrics summary reads the optional `jobs` field. The standing report gets one line per job: the median wall clock over the latest ten runs that recorded it, and over the ten before them, so a change in run time shows as two numbers side by side. A record with no `jobs` (every record before this change) counts for nothing in those lines and is still a run.
 

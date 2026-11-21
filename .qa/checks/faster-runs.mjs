@@ -62,17 +62,17 @@ try {
     mkdirSync(join(dir, 'judged'))
     writeFileSync(join(dir, 'judged/metrics.json'), JSON.stringify({ schemaVersion: 'qare.metrics.v1', runId: 'pr-1', verdict: 'passed' }))
     tool('curl', `printf '%s\\n' "$@" > "$RUNNER_TEMP/calls"; cat "$RUNNER_TEMP/api.json"`)
-    // The step needs jq, which every runner has and the image does not: it
-    // runs where jq is, and the cli suite runs it on every change
-    // (pipeline-job-timings.test.ts).
-    let record = { jobs: 'not run here: this image has no jq' }
-    if (spawnSync('jq', ['--version']).status === 0) {
-      const ran = runScript(step.run, dir, { GH_TOKEN: 'token', GITHUB_API_URL: 'api.github.test', GITHUB_REPOSITORY: 'acme/app', RUN_ID: '42', RUN_ATTEMPT: '1' })
-      assert.equal(ran.status, 0, ran.stderr)
-      record = JSON.parse(readFileSync(join(dir, 'judged/metrics.json'), 'utf8'))
-      assert.deepEqual(record.jobs.map((job) => [job.name, job.wallMs]), [['collect (GitHub token only)', 18000], ['execute (no secrets)', 51000]])
-    }
-    assert.match(step.run, /actions\/runs\/\$RUN_ID\/attempts\/\$RUN_ATTEMPT\/jobs/)
+    // publish's own step, run as it runs: the Actions API asked for this run
+    // attempt's jobs, and the record judge wrote extended with them.
+    const ran = runScript(step.run, dir, { GH_TOKEN: 'token', GITHUB_API_URL: 'api.github.test', GITHUB_REPOSITORY: 'acme/app', RUN_ID: '42', RUN_ATTEMPT: '1' })
+    assert.equal(ran.status, 0, ran.stderr)
+    assert.ok(!ran.stdout.includes('::warning::'), ran.stdout)
+    const asked = readFileSync(join(dir, 'calls'), 'utf8').split('\n').find((arg) => arg.includes('/actions/runs/'))
+    assert.equal(asked, 'api.github.test/repos/acme/app/actions/runs/42/attempts/1/jobs?per_page=100')
+    const record = JSON.parse(readFileSync(join(dir, 'judged/metrics.json'), 'utf8'))
+    assert.equal(record.runId, 'pr-1')
+    // A skipped job ran nothing and publish is still running: neither is a wall clock.
+    assert.deepEqual(record.jobs.map((job) => [job.name, job.wallMs]), [['collect (GitHub token only)', 18000], ['execute (no secrets)', 51000]])
     // The standing report's lines from twelve such records: the latest ten beside the two before.
     const { summarizeMetrics, metricsSummaryLines } = await core('metrics.ts')
     const runs = Array.from({ length: 12 }, (_, index) => {
@@ -81,7 +81,15 @@ try {
     })
     const lines = metricsSummaryLines(summarizeMetrics({ runs, notes: [], malformed: 0 })).filter((line) => line.startsWith('job wall clock'))
     assert.deepEqual(lines, ['job wall clock, collect (GitHub token only): median 18s over the latest 10 runs, 24s over the 2 before'])
-    console.log(JSON.stringify({ check, recordedJobs: record.jobs, reportLines: lines }))
+    // The report reads what the sweep joins from qa-assets: this record, as a line of the store.
+    const { readMetricsStore } = await core('metrics.ts')
+    const store = join(dir, 'store')
+    mkdirSync(store)
+    const at = record.jobs[0].startedAt
+    writeFileSync(join(store, 'runs.jsonl'), `${JSON.stringify({ ...record, recordedAt: at, startedAt: at, finishedAt: at, wallMs: 0, criteria: { selected: [], counts: {} } })}\n`)
+    const fromRecord = metricsSummaryLines(summarizeMetrics(await readMetricsStore(store))).filter((line) => line.startsWith('job wall clock'))
+    assert.deepEqual(fromRecord, ['job wall clock, collect (GitHub token only): median 18s over 1 run', 'job wall clock, execute (no secrets): median 51s over 1 run'])
+    console.log(JSON.stringify({ check, apiAsked: asked, recordedJobs: record.jobs, reportLinesFromThatRecord: fromRecord, reportLinesOverTwelveRuns: lines }))
   } else if (check === 'collect') {
     // collect and main_collect run the published core image, never a source build.
     const out = {}
@@ -109,6 +117,7 @@ try {
     for (const [label, revision] of [['matching', BASE], ['another commit', 'd'.repeat(40)]]) {
       const head = repo('head')
       const calls = []
+      const docker = []
       const { result } = await runJob(
         { id: 'base-image', repoPath: head, baseRef: BASE, headRef: 'b'.repeat(40), post: 'none', evidenceDir: join(head, 'evidence'), profile: { inline: appProfile({ base: { criteria: 'all', image: 'ghcr.io/acme/app:{base}' } }) }, criteria: [fileCheck('kept', 'old.txt')] },
         {
@@ -116,7 +125,7 @@ try {
             calls.push(args.filter((arg) => arg !== '-p' && !arg.startsWith('qare-')))
             return { code: 0, stdout: '', stderr: '' }
           },
-          runDocker: async (args) => (args[0] === 'pull' ? { code: 0, stdout: '', stderr: '' } : { code: 0, stdout: JSON.stringify([{ RepoDigests: [`ghcr.io/acme/app@sha256:${'c'.repeat(64)}`], Config: { Labels: { 'org.opencontainers.image.revision': revision } } }]), stderr: '' }),
+          runDocker: async (args) => (docker.push(args.join(' ')), args[0] === 'pull' ? { code: 0, stdout: '', stderr: '' } : { code: 0, stdout: JSON.stringify([{ RepoDigests: [`ghcr.io/acme/app@sha256:${'c'.repeat(64)}`], Config: { Labels: { 'org.opencontainers.image.revision': revision } } }]), stderr: '' }),
           probe: async () => ({ ok: true }),
           pollIntervalMs: 1,
           execution: 'native',
@@ -124,8 +133,17 @@ try {
         },
       )
       const ups = calls.filter((args) => args.includes('up'))
-      observed[label] = { baseImages: result.base.images, baseUpUsesOverride: ups[0].some((arg) => arg.endsWith('.base-image.yml')), headUpUsesOverride: ups[1].some((arg) => arg.endsWith('.base-image.yml')) }
+      const builds = calls.filter((args) => args.includes('build'))
+      observed[label] = {
+        dockerCalls: docker,
+        // The base's build is asked for the service's dependencies only, through an override whose build is reset; the head builds as before.
+        baseBuild: builds[0],
+        headBuild: builds[1],
+        baseImages: result.base.images, baseUpUsesOverride: ups[0].some((arg) => arg.endsWith('.base-image.yml')), headUpUsesOverride: ups[1].some((arg) => arg.endsWith('.base-image.yml')) }
     }
+    assert.deepEqual(observed.matching.dockerCalls, [`pull -- ghcr.io/acme/app:${BASE}`, `image inspect -- ghcr.io/acme/app:${BASE}`])
+    assert.ok(observed.matching.baseBuild.some((arg) => arg.endsWith('.base-image.yml')))
+    assert.ok(!observed.matching.headBuild.some((arg) => arg.endsWith('.base-image.yml')))
     assert.equal(observed.matching.baseImages[0].used, true)
     assert.equal(observed.matching.baseUpUsesOverride, true)
     assert.equal(observed.matching.headUpUsesOverride, false)
@@ -167,7 +185,14 @@ try {
     assert.deepEqual(savers, ['main_execute'])
     const save = stepOf('main_execute', 'Save the build cache')
     assert.match(save.if, /github\.event_name != 'pull_request'/)
-    for (const id of ['execute', 'main_execute']) assert.ok(!/secrets\.|github\.token/.test(JSON.stringify(workflow.jobs[id])), `${id} holds a secret`)
+    // No secret can reach the cache: the jobs that write and read it are handed none, and neither is the run's container or the build.
+    const handedSecrets = {}
+    for (const id of ['execute', 'main_execute']) {
+      const job = JSON.stringify(workflow.jobs[id])
+      handedSecrets[id] = { secretsReferenced: (job.match(/secrets\.[\w-]+/g) ?? []), tokensReferenced: (job.match(/github\.token|GITHUB_TOKEN|GH_TOKEN|QARE_APP_TOKEN|MODEL_KEY/g) ?? []), permissions: workflow.jobs[id].permissions ?? 'the workflow default: contents: read' }
+      assert.deepEqual(handedSecrets[id].secretsReferenced, [], `${id} references a secret`)
+      assert.deepEqual(handedSecrets[id].tokensReferenced, [], `${id} references a token`)
+    }
     // A pull request's execute step reads the cache and never writes it.
     tool('docker', 'printf "%s\\n" "$@" > "$RUNNER_TEMP/calls"; mkdir -p evidence; echo "{\\"verdict\\":\\"passed\\",\\"criteria\\":[]}" > evidence/result.json')
     tool('git', 'if [ "$1" = worktree ]; then mkdir -p "$4"; fi; return 0')
@@ -180,9 +205,12 @@ try {
       const ran = runScript(stepOf(job, name).run, at, { IMAGE_REF: 'image', IMAGE_DIGEST: 'image', IMAGE_TAG_REF: 'tag', BASE_SHA: BASE, HEAD_SHA: 'b'.repeat(40), PR_NUMBER: '1', PROFILE: '.qa', RUN_ID: '1', RUN_ATTEMPT: '1', FLAKE_ATTEMPTS: '1', QUARANTINE: '', BUILD_CACHE: 'true' })
       assert.equal(ran.status, 0, ran.stderr)
       const args = readFileSync(join(at, 'calls'), 'utf8').split('\n')
-      handed[job] = { reads: args.includes('--build-cache-from'), writes: args.includes('--build-cache-to') }
+      // Every variable the run's container is handed, by name: none is a credential.
+      const containerEnv = args.flatMap((arg, index) => (args[index - 1] === '-e' ? [arg.split('=')[0]] : []))
+      assert.ok(!containerEnv.some((name) => /TOKEN|SECRET|KEY|PASSWORD/i.test(name)), `${job} hands its container ${containerEnv.join(', ')}`)
+      handed[job] = { reads: args.includes('--build-cache-from'), writes: args.includes('--build-cache-to'), containerEnv }
     }
-    assert.deepEqual(handed, { execute: { reads: true, writes: false }, main_execute: { reads: true, writes: true } })
+    assert.deepEqual(Object.fromEntries(Object.entries(handed).map(([job, { reads, writes }]) => [job, { reads, writes }])), { execute: { reads: true, writes: false }, main_execute: { reads: true, writes: true } })
     // The boot's override, from the services compose says build.
     const { bootApp, stopApp } = await core('boot.ts')
     const isolation = { runId: 'faster-cache', project: 'qare-faster-cache', startedAt: new Date().toISOString(), port: 41300 }
@@ -190,15 +218,18 @@ try {
     const runCompose = async (args, _timeoutMs, env) => {
       if (args.includes('config')) return { code: 0, stdout: JSON.stringify({ services: { web: { build: { context: '.' } }, db: { image: 'postgres:16' } } }), stderr: '' }
       const file = args.find((arg) => arg.endsWith('.build-cache.json'))
-      if (args.includes('build') && file !== undefined) override = { file: JSON.parse(readFileSync(file, 'utf8')), entitlement: env?.BUILDX_BAKE_ENTITLEMENTS_FS }
+      if (args.includes('build') && file !== undefined) override = { file: JSON.parse(readFileSync(file, 'utf8')), buildEnv: Object.keys(env ?? {}).sort() }
       return { code: 0, stdout: '', stderr: '' }
     }
     const cacheTo = join(dir, 'cache-new')
     await bootApp(appProfile(), { runCompose, probe: async () => ({ ok: true }), pollIntervalMs: 1, isolation, buildCache: { from: join(dir, 'cache'), to: cacheTo } })
     await stopApp(appProfile(), { runCompose, isolation })
     assert.deepEqual(Object.keys(override.file.services), ['web'])
+    // The override adds cache locations and nothing else: no build args, no secrets, no ssh.
+    assert.deepEqual(Object.keys(override.file.services.web.build), ['cache_to'])
+    assert.deepEqual(override.buildEnv, ['BUILDX_BAKE_ENTITLEMENTS_FS', 'QARE_APP_PORT', 'QARE_RUN_ID'])
     assert.ok(existsSync(scratch))
-    console.log(JSON.stringify({ check, saves: savers, handed, bootOverride: override }))
+    console.log(JSON.stringify({ check, saves: savers, handedSecrets, handed, bootOverride: override }))
   } else {
     throw new Error(`unknown check ${check}: jobs, collect, base-image, ledger-default or build-cache`)
   }
