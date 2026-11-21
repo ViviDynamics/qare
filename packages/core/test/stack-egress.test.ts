@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { parse } from 'yaml'
-import { containmentOf, dnsOverride, EGRESS_DNS_SERVICE, EGRESS_RELAY_SERVICE, CONTAINED_NETWORK, INGRESS_NETWORK } from '../src/stack-egress.js'
+import { containedAddresses, containmentOf, dnsOverride, EGRESS_DNS_SERVICE, EGRESS_MAP_FILE, EGRESS_RELAY_SERVICE, CONTAINED_NETWORK, INGRESS_NETWORK, relayOverride } from '../src/stack-egress.js'
 
 const IMAGE = 'ghcr.io/vividynamics/qare-core:2026.11.21'
 
@@ -31,22 +31,94 @@ describe('the containment of a booted stack (#382)', () => {
       [CONTAINED_NETWORK]: { internal: true },
       [INGRESS_NETWORK]: {},
     })
-    expect(override.services.web).toEqual({ networks: { [CONTAINED_NETWORK]: {} }, ports: [] })
-    expect(override.services.mailpit).toEqual({ networks: { [CONTAINED_NETWORK]: {} }, ports: [] })
+    // Each service keeps the networks it had and joins the contained one besides (#408).
+    expect(override.services.web).toEqual({ networks: { default: {}, [CONTAINED_NETWORK]: {} }, ports: [] })
+    expect(override.services.mailpit).toEqual({ networks: { default: {}, [CONTAINED_NETWORK]: {} }, ports: [] })
     expect(override.services[EGRESS_DNS_SERVICE]).toMatchObject({
       image: IMAGE,
-      command: ['qare', 'cell', 'egress-dns', '--host', 'api.billing-vendor.example=billing-stub', '--host', '*.cdn.billing-vendor.example=billing-stub'],
+      command: ['qare', 'cell', 'egress-dns', '--map', EGRESS_MAP_FILE, '--host', 'api.billing-vendor.example=billing-stub', '--host', '*.cdn.billing-vendor.example=billing-stub'],
       networks: { [CONTAINED_NETWORK]: {} },
+      tmpfs: ['/run/qare-egress'],
       cap_drop: ['ALL'],
     })
+    // The relay's forwards name addresses, written once the stack is up (#408): here it has none yet.
     expect(override.services[EGRESS_RELAY_SERVICE]).toMatchObject({
       image: IMAGE,
-      command: ['qare', 'cell', 'egress-relay', '--forward', '20000=web:3000'],
       networks: { [CONTAINED_NETWORK]: {}, [INGRESS_NETWORK]: {} },
       ports: [{ target: 20000, published: '41234', host_ip: '127.0.0.1', protocol: 'tcp' }],
       cap_drop: ['ALL'],
     })
+    expect(override.services[EGRESS_RELAY_SERVICE].command).toBeUndefined()
     expect(plan.services).toEqual(['web', 'mailpit'])
+    expect(plan.forwards).toEqual([{ listen: 20000, service: 'web', target: 3000 }])
+    expect(plan.stubServices).toEqual([])
+  })
+
+  test('a service with no declared networks keeps the implicit default beside one with a static address on a custom subnet (#408)', () => {
+    // compose config of a stack like a pinned-address one: db is pinned on the default network's own subnet,
+    // web declares no network and reaches db through extra_hosts; compose lists web's implicit default as null.
+    const pinned = {
+      name: 'qare-run',
+      networks: { default: { name: 'qare-run_default', ipam: { config: [{ subnet: '198.18.89.0/24' }] } } },
+      services: {
+        web: { extra_hosts: ['db=198.18.89.10'], networks: { default: null }, ports: [{ target: 3000, published: '41234', protocol: 'tcp' }] },
+        db: { networks: { default: { ipv4_address: '198.18.89.10' } } },
+        'billing-stub': { networks: { default: { ipv4_address: '198.18.89.20' }, backend: { aliases: ['billing'] } } },
+        worker: {},
+      },
+    }
+    const plan = containmentOf(pinned, { image: IMAGE, stubs })
+    if (plan.kind !== 'contained') throw new Error(plan.reason)
+    const override = parse(plan.override, { logLevel: 'error' })
+    expect(override.services.web.networks).toEqual({ default: {}, [CONTAINED_NETWORK]: {} })
+    expect(override.services.db.networks).toEqual({ default: {}, [CONTAINED_NETWORK]: {} })
+    expect(override.services['billing-stub'].networks).toEqual({ default: {}, backend: {}, [CONTAINED_NETWORK]: {} })
+    // A service compose lists with no networks at all is on the default one.
+    expect(override.services.worker.networks).toEqual({ default: {}, [CONTAINED_NETWORK]: {} })
+    // A network a service joins is made internal even where the top level does not list it.
+    expect(override.networks).toEqual({ default: { internal: true }, backend: { internal: true }, [CONTAINED_NETWORK]: { internal: true }, [INGRESS_NETWORK]: {} })
+    expect(plan.stubServices).toEqual(['billing-stub'])
+  })
+
+  test('the override merged over the stack keeps every network setting a service had (#408)', () => {
+    // compose merges service networks by key, and an empty mapping adds nothing to the key it merges into.
+    const stack = { default: { ipv4_address: '198.18.89.10' } }
+    const plan = containmentOf({ services: { db: { networks: stack } } }, { image: IMAGE, stubs: [] })
+    if (plan.kind !== 'contained') throw new Error(plan.reason)
+    const added = parse(plan.override, { logLevel: 'error' }).services.db.networks as Record<string, object>
+    const merged = Object.fromEntries([...new Set([...Object.keys(stack), ...Object.keys(added)])].map((key) => [key, { ...(stack as Record<string, object>)[key], ...added[key] }]))
+    expect(merged).toEqual({ default: { ipv4_address: '198.18.89.10' }, [CONTAINED_NETWORK]: {} })
+  })
+
+  test('the relay override carries each forward to the address the run found, and skips a service that is not running (#408)', () => {
+    const forwards = [
+      { listen: 20000, service: 'web', target: 3000 },
+      { listen: 20001, service: 'admin', target: 4000 },
+    ]
+    const relay = relayOverride(forwards, { web: ['198.18.0.4'] })
+    if (!('override' in relay)) throw new Error(relay.missing)
+    expect(parse(relay.override, { logLevel: 'error' })).toEqual({
+      services: { [EGRESS_RELAY_SERVICE]: { command: ['qare', 'cell', 'egress-relay', '--forward', '20000=198.18.0.4:3000'] } },
+    })
+    expect(relay.override).toContain('command: !override')
+    expect(relayOverride(forwards, { web: [] })).toEqual({ missing: 'web' })
+    expect(relayOverride(forwards, {})).toEqual({ override: undefined })
+  })
+
+  test("the addresses are read from docker inspect on the run's contained network, by compose service (#408)", () => {
+    const container = (service: string, project: string, networks: Record<string, { IPAddress?: string }>) => ({
+      Config: { Labels: { 'com.docker.compose.project': project, 'com.docker.compose.service': service } },
+      NetworkSettings: { Networks: networks },
+    })
+    const inspect = JSON.stringify([
+      container('web', 'qare-run', { 'qare-run_default': { IPAddress: '198.18.89.2' }, [`qare-run_${CONTAINED_NETWORK}`]: { IPAddress: '198.18.0.4' } }),
+      container('billing-stub', 'qare-run', { [`qare-run_${CONTAINED_NETWORK}`]: { IPAddress: '198.18.0.3' } }),
+      container('billing-stub', 'qare-run', { [`qare-run_${CONTAINED_NETWORK}`]: { IPAddress: '198.18.0.5' } }),
+      container('db', 'qare-run', { 'qare-run_default': { IPAddress: '198.18.89.10' } }),
+      container('web', 'qare-other', { [`qare-other_${CONTAINED_NETWORK}`]: { IPAddress: '198.18.1.4' } }),
+    ])
+    expect(containedAddresses(inspect, 'qare-run')).toEqual({ web: ['198.18.0.4'], 'billing-stub': ['198.18.0.3', '198.18.0.5'], db: [] })
+    expect(containedAddresses('not json', 'qare-run')).toBeUndefined()
   })
 
   test('the second override points every service of the stack at the sink, replacing any resolver it named', () => {

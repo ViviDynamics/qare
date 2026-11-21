@@ -9,15 +9,22 @@ import type { ProfileStub } from './profile.js'
  * - makes every network of the stack internal, so nothing in it routes
  *   anywhere but to the stack's own services;
  * - joins every service to one more internal network, the contained one,
- *   where the sink answers names and the relay reaches every service;
+ *   where the sink answers names and the relay reaches every service, and
+ *   keeps every network the service was on, the implicit default included
+ *   (#408): compose merges a service's networks by key, so an override that
+ *   named the contained network alone would take a service that declares
+ *   none off the default network its pinned neighbours are on;
  * - takes every published port off the service that published it and
  *   publishes it on the relay instead, which is on the contained network
  *   and on an ordinary one: docker publishes no port of an internal network.
  *
  * A second override, written once the sink is up and has said its address,
- * points every service's resolver at the sink. A stack that cannot be held
- * to this is not contained, and the reason says why, so the evidence never
- * calls it contained.
+ * points every service's resolver at the sink. A third, written once the
+ * stack is up, hands the relay the address of each service it carries to.
+ * Neither the relay nor the sink looks a service up by name (#408): a daemon
+ * may answer no embedded DNS, so the run reads each address from the daemon
+ * itself. A stack that cannot be held to this is not contained, and the
+ * reason says why, so the evidence never calls it contained.
  */
 
 /** The run's resolver for the stack: a stub host is a stub's address, any other name is recorded and refused. */
@@ -31,6 +38,9 @@ export const INGRESS_NETWORK = 'qare-ingress'
 /** Where the relay listens for the first published port; each further port takes the next. */
 export const RELAY_FIRST_PORT = 20_000
 
+/** Where the sink reads the addresses of the services that provide stubs, which the run writes once they are up (#408). */
+export const EGRESS_MAP_FILE = '/run/qare-egress/services.json'
+
 /** Why a stack booted where no image names the run's own is not contained. */
 export const NO_EGRESS_IMAGE = 'the sink and the relay run from the image the run is in, and QARE_IMAGE_REF names none (the pipeline execute step sets it)'
 
@@ -42,6 +52,11 @@ export function containmentOverrideFile(project: string): string {
 /** Where the run writes the override that points the stack's resolvers at the sink. */
 export function dnsOverrideFile(project: string): string {
   return join(tmpdir(), `${project}.egress-dns.yml`)
+}
+
+/** Where the run writes the override that hands the relay each service's address (#408). */
+export function relayOverrideFile(project: string): string {
+  return join(tmpdir(), `${project}.egress-relay.yml`)
 }
 
 /** The part of `compose config --format json` the containment reads. */
@@ -70,8 +85,27 @@ export type Containment =
       override: string
       /** The services whose resolver the sink becomes: every one that has a network of its own. */
       services: string[]
+      /** Each published port the relay carries, to the service it was published from. */
+      forwards: RelayPlan[]
+      /** The contained services that provide a stub, whose addresses the sink is handed before the app starts. */
+      stubServices: string[]
     }
   | { kind: 'uncontained'; reason: string }
+
+/** One port the relay listens on, and the service and port it carries each connection to. */
+export interface RelayPlan {
+  listen: number
+  service: string
+  target: number
+}
+
+/** The networks a resolved service is on: the keys compose lists, or the default one when it lists none. */
+function networksOf(service: ComposeService | null): string[] {
+  const networks = service?.networks
+  if (Array.isArray(networks)) return networks.filter((name): name is string => typeof name === 'string')
+  if (typeof networks === 'object' && networks !== null) return Object.keys(networks)
+  return ['default']
+}
 
 /** A string compose reads as itself: every `$` doubled, so nothing is interpolated. */
 function literal(value: unknown): unknown {
@@ -100,6 +134,7 @@ export function containmentOf(config: ComposeConfig, opts: { image: string; stub
   }
 
   const joined: string[] = []
+  const kept = new Map<string, string[]>()
   const forwards: Array<{ listen: number; service: string; target: number; published?: string; host_ip?: string }> = []
   for (const [name, service] of services) {
     const mode = service?.network_mode
@@ -109,6 +144,7 @@ export function containmentOf(config: ComposeConfig, opts: { image: string; stub
       return { kind: 'uncontained', reason: `the service ${name} runs with network_mode ${mode}, which no network of the stack can contain` }
     }
     joined.push(name)
+    kept.set(name, networksOf(service))
     const ports = Array.isArray(service?.ports) ? (service.ports as PublishedPort[]) : []
     for (const port of ports) {
       const protocol = typeof port.protocol === 'string' ? port.protocol : 'tcp'
@@ -130,17 +166,20 @@ export function containmentOf(config: ComposeConfig, opts: { image: string; stub
   const hosts = opts.stubs.flatMap((stub) => stub.hosts.map((host) => `${host}=${stub.provided_by.compose_service}`))
   const hardened = { cap_drop: ['ALL'], security_opt: ['no-new-privileges:true'], read_only: true, restart: 'no' }
   const lines = ['services:']
-  for (const name of joined) lines.push(`  ${flow(name)}:`, `    networks: ${flow({ [CONTAINED_NETWORK]: {} })}`, '    ports: !reset []')
+  // Each network a service is on is named again, as an empty mapping, which compose merges into the stack's own by key: a pinned address and every other setting stay.
+  for (const name of joined)
+    lines.push(`  ${flow(name)}:`, `    networks: ${flow(Object.fromEntries([...(kept.get(name) ?? []), CONTAINED_NETWORK].map((network) => [network, {}])))}`, '    ports: !reset []')
   lines.push(
     `  ${flow(EGRESS_DNS_SERVICE)}: ${flow({
       image: opts.image,
-      command: ['qare', 'cell', 'egress-dns', ...hosts.flatMap((host) => ['--host', host])],
+      command: ['qare', 'cell', 'egress-dns', '--map', EGRESS_MAP_FILE, ...hosts.flatMap((host) => ['--host', host])],
       networks: { [CONTAINED_NETWORK]: {} },
+      // The one place the sink can be handed addresses: its root is read-only, and nothing of the stack shares it.
+      tmpfs: [EGRESS_MAP_FILE.slice(0, EGRESS_MAP_FILE.lastIndexOf('/'))],
       ...hardened,
     })}`,
     `  ${flow(EGRESS_RELAY_SERVICE)}: ${flow({
       image: opts.image,
-      command: ['qare', 'cell', 'egress-relay', ...forwards.flatMap((forward) => ['--forward', `${forward.listen}=${forward.service}:${forward.target}`])],
       networks: { [CONTAINED_NETWORK]: {}, [INGRESS_NETWORK]: {} },
       ports: forwards.map((forward) => ({
         target: forward.listen,
@@ -151,11 +190,69 @@ export function containmentOf(config: ComposeConfig, opts: { image: string; stub
       ...hardened,
     })}`,
     'networks:',
-    ...networks.map(([name]) => `  ${flow(name)}: ${flow({ internal: true })}`),
+    // Every network of the stack, and every one a service joins that the top level does not list, such as an implicit default.
+    ...[...new Set([...networks.map(([name]) => name), ...[...kept.values()].flat()])].map((name) => `  ${flow(name)}: ${flow({ internal: true })}`),
     `  ${flow(CONTAINED_NETWORK)}: ${flow({ internal: true })}`,
     `  ${flow(INGRESS_NETWORK)}: {}`,
   )
-  return { kind: 'contained', override: `${lines.join('\n')}\n`, services: joined }
+  const provided = new Set(opts.stubs.map((stub) => stub.provided_by.compose_service))
+  return {
+    kind: 'contained',
+    override: `${lines.join('\n')}\n`,
+    services: joined,
+    forwards: forwards.map(({ listen, service, target }) => ({ listen, service, target })),
+    stubServices: joined.filter((name) => provided.has(name)),
+  }
+}
+
+/**
+ * The third override (#408): the relay's forwards, each to the address the
+ * run read for its service once the stack was up. A forward whose service is
+ * not running is left out, since nothing could answer it; one whose service
+ * runs with no address on the contained network is the service it names in
+ * `missing`, and the stack cannot be contained. With no forward left there is
+ * no override, and no relay to start.
+ */
+export function relayOverride(forwards: readonly RelayPlan[], addresses: Readonly<Record<string, readonly string[]>>): { override: string | undefined } | { missing: string } {
+  const carried: string[] = []
+  for (const forward of forwards) {
+    const found = addresses[forward.service]
+    if (found === undefined) continue
+    const address = found[0]
+    if (address === undefined) return { missing: forward.service }
+    carried.push('--forward', `${forward.listen}=${address}:${forward.target}`)
+  }
+  if (carried.length === 0) return { override: undefined }
+  return { override: `services:\n  ${flow(EGRESS_RELAY_SERVICE)}:\n    command: !override ${flow(['qare', 'cell', 'egress-relay', ...carried])}\n` }
+}
+
+const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/
+
+/**
+ * The address of every container of a project on its contained network, by
+ * compose service, read from `docker inspect` (#408). A service whose
+ * containers have no such address is listed with none. Undefined when the
+ * output is not docker's.
+ */
+export function containedAddresses(inspect: string, project: string): Record<string, string[]> | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(inspect)
+  } catch {
+    return undefined
+  }
+  if (!Array.isArray(parsed)) return undefined
+  const network = `${project}_${CONTAINED_NETWORK}`
+  const found: Record<string, string[]> = {}
+  for (const entry of parsed as Array<{ Config?: { Labels?: Record<string, unknown> | null }; NetworkSettings?: { Networks?: Record<string, { IPAddress?: unknown } | null> | null } }>) {
+    const labels = entry?.Config?.Labels ?? {}
+    const service = labels['com.docker.compose.service']
+    if (labels['com.docker.compose.project'] !== project || typeof service !== 'string') continue
+    const address = entry.NetworkSettings?.Networks?.[network]?.IPAddress
+    const addresses = (found[service] ??= [])
+    if (typeof address === 'string' && IPV4.test(address)) addresses.push(address)
+  }
+  return found
 }
 
 /**
