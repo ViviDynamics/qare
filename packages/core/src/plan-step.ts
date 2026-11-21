@@ -9,6 +9,7 @@ import { placeholderValue, shellCharacter, tokenFillsTemplate } from './run.js'
 import { existsSync, statSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 import { redactText, redactionRules, type ProfileRedaction, type RedactionRule } from './redact.js'
+import { suiteFilterViolation } from './suite-filter.js'
 
 export interface PlanCriterionInput {
   id: string
@@ -221,6 +222,12 @@ export interface PlanSuite {
   kind?: string
   /** What the suite runs, as the profile wrote it. */
   command?: string
+  /** The placeholder of command that takes a test name or path (#376), when the suite takes a filter. */
+  filter?: string
+}
+
+function takesFilter(suite: string | PlanSuite): suite is PlanSuite & { filter: string } {
+  return typeof suite !== 'string' && suite.filter !== undefined
 }
 
 function suiteName(suite: string | PlanSuite): string {
@@ -236,7 +243,52 @@ function suiteLine(suite: string | PlanSuite, rules: readonly RedactionRule[]): 
   if (typeof suite === 'string') return `- ${suite}`
   const command = suite.command === undefined ? undefined : redactText(suite.command, rules)
   const what = [suite.kind === undefined ? undefined : `a ${suite.kind} suite`, command].filter((part) => part !== undefined)
-  return what.length === 0 ? `- ${suite.name}` : `- ${suite.name} (${what.join(': ')})`
+  const filter = suite.filter === undefined ? '' : ` [takes a filter: {{${suite.filter}}} is the test name or path it runs]`
+  return `${what.length === 0 ? `- ${suite.name}` : `- ${suite.name} (${what.join(': ')})`}${filter}`
+}
+
+/**
+ * What the planner is told of a suite that takes a filter (#376): how to name
+ * the one test, the form the value must take, and that a named test outranks a
+ * grep of the source for a criterion about behaviour.
+ */
+function suiteFilterGuidance(inputs: PlanInputs): string[] {
+  if (!(inputs.suites ?? []).some(takesFilter)) return []
+  return [
+    'A suite marked as taking a filter runs only the tests its filter names, inside the stack where the project runs its own tests:',
+    '{"kind":"flow","name":...,"suite":"a suite that takes a filter","filter":"the test name or path to run"}.',
+    'The filter is one token of letters, digits and . _ / : * + ? ^ [ ] = , @ -, never starting with - and never climbing out with ..;',
+    'a test file, a file:line, or a test name pattern the runner understands. Read the repository to find the test that covers the criterion.',
+    'For a criterion about what the code does, plan a suite check whose filter names a test that exercises it, before any grep of the source:',
+    'the test shows the behaviour, while a grep shows only that some text is there, and a wrong pattern fails a criterion that holds.',
+    'Plan a grep only for a criterion about the text itself, or when no declared test covers the criterion.',
+    'A suite that takes a filter is always given one, and a suite that takes none is never given one.',
+    '',
+  ]
+}
+
+/**
+ * A suite check whose filter does not match what its suite takes (#376): a filter the suite
+ * cannot take, a filtered suite named without one, or a value that is not one
+ * safe token. Caught here, where the planner can still name the test another way.
+ */
+function suiteFilterGap(plan: Plan, inputs: PlanInputs): string | undefined {
+  for (const criterion of plan.criteria) {
+    if (!('checks' in criterion)) continue
+    for (const check of criterion.checks) {
+      if (check.kind !== 'flow' || check.suite === undefined) continue
+      const declared = (inputs.suites ?? []).find((suite) => suiteName(suite) === check.suite)
+      if (declared === undefined) continue
+      const where = `criterion ${criterion.id} flow check "${check.name}"`
+      if (!takesFilter(declared) && check.filter !== undefined)
+        return `${where}: suite ${check.suite} takes no filter, so it cannot run only ${check.filter}; name a suite that takes one, or drop the filter to run the whole suite`
+      if (takesFilter(declared) && check.filter === undefined)
+        return `${where}: suite ${check.suite} takes a filter ({{${declared.filter}}}), so the check must name the test or path it runs`
+      const violation = check.filter === undefined ? undefined : suiteFilterViolation(check.filter)
+      if (violation !== undefined) return `${where}: ${violation}`
+    }
+  }
+  return undefined
 }
 
 /**
@@ -484,6 +536,7 @@ function planSchemaOver(checkKinds: string[], kinds: string[]) {
                 name: { type: 'string' },
                 command: { type: 'string' },
                 suite: { type: 'string' },
+                filter: { type: 'string' },
                 actions: {
                   type: 'array',
                   items: {
@@ -576,6 +629,7 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     '',
     suites,
     '',
+    ...suiteFilterGuidance(inputs),
     ...(qaMd === undefined
       ? []
       : ["The repository's own QA.md, which states what the app is, what matters and how to log in:", qaMd, '']),
@@ -1442,6 +1496,11 @@ async function planTurns(
         `${browser}. Until then, plan the criterion with ` +
         (inputs.suites?.length ? `a declared suite (${inputs.suites.map(suiteName).join(', ')}) or a command` : 'a command') +
         ', or mark it unplannable.'
+      continue
+    }
+    const filterGap = suiteFilterGap(plan, inputs)
+    if (filterGap !== undefined) {
+      correction = `${filterGap}.`
       continue
     }
     const interpreter = interpreterGap(plan, inputs)

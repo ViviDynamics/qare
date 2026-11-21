@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { parse as parseYaml } from 'yaml'
 import { parseMailDelivery, type MailAuthenticationAssertion } from './mail-delivery.js'
 import { isUnsafeProfileName, type QaProfile } from './profile.js'
+import { suiteFilterViolation } from './suite-filter.js'
 import { MAX_VISUAL_WIDTH, PlanValidationError, parseFlowActions, parseToolAssertions, parseToolArgs, type FlowActionStep, type ToolAssertion } from './plan.js'
 import { DEFAULT_PROFILE_NAME } from './monorepo.js'
 
@@ -37,6 +38,8 @@ export interface JobFlowCheck {
   kind: 'flow'
   name?: string
   suite?: string
+  /** The test name or path a suite that declares a filter runs (#376). */
+  filter?: string
   actions?: FlowActionStep[]
   timeoutMs?: number
 }
@@ -371,9 +374,24 @@ function parseFlowCheck(value: Record<string, unknown>, base: string): JobFlowCh
     fail(`${base}.suite`, 'flow check needs a suite (an existing suite name) or actions (a fixed action set)')
   if (hasSuite && hasActions)
     fail(`${base}.suite`, 'flow check carries both suite and actions; a flow check is one or the other')
+  if (value.filter !== undefined && !hasSuite)
+    fail(`${base}.filter`, 'a filter names the test a suite runs, so only a flow check that names a suite carries one')
   if (hasSuite) {
     const suite = nonEmptyString(value.suite, `${base}.suite`, 'suite')
-    return { kind: 'flow', ...(name !== undefined ? { name } : {}), suite, ...(timeoutMs !== undefined ? { timeoutMs } : {}) }
+    let filter: string | undefined
+    if (value.filter !== undefined) {
+      if (typeof value.filter !== 'string') fail(`${base}.filter`, 'filter must be a string: the test name or path the suite runs')
+      const violation = suiteFilterViolation(value.filter)
+      if (violation !== undefined) fail(`${base}.filter`, violation)
+      filter = value.filter
+    }
+    return {
+      kind: 'flow',
+      ...(name !== undefined ? { name } : {}),
+      suite,
+      ...(filter !== undefined ? { filter } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    }
   }
   let actions
   try {

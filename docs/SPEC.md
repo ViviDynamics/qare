@@ -166,6 +166,7 @@ Judge:
 - Standard command-check tools are `node`, `python3`, `grep` and `test` (#309). Node and Python execute repository-relative script paths within the declared run inputs when supplied; inline code, module/preload/import/loader flags and stdin are refused, including when the interpreter is profile-declared. A bare version probe remains allowed. Arguments after the script are script data. `nare` requires an explicit profile command and is not a standard tool. These program-specific rules constrain which forms ADR-0007 permits; they do not change containment or directly authored jobs and suites.
 - A plan whose command check fills a path placeholder with a file the checkout does not carry is corrected, then refused, like any other contract violation (#201): an invented script is a model-step guess, and the correction round catches it before the runner turns it into a red verdict.
 - A command check whose profile command declares a filter and a report format is proven only if its report shows the filter selecting tests: none or all selected leaves the check unverified naming the filter and the counts, and the selected names are saved to evidence, because a whole-suite run does not prove a filtered criterion (#157). A command with no declared filter is proven by exit 0 as before.
+- A suite may take a filter (#376): `filter` names the placeholder of its command that takes a test name or path, and `report` the machine-readable format it prints (the formats a declared command takes), both or neither. This is how a profile declares the project's own test command, run inside its stack (`docker compose -p qare-{{run.id}} ... exec -T <service> <runner> {{test}}`). A plan's suite check then carries `filter`, the test to run, and the planner is told which suites take one and to plan a suite check naming the test that covers a criterion about behaviour before any grep of the source. The plan names only a declared suite and fills only its one placeholder, so the command that runs is the profile's. The value is held in code to one token of letters, digits and `. _ / : * + ? ^ [ ] = , @ -`, never starting with `-`, never absolute and never climbing out with `..`; the plan step corrects and then refuses anything else, the job loader refuses it, and the run refuses it again. A filter on a suite that takes none, or a filtered suite named without one (a ledger `suite:<name>` reference among them), is corrected at the plan step and unverified at run time, and runs nothing. The runner does the selecting, so its report lists only the tests that ran: a passing run whose report cannot be read, or that ran no test, is `unverified` however it exited, and the tests that ran are recorded in `suite.txt` beside the filter.
 - A criterion whose evidence can only come into existence through a model-driven session is unplannable: the executing job runs no model, so no check can produce that evidence, and the run publishes evidence only when it ends. Evidence under a declared profile directory is not an exception — a command check reading it is corrected, then refused like any other undeclared input (#168).
 
 ## The `.qa/` profile (per repo)
@@ -204,6 +205,11 @@ visual:
   themes: [light, dark]
 suites:
   - { name: browser-e2e, command: "npm --prefix e2e test", kind: flow }
+  - name: unit                   # the project's own tests, inside the booted service (#376)
+    command: "docker compose -p qare-{{run.id}} -f compose.qa.yaml exec -T admin node --test --test-reporter=tap {{test}}"
+    kind: command
+    filter: test                 # optional: the placeholder a plan fills with the test name or path to run
+    report: junit-xml            # required with filter: vitest-json, junit-xml or node-tap, printed on stdout
 commands:                        # optional: invocations the planner may rely on (#156); forms to prefer, not the only forms (#270)
   test:
     run: "pnpm --filter {{package}} exec vitest run -t {{pattern}}"  # the planner fills {{placeholders}} itself
@@ -2355,8 +2361,9 @@ target through `{{run.target_url}}`. A flow's `open` action also takes a path
 on the target (`/wiki/Ada_Lovelace`), which resolves below its URL, so a target
 served under a sub-path keeps it; a health path resolves the same way, and a
 path that climbs out of the target (`/../admin`) is refused. In a flow's
-strings and a suite's command only `{{run.<name>}}` is a reference: other
-braces are the page's or the command's own and pass through untouched. A
+strings and a suite's command only `{{run.<name>}}` is a reference, beside
+the placeholder a suite names as its `filter` (#376): other braces are the
+page's or the command's own and pass through untouched. A
 profile that boots its own stack does not mint `{{run.target_url}}`, so a
 reference to it there fails closed at plan time.
 

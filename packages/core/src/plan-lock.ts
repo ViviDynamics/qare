@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Plan, PlanCheck, PlanCriterion } from './plan.js'
 
-const CHECK_FIELDS = ['kind', 'name', 'command', 'suite', 'actions', 'screenshot', 'url', 'widths', 'themes', 'address', 'from', 'subject', 'body', 'code', 'timeoutMs', 'singleUse', 'authentication', 'placement', 'tool', 'args', 'assert', 'inferred']
+const CHECK_FIELDS = ['kind', 'name', 'command', 'suite', 'filter', 'actions', 'screenshot', 'url', 'widths', 'themes', 'address', 'from', 'subject', 'body', 'code', 'timeoutMs', 'singleUse', 'authentication', 'placement', 'tool', 'args', 'assert', 'inferred']
 
 export interface PlanComparison {
   matches: boolean
@@ -25,6 +25,7 @@ function canonicalCheck(check: PlanCheck): PlanCheck {
     canonical.command = check.command
   } else if (check.kind === 'flow') {
     if (check.suite !== undefined) canonical.suite = check.suite
+    if (check.filter !== undefined) canonical.filter = check.filter
     if (check.actions !== undefined) canonical.actions = [...check.actions]
   } else if (check.kind === 'mail') {
     canonical.address = check.address
@@ -207,7 +208,7 @@ function describeCheck(check: PlanCheck): string {
   if (check.kind === 'command') return `command "${check.name}" (${check.command})`
   if (check.kind === 'flow') {
     return check.suite !== undefined
-      ? `flow "${check.name}" (suite ${check.suite})`
+      ? `flow "${check.name}" (suite ${check.suite}${check.filter === undefined ? '' : `, filter ${check.filter}`})`
       : `flow "${check.name}" (actions ${JSON.stringify(check.actions ?? [])})`
   }
   if (check.kind === 'mail') return `mail "${check.name}" (${check.address})`

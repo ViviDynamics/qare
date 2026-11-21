@@ -790,7 +790,7 @@ test('qare plan hands its working directory to the plan step, so an invented scr
 
 // #258: the plan step assumed a browser whatever image execute would run in,
 // and never told the planner which suites the profile declares.
-async function flavourProfile(flavour: string | undefined): Promise<{ dir: string; profile: string; criteriaPath: string; diffPath: string }> {
+async function flavourProfile(flavour: string | undefined, extraSuites: string[] = []): Promise<{ dir: string; profile: string; criteriaPath: string; diffPath: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'qare-plan-flavour-'))
   const profile = join(dir, '.qa')
   await mkdir(profile, { recursive: true })
@@ -805,6 +805,7 @@ async function flavourProfile(flavour: string | undefined): Promise<{ dir: strin
       ...(flavour === undefined ? [] : [`flavour: ${flavour}`]),
       'suites:',
       '  - { name: sign-in, command: "bundle exec cucumber features/sign_in.feature", kind: flow }',
+      ...extraSuites,
       '',
     ].join('\n'),
     'utf8',
@@ -921,6 +922,32 @@ test('a profile whose flavour ships a browser plans browser checks as before, an
   const plan = JSON.parse(await readFile(join(dir, 'plan.json'), 'utf8')) as { criteria: Array<{ checks?: Array<{ kind: string }> }> }
   expect(plan.criteria.map((criterion) => criterion.checks?.[0]?.kind)).toEqual(['flow', 'visual'])
   expect(out.lines.join('')).not.toContain('no browser')
+})
+
+test('a suite that takes a filter reaches the planner as one, so a criterion can name its test (#376)', async () => {
+  const { dir, profile, criteriaPath, diffPath } = await flavourProfile(undefined, [
+    '  - { name: unit, command: "bin/rails test {{test}}", kind: command, filter: test, report: junit-xml }',
+  ])
+  const nare = await recordingNare(dir, {
+    schemaVersion: '1',
+    criteria: [
+      { id: 'c1', text: CRITERIA[0].text, checks: [{ kind: 'flow', name: 'sign in', suite: 'unit', filter: 'test/models/session_test.rb' }] },
+      { id: 'c2', text: CRITERIA[1].text, unplannable: 'the core flavour ships no browser' },
+    ],
+  })
+
+  const code = await main(
+    ['plan', '--criteria', criteriaPath, '--diff', diffPath, '--out', join(dir, 'plan.json'), '--nare', nare.binary, '--profile', profile],
+    capture().writer,
+    capture().writer,
+  )
+
+  expect(code).toBe(0)
+  const prompt = await nare.prompt()
+  expect(prompt).toContain('- unit (a command suite: bin/rails test {{test}}) [takes a filter: {{test}} is the test name or path it runs]')
+  expect(prompt).toMatch(/before any grep of the source/)
+  const plan = JSON.parse(await readFile(join(dir, 'plan.json'), 'utf8')) as { criteria: Array<{ checks?: Array<{ suite?: string; filter?: string }> }> }
+  expect(plan.criteria[0]?.checks?.[0]).toMatchObject({ suite: 'unit', filter: 'test/models/session_test.rb' })
 })
 
 // #264: the profile names the booted app's address only in its health check,
