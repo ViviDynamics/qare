@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
@@ -222,6 +223,46 @@ test('the planner is told a pattern is one token, and not to run a source that i
   expect(prompt).toMatch(/grep takes its pattern as one token/)
   expect(prompt).toMatch(/TypeScript source/)
   expect(prompt).toMatch(/nothing is built/)
+})
+
+// #368: on #367 the planner, told to put "." where a space would be, wrote
+// `versions.nare,.2026.11.104` for `assert.equal(versions.nare, '2026.11.104')`.
+// The source has a space and a quote there, so grep matched nothing and a
+// satisfied criterion was recorded failed. The gap between words is ".*".
+
+test('the planner is told to write the gap between the words of a pattern as .*, not one . per space', async () => {
+  const runner = new FakeAgentRunner([completed(planWith('grep -n addresses docs/SPEC.md'))])
+
+  await planRun(runner, await inputs({ runInputs: { paths: ['docs/SPEC.md'] } }))
+
+  const prompt = runner.requests[0]?.prompt ?? ''
+  expect(prompt).toContain('with .* between its words')
+  expect(prompt).not.toContain('with . where a space would be')
+})
+
+test('a grep correction tells the planner to write the gap between words as .*', async () => {
+  const operand = new FakeAgentRunner([completed(planWith(MULTI_WORD)), completed(planWith('grep -n addresses.*booted docs/SPEC.md'))])
+  await planRun(operand, await inputs())
+  const declared = new FakeAgentRunner([completed(planWith(MULTI_WORD)), completed(planWith('grep -n -- addresses.*booted docs/SPEC.md'))])
+  await planRun(declared, await inputs({ commands: SOURCE }))
+
+  for (const runner of [operand, declared]) {
+    const correction = runner.requests[1]?.prompt ?? ''
+    expect(correction).toContain('with .* between its words')
+    expect(correction).not.toContain('with . where a space would be')
+  }
+})
+
+test('the pattern the planner is steered to finds the nare-compat line of #367, where one . per space found nothing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'qare-grep-368-'))
+  await mkdir(join(root, 'scripts'), { recursive: true })
+  await writeFile(join(root, 'scripts', 'nare-compat.mjs'), "assert.equal(versions.nare, '2026.11.104')\n")
+  const run = (pattern: string) => spawnSync('grep', ['-n', '--', pattern, 'scripts/nare-compat.mjs'], { cwd: root, encoding: 'utf8' })
+
+  expect(run('versions.nare,.2026.11.104').status).toBe(1)
+  const steered = run('versions.nare.*2026.11.104')
+  expect(steered.status).toBe(0)
+  expect(steered.stdout).toContain('2026.11.104')
 })
 
 // What the run records, with the real grep.

@@ -660,7 +660,9 @@ function prompt(inputs: PlanInputs, correction?: string): string {
     // What a split command means for the tools a plan reaches for most (#262).
     'grep takes its pattern as one token: every argument after it is a file to search, so a pattern of several',
     'words searches for the first word in files named by the rest, and shows nothing. Write one word that is',
-    'enough to tell, or a regular expression with . where a space would be.',
+    'enough to tell, or a regular expression with .* between its words: the source may carry more than one',
+    // One . per space misses the quotes and commas a paraphrase drops, and a miss reads as failed (#368).
+    "character between them, such as a quote or a comma, so versions.nare.*2026.11.104 finds versions.nare, '2026.11.104'.",
     'node and python3 execute a repository script, optionally after --, using a declared run input when a list is supplied.',
     'Do not use inline code (-e, --eval, -p, --print, -c), module execution (-m), preload/import/loader flags or stdin (-).',
     'Arguments after the script are script data. A bare --version (node -v or python3 -V) is also accepted.',
@@ -1024,7 +1026,7 @@ function grepGap(plan: Plan, inputs: PlanInputs): string | undefined {
         return (
           `${where}: the profile declares grep as the command ${forms}, and the planned command does not have that form. ` +
           'It is split on whitespace and each placeholder takes exactly one token, so a pattern of several words cannot be passed: ' +
-          'write the pattern as one token (one word, or a regular expression with . where a space would be) in the declared form, or mark the criterion unplannable'
+          'write the pattern as one token (one word, or a regular expression with .* between its words) in the declared form, or mark the criterion unplannable'
         )
       }
       if (inputs.repoPath === undefined) continue
@@ -1036,7 +1038,7 @@ function grepGap(plan: Plan, inputs: PlanInputs): string | undefined {
         return (
           `${where}: grep would read ${JSON.stringify(operand)} as a file, and ${runValue ? 'a value the run fills in is not a file of the checkout' : 'the checkout carries no such file'}. ` +
           'The command is split on whitespace, so a pattern is one token and every argument after it is a file to search: ' +
-          'write the pattern as one token (one word, or a regular expression with . where a space would be), or mark the criterion unplannable'
+          'write the pattern as one token (one word, or a regular expression with .* between its words), or mark the criterion unplannable'
         )
       }
     }
