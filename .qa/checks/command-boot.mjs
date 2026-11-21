@@ -9,6 +9,9 @@ import './source.mjs'
 // Its compose is a stand-in, so the stack is booted uncontained: containment
 // is exercised by stack-egress.mjs (#382), and the run's image is not named here.
 delete process.env.QARE_IMAGE_REF
+// The ref and digest are a pair (environment.ts), so both go: main runs set both.
+delete process.env.QARE_IMAGE_DIGEST
+delete process.env.QARE_IMAGE_TAG
 
 // Executable checks of booting an app by command (#379), run against the
 // checkout's core source without a build. The image has no docker daemon,
