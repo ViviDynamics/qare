@@ -122,7 +122,7 @@ export async function planInit(repoPath: string, opts: InitOptions = {}): Promis
     const started = compose === undefined ? (inventory.profile.commandBoot ?? (await startCommand(inventory.repoPath))) : undefined
     if (compose === undefined && started === undefined)
       throw new InitError(
-        'no compose file and no start script found, so there is nothing for qare to boot: name the running app to check with --target <url>; a desktop build is checked through a client profile, which is written by hand (docs/SPEC.md, Clients)',
+        'no compose file found and no start script, so there is nothing for qare to boot: name the running app to check with --target <url>; a desktop build is checked through a client profile, which is written by hand (docs/SPEC.md, Clients)',
       )
     kind = 'app'
     if (started !== undefined) {

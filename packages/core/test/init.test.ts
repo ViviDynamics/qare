@@ -345,7 +345,7 @@ test('a compose file still wins over a start script, and a package with no start
   expect((await loadProfile(join(repo, '.qa'))).app?.boot).toEqual({ compose: 'docker-compose.yml', service: 'web' })
 
   const none = await repoWith({ 'package.json': JSON.stringify({ scripts: { test: 'vitest' } }) })
-  await expect(planInit(none)).rejects.toThrow(/no compose file and no start script/)
+  await expect(planInit(none)).rejects.toThrow(/no compose file found and no start script/)
   // --service names a compose service, and a command boot has none to name.
   const started = await repoWith({ 'package.json': PACKAGE })
   await expect(planInit(started, { service: 'web' })).rejects.toThrow(/--service .* names a compose service/)
