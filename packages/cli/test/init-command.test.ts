@@ -164,7 +164,8 @@ test('on a repository with no compose file, init --target writes a target profil
   }
   const nareDir = await mkdtemp(join(tmpdir(), 'qare-init-nare-'))
   const script = [
-    `const answer = process.argv[3].includes('qare verifier') ? { findings: [] } : ${JSON.stringify(plan)}`,
+    "const { readFileSync } = await import('node:fs')",
+    `const answer = readFileSync(process.argv[process.argv.indexOf('--prompt-file') + 1], 'utf8').includes('qare verifier') ? { findings: [] } : ${JSON.stringify(plan)}`,
     "console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },",
     "  stop_reason: 'end_turn', turns: 1, contract: 3, output: answer, error: null }))",
   ].join('\n')

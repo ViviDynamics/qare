@@ -52,9 +52,10 @@ async function provenRun(): Promise<{ dir: string; resultPath: string; planPath:
 }
 
 /** A real executable standing in for nare: records its argv, answers with `output`. */
-async function fakeNare(output: unknown): Promise<{ binary: string; argv: () => Promise<string[]> }> {
+async function fakeNare(output: unknown): Promise<{ binary: string; argv: () => Promise<string[]>; prompt: () => Promise<string> }> {
   const dir = await mkdtemp(join(tmpdir(), 'qare-nare-'))
   const argvPath = join(dir, 'argv.json')
+  const promptPath = join(dir, 'prompt.txt')
   const binary = join(dir, 'nare')
   const result = {
     type: 'result',
@@ -67,15 +68,21 @@ async function fakeNare(output: unknown): Promise<{ binary: string; argv: () => 
     questions: [],
   }
   const script = [
-    `import { writeFileSync } from 'node:fs'`,
+    `import { readFileSync, writeFileSync } from 'node:fs'`,
     `writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)))`,
+    // The prompt arrives by file (#401) and is gone once the run ends, so it is kept here.
+    `writeFileSync(${JSON.stringify(promptPath)}, readFileSync(process.argv[process.argv.indexOf('--prompt-file') + 1], 'utf8'))`,
     `console.log(JSON.stringify({ type: 'output', text: ${JSON.stringify(JSON.stringify(output))} }))`,
     `console.log(${JSON.stringify(JSON.stringify(result))})`,
   ].join('\n')
   await writeFile(`${binary}.mjs`, script, 'utf8')
   await writeFile(binary, `#!/bin/sh\nexec node ${binary}.mjs "$@"\n`, 'utf8')
   await chmod(binary, 0o755)
-  return { binary, argv: async () => JSON.parse(await readFile(argvPath, 'utf8')) as string[] }
+  return {
+    binary,
+    argv: async () => JSON.parse(await readFile(argvPath, 'utf8')) as string[],
+    prompt: async () => await readFile(promptPath, 'utf8'),
+  }
 }
 
 async function judge(args: string[]): Promise<{ code: number; out: string; err: string }> {
@@ -119,7 +126,7 @@ test('the verifier reads the criterion text and the diff, confined read-only to 
   await judge(['--result', resultPath, '--plan', planPath, '--diff', diffPath, '--nare', nare.binary, '--outDir', dir])
 
   const argv = await nare.argv()
-  const prompt = argv[1] ?? ''
+  const prompt = await nare.prompt()
   expect(prompt).toContain('The ledger exports every row to CSV.')
   expect(prompt).toContain('diff --git a/export.rb b/export.rb')
   expect(prompt).toContain('checks/export-csv/0/stdout.txt')
@@ -139,7 +146,7 @@ test('judge --no-diff tells the verifier there is no change under review', async
 
   expect(run.code).toBe(0)
   expect(run.out).toContain('verdict passed')
-  const prompt = (await nare.argv())[1] ?? ''
+  const prompt = await nare.prompt()
   expect(prompt).toContain(NO_DIFF)
   expect(prompt).toContain('The ledger exports every row to CSV.')
 })

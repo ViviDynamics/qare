@@ -128,7 +128,13 @@ type Reviewer = 'reads-the-evidence' | 'silent' | 'crashes' | 'hostile' | 'leaks
  * snapshot shows by two fixed rules: a required control with no accessible
  * name, and an alert that says only "Error". It is rules, not a model.
  */
-async function standInNare(reviewer: Reviewer): Promise<{ binary: string; calls: () => Promise<string[][]> }> {
+/** One call the stand-in answered: its argv, and the prompt its prompt file held. */
+interface NareCall {
+  argv: string[]
+  prompt: string
+}
+
+async function standInNare(reviewer: Reviewer): Promise<{ binary: string; calls: () => Promise<NareCall[]> }> {
   const dir = await mkdtemp(join(tmpdir(), 'qare-standin-nare-'))
   made.push(dir)
   const callsPath = join(dir, 'calls.jsonl')
@@ -137,8 +143,9 @@ async function standInNare(reviewer: Reviewer): Promise<{ binary: string; calls:
 import { appendFileSync, readFileSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 const argv = process.argv.slice(2)
-appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(argv) + '\\n')
-const prompt = argv[1] ?? ''
+// The prompt arrives by file (#401), gone once the run ends, so each call keeps its text.
+const prompt = readFileSync(argv[argv.indexOf('--prompt-file') + 1], 'utf8')
+appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify({ argv, prompt }) + '\\n')
 const root = argv[argv.indexOf('--root') + 1]
 const mode = ${JSON.stringify(reviewer)}
 const finish = (output, status = 'done', error = null) => {
@@ -186,7 +193,7 @@ finish({ findings })
       (await readFile(callsPath, 'utf8').catch(() => ''))
         .split('\n')
         .filter((line) => line !== '')
-        .map((line) => JSON.parse(line) as string[]),
+        .map((line) => JSON.parse(line) as NareCall),
   }
 }
 
@@ -274,9 +281,9 @@ test('the reviewer reads the screens read-only, confined to the evidence, with t
   const calls = await nare.calls()
   // The verifier first, on the proven criteria; then the reviewer, once.
   expect(calls).toHaveLength(2)
-  expect(calls[0]?.[1]).toContain('You are the qare verifier')
-  const argv = calls[1] ?? []
-  const prompt = argv[1] ?? ''
+  expect(calls[0]?.prompt).toContain('You are the qare verifier')
+  const argv = calls[1]?.argv ?? []
+  const prompt = calls[1]?.prompt ?? ''
   expect(prompt).toContain('You are the qare UX reviewer')
   expect(argv[argv.indexOf('--tools') + 1]).toBe('read')
   expect(argv[argv.indexOf('--root') + 1]).toBe(join(run.dir, 'evidence'))
@@ -331,7 +338,7 @@ test('the profile turns the review off: the verifier still runs, the reviewer is
   expect(result.out).toContain('verdict passed')
   const calls = await nare.calls()
   expect(calls).toHaveLength(1)
-  expect(calls[0]?.[1]).toContain('You are the qare verifier')
+  expect(calls[0]?.prompt).toContain('You are the qare verifier')
   const { judged, comment } = await artifacts(run.dir)
   expect(judged.advisory).toBeUndefined()
   expect(comment).not.toContain('Advisory')
@@ -346,7 +353,7 @@ test('judge --no-advisory asks the verifier and never the reviewer', async () =>
   expect(result.out).toContain('verdict passed')
   const calls = await nare.calls()
   expect(calls).toHaveLength(1)
-  expect(calls[0]?.[1]).toContain('You are the qare verifier')
+  expect(calls[0]?.prompt).toContain('You are the qare verifier')
   expect((await artifacts(run.dir)).judged.advisory).toBeUndefined()
 })
 
@@ -369,7 +376,7 @@ test('a finding a person dismissed is handed to the reviewer and not raised agai
     'utf8',
   )
   await judge([...run.args, '--nare', nare.binary, '--dismissed', dismissedPath])
-  const prompt = (await nare.calls())[1]?.[1] ?? ''
+  const prompt = (await nare.calls())[1]?.prompt ?? ''
   expect(prompt).toContain('"dismissed":[{"screen":"checks/signup-form/0","category":"label","saw":"The required textbox has no accessible name."')
   const { judged, comment } = await artifacts(run.dir)
   expect(judged.advisory?.findings.map((finding) => finding.category)).toEqual(['error-message'])
@@ -420,7 +427,7 @@ test('in a run of several apps each profile speaks for its own screens: one turn
   const on = await several(['ux:', '  rules:', '    - Forms name every field.'])
   const nare = await standInNare('reads-the-evidence')
   await judge([...on.args, '--nare', nare.binary])
-  const prompt = (await nare.calls())[1]?.[1] ?? ''
+  const prompt = (await nare.calls())[1]?.prompt ?? ''
   const payload = JSON.parse(prompt.slice(prompt.indexOf('\n\n{') + 2)) as { qaMd: string; houseRules: string[]; screens: Array<{ app?: string }> }
   expect(payload.houseRules).toEqual(['admin: Forms name every field.', 'ledger: Amounts show a currency.'])
   // The screen names the app it belongs to, so admin's rule is held to it and ledger's is not.

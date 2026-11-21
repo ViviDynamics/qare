@@ -326,12 +326,13 @@ test('the planner never sees the seeded values the diff carries (#64)', async ()
     `app:\n  boot: { compose: compose.yml, service: app }\n  health: { http: ${healthUrl}, timeout: 1s }\n  seed: { command: "true" }\n  login:\n    fixture: seed.sql\n    role: admin\n    totp:\n      secret: ${secret}\nstubs: []\nvisual:\n  widths: [390]\n  themes: [light]\nsuites:\n  - { name: sign-in, command: "bin/sign-in --otp-seed ${secret}", kind: flow }\n`,
     'utf8',
   )
-  const argvPath = join(dir, 'argv.json')
+  const promptPath = join(dir, 'prompt.txt')
   const binary = join(dir, 'nare')
   const script = [
     '#!/usr/bin/env node',
-    `import { writeFileSync } from 'node:fs'`,
-    `writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)))`,
+    `import { readFileSync, writeFileSync } from 'node:fs'`,
+    // The prompt arrives by file (#401) and is gone once the run ends, so it is kept here.
+    `writeFileSync(${JSON.stringify(promptPath)}, readFileSync(process.argv[process.argv.indexOf('--prompt-file') + 1], 'utf8'))`,
     `const answer = ${JSON.stringify(JSON.stringify(PLAN))}`,
     `console.log(JSON.stringify({ type: 'output', text: answer, detail: {} }))`,
     `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
@@ -362,11 +363,11 @@ test('the planner never sees the seeded values the diff carries (#64)', async ()
 
   expect(code).toBe(0)
   expect(out.lines.join('')).toContain("the profile's seeded values are redacted from the diff before planning")
-  const argv = JSON.parse(await readFile(argvPath, 'utf8')) as string[]
-  expect(argv[1]).not.toContain(secret)
-  expect(argv[1]).toContain('[redacted]')
+  const prompt = await readFile(promptPath, 'utf8')
+  expect(prompt).not.toContain(secret)
+  expect(prompt).toContain('[redacted]')
   // The profile's suites reach the planner too, and their commands are swept the same way (#258).
-  expect(argv[1]).toContain('- sign-in (a flow suite: bin/sign-in --otp-seed [redacted])')
+  expect(prompt).toContain('- sign-in (a flow suite: bin/sign-in --otp-seed [redacted])')
 })
 
 test('qare plan declares the run contract paths to the planner (#162)', async () => {
@@ -378,12 +379,13 @@ test('qare plan declares the run contract paths to the planner (#162)', async ()
   await writeFile(diffPath, 'diff --git a/login.ts b/login.ts\n+++ b/login.ts\n+export {}', 'utf8')
   await mkdir(join(dir, '.qa'), { recursive: true })
   await writeFile(join(dir, '.qa', 'QA.md'), '# QA\n', 'utf8')
-  const argvPath = join(dir, 'argv.json')
+  const promptPath = join(dir, 'prompt.txt')
   const binary = join(dir, 'nare')
   const script = [
     '#!/usr/bin/env node',
-    `import { writeFileSync } from 'node:fs'`,
-    `writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)))`,
+    `import { readFileSync, writeFileSync } from 'node:fs'`,
+    // The prompt arrives by file (#401) and is gone once the run ends, so it is kept here.
+    `writeFileSync(${JSON.stringify(promptPath)}, readFileSync(process.argv[process.argv.indexOf('--prompt-file') + 1], 'utf8'))`,
     `const answer = ${JSON.stringify(JSON.stringify(PLAN))}`,
     `console.log(JSON.stringify({ type: 'output', text: answer, detail: {} }))`,
     `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
@@ -414,12 +416,12 @@ test('qare plan declares the run contract paths to the planner (#162)', async ()
   )
 
   expect(code).toBe(0)
-  const argv = JSON.parse(await readFile(argvPath, 'utf8')) as string[]
-  expect(argv[1]).toContain('declared run inputs')
-  expect(argv[1]).toContain('plan.json')
-  expect(argv[1]).toContain(relative(process.cwd(), resolve(join(dir, '.qa'))))
-  expect(argv[1]).toContain('login.ts')
-  expect(argv[1]).toContain('result.json, judged-result.json')
+  const prompt = await readFile(promptPath, 'utf8')
+  expect(prompt).toContain('declared run inputs')
+  expect(prompt).toContain('plan.json')
+  expect(prompt).toContain(relative(process.cwd(), resolve(join(dir, '.qa'))))
+  expect(prompt).toContain('login.ts')
+  expect(prompt).toContain('result.json, judged-result.json')
 })
 
 test('renamed, mode-only and binary diff paths are declared; deletions are not (#162)', async () => {
@@ -450,12 +452,13 @@ test('renamed, mode-only and binary diff paths are declared; deletions are not (
   )
   await mkdir(join(dir, '.qa'), { recursive: true })
   await writeFile(join(dir, '.qa', 'QA.md'), '# QA\n', 'utf8')
-  const argvPath = join(dir, 'argv.json')
+  const promptPath = join(dir, 'prompt.txt')
   const binary = join(dir, 'nare')
   const script = [
     '#!/usr/bin/env node',
-    `import { writeFileSync } from 'node:fs'`,
-    `writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)))`,
+    `import { readFileSync, writeFileSync } from 'node:fs'`,
+    // The prompt arrives by file (#401) and is gone once the run ends, so it is kept here.
+    `writeFileSync(${JSON.stringify(promptPath)}, readFileSync(process.argv[process.argv.indexOf('--prompt-file') + 1], 'utf8'))`,
     `const answer = ${JSON.stringify(JSON.stringify(PLAN))}`,
     `console.log(JSON.stringify({ type: 'output', text: answer, detail: {} }))`,
     `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
@@ -486,11 +489,11 @@ test('renamed, mode-only and binary diff paths are declared; deletions are not (
   )
 
   expect(code).toBe(0)
-  const argv = JSON.parse(await readFile(argvPath, 'utf8')) as string[]
-  expect(argv[1]).toContain('- new.ts\n')
-  expect(argv[1]).toContain('- mode.txt\n')
-  expect(argv[1]).toContain('- logo.png\n')
-  expect(argv[1]).not.toContain('- gone.ts')
+  const prompt = await readFile(promptPath, 'utf8')
+  expect(prompt).toContain('- new.ts\n')
+  expect(prompt).toContain('- mode.txt\n')
+  expect(prompt).toContain('- logo.png\n')
+  expect(prompt).not.toContain('- gone.ts')
 })
 
 test('a command check that reads a run output is corrected, then neutral, not red (#162)', async () => {
@@ -819,12 +822,13 @@ async function flavourProfile(flavour: string | undefined, extraSuites: string[]
 
 /** A nare stand-in that keeps the prompt it was handed, then answers. */
 async function recordingNare(dir: string, answer: unknown): Promise<{ binary: string; prompt: () => Promise<string> }> {
-  const argvPath = join(dir, 'argv.json')
+  const promptPath = join(dir, 'prompt.txt')
   const binary = join(dir, 'nare')
   const script = [
     '#!/usr/bin/env node',
-    `import { writeFileSync } from 'node:fs'`,
-    `writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)))`,
+    `import { readFileSync, writeFileSync } from 'node:fs'`,
+    // The prompt arrives by file (#401) and is gone once the run ends, so it is kept here.
+    `writeFileSync(${JSON.stringify(promptPath)}, readFileSync(process.argv[process.argv.indexOf('--prompt-file') + 1], 'utf8'))`,
     `const answer = ${JSON.stringify(JSON.stringify(answer))}`,
     `console.log(JSON.stringify({ type: 'output', text: answer, detail: {} }))`,
     `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
@@ -834,7 +838,7 @@ async function recordingNare(dir: string, answer: unknown): Promise<{ binary: st
   await writeFile(binary, `#!/bin/sh\nexec node ${binary}.mjs "$@"\n`, 'utf8')
   const { chmod } = await import('node:fs/promises')
   await chmod(binary, 0o755)
-  return { binary, prompt: async () => (JSON.parse(await readFile(argvPath, 'utf8')) as string[])[1] ?? '' }
+  return { binary, prompt: async () => await readFile(promptPath, 'utf8') }
 }
 
 const SUITE_PLAN = {

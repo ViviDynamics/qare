@@ -51,8 +51,8 @@ async function fakeNare(plan: unknown, findings: unknown[] = []): Promise<{ bina
   const dir = await mkdtemp(join(tmpdir(), 'qare-check-nare-'))
   const log = join(dir, 'prompts.jsonl')
   const script = [
-    "const { appendFileSync } = await import('node:fs')",
-    'const prompt = process.argv[3]',
+    "const { appendFileSync, readFileSync } = await import('node:fs')",
+    "const prompt = readFileSync(process.argv[process.argv.indexOf(\'--prompt-file\') + 1], \'utf8\')",
     `appendFileSync(${JSON.stringify(log)}, JSON.stringify(prompt) + '\\n')`,
     `const answer = prompt.includes('qare verifier') ? ${JSON.stringify(JSON.stringify({ findings }))} : ${JSON.stringify(JSON.stringify(plan))}`,
     "console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },",

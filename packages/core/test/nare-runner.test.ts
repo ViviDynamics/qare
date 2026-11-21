@@ -23,6 +23,7 @@ async function fakeNare(
   argv: () => Promise<string[]>
   schemaSeen: () => Promise<string>
   mcpConfigSeen: () => Promise<unknown>
+  promptSeen: () => Promise<{ path: string; text: string; mode: number; dirMode: number }>
   envSeen: () => Promise<{
     tools: string | null
     endpoint: string | null
@@ -36,10 +37,12 @@ async function fakeNare(
   const schemaPath = join(dir, 'schema-seen.json')
   const envPath = join(dir, 'env-seen.json')
   const mcpPath = join(dir, 'mcp-config-seen.json')
+  const promptPath = join(dir, 'prompt-seen.json')
   const binary = join(dir, 'nare')
   const script = [
     '#!/usr/bin/env node',
-    `import { writeFileSync, readFileSync } from 'node:fs'`,
+    `import { writeFileSync, readFileSync, statSync } from 'node:fs'`,
+    `import { dirname } from 'node:path'`,
     `const argv = process.argv.slice(2)`,
     `writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(argv))`,
     // Read the schema while the run is in flight: the runner cleans its temp
@@ -48,6 +51,10 @@ async function fakeNare(
     `if (at !== -1) writeFileSync(${JSON.stringify(schemaPath)}, readFileSync(argv[at + 1], 'utf8'))`,
     `const mcpAt = argv.indexOf('--mcp-config')`,
     `if (mcpAt !== -1) writeFileSync(${JSON.stringify(mcpPath)}, readFileSync(argv[mcpAt + 1], 'utf8'))`,
+    // The prompt file exists only while the run is in flight, so what it held,
+    // and who could read it, is recorded from inside the run.
+    `const promptAt = argv.indexOf('--prompt-file')`,
+    `if (promptAt !== -1) { const p = argv[promptAt + 1]; writeFileSync(${JSON.stringify(promptPath)}, JSON.stringify({ path: p, text: readFileSync(p, 'utf8'), mode: statSync(p).mode & 0o777, dirMode: statSync(dirname(p)).mode & 0o777 })) }`,
     `writeFileSync(${JSON.stringify(envPath)}, JSON.stringify({ tools: process.env.QARE_EXPLORATION_TOOLS ?? null, endpoint: process.env.QARE_EXPLORATION_ENDPOINT ?? null, mcpTools: process.env.QARE_MCP_TOOLS ?? null, mcpEndpoint: process.env.QARE_MCP_ENDPOINT ?? null, contextWindow: process.env.NARE_CONTEXT_WINDOW ?? null }))`,
     `for (const line of ${JSON.stringify(lines)}) console.log(JSON.stringify(line))`,
     `process.exit(${exitCode})`,
@@ -60,6 +67,8 @@ async function fakeNare(
     argv: async () => JSON.parse(await readFile(argvPath, 'utf8')) as string[],
     schemaSeen: async () => await readFile(schemaPath, 'utf8'),
     mcpConfigSeen: async () => JSON.parse(await readFile(mcpPath, 'utf8')) as unknown,
+    promptSeen: async () =>
+      JSON.parse(await readFile(promptPath, 'utf8')) as { path: string; text: string; mode: number; dirMode: number },
     envSeen: async () => JSON.parse(await readFile(envPath, 'utf8')) as {
       tools: string | null
       endpoint: string | null
@@ -164,7 +173,10 @@ test('the request reaches nare as flags, not as prose', async () => {
   const argv = await nare.argv()
 
   expect(argv[0]).toBe('run')
-  expect(argv).toContain('judge this')
+  // The prompt travels by file (#401): never as an argument, so no argv size limit applies.
+  expect(argv).not.toContain('judge this')
+  expect(argv[argv.indexOf('--prompt-file') + 1]).toBe((await nare.promptSeen()).path)
+  expect((await nare.promptSeen()).text).toBe('judge this')
   expect(argv).toContain('--yes')
   expect(argv).toContain('--jsonl')
   expect(argv.join(' ')).toContain('--contract 3')
@@ -410,17 +422,42 @@ test('a missing nare binary says so plainly', async () => {
   await expect(runner.run(REQUEST)).rejects.toThrow(/nare/i)
 })
 
-test.runIf(process.platform === 'linux')(
-  'a prompt too large for one argument is refused by name, before nare is spawned',
-  async () => {
-    const nare = await fakeNare([result()])
+test('a prompt larger than one argument can carry reaches nare intact (#401)', async () => {
+  const nare = await fakeNare([ANSWER, result()])
+  // Past Linux's 131071 byte cap on one argument, with multibyte text, CRLF and
+  // a trailing newline that a lossy route would mangle.
+  const prompt = `${'diff line ü ✓\r\n'.repeat(12000)}end\n`
+  expect(Buffer.byteLength(prompt, 'utf8')).toBeGreaterThan(131071)
 
-    await expect(
-      new NareAgentRunner({ binary: nare.binary }).run({ ...REQUEST, prompt: 'x'.repeat(128 * 1024) }),
-    ).rejects.toThrow(/over the 131071 one argument can carry on Linux.*nare#29/)
-    await expect(nare.argv()).rejects.toThrow()
-  },
-)
+  const run = await new NareAgentRunner({ binary: nare.binary }).run({ ...REQUEST, prompt })
+
+  expect(run.status).toBe('completed')
+  expect((await nare.promptSeen()).text).toBe(prompt)
+})
+
+test('the prompt file is private to the run and gone once it ends', async () => {
+  const nare = await fakeNare([ANSWER, result()])
+
+  await new NareAgentRunner({ binary: nare.binary }).run(REQUEST)
+  const seen = await nare.promptSeen()
+
+  expect(seen.mode).toBe(0o600)
+  expect(seen.dirMode).toBe(0o700)
+  await expect(readFile(seen.path, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
+test.each([
+  ['nare exits without a result line', [] as unknown[], 1],
+  ['nare never starts', [] as unknown[], 2],
+])('the prompt file is removed when the run fails: %s', async (_name, lines, code) => {
+  const nare = await fakeNare(lines, code)
+
+  await expect(new NareAgentRunner({ binary: nare.binary }).run(REQUEST)).rejects.toThrow(/nare/)
+  const seen = await nare.promptSeen()
+
+  expect(seen.text).toBe('judge this')
+  await expect(readFile(seen.path, 'utf8')).rejects.toThrow(/ENOENT/)
+})
 
 // An older subprocess cannot be mistaken for the harness qare is written against.
 test('a contract 2 result is refused after the contract 3 upgrade', async () => {
