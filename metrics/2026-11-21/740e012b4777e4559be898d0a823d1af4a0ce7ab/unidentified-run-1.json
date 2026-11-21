@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "qare.metrics.v1",
+  "recordedAt": "2026-11-21T04:04:13.750Z",
+  "runId": "pr-385",
+  "startedAt": "2026-11-21T04:02:45.926Z",
+  "finishedAt": "2026-11-21T04:02:52.492Z",
+  "wallMs": 6566,
+  "verdict": "blocked",
+  "criteria": {
+    "selected": [
+      {
+        "id": "c-9afffa28ae3dfc59",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-6c221c6b4d01c24f",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-346695bb6c69b967",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-5f1872559c048264",
+        "outcome": "unverified"
+      },
+      {
+        "id": "c-ee0e72050b46bea5",
+        "outcome": "unverified"
+      }
+    ],
+    "counts": {
+      "unverified": 5
+    }
+  },
+  "model": {
+    "plan": {
+      "inputTokens": 76037,
+      "outputTokens": 5316
+    },
+    "judge": {
+      "inputTokens": 213782,
+      "outputTokens": 9334
+    }
+  },
+  "context": {
+    "pr": 385
+  }
+}
