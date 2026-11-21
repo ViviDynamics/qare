@@ -39,6 +39,7 @@ import { flowOpenUrl } from './app-address.js'
 import { runVisualCheckJob, visualPageUrl, type VisualComparison, type VisualContext, type VisualSessionFactory } from './visual-run.js'
 import { runSeed, SEED_LOG, unrunnableSeedReason } from './seed.js'
 import { mintRunValues, mintedMailAddress, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
+import { suiteFilterViolation } from './suite-filter.js'
 import {
   addQuarantineRecord,
   checkFingerprint,
@@ -3148,8 +3149,29 @@ async function runFlowCheckJob(
     // on a target run learns where the target is from {{run.target_url}}.
     // A suite runs its own browser, which qare cannot see: like a command
     // check, its traffic is not recorded, and the SPEC says so.
-    const command = substituteValues(suite.command, values)
-    const outcome = await runSuiteCheck({ name: suite.name, command }, { cwd: repoPath, timeoutMs: check.timeoutMs, execution })
+    // A suite that takes a filter runs the one test the plan names (#376):
+    // the value is held to one safe token again here, since a job built in
+    // process never passed the loader, and a filter the suite cannot take, or
+    // a filtered suite named without one, runs nothing.
+    const refused = suiteFilterRefusal(suite, check.filter)
+    if (refused !== undefined) return { status: 'unverified', reason: refused, evidence: [] }
+    const filled = suite.filter === undefined || check.filter === undefined ? suite.command : suite.command.split(`{{${suite.filter}}}`).join(check.filter)
+    const command = substituteValues(filled, values)
+    const ran = await runSuiteCheck({ name: suite.name, command }, { cwd: repoPath, timeoutMs: check.timeoutMs, execution })
+    // The runner does the selecting, so its report holds only the tests the
+    // filter ran (#376): code counts them, and a run that ran none, or whose
+    // report cannot be read, proves nothing about the test the criterion
+    // names, however it exited. Some runners exit 0 when a filter matches
+    // nothing, which is why a filtered suite must declare its report.
+    const counted =
+      ran.outcome === 'passed' && suite.report !== undefined && check.filter !== undefined
+        ? filteredSuiteRun(suite.report, check.filter, ran.stdout)
+        : undefined
+    const outcome =
+      counted === undefined || counted.status === 'passed'
+        ? ran
+        : { ...ran, outcome: 'unverified' as const, reason: `suite ${suite.name}: ${counted.reason}` }
+    const selection = counted === undefined ? {} : { filter: check.filter, ...(counted.selected === undefined ? {} : { selected: counted.selected }) }
     const dir = join(evidenceDir, checkDir)
     await mkdir(dir, { recursive: true })
     // What the suite wrote is evidence like a command check's streams are
@@ -3192,6 +3214,7 @@ async function runFlowCheckJob(
         {
           suite: suite.name,
           command,
+          ...selection,
           containment: 'none',
           note: 'a suite runs uncontained, so it may reach for whatever its step can reach and its traffic is not recorded',
           outcome: outcome.outcome,
@@ -3994,6 +4017,35 @@ function selectionVerdict(
       selected,
     }
   return { status: 'passed', selected }
+}
+
+/** What a filtered suite's report says ran (#376): at least one test, or the reason none can be counted. */
+function filteredSuiteRun(
+  report: ReportFormat,
+  filter: string,
+  stdout: string,
+): { status: 'passed'; selected: string[] } | { status: 'unverified'; reason: string; selected?: string[] } {
+  const names = testNames(report, stdout)
+  if (names === undefined)
+    return { status: 'unverified', reason: `its report could not be read as ${report}, so what the filter ${filter} ran is unknown` }
+  if (names.length === 0)
+    return { status: 'unverified', reason: `the filter ${filter} ran no test, so nothing it names was exercised`, selected: [] }
+  return { status: 'passed', selected: names }
+}
+
+/**
+ * Why a suite check cannot run as planned (#376), or undefined when it can: a
+ * filter must meet a suite that takes one, a suite that takes one must be
+ * given one, and the value must be one safe token.
+ */
+function suiteFilterRefusal(suite: ProfileSuite, filter: string | undefined): string | undefined {
+  if (suite.filter === undefined && filter !== undefined)
+    return `suite ${suite.name} takes no filter, so it cannot run only ${filter}; the flow is unverified, not failed`
+  if (suite.filter !== undefined && filter === undefined)
+    return `suite ${suite.name} takes a filter ({{${suite.filter}}}) naming the test to run, and the check names none; the flow is unverified, not failed`
+  if (filter === undefined) return undefined
+  const violation = suiteFilterViolation(filter)
+  return violation === undefined ? undefined : `suite ${suite.name} filter refused: ${violation}`
 }
 
 /**

@@ -525,3 +525,58 @@ test('a flow naming an action the driver lacks is refused before anything boots 
   // Nothing ran: no boot, no browser, no evidence.
   expect(events).toEqual([])
 })
+
+// A suite that takes a filter runs one test (#376). The script stands in for a
+// test runner: like a real one it does the selecting, and prints a TAP line
+// only for each test whose name matches the filter.
+const TAP_RUNNER = [
+  "const filter = process.argv[2] ?? ''",
+  "const names = ['invoice totals add up', 'invoice totals round down', 'refund is refused'].filter((name) => new RegExp(filter).test(name))",
+  "names.forEach((name, index) => console.log(`ok ${index + 1} - ${name}`))",
+].join('\n')
+
+async function filteredSuiteJob(check: Record<string, unknown>) {
+  const job = await makeJob({
+    criteria: flowCriterion({ kind: 'flow', suite: 'unit', ...check } as never),
+    profile: {
+      inline: {
+        ...INLINE_PROFILE,
+        suites: [{ name: 'unit', command: 'node runner.mjs {{test}}', kind: 'command', filter: 'test', report: 'node-tap' }],
+      },
+    },
+  })
+  const { writeFile } = await import('node:fs/promises')
+  await writeFile(join(job.repoPath, 'runner.mjs'), TAP_RUNNER)
+  return job
+}
+
+test('a filtered suite runs the named test and records what the filter selected (#376)', async () => {
+  const job = await filteredSuiteJob({ filter: 'totals.add' })
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, flowSession: fakeSessionFactory([]).factory })
+
+  expect(result.criteria[0].outcome).toBe('proven')
+  const suite = JSON.parse(await readFile(join(job.evidenceDir, 'checks', 'criterion-1', '0', 'suite.txt'), 'utf8')) as Record<string, unknown>
+  expect(suite).toMatchObject({ suite: 'unit', command: 'node runner.mjs totals.add', filter: 'totals.add', selected: ['invoice totals add up'], outcome: 'passed' })
+})
+
+test('a filtered suite whose filter ran no test is unverified however it exited (#376)', async () => {
+  const job = await filteredSuiteJob({ filter: 'nothing_matches' })
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, flowSession: fakeSessionFactory([]).factory })
+  expect(result.criteria[0].outcome).toBe('unverified')
+  expect(result.criteria[0].reason).toContain('ran no test')
+})
+
+test('a filtered suite named without a filter, or a filter on a suite that takes none, is unverified and runs nothing (#376)', async () => {
+  const bare = await filteredSuiteJob({})
+  const { result: bareResult } = await runJob(bare, { ...HEALTHY_BOOT, flowSession: fakeSessionFactory([]).factory })
+  expect(bareResult.criteria[0].outcome).toBe('unverified')
+  expect(bareResult.criteria[0].reason).toContain('takes a filter')
+
+  const job = await makeJob({
+    criteria: flowCriterion({ kind: 'flow', suite: 'browser-e2e', filter: 'sign_in' } as never),
+    profile: { inline: INLINE_PROFILE },
+  })
+  const { result } = await runJob(job, { ...HEALTHY_BOOT, flowSession: fakeSessionFactory([]).factory })
+  expect(result.criteria[0].outcome).toBe('unverified')
+  expect(result.criteria[0].reason).toContain('takes no filter')
+})
