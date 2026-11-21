@@ -34,6 +34,10 @@ commands:
     run: node -- .qa/checks/pipeline-defaults.mjs {{check}}
     about: Exercises the checkout's pipeline defaults (#380) without a build, printing what it observed; its step stubs are bash functions, so a noexec scratch is fine. check=flake runs the execute step script with docker and git stubbed (one retry and the base revision's quarantine store reach qare run) and the checkout's runJob (a check that fails then passes is quarantined and unverified, one that always fails is failed); check=exclude applies collect's default planner diff pathspecs to lockfiles, generated paths and source, and prints the Planner diff section the checkout's post-evidence writes for what was left out; check=blocked posts a blocked verdict through the checkout's post-evidence (neutral by default, failure on opt-in) and runs the publish step script to show the opt-in reaching post-evidence and a typo refused.
     scratch: [.qa/checks/scratch]
+  http-check:
+    run: node -- .qa/checks/http-check.mjs {{check}}
+    about: Exercises the checkout's http check kind (#378) without a build, with the app standing in for fetch in the same process, so it needs no network, and prints what it observed. check=plan loads an http check (method, path, headers, body, status, header and JSON path matchers) through the plan loader and shows a host URL, an unknown method, a missing status, a client header and an unread matcher refused; check=record runs one http check and prints the http.json evidence it writes, the request and the response status, headers and body, with the credential and cookie redacted; check=judge runs the checkout's runJob against a target with no model, proving one criterion and failing two on the same answer by their matchers alone; check=planner runs the checkout's planRun on a profile with no browser flavour (core) and prints the http kind it is offered, the prompt lines that describe it, and the http check it keeps.
+    scratch: [.qa/checks/scratch]
 
 # The suites the main lane runs for the ledger's active criteria (#363): the
 # lane reads no plan, it runs what each entry's `suite:<name>` check names.

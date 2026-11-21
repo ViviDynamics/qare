@@ -29,6 +29,16 @@ checkout's core source, without a build. Choose them for those criteria; the
 repository's vitest and node --test files import built packages and cannot run
 in the image.
 
+Executable http check checks (#378): the http check kind's plan shape and
+bounds, its evidence, its code-decided verdict and its place in the planner's
+prompt are proven by `node -- .qa/checks/http-check.mjs <check>`, the declared
+http-check command, with check `plan`, `record`, `judge` or `planner` (`record` is the one that
+prints the http.json evidence an http check writes). They
+run the checkout's core source without a build, with the app under test
+standing in for fetch in the same process, so they need no network, model or
+credentials. Choose them for those criteria, never a grep of the source or a
+Wikipedia page: the target has no API of its own to send an http check to.
+
 qare repository QA profile (self-run target).
 
 What this is: the profile qare's own self-run executes, so a pull request

@@ -4,6 +4,7 @@
 import { undeclaredCheckKinds, type FlowAction, type FlowDriverCapabilities, type FlowElement } from './flow.js'
 import { suiteFilterViolation } from './suite-filter.js'
 import { parseMailDelivery, type MailAuthenticationAssertion } from './mail-delivery.js'
+import { parseHttpFields, type HttpCheckFields } from './http-check.js'
 import { identityOfPath, isSnapshotPath } from './locator.js'
 import type { ModelUsage } from './metrics.js'
 import { isUnsafeProfileName } from './profile.js'
@@ -11,7 +12,7 @@ import { DEFAULT_PROFILE_NAME } from './monorepo.js'
 
 export const PLAN_SCHEMA_VERSION = '1'
 
-export type CheckKind = 'command' | 'flow' | 'visual' | 'mail' | 'tool' | 'a11y'
+export type CheckKind = 'command' | 'flow' | 'visual' | 'mail' | 'tool' | 'a11y' | 'http'
 
 export type FlowActionStep = FlowAction
 
@@ -115,7 +116,18 @@ export interface A11yCheck {
   inferred?: boolean
 }
 
-export type PlanCheck = CommandCheck | FlowCheck | VisualCheck | MailCheck | ToolCheck | A11yCheck
+/**
+ * A request against the app under test (#378): a method, a path on the booted
+ * app or below the profile's target, and matchers on the status, headers and
+ * JSON body that code decides. A plan never names a host.
+ */
+export interface HttpCheck extends HttpCheckFields {
+  kind: 'http'
+  name: string
+  inferred?: boolean
+}
+
+export type PlanCheck = CommandCheck | FlowCheck | VisualCheck | MailCheck | ToolCheck | A11yCheck | HttpCheck
 
 export interface PlannedCriterion {
   id: string
@@ -175,7 +187,7 @@ export interface Plan {
   usage?: ModelUsage
 }
 
-const CHECK_KINDS: CheckKind[] = ['command', 'flow', 'visual', 'mail', 'tool', 'a11y']
+const CHECK_KINDS: CheckKind[] = ['command', 'flow', 'visual', 'mail', 'tool', 'a11y', 'http']
 
 /** The widest viewport a visual check captures at (#143): wider is a typo, not a screen. */
 export const MAX_VISUAL_WIDTH = 10000
@@ -392,7 +404,7 @@ function parseCheck(value: unknown, base: string, extraFlowActions: readonly str
 
   const kind = value.kind
   if (typeof kind !== 'string' || !CHECK_KINDS.includes(kind as CheckKind))
-    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(kind)} (expected "command", "flow", "visual", "mail", "tool" or "a11y")`)
+    fail(`${base}.kind`, `unknown check kind ${JSON.stringify(kind)} (expected "command", "flow", "visual", "mail", "tool", "a11y" or "http")`)
   const name = nonEmptyString(value.name, `${base}.name`, 'name')
   const inferred = parseInferred(value.inferred, `${base}.inferred`)
 
@@ -469,6 +481,8 @@ function parseCheck(value: unknown, base: string, extraFlowActions: readonly str
         inferred,
       )
     }
+    case 'http':
+      return finish({ kind: 'http', name, ...parseHttpFields(value, base, fail) }, inferred)
     case 'tool': {
       const tool = nonEmptyString(value.tool, `${base}.tool`, 'tool name')
       const args = parseToolArgs(value.args, `${base}.args`)

@@ -680,6 +680,60 @@ runs the sweep in judge before the model is asked, and again the moment a
 reply is made when the caller listens for `issue_comment`
 ([pipeline.md](./pipeline.md)).
 
+### HTTP checks
+
+An API criterion ("POST /orders with no items returns 422") is about what the
+running app answers, which needs neither a browser nor a committed script. An
+`http` check (#378) sends one request to the app under test and judges the
+answer in code (rule 3):
+
+```json
+{ "kind": "http", "name": "an empty order is refused", "method": "POST", "path": "/orders",
+  "headers": { "content-type": "application/json" }, "body": "{\"items\":[]}",
+  "expect": { "status": 422, "headers": [{ "name": "content-type", "contains": "json" }],
+              "json": [{ "path": "error.code", "equals": "empty_order" }] } }
+```
+
+A model may plan one, so the request is bounded where the plan loads, and the
+loader refuses anything else:
+
+- **Where it goes.** A `path`, never a URL: the run resolves it on the origin
+  of the app it booted and proved healthy, with `{{run.app_port}}` pinned, or
+  below the profile's target URL. A path that climbs out of either, a desktop
+  build, a profile with no app and no target, and a target URL that carries a
+  credential are refused or left unverified by name, and nothing is sent.
+  Redirects are the answer and are never followed.
+- **What it carries.** The method is one of GET, HEAD, POST, PUT, PATCH,
+  DELETE and OPTIONS. At most 32 headers of at most 8 KiB each, never one the
+  client writes from the request (`host`, `content-length`, `connection` and
+  the like); a string body of at most 64 KiB, none on a GET or HEAD; a timeout
+  of at most 120 s. The strings may name run values, and nothing else is
+  substituted. Only what the plan wrote is sent: the run adds no header,
+  cookie or credential from its environment, and execute still holds no
+  secret (rule 7).
+- **What decides.** `expect.status` is always named, one code or a list.
+  Header matchers name a header and one of `equals`, `contains`, `matches` or
+  `exists`; JSON matchers name a dot path into the parsed body and one of the
+  same four, judged as a tool check's are. An answer the matchers refuse
+  fails the criterion, and so does a JSON matcher on a body that is not JSON.
+  No answer within the timeout, nowhere to send the request, and a body larger
+  than the 1 MiB the check reads leave it unverified: the check could not
+  look. The verifier may still argue the evidence down, never up.
+
+The request and the response (status, headers and body) are recorded in
+`http.json`, redacted by the run's rules. The values of `authorization`,
+`proxy-authorization`, `cookie`, `set-cookie` and any header whose name names a
+secret are replaced, a credential the plan wrote is swept wherever the answer
+echoes it, a JSON body has its secret keys redacted, and the body kept is cut
+at 16 KiB.
+
+The planner is offered the kind only where there is an app to address, the
+booted app or a target, and on a flavour with no browser too: it opens no
+page. It is told to prefer an http check to a command or a grep for what the
+running app answers, and to keep a named test from a suite for behaviour
+inside the code that no request shows. A planned http check with nothing to
+address is corrected.
+
 ### Mail checks
 
 A `mail` check waits for one message at an address and reads it. The address

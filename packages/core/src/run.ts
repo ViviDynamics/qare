@@ -23,7 +23,7 @@ import { startCommandCell, type CommandCell, type CommandCellOptions } from './c
 import { makePlaywrightFlowSession } from './flow-playwright.js'
 import { excerptAround, type PlatformLogEntry } from './platform-log.js'
 import { evidenceOf, judgeRun, toBaseSideResults, toSideResults } from './judge.js'
-import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck, type JobProfileGroup, type JobProfileRef, type JobToolCheck, type SeveralProfilesJob, type SingleProfileJob } from './job.js'
+import { JobValidationError, type Job, type JobCheck, type JobCommandCheck, type JobCriterion, type JobFlowCheck, type JobHttpCheck, type JobProfileGroup, type JobProfileRef, type JobToolCheck, type SeveralProfilesJob, type SingleProfileJob } from './job.js'
 import type { FlowActionStep } from './plan.js'
 import { feedRunLedger } from './ledger-feed.js'
 import { FileLedgerStore } from './ledger.js'
@@ -36,6 +36,7 @@ import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, mailEviden
 import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunProfileSummary, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
 import { flowOpenUrl } from './app-address.js'
+import { runHttpCheckJob } from './http-run.js'
 import { runVisualCheckJob, visualPageUrl, type VisualComparison, type VisualContext, type VisualSessionFactory } from './visual-run.js'
 import { runSeed, SEED_LOG, unrunnableSeedReason } from './seed.js'
 import { mintRunValues, mintedMailAddress, substituteValues, validateRunReferences, validateValueReferences, type RunValues, REFERENCE } from './values.js'
@@ -2282,6 +2283,10 @@ function validatePlanValues(criteria: JobCriterion[], profile: QaProfile, values
         }
         continue
       }
+      if (check.kind === 'http') {
+        validateHttpCheck(check, profile, values, base)
+        continue
+      }
       const allow = (field: string) => (name: string): boolean => {
         if (!name.startsWith('mail.')) return false
         validateMailArtefactName(name, mailChecks, field)
@@ -2787,6 +2792,26 @@ async function runCriterion(
       foldCriterion(fold)
       continue
     }
+    if (substituted.kind === 'http') {
+      // An http check sends one request to the app under test (#378): the
+      // matchers decide in code, and the request and the response are
+      // redacted evidence.
+      const fold = await settleCheck(async (attempt) => {
+        const outcome = await runHttpCheckJob({
+          check: substituted,
+          address: { ...flow.visual, client: flow.client !== undefined },
+          values,
+          evidenceDir: job.evidenceDir,
+          checkDir: dirFor(index, attempt),
+          rules: sweepRules,
+          defaultTimeoutMs: DEFAULT_CHECK_TIMEOUT_MS,
+        })
+        evidence.push(...outcome.evidence)
+        return { status: outcome.status, reason: outcome.reason === undefined ? undefined : redactText(outcome.reason, sweepRules) }
+      }, policy.attempts)
+      foldCriterion(fold)
+      continue
+    }
     if (substituted.kind === 'visual') {
       // A visual check captures through the screenshot seam and compares
       // with what the base side saved (#143). The outcome is decided in
@@ -3020,6 +3045,37 @@ async function replayCriterion(
 }
 
 /**
+ * An http check is held to the app it may address before anything boots
+ * (#378): a profile with no app and no target, or a desktop build, has
+ * nothing to send a request to, and a path that climbs out of the app is
+ * refused whatever port the run lands on. Its strings may name run values
+ * and nothing else: a mail artefact is not something a request carries.
+ */
+function validateHttpCheck(check: JobHttpCheck, profile: QaProfile, values: RunValues, base: string): void {
+  if (profile.client !== undefined)
+    throw new JobValidationError(`${base}.kind`, 'the app is a desktop build with no address, so an http check has nothing to send its request to')
+  if (profile.app === undefined && profile.target === undefined)
+    throw new JobValidationError(`${base}.kind`, 'the profile boots no app and names no target, so an http check has nothing to send its request to')
+  validateValueReferences(check.path, values, `${base}.path`)
+  const written = substituteValues(check.path, values)
+  const root = profile.target?.url ?? 'http://app.invalid/'
+  if (pathOnTarget(root, written) === undefined)
+    throw new JobValidationError(`${base}.path`, `the path ${JSON.stringify(check.path)} climbs out of the app; an http check stays on the app under test`)
+  for (const [name, value] of Object.entries(check.headers ?? {})) validateRunReferences(value, values, `${base}.headers.${name}`)
+  if (check.body !== undefined) validateRunReferences(check.body, values, `${base}.body`)
+  for (const [index, assertion] of (check.expect.headers ?? []).entries())
+    for (const field of ['equals', 'contains', 'matches'] as const) {
+      const value = assertion[field]
+      if (value !== undefined) validateRunReferences(value, values, `${base}.expect.headers[${index}].${field}`)
+    }
+  for (const [index, assertion] of (check.expect.json ?? []).entries())
+    for (const field of ['equals', 'contains', 'matches'] as const) {
+      const value = assertion[field]
+      if (typeof value === 'string') validateRunReferences(value, values, `${base}.expect.json[${index}].${field}`)
+    }
+}
+
+/**
  * Substitute `{{run.<name>}}` references in a check's user-authored strings with
  * the run's minted values. Unknown names never reach this point: the plan-time
  * walk already refused the run.
@@ -3047,6 +3103,40 @@ function substituteCheck(check: JobCheck, values: RunValues): JobCheck {
       ...(check.url === undefined ? {} : { url: substituteValues(check.url, values) }),
       ...(check.actions === undefined ? {} : { actions: check.actions.map((action) => mapFlowStrings(action, (value) => substituteValues(value, values))) }),
     }
+  if (check.kind === 'http') {
+    // The path, the header values, the body and the matcher text may name
+    // run values (#378); nothing else is substituted into a request.
+    const text = (value: string): string => substituteValues(value, values)
+    return {
+      ...check,
+      path: text(check.path),
+      ...(check.headers === undefined ? {} : { headers: Object.fromEntries(Object.entries(check.headers).map(([name, value]) => [name, text(value)])) }),
+      ...(check.body === undefined ? {} : { body: text(check.body) }),
+      expect: {
+        status: check.expect.status,
+        ...(check.expect.headers === undefined
+          ? {}
+          : {
+              headers: check.expect.headers.map((assertion) => ({
+                ...assertion,
+                ...(assertion.equals === undefined ? {} : { equals: text(assertion.equals) }),
+                ...(assertion.contains === undefined ? {} : { contains: text(assertion.contains) }),
+                ...(assertion.matches === undefined ? {} : { matches: text(assertion.matches) }),
+              })),
+            }),
+        ...(check.expect.json === undefined
+          ? {}
+          : {
+              json: check.expect.json.map((assertion) => ({
+                ...assertion,
+                ...(typeof assertion.equals === 'string' ? { equals: text(assertion.equals) } : {}),
+                ...(assertion.contains === undefined ? {} : { contains: text(assertion.contains) }),
+                ...(assertion.matches === undefined ? {} : { matches: text(assertion.matches) }),
+              })),
+            }),
+      },
+    }
+  }
   if (check.kind === 'tool') {
     // A tool check's strings — argument values and matcher text alike — may
     // name run values, exactly as a command's do (#94).

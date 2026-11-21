@@ -175,10 +175,10 @@ test('flow checks are carried to the job, with suites and typed actions', () => 
   expect(notes.join(' ')).not.toMatch(/flow/)
 })
 
-test('the drop note names every kind the runner executes, visual and a11y among them (#143, #149)', () => {
+test('the drop note names every kind the runner executes, visual, a11y and http among them (#143, #149, #378)', () => {
   const { notes } = jobFromPlan(planWith([{ id: 'c1', text: 'x', checks: [UNKNOWN_KIND] }]), CONTEXT)
 
-  expect(notes.join(' ')).toMatch(/command, mail, flow, tool, visual and a11y checks only \(telepathy\)/)
+  expect(notes.join(' ')).toMatch(/command, mail, flow, tool, visual, a11y and http checks only \(telepathy\)/)
   expect(notes.join(' ')).not.toMatch(/yet/)
 })
 

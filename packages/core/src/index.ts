@@ -16,8 +16,11 @@ export type {
   CommandCheck,
   FlowCheck,
   VisualCheck,
+  HttpCheck,
   FlowActionStep,
 } from './plan.js'
+export { HTTP_METHODS, MAX_HTTP_BODY_BYTES, MAX_HTTP_HEADERS, MAX_HTTP_TIMEOUT_MS } from './http-check.js'
+export type { HttpCheckFields, HttpExpect, HttpHeaderAssertion, HttpJsonAssertion, HttpMethod } from './http-check.js'
 export { fingerprintPlan, comparePlan, lockPlan } from './plan-lock.js'
 export type { PlanComparison } from './plan-lock.js'
 export { mintRunValues, substituteValues, validateValueReferences } from './values.js'
@@ -165,7 +168,7 @@ export {
 export type { DeclaredRunInputs, PlanBatchReport, PlanCriterionInput, PlanInputs, PlanSuite, UnplannedCriterion } from './plan-step.js'
 export { JobValidationError, loadJobFromFile, loadJobFromText, parseJob } from './job.js'
 export { SUITE_FILTER_LIMIT, suiteFilterViolation } from './suite-filter.js'
-export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobVisualCheck, JobA11yCheck, JobCheck, JobPostTarget, JobProfileGroup, SingleProfileJob, SeveralProfilesJob } from './job.js'
+export type { Job, JobProfileRef, JobCriterion, JobCommandCheck, JobFlowCheck, JobVisualCheck, JobA11yCheck, JobHttpCheck, JobCheck, JobPostTarget, JobProfileGroup, SingleProfileJob, SeveralProfilesJob } from './job.js'
 export { httpMailbox, mailEvidence, runMailCheck, extractCode, DEFAULT_CODE_PATTERN } from './mailbox.js'
 export { AUTH_MECHANISMS, assessDelivery, fromDomain, parseAuthenticationResults } from './mail-auth.js'
 export type { AuthMechanism, AuthResult, AuthenticationResults, DeliveryOutcome, MailAuthenticationAssertion, MailAuthenticationEvidence, MailDeliveryEvidence, MailSourceTrust } from './mail-auth.js'
@@ -303,7 +306,9 @@ export { BROWSER_FLOW_DRIVER, makePlaywrightFlowSession, PlaywrightFlowSessionEr
 export { ELECTRON_FLOW_DRIVER, ElectronFlowSessionError, applicationPathProblem, electronDisplayProblem, makeElectronFlowSession } from './flow-electron.js'
 export type { ElectronAppProcess, ElectronHost } from './flow-electron.js'
 export { BROWSER_FLAVOURS, DEFAULT_FLAVOUR, browserlessFlavour, flowDriverFor } from './flow-driver.js'
-export { bootedAppOrigin, flowOpenUrl, plannedAppAddress, plannerAddress } from './app-address.js'
+export { bootedAppOrigin, flowOpenUrl, httpCheckUrl, plannedAppAddress, plannerAddress } from './app-address.js'
+export { runHttpCheckJob } from './http-run.js'
+export type { HttpCheckJobInput, HttpCheckOutcome } from './http-run.js'
 export type { FlowAddressContext, PlannerAddress } from './app-address.js'
 export { runCellCommand } from './cell-launch.js'
 export { clientCellProblem, reapLiveCells, startClientCell, trackLiveCell } from './client-cell.js'
