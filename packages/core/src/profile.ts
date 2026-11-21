@@ -418,9 +418,12 @@ export interface ProfileUx {
 
 export interface ProfileBase {
   /**
-   * `all` (the default) runs the whole plan at the base; `ledger` only the
-   * criteria the ledger at the base already carries; `none` runs nothing
-   * there, so the run has one side and says so.
+   * `ledger` (the default for a booted app since #381) runs only the
+   * criteria the ledger at the base already carries, and under the default
+   * also those whose check is decided against the base (visual, a11y, a
+   * flow under a standing audit); `all` (a client's default) runs the whole
+   * plan at the base; `none` runs nothing there, so the run has one side and
+   * says so. Absent means the default.
    */
   criteria?: 'all' | 'ledger' | 'none'
   /** The base side's wall clock bound, as a duration like `10m`. */
