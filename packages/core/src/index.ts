@@ -32,6 +32,7 @@ export type { LanePlan } from './shards.js'
 export {
   RESULT_SCHEMA_VERSION,
   RUN_VERDICTS,
+  BOOT_TAIL_LINES,
   ResultValidationError,
   loadResult,
   parseResult,
@@ -88,6 +89,8 @@ export type {
   RunTarget,
   RunBase,
   RunEgress,
+  RunBootFailure,
+  RunBootService,
   RunBaseImage,
   CriterionBase,
 } from './result.js'

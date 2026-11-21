@@ -1371,3 +1371,62 @@ test('a build that fails blocks the run naming the build, with what the build sa
   expect(verbs).toEqual(['build'])
   expect(existsSync(join(job.evidenceDir, 'seed.log'))).toBe(false)
 })
+
+/** A stack whose web service printed a line and exited 1 (#407): compose ps and logs say so. */
+const EXITED_STACK = [
+  JSON.stringify({ Service: 'admin', State: 'exited', ExitCode: 1 }),
+  JSON.stringify({ Service: 'db', State: 'running', ExitCode: 0, Health: 'healthy' }),
+].join('\n')
+const ADMIN_LOG = `${Array.from({ length: 30 }, (_, index) => `boot line ${index + 1}`).join('\n')}\nDATABASE_URL=postgres://app:hunter2-407@db/app\nActiveRecord::ConnectionNotEstablished: Network is unreachable\n`
+
+function exitedStack(upCode: number): BootOpts {
+  return {
+    runCompose: async (args) => {
+      if (args.includes('ps')) return { code: 0, stdout: EXITED_STACK, stderr: '' }
+      if (args.includes('logs') && args.includes('--tail')) return { code: 0, stdout: args.includes('admin') ? ADMIN_LOG : 'db ready\n', stderr: '' }
+      if (args.includes('up')) return { code: upCode, stdout: '', stderr: upCode === 0 ? '' : 'container admin-1 exited (1)' }
+      return { code: 0, stdout: '', stderr: '' }
+    },
+    probe: async () => ({ ok: true }),
+    pollIntervalMs: 1,
+    egressImage: '',
+  }
+}
+
+test('a service that exits during the boot leaves its log, its exit code and its last lines in the evidence (#407)', async () => {
+  const job = await makeJob({ criteria: commandCriteria('echo ok'), profile: { inline: INLINE_PROFILE } })
+  const { result } = await runJob(job, exitedStack(1))
+
+  expect(result.verdict).toBe('blocked')
+  const admin = await readFile(join(job.evidenceDir, 'services', 'admin.log'), 'utf8')
+  expect(admin).toContain('boot line 1\n')
+  expect(admin).toContain('ActiveRecord::ConnectionNotEstablished: Network is unreachable')
+  // Redacted by the run's rules before it is written.
+  expect(admin).not.toContain('hunter2-407')
+  expect(await readFile(join(job.evidenceDir, 'services', 'db.log'), 'utf8')).toBe('db ready\n')
+  expect(result.boot?.services.map(({ tail: _tail, ...service }) => service)).toEqual([
+    { service: 'admin', state: 'exited', exitCode: 1, log: 'services/admin.log' },
+    { service: 'db', state: 'running', exitCode: 0, health: 'healthy', log: 'services/db.log' },
+  ])
+  const tail = result.boot?.services[0]?.tail ?? []
+  expect(tail).toHaveLength(20)
+  expect(tail.at(-1)).toBe('ActiveRecord::ConnectionNotEstablished: Network is unreachable')
+  expect(tail.join('\n')).not.toContain('hunter2-407')
+  // A service that came up carries no lines: the comment names the one that failed.
+  expect(result.boot?.services[1]?.tail).toBeUndefined()
+  // The stack was not contained, and the result says so.
+  expect(result.egress).toEqual({ containment: 'uncontained', reason: expect.any(String) })
+  // The published result carries the same record.
+  expect(JSON.parse(await readFile(join(job.evidenceDir, 'result.json'), 'utf8')).boot).toEqual(result.boot)
+})
+
+test('a seed that fails reads the services of the stack it ran against (#407)', async () => {
+  const job = await makeJob({
+    criteria: commandCriteria('echo ok'),
+    profile: { inline: { ...INLINE_PROFILE, app: { ...(INLINE_PROFILE.app as NonNullable<QaProfile['app']>), seed: { command: 'exit 3' } } } },
+  })
+  const { result } = await runJob(job, exitedStack(0))
+  expect(result.verdict).toBe('blocked')
+  expect(result.boot?.services[0]).toMatchObject({ service: 'admin', exitCode: 1, log: 'services/admin.log' })
+  expect(existsSync(join(job.evidenceDir, 'services', 'admin.log'))).toBe(true)
+})

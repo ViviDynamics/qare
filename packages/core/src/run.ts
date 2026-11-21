@@ -10,7 +10,7 @@ import { collectCriterionFiles, criterionCacheKey, FileCheckCache, planFingerpri
 import { Artefacts, type ArtefactField } from './artefacts.js'
 import { inspectRunnerSafety, type RunnerSafetyProbes } from './runner-safety.js'
 import { detectExecution, runEnvironment, type ExecutionKind } from './environment.js'
-import { bootApp, CANCEL_DOWN_TIMEOUT_MS, clientCellStarter, clientExecutablePath, inPlaceBuild, killActiveCompose, stopApp, type BootOpts, type BootedClient, type StackEgress } from './boot.js'
+import { bootApp, CANCEL_DOWN_TIMEOUT_MS, captureServiceLogs, clientCellStarter, clientExecutablePath, COMMAND_BOOT_SERVICE, inPlaceBuild, killActiveCompose, serviceFailed, stopApp, type BootOpts, type BootedClient, type ServiceLog, type StackEgress } from './boot.js'
 import { removeLiveInstalls } from './provision.js'
 import { detectHost, placementProblem, rememberProbes, requirementsOf, unmetReason, unmetRequirements, type HostProbes, type Requirements } from './placement.js'
 import { hasMintedProject, isolatedHealthUrl, isolateRun, type RunIsolation } from './isolation.js'
@@ -35,7 +35,7 @@ import { extractCode, mailEvidence, runMailCheck, type MailProof, type ReadMail 
 import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCapabilities, mcpDriverServer, type McpToolResult } from './mcp.js'
 import { ProfileMissingError, clientExecutableName, isCommandBoot, loadProfile, pathOnTarget, validateProfileConfig, type ProfileClient, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, mailEvidenceRules, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
-import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunBaseImage, type RunEgress, type RunProfileSummary, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
+import { BOOT_TAIL_LINES, RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunBaseImage, type RunBootFailure, type RunBootService, type RunEgress, type RunProfileSummary, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
 import { flowOpenUrl } from './app-address.js'
 import { runHttpCheckJob } from './http-run.js'
@@ -794,7 +794,28 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
         reason: boot.reason ?? 'boot did not come up',
         ...(attached ? { evidence: [PROVISION_LOG] } : {}),
       }))
-      const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria, startedAt, ...targetNote }, rules, values, execution, opts.host)
+      // Each service of the stack, read before anything took it down, and
+      // what a contained stack looked up before it failed (#407).
+      const failure = await recordBootFailure(job.evidenceDir, boot.services, rules, bootServiceOf(profile))
+      const ledger = new StackEgressLedger()
+      ledger.record(boot.egress, boot.lookups)
+      const stackEgress = ledger.summary()
+      const finished = await finishRun(
+        job,
+        {
+          schemaVersion: RESULT_SCHEMA_VERSION,
+          verdict: 'blocked',
+          criteria,
+          startedAt,
+          ...targetNote,
+          ...(stackEgress === undefined ? {} : { egress: stackEgress }),
+          ...(failure === undefined ? {} : { boot: failure }),
+        },
+        rules,
+        values,
+        execution,
+        opts.host,
+      )
       await feedIfOptedIn(opts, job, finished.result)
       return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
     }
@@ -808,7 +829,27 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     const unseeded = await seedBooted(profile, values, isolation, job.repoPath, job.evidenceDir, rules, execution)
     if (unseeded !== undefined) {
       const criteria: CriterionResult[] = job.criteria.map((criterion) => ({ id: criterion.id, outcome: 'unverified', ...unseeded }))
-      const finished = await finishRun(job, { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'blocked', criteria, startedAt, ...targetNote }, rules, values, execution, opts.host)
+      // The stack is still up: its services and what it looked up are read before the teardown (#407).
+      const failure = isolation === undefined ? undefined : await recordBootFailure(job.evidenceDir, await captureServiceLogs(isolation, opts), rules, bootServiceOf(profile))
+      const ledger = new StackEgressLedger()
+      await ledger.note(boot.egress, isolation, opts)
+      const stackEgress = ledger.summary()
+      const finished = await finishRun(
+        job,
+        {
+          schemaVersion: RESULT_SCHEMA_VERSION,
+          verdict: 'blocked',
+          criteria,
+          startedAt,
+          ...targetNote,
+          ...(stackEgress === undefined ? {} : { egress: stackEgress }),
+          ...(failure === undefined ? {} : { boot: failure }),
+        },
+        rules,
+        values,
+        execution,
+        opts.host,
+      )
       await feedIfOptedIn(opts, job, finished.result)
       return { result: finished.result, ...(isolation === undefined ? {} : { isolation }) }
     }
@@ -914,6 +955,60 @@ async function seedBooted(
 
 /** The provisioning log's name in a side's evidence (#75). */
 const PROVISION_LOG = 'provision.log'
+/** Where a side keeps each service's log of a stack that did not come up (#407). */
+const SERVICES_DIR = 'services'
+/** A compose service name a log file may be named for: a plain name, never a path. */
+const SERVICE_FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
+/** How much of one log line the result carries: a line is the application's, and the comment stays readable. */
+const MAX_TAIL_LINE_CHARACTERS = 400
+
+/** The service a profile's boot waits on: the profile's own, or the one a command boot runs as. */
+function bootServiceOf(profile: QaProfile): string | undefined {
+  const boot = profile.app?.boot
+  if (boot === undefined) return undefined
+  return isCommandBoot(boot) ? COMMAND_BOOT_SERVICE : boot.service
+}
+
+/** The last lines of a redacted log, at most BOOT_TAIL_LINES, each cut to a readable length. */
+function logTail(log: string): string[] {
+  const lines = log.split('\n').map((line) => line.replace(/\r$/, ''))
+  while (lines.length > 0 && (lines.at(-1) ?? '').trim() === '') lines.pop()
+  return lines.slice(-BOOT_TAIL_LINES).map((line) => (line.length <= MAX_TAIL_LINE_CHARACTERS ? line : `${line.slice(0, MAX_TAIL_LINE_CHARACTERS)} [cut]`))
+}
+
+/**
+ * Publish each service of a stack that did not come up (#407): its log,
+ * redacted by the run's rules, at `services/<service>.log`, and in the
+ * result its state, exit code and health, with the last lines of its log
+ * for each service that failed. When none failed (a health check that never
+ * passed against a running stack), the service the boot waited on is the
+ * one whose lines are kept. A stack nothing could be read of records nothing.
+ */
+async function recordBootFailure(
+  evidenceDir: string,
+  services: readonly ServiceLog[] | undefined,
+  rules: readonly RedactionRule[],
+  bootService: string | undefined,
+): Promise<RunBootFailure | undefined> {
+  if (services === undefined || services.length === 0) return undefined
+  const failing = services.filter(serviceFailed)
+  const shown = new Set((failing.length > 0 ? failing : services.filter((service) => service.service === bootService)).map((service) => service.service))
+  const recorded: RunBootService[] = []
+  for (const service of services) {
+    const file = SERVICE_FILE_NAME.test(service.service) ? `${SERVICES_DIR}/${service.service}.log` : undefined
+    const attached = file === undefined ? false : await writeProvisionLog(evidenceDir, service.log, rules, file)
+    const tail = shown.has(service.service) ? logTail(redactText(service.log, rules)) : []
+    recorded.push({
+      service: service.service,
+      state: service.state,
+      ...(service.exitCode === undefined ? {} : { exitCode: service.exitCode }),
+      ...(service.health === undefined ? {} : { health: service.health }),
+      ...(attached && file !== undefined ? { log: file } : {}),
+      ...(tail.length === 0 ? {} : { tail }),
+    })
+  }
+  return { services: recorded }
+}
 /** What the published log keeps: a boot's output is the application's, and it is bounded like any other evidence. */
 const MAX_PROVISION_LOG_CHARACTERS = 256 * 1024
 
@@ -1777,7 +1872,7 @@ function a11yContextOf(profile: QaProfile, comparison: VisualComparison, side: S
 type BaseSideOutcome =
   | { status: 'executed'; result: RunResult; images?: RunBaseImage[] }
   /** `evidence` is what the base side saved on its way to not running: the log of a provisioning that blocked (#75). */
-  | { status: 'not-executed'; reason: string; evidence?: string[]; images?: RunBaseImage[] }
+  | { status: 'not-executed'; reason: string; evidence?: string[]; images?: RunBaseImage[]; egress?: RunEgress; boot?: RunBootFailure }
 
 const NOT_RUN_AT_BASE = 'not run at the base: '
 
@@ -2076,6 +2171,10 @@ async function runBaseSide(
         // What stopped the side is kept with it: a seed that failed at the
         // base left its log there (#240), as a blocked provisioning does.
         ...(first?.evidence === undefined ? {} : { evidence: first.evidence }),
+        // A stack that did not come up at the base names its services, and
+        // what it looked up before it failed (#407).
+        ...(result.egress === undefined ? {} : { egress: result.egress }),
+        ...(result.boot === undefined ? {} : { boot: result.boot }),
         ...offered,
       }
     }
@@ -2181,7 +2280,13 @@ function compareSides(job: Job, head: RunResult, base: BaseSideOutcome, startedA
   // name no stub declares refuses the run as the head would, because stubs
   // merge first, so the base boots against them too.
   const baseEgress = base.status === 'executed' ? base.result.egress : undefined
-  const offered = { ...(base.images === undefined ? {} : { images: base.images }), ...(baseEgress === undefined ? {} : { egress: baseEgress }) }
+  // A base that did not come up keeps what its stack looked up and each of its services (#407); it decides no verdict.
+  const recordedEgress = base.status === 'executed' ? baseEgress : base.egress
+  const offered = {
+    ...(base.images === undefined ? {} : { images: base.images }),
+    ...(recordedEgress === undefined ? {} : { egress: recordedEgress }),
+    ...(base.status === 'not-executed' && base.boot !== undefined ? { boot: base.boot } : {}),
+  }
   const status: RunBase =
     base.status === 'executed' ? { ref: job.baseRef, status: 'executed', ...offered } : { ref: job.baseRef, status: 'not-executed', reason: base.reason, ...offered }
   // A client's two sides are two builds (#75): the result names the one the

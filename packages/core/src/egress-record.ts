@@ -1,4 +1,5 @@
 import { readStackEgress, type BootOpts, type StackEgress } from './boot.js'
+import type { SinkRecord } from './egress-sink.js'
 import type { RunIsolation } from './isolation.js'
 import type { RunEgress } from './result.js'
 
@@ -14,11 +15,20 @@ export class StackEgressLedger {
   /** Read one stack's record and keep it. A stack the run did not contain is kept with why. */
   async note(egress: StackEgress | undefined, isolation: RunIsolation | undefined, opts: Pick<BootOpts, 'runCompose'>): Promise<void> {
     if (egress === undefined) return
+    this.record(egress, egress.containment === 'contained' && isolation !== undefined ? await readStackEgress(isolation, opts) : undefined)
+  }
+
+  /**
+   * Keep one stack's record as it was already read: a stack that did not
+   * come up is read before it is taken down (#407). A contained stack with no
+   * record is kept as one whose record could not be read.
+   */
+  record(egress: StackEgress | undefined, record: SinkRecord | undefined): void {
+    if (egress === undefined) return
     if (egress.containment === 'uncontained') {
       this.entries.push({ containment: 'uncontained', reason: egress.reason })
       return
     }
-    const record = isolation === undefined ? undefined : await readStackEgress(isolation, opts)
     if (record === undefined) {
       this.entries.push({ containment: 'contained', declared: [], undeclared: [], unread: "the stack's resolver log could not be read, so what the stack looked up is not known" })
       return
