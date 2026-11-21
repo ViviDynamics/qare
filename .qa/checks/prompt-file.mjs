@@ -196,7 +196,7 @@ async function citations() {
   console.log(`searched ${files.length} files under ${roots.join(', ')} for ${tag}, MAX_ARG_BYTES, "can carry on Linux" and "argument budget"`)
   console.log(`hits: ${hits.length}`)
   for (const hit of hits) console.log(hit)
-  for (const [file, needle] of [['packages/core/src/runner.ts', '--prompt-file'], ['.github/workflows/pipeline.yml', 'reaches nare by file (#401)'], ['docs/pipeline.md', 'reaches nare by file'], ['docs/images.md', '--prompt-file']]) {
+  for (const [file, needle] of [['packages/core/src/runner.ts', '--prompt-file'], ['.github/workflows/pipeline.yml', 'reaches nare by file (#401)'], ['docs/pipeline.md', 'reaches nare by file'], ['docs/images.md', '--prompt-file'], ['packages/core/src/runner.ts', 'What still bounds a prompt is the'], ['docs/images.md', 'No argument size bounds a prompt now'], ['docs/pipeline.md', "What bounds it is the model's context window"]]) {
     const line = readFileSync(join(root, file), 'utf8').split('\n').findIndex((text) => text.includes(needle))
     console.log(`${file}:${line + 1} carries "${needle}"`)
     assert.ok(line >= 0)

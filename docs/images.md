@@ -173,9 +173,10 @@ typed result it reads are unchanged.
 qare hands nare its prompt with `--prompt-file`, never as an argument (#401).
 One argument is capped at 128 KiB on Linux, and a pull request's diff often
 passes that. The file sits in a directory private to the run (0700, the file
-itself 0600) and is removed with it however the run ends. No argument size
-bounds a prompt now; the model's context window does (`NARE_CONTEXT_WINDOW`,
-`nare-context-window` in the pipeline, #391).
+itself 0600) and is removed with it however the run ends.
+
+No argument size bounds a prompt now; the model's context window bounds it
+(`NARE_CONTEXT_WINDOW`, `nare-context-window` in the pipeline, #391).
 
 Schema-constrained backend output is opt-in in nare and remains off here:
 qare keeps nare's schema validation and correction without requiring a backend
