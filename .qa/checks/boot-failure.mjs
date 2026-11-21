@@ -91,7 +91,7 @@ try {
     assert.ok(up >= 0 && ps > up)
     assert.ok(!verbs.some((verb) => verb.includes('down')), 'nothing took the stack down before it was read')
     assert.deepEqual(
-      outcome.services.map(({ log: _log, ...service }) => service),
+      outcome.services.map((service) => ({ service: service.service, state: service.state, exitCode: service.exitCode, ...(service.health === undefined ? {} : { health: service.health }) })),
       [{ service: 'web', state: 'exited', exitCode: 1 }, { service: 'db', state: 'running', exitCode: 0, health: 'healthy' }],
     )
     assert.ok(outcome.services[0].log.includes(SAID))
@@ -136,7 +136,7 @@ try {
       assert.ok(record.egress.undeclared.includes('db.crash-app.example'))
       say(`${at}/services/web.log: ${text.split('\n').filter(Boolean).length} lines, the last ${JSON.stringify(SAID)}, the password redacted (${text.split('\n').find((line) => line.startsWith('DATABASE_URL'))})`)
       say(`${at}/services/db.log written: ${existsSync(join(repo, at, 'services', 'db.log'))}`)
-      say(`${side === '' ? '' : `${side === 'base' ? 'base.' : ''}`}boot in result.json: ${JSON.stringify(record.boot.services.map(({ tail, ...service }) => ({ ...service, ...(tail === undefined ? {} : { tailLines: tail.length }) })))}`)
+      say(`${side === '' ? '' : `${side === 'base' ? 'base.' : ''}`}boot in result.json: ${JSON.stringify(record.boot.services.map((service) => ({ ...service, tail: undefined, ...(service.tail === undefined ? {} : { tailLines: service.tail.length }) })))}`)
       say(`${side === 'base' ? 'base.' : ''}egress in result.json: ${JSON.stringify(record.egress)}`)
     }
     const comment = renderComment(written, { kind: 'artifact' })
@@ -161,7 +161,7 @@ try {
     assert.equal(result.verdict, 'blocked')
     assert.ok(existsSync(join(repo, 'evidence', 'services', 'web.log')))
     say(`a seed that exited 1: verdict ${result.verdict}, reason ${JSON.stringify(result.criteria[0].reason)}`)
-    say(`boot in result.json: ${JSON.stringify(result.boot.services.map(({ tail, ...service }) => service))}`)
+    say(`boot in result.json: ${JSON.stringify(result.boot.services.map((service) => ({ ...service, tail: undefined })))}`)
     say(`egress in result.json: ${JSON.stringify(result.egress)}`)
   } else if (check === 'ci') {
     // Where the real boot is proven: the CI step, and what its script holds the run to.

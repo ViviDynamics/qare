@@ -1404,7 +1404,7 @@ test('a service that exits during the boot leaves its log, its exit code and its
   // Redacted by the run's rules before it is written.
   expect(admin).not.toContain('hunter2-407')
   expect(await readFile(join(job.evidenceDir, 'services', 'db.log'), 'utf8')).toBe('db ready\n')
-  expect(result.boot?.services.map(({ tail: _tail, ...service }) => service)).toEqual([
+  expect(result.boot?.services.map((service) => ({ ...service, tail: undefined }))).toEqual([
     { service: 'admin', state: 'exited', exitCode: 1, log: 'services/admin.log' },
     { service: 'db', state: 'running', exitCode: 0, health: 'healthy', log: 'services/db.log' },
   ])

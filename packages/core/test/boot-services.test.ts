@@ -106,7 +106,7 @@ test('a compose up that exits names each service\'s state and log, read before a
   const stack = exitingStack(1)
   const outcome = await bootApp(await profile(), {
     isolation: run,
-    runCompose: async (args, timeoutMs, env) => {
+    runCompose: async (args) => {
       verbs.push(args.find((arg) => ['build', 'up', 'ps', 'logs', 'down'].includes(arg)) ?? '')
       return stack(args)
     },
