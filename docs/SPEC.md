@@ -82,8 +82,10 @@ states it (`base` in `config.yml`). `criteria: ledger`, the default since
 #381, runs at the base only the criteria the ledger at the base already
 carries as active, which are the old behaviours a regression can be found
 in; when it is only the default, a criterion with a visual or a11y check, or
-a flow check under a standing audit, still runs there, because its verdict
-is decided against the base. `criteria: all` runs the whole plan there (the
+a flow check under a standing audit, still runs there, because its outcome
+is decided against the base. A criterion the default leaves out is not
+compared, so it cannot be a regression, and a waiver on it is not overruled
+by one. `criteria: all` runs the whole plan there (the
 default before #381, and still a client profile's); `criteria: none` runs
 nothing there; `budget: 10m` bounds the base side's wall clock from the
 moment it starts. Whatever those leave out is reported as not compared, with

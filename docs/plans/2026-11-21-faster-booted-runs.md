@@ -47,7 +47,7 @@ The current default is `all`: the whole plan runs at the base. `ledger` runs onl
 
 This does make existing callers check less at the base, and the docs and the pull request say so: a criterion the base's ledger does not carry yet (every criterion a pull request introduces, and every criterion of a repository with no ledger) is no longer run at the base, so it is reported "not compared" and a head failure of it is not labelled a regression. The reason names the default and how to restore the old behaviour (`base.criteria: all`).
 
-It must not change a verdict. A visual check and an accessibility audit are decided against the base (#143, #149), so a criterion with one of those, and a flow check when the profile's audit is standing, still runs at the base under the default, whatever the ledger carries. An explicit `ledger` keeps its meaning unchanged. A client profile cannot read a ledger at the base, so its default stays `all`.
+It must not change a criterion's outcome. A visual check and an accessibility audit are decided against the base (#143, #149), so a criterion with one of those, and a flow check when the profile's audit is standing, still runs at the base under the default, whatever the ledger carries. One run verdict can still change, and the docs say so: a waiver does not cover a regression, so a waived criterion that would have regressed failed the run under `all`, and under the default it is not compared and the run ends `waived`. An explicit `ledger` keeps its meaning unchanged. A client profile cannot read a ledger at the base, so its default stays `all`.
 
 ### 5. The opt-in build cache (criterion 2)
 

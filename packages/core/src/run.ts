@@ -1720,8 +1720,11 @@ function a11yContextOf(profile: QaProfile, comparison: VisualComparison, side: S
   }
 }
 
-/** The base side as the comparison reads it: the raw result of a base that ran, or why none did. */
-/** `images` are the prebuilt images the base side was offered (#381), and what it did with each. */
+/**
+ * The base side as the comparison reads it: the raw result of a base that
+ * ran, or why none did. `images` are the prebuilt images the base side was
+ * offered (#381), and what it did with each.
+ */
 type BaseSideOutcome =
   | { status: 'executed'; result: RunResult; images?: RunBaseImage[] }
   /** `evidence` is what the base side saved on its way to not running: the log of a provisioning that blocked (#75). */
@@ -1817,10 +1820,10 @@ function baseCriteriaOf(profile: QaProfile): { criteria: 'all' | 'ledger' | 'non
  * Whether a criterion runs at the base under a ledger limit (#147, #381):
  * when the ledger at the base carries it as active. When the limit is only
  * the default, a criterion whose check is decided against the base runs
- * there whatever the ledger says, so the default never changes a verdict:
- * a visual check (#143), an accessibility audit (#149), and a flow check
- * when the profile audits every flow. An explicit `ledger` means the
- * ledger alone.
+ * there whatever the ledger says, because the base decides its outcome: a
+ * visual check (#143), an accessibility audit (#149), and a flow check when
+ * the profile audits every flow. An explicit `ledger` means the ledger
+ * alone.
  */
 export function gateOf(profile: QaProfile, carried: ReadonlySet<string>, criterion: JobCriterion): boolean {
   const { criteria, defaulted } = baseCriteriaOf(profile)

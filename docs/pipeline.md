@@ -659,11 +659,14 @@ before, when the default was `all`: a criterion the base's ledger does not
 carry yet (every criterion a pull request introduces, and every criterion of
 a repository with no ledger) is no longer run at the base. It is reported
 "not compared", with the default named in the reason, and a head failure of
-it is not labelled a regression. No verdict changes: the head decides every
-verdict, and a criterion whose check is decided against the base still runs
-there whatever the ledger carries (a visual check, an accessibility audit,
-and a flow check when `a11y.standing` audits every flow). Set
-`base.criteria: all` for the old behaviour. A profile that installs a build
+it is not labelled a regression. The head still decides every outcome, and a
+criterion whose check is decided against the base still runs there whatever
+the ledger carries (a visual check, an accessibility audit, and a flow check
+when `a11y.standing` audits every flow), so those outcomes are as before.
+One verdict can change: a waiver does not cover a regression, so a waived
+criterion that would have regressed failed the run before, and when the base
+no longer runs it, the run ends `waived`. Set `base.criteria: all` for the
+old behaviour. A profile that installs a build
 (`client`) cannot read a ledger at the base, so its default stays `all`.
 
 **`base.image`** names an image to run as the app's service on the base side
