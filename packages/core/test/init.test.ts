@@ -295,3 +295,68 @@ test('the profile init writes for a compose example runs as written: readiness n
     ])
   }
 })
+
+const PACKAGE = JSON.stringify({ name: 'shop', scripts: { start: 'node server.js' } })
+
+test('a repository with no compose file but a start script gets a profile that boots by command (#379)', async () => {
+  const repo = await repoWith({ 'package.json': PACKAGE, 'package-lock.json': '{}', 'playwright.config.ts': 'export default {}\n' })
+  const plan = await planInit(repo)
+  expect(plan.kind).toBe('app')
+  // A command boot has no stubs, so it keeps no stubs directory.
+  expect(plan.profile.map((file) => file.path)).toEqual(['.qa/config.yml', '.qa/QA.md', '.qa/fixtures/users.yml'])
+  // Nothing is stubbed, so nothing is re-queued for want of a stub.
+  expect(Object.keys((parse(plan.workflow.content) as { on: Record<string, unknown> }).on)).toEqual(['pull_request'])
+
+  await write(repo, plan)
+  const profile = await loadProfile(join(repo, '.qa'))
+  expect(profile.app?.boot).toEqual({ command: 'npm ci && npm start', image: 'node:22', port: 3000 })
+  expect(profile.app?.health).toEqual({ http: url('http', 'localhost:{{run.app_port}}/'), timeout: '120s' })
+  expect(profile.stubs).toEqual([])
+  // A suite runs inside the one service, reached by the run's project alone.
+  expect(profile.suites).toEqual([{ name: 'playwright', command: 'docker compose -p qare-{{run.id}} exec -T app npx playwright test', kind: 'command' }])
+  // What only a person knows is left as TODO lines readiness reports: the
+  // image, the port and the health path are guesses.
+  const gaps = (await readinessInventory(repo)).gaps.filter((gap) => gap.startsWith('.qa/config.yml'))
+  expect(gaps).toEqual([
+    '.qa/config.yml is not filled in: confirm the image the start command runs in: it carries sh and the runtime the app needs, then remove this line',
+    '.qa/config.yml is not filled in: confirm the port the app listens on inside the image (qare hands it to the app as PORT), then remove this line',
+    '.qa/config.yml is not filled in: confirm the health path answers 200 when the app is up (a redirect does not pass), then remove this line',
+    '.qa/config.yml is not filled in: name the command that seeds the QA data, in place of "true"',
+    '.qa/config.yml is not filled in: describe the user QA signs in as in .qa/fixtures/users.yml, and name its role here',
+  ])
+  // Nothing about booting is a gap: no compose file is needed.
+  expect((await readinessInventory(repo)).gaps.filter((gap) => gap.includes('compose'))).toEqual([])
+})
+
+test('the start command installs with the package manager the lockfile names (#379)', async () => {
+  const commandFor = async (files: Record<string, string>): Promise<unknown> => {
+    const repo = await repoWith({ 'package.json': PACKAGE, ...files })
+    await write(repo, await planInit(repo, { health: '/up' }))
+    return (await loadProfile(join(repo, '.qa'))).app?.boot
+  }
+  expect(await commandFor({ 'pnpm-lock.yaml': '' })).toMatchObject({ command: 'corepack enable && pnpm install --frozen-lockfile && pnpm start' })
+  expect(await commandFor({ 'yarn.lock': '' })).toMatchObject({ command: 'corepack enable && yarn install --frozen-lockfile && yarn start' })
+  expect(await commandFor({})).toMatchObject({ command: 'npm install && npm start' })
+})
+
+test('a compose file still wins over a start script, and a package with no start script boots nothing (#379)', async () => {
+  const repo = await composeRepo({ 'package.json': PACKAGE })
+  await write(repo, await planInit(repo))
+  expect((await loadProfile(join(repo, '.qa'))).app?.boot).toEqual({ compose: 'docker-compose.yml', service: 'web' })
+
+  const none = await repoWith({ 'package.json': JSON.stringify({ scripts: { test: 'vitest' } }) })
+  await expect(planInit(none)).rejects.toThrow(/no compose file and no start script/)
+  // --service names a compose service, and a command boot has none to name.
+  const started = await repoWith({ 'package.json': PACKAGE })
+  await expect(planInit(started, { service: 'web' })).rejects.toThrow(/--service .* names a compose service/)
+})
+
+test('a command boot that is already there keeps its command, image and port (#379)', async () => {
+  const repo = await repoWith({ 'package.json': PACKAGE })
+  await write(repo, await planInit(repo))
+  const config = join(repo, '.qa', 'config.yml')
+  const { readFile } = await import('node:fs/promises')
+  await writeFile(config, (await readFile(config, 'utf8')).replace('boot: { command: "npm install && npm start", image: "node:22", port: 3000 }', 'boot: { command: "bin/serve", image: "ruby:3.3", port: 9292 }'), 'utf8')
+  await write(repo, await planInit(repo))
+  expect((await loadProfile(join(repo, '.qa'))).app?.boot).toEqual({ command: 'bin/serve', image: 'ruby:3.3', port: 9292 })
+})

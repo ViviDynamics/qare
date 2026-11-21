@@ -100,6 +100,8 @@ export async function planInit(repoPath: string, opts: InitOptions = {}): Promis
 
   let kind: InitPlan['kind']
   let config: string
+  // A command boot has no stubs (#379): no stubs directory, and nothing to re-queue for want of one.
+  let commandBooted = false
   // A target profile that is already there says where the app runs, so a
   // repository that only lacks the workflow needs no flag.
   // It holds whatever compose files lie beside it: a compose file kept for
@@ -115,13 +117,23 @@ export async function planInit(repoPath: string, opts: InitOptions = {}): Promis
     const booted = inventory.profile.boot
     const own = booted !== undefined && (await exists(join(inventory.repoPath, booted.compose), 'file')) ? booted : undefined
     const compose = own === undefined ? inventory.boot[0]?.file : `./${own.compose.replace(/^\.\//, '')}`
-    if (compose === undefined)
+    // With no compose file to boot from, a start script is booted by
+    // command instead (#379), or the command a profile already names.
+    const started = compose === undefined ? (inventory.profile.commandBoot ?? (await startCommand(inventory.repoPath))) : undefined
+    if (compose === undefined && started === undefined)
       throw new InitError(
-        'no compose file found, so there is nothing for qare to boot: name the running app to check with --target <url>; a desktop build is checked through a client profile, which is written by hand (docs/SPEC.md, Clients)',
+        'no compose file and no start script found, so there is nothing for qare to boot: name the running app to check with --target <url>; a desktop build is checked through a client profile, which is written by hand (docs/SPEC.md, Clients)',
       )
     kind = 'app'
-    const service = await chooseService(inventory.repoPath, compose, opts.service ?? own?.service)
-    config = appConfig({ ...service, ...(opts.health === undefined ? {} : { healthPath: opts.health }) }, compose, inventory, suites)
+    if (started !== undefined) {
+      if (opts.service !== undefined)
+        throw new InitError(`--service ${JSON.stringify(opts.service)} names a compose service, and the repository has no compose file: the app is booted by its start command`)
+      commandBooted = true
+      config = commandConfig(started, inventory.profile.commandBoot !== undefined, opts.health, suites)
+    } else {
+      const service = await chooseService(inventory.repoPath, compose as string, opts.service ?? own?.service)
+      config = appConfig({ ...service, ...(opts.health === undefined ? {} : { healthPath: opts.health }) }, compose as string, inventory, suites)
+    }
   }
 
   // Fail closed: a profile init would write is one the loader accepts.
@@ -138,7 +150,7 @@ export async function planInit(repoPath: string, opts: InitOptions = {}): Promis
   ]
   if (kind === 'app') {
     profile.push({ path: '.qa/fixtures/users.yml', content: FIXTURE_SKELETON })
-    profile.push({ path: '.qa/stubs/.gitkeep', content: '' })
+    if (!commandBooted) profile.push({ path: '.qa/stubs/.gitkeep', content: '' })
   }
   return {
     kind,
@@ -147,7 +159,7 @@ export async function planInit(repoPath: string, opts: InitOptions = {}): Promis
       path: INIT_WORKFLOW_PATH,
       // Re-queueing is for pull requests refused for want of a stub, and
       // only a booted profile has stubs.
-      content: callerWorkflow({ model, ...(kind === 'app' ? { requeue: { branch: opts.defaultBranch ?? 'main' } } : {}) }),
+      content: callerWorkflow({ model, ...(kind === 'app' && !commandBooted ? { requeue: { branch: opts.defaultBranch ?? 'main' } } : {}) }),
     },
     secret: INIT_MODEL_SECRET,
     inventory,
@@ -267,6 +279,89 @@ function appConfig(service: ComposeService, composeLabel: string, inventory: Rea
     'flavour: web',
     // The run image has none of the app's runtime, so a suite runs inside
     // the booted service, where its dependencies and the stack's hostnames are.
+    ...suiteLines(
+      suites.map((suite) => ({ ...suite, command: `${exec} ${suite.command}` })),
+      true,
+    ),
+    '',
+  ].join('\n')
+}
+
+/** A start command, the image it runs in and the port it listens on (#379). */
+interface StartCommand {
+  command: string
+  image: string
+  port: number
+}
+
+/**
+ * The start script a repository runs with, when it has one init knows:
+ * package.json's `start`, run with the package manager its lockfile names,
+ * after installing, since the image is a stock one that holds no
+ * dependencies. The image and the port are guesses a person confirms.
+ */
+async function startCommand(repo: string): Promise<StartCommand | undefined> {
+  let manifest: unknown
+  try {
+    manifest = JSON.parse(await readFile(join(repo, 'package.json'), 'utf8'))
+  } catch {
+    return undefined
+  }
+  const scripts = isRecord(manifest) && isRecord(manifest.scripts) ? manifest.scripts : {}
+  if (typeof scripts.start !== 'string' || scripts.start.trim() === '') return undefined
+  const command = (await exists(join(repo, 'pnpm-lock.yaml'), 'file'))
+    ? 'corepack enable && pnpm install --frozen-lockfile && pnpm start'
+    : (await exists(join(repo, 'yarn.lock'), 'file'))
+      ? 'corepack enable && yarn install --frozen-lockfile && yarn start'
+      : (await exists(join(repo, 'package-lock.json'), 'file')) || (await exists(join(repo, 'npm-shrinkwrap.json'), 'file'))
+        ? 'npm ci && npm start'
+        : 'npm install && npm start'
+  return { command, image: 'node:22', port: 3000 }
+}
+
+/**
+ * A profile that boots by command (#379): the run writes the compose project
+ * itself, with one service, `app`, so a seed or a suite reaches it by the
+ * run's project alone. A command boot runs the app alone, so nothing is
+ * stubbed. A command a profile already names is its own word and is kept as
+ * it is; one init found is marked for a person to confirm.
+ */
+function commandConfig(started: StartCommand, own: boolean, healthPath: string | undefined, suites: Suite[]): string {
+  const exec = 'docker compose -p qare-{{run.id}} exec -T app'
+  return [
+    ...HEADER,
+    '#',
+    '# The app is booted from its start command: qare copies the checkout into',
+    '# the image at /app, runs the command there with PORT set to the port, and',
+    '# publishes that port on one of its own for each run.',
+    'app:',
+    ...(own
+      ? []
+      : [
+          `  # ${INIT_PLACEHOLDER} confirm the image the start command runs in: it carries sh and the runtime the app needs, then remove this line`,
+          `  # ${INIT_PLACEHOLDER} confirm the port the app listens on inside the image (qare hands it to the app as PORT), then remove this line`,
+        ]),
+    `  boot: { command: ${JSON.stringify(started.command)}, image: ${JSON.stringify(started.image)}, port: ${started.port} }`,
+    ...(healthPath === undefined
+      ? [`  # ${INIT_PLACEHOLDER} confirm the health path answers 200 when the app is up (a redirect does not pass), then remove this line`]
+      : []),
+    `  health: { http: ${JSON.stringify(`http://localhost:{{run.app_port}}${healthPath ?? '/'}`)}, timeout: 120s }`,
+    `  # ${INIT_PLACEHOLDER} name the command that seeds the QA data, in place of "true"`,
+    '  # qare runs it once the app is healthy, before any check, from the runner. A',
+    `  # seed inside the service: ${exec} <command>`,
+    '  seed: { command: "true" }',
+    `  # ${INIT_PLACEHOLDER} describe the user QA signs in as in .qa/fixtures/users.yml, and name its role here`,
+    '  login: { fixture: fixtures/users.yml, role: admin }',
+    '# A command boot runs the app alone, so nothing is stubbed: boot from a',
+    '# compose file to stub the hosts the app reaches.',
+    'stubs: []',
+    'visual:',
+    '  widths: [1440, 390]',
+    '  themes: [light]',
+    '# The image the checks run in: web carries the browser the flows drive.',
+    'flavour: web',
+    // The run image has none of the app's runtime, so a suite runs inside
+    // the booted service, as it does for a compose boot.
     ...suiteLines(
       suites.map((suite) => ({ ...suite, command: `${exec} ${suite.command}` })),
       true,

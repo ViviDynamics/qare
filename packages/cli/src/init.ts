@@ -28,10 +28,11 @@ const HELP = `${USAGE}
   workflow that calls the qare pipeline. Never overwrites: an existing .qa/ or workflow is
   left alone, and init prints what it would have written. A desktop build is checked
   through a client profile, which is written by hand (docs/SPEC.md, Clients): init keeps
-  it and writes only the workflow.
+  it and writes only the workflow. A repository with no compose file but a start script
+  (package.json's start) gets a profile that boots the app by that command.
   --target <url>              check an app that is already running, instead of booting one
   --health <path>             the path the health check asks for, which must answer 200
-  --service <name>            the compose service that is the application
+  --service <name>            the compose service that is the application (a compose boot)
   --model <name>              the model the pipeline asks (the workflow's nare-model)
   --file-issues <owner/name>  file an issue for every missing stub (needs GITHUB_TOKEN or GH_TOKEN)
 `
