@@ -1,7 +1,9 @@
 import { createSocket, type RemoteInfo, type Socket as UdpSocket } from 'node:dgram'
 import { lookup } from 'node:dns/promises'
+import { readFile, rename, writeFile } from 'node:fs/promises'
 import { connect, createServer, type AddressInfo, type Server, type Socket } from 'node:net'
 import { networkInterfaces } from 'node:os'
+import { isAbsolute } from 'node:path'
 import { DNS_TYPE_A, hostName, readDnsQuestion, type DnsQuestion } from './cell-wire.js'
 
 /**
@@ -48,7 +50,13 @@ export interface DnsSinkOptions {
   hosts: Readonly<Record<string, string>>
   port?: number
   bind?: string
-  /** The addresses of a compose service, as the stack's own resolver gives them. */
+  /**
+   * The file the run writes each stub service's addresses to once they are
+   * up (#408), read on every answer. A service it names is answered from it,
+   * with no lookup, since a daemon may answer no embedded DNS.
+   */
+  map?: string
+  /** The addresses of a compose service, as the stack's own resolver gives them: the fallback for a service the map does not name yet. */
   resolveService?: (service: string) => Promise<string[]>
   /** Where each record line goes: the sink's stdout, which the run reads with `compose logs`. */
   write: (line: string) => void
@@ -118,8 +126,21 @@ export function ownAddress(): string | undefined {
   return undefined
 }
 
+/** The addresses the map names for a service, or undefined when the map is absent, unreadable or silent on it. */
+async function mapped(map: string | undefined, service: string): Promise<string[] | undefined> {
+  if (map === undefined) return undefined
+  try {
+    const parsed = JSON.parse(await readFile(map, 'utf8')) as Record<string, unknown>
+    const found = parsed[service]
+    return Array.isArray(found) ? found.filter((address): address is string => typeof address === 'string' && IPV4.test(address)) : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export async function startDnsSink(opts: DnsSinkOptions): Promise<DnsSink> {
-  const resolveService = opts.resolveService ?? defaultResolveService
+  const fallback = opts.resolveService ?? defaultResolveService
+  const resolveService = async (service: string): Promise<string[]> => (await mapped(opts.map, service)) ?? fallback(service)
   const max = opts.maxEntries ?? DEFAULT_MAX_ENTRIES
   const seen = new Set<string>()
   let capped = false
@@ -265,18 +286,52 @@ function untilSignalled(signals: SignalSource): Promise<void> {
 const SERVICE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
 /**
+ * `qare cell egress-dns-map --map <file> --service <service>=<address>,...`
+ * (#408): the run execs it in the sink's container once the stub services
+ * are up, to hand the sink their addresses. The file is written beside
+ * itself and renamed over, so the sink never reads half of it.
+ */
+async function writeServiceMap(map: string | undefined, entries: string[], who: string, io: { err: (line: string) => void }): Promise<number> {
+  if (map === undefined || !isAbsolute(map)) {
+    io.err(`${who}: --map must be an absolute path`)
+    return 4
+  }
+  const services: Record<string, string[]> = {}
+  for (const entry of entries) {
+    const at = entry.indexOf('=')
+    const service = at === -1 ? '' : entry.slice(0, at)
+    const addresses = at === -1 ? [] : entry.slice(at + 1).split(',')
+    if (!SERVICE.test(service) || addresses.length === 0 || !addresses.every((address) => IPV4.test(address))) {
+      io.err(`${who}: ${JSON.stringify(entry)} is not a <compose service>=<address>[,<address>] entry`)
+      return 4
+    }
+    services[service] = addresses
+  }
+  const partial = `${map}.${process.pid}.partial`
+  try {
+    await writeFile(partial, `${JSON.stringify(services)}\n`, { mode: 0o600 })
+    await rename(partial, map)
+  } catch (error) {
+    io.err(`${who}: could not write ${map}: ${(error as Error).message}`)
+    return 4
+  }
+  return 0
+}
+
+/**
  * `qare cell egress-dns --host <host>=<service>...` and `qare cell
  * egress-relay --forward <port>=<service>:<port>...` (#382). Each prints one
  * ready line and runs until it is signalled. Exit 4 is a call that was not
  * understood, as elsewhere in the CLI.
  */
 export async function runEgressCommand(
-  verb: 'egress-dns' | 'egress-relay',
+  verb: 'egress-dns' | 'egress-relay' | 'egress-dns-map',
   flags: string[],
   io: { out: (line: string) => void; err: (line: string) => void; signals: SignalSource },
 ): Promise<number> {
   const values = (name: string): string[] => flags.flatMap((flag, index) => (flag === name && flags[index + 1] !== undefined ? [flags[index + 1] as string] : []))
   const who = `qare cell ${verb}`
+  if (verb === 'egress-dns-map') return writeServiceMap(values('--map')[0], values('--service'), who, io)
   const bind = values('--bind')[0]
   if (verb === 'egress-dns') {
     const hosts: Record<string, string> = {}
@@ -295,9 +350,14 @@ export async function runEgressCommand(
       io.err(`${who}: --port must be a port`)
       return 4
     }
+    const map = values('--map')[0]
+    if (map !== undefined && !isAbsolute(map)) {
+      io.err(`${who}: --map must be an absolute path`)
+      return 4
+    }
     let sink: DnsSink
     try {
-      sink = await startDnsSink({ hosts, port, ...(bind === undefined ? {} : { bind }), write: io.out })
+      sink = await startDnsSink({ hosts, port, ...(bind === undefined ? {} : { bind }), ...(map === undefined ? {} : { map }), write: io.out })
     } catch (error) {
       io.err(`${who}: could not start: ${(error as Error).message}`)
       return 4

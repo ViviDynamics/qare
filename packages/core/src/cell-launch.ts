@@ -173,7 +173,7 @@ export interface CellCommandIo {
 export async function runCellCommand(argv: string[], io: CellCommandIo): Promise<number> {
   const [verb, ...rest] = argv
   // A booted stack's resolver and relay (#382), run from the same image.
-  if (verb === 'egress-dns' || verb === 'egress-relay') return runEgressCommand(verb, rest, { ...io, signals: io.signals ?? process })
+  if (verb === 'egress-dns' || verb === 'egress-relay' || verb === 'egress-dns-map') return runEgressCommand(verb, rest, { ...io, signals: io.signals ?? process })
   if (verb !== 'gate' && verb !== 'launch') {
     io.err(USAGE)
     return 4
