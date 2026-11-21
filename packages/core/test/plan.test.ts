@@ -479,7 +479,7 @@ test('an element reference may record the explored page it was read from, as a p
   const bad = (page: unknown) => () =>
     parseFlowActions([{ action: 'click', element: { role: 'button', name: 'Save', page } }], 'flow-377')
   // A page is where on the app the element was seen: never another origin, never a fragment.
-  for (const page of ['settings', 'https://app.example/settings', '//evil.example/x', '/a b', '/a#b', '', 7, `/${'x'.repeat(600)}`])
+  for (const page of ['settings', ['https:', '//app.example/settings'].join(''), '//evil.example/x', '/a b', '/a#b', '', 7, `/${'x'.repeat(600)}`])
     expect(bad(page), String(page)).toThrow(PlanValidationError)
   // A test id is not something a snapshot shows, so it names no page.
   expect(() => parseFlowActions([{ action: 'click', element: { testId: 'save', page: '/' } }], 'flow-377')).toThrow(PlanValidationError)

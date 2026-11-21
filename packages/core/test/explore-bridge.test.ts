@@ -1,4 +1,3 @@
-import { request } from 'node:http'
 import { afterEach, expect, test } from 'vitest'
 
 import {
@@ -10,6 +9,7 @@ import {
   type ExplorationServer,
   type SnapshotNode,
 } from '../src/index.js'
+import { post } from './mcp-post.js'
 
 const url = (rest: string, scheme = 'http'): string => [scheme, '://', rest].join('')
 const APP = url('127.0.0.1:41000')
@@ -57,30 +57,6 @@ async function started(): Promise<{ bridge: ExplorationBridge; server: Explorati
   const bridge = await startExplorationBridge(server.url)
   open.push(bridge)
   return { bridge, server, navigated: app.navigated }
-}
-
-/** One JSON-RPC message posted the way an MCP Streamable HTTP client posts it. */
-function post(target: string, body: unknown, method = 'POST'): Promise<{ status: number; type: string; body: string }> {
-  const parsed = new URL(target)
-  const text = body === undefined ? '' : JSON.stringify(body)
-  return new Promise((resolve, reject) => {
-    const outgoing = request(
-      {
-        hostname: parsed.hostname,
-        port: Number(parsed.port),
-        path: parsed.pathname,
-        method,
-        headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
-      },
-      (incoming) => {
-        let raw = ''
-        incoming.on('data', (chunk) => (raw += String(chunk)))
-        incoming.on('end', () => resolve({ status: incoming.statusCode ?? 0, type: String(incoming.headers['content-type'] ?? ''), body: raw }))
-      },
-    )
-    outgoing.on('error', reject)
-    outgoing.end(text)
-  })
 }
 
 async function rpc(bridge: ExplorationBridge, method: string, params?: unknown): Promise<{ result?: any; error?: { code: number; message: string } }> {

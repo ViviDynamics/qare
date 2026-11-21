@@ -591,3 +591,4 @@ export type {
   ProvisionSide,
   ProvisionedArtefact,
 } from './provision.js'
+export { runSeed } from './seed.js'
