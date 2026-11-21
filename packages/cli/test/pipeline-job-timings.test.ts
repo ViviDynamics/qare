@@ -54,7 +54,7 @@ function runStep(opts: { answer?: unknown; curlFails?: boolean; record?: boolean
     encoding: 'utf8',
     env: {
       PATH: `${dir}:${process.env.PATH ?? ''}`, CALLS: calls, ANSWER: join(dir, 'answer.json'),
-      GH_TOKEN: 'token', GITHUB_API_URL: 'https://api.github.test', GITHUB_REPOSITORY: 'acme/app', RUN_ID: '42', RUN_ATTEMPT: '3',
+      GH_TOKEN: 'token', GITHUB_API_URL: 'api.github.test', GITHUB_REPOSITORY: 'acme/app', RUN_ID: '42', RUN_ATTEMPT: '3',
       RUNNER_TEMP: dir,
     },
   })
@@ -65,7 +65,7 @@ function runStep(opts: { answer?: unknown; curlFails?: boolean; record?: boolean
 test('publish adds each completed job of this run attempt, by its own name, to the metrics record (#381)', () => {
   const { result, record, calls } = runStep()
   expect(result.status, result.stderr).toBe(0)
-  expect(calls).toContain('https://api.github.test/repos/acme/app/actions/runs/42/attempts/3/jobs?per_page=100')
+  expect(calls).toContain('api.github.test/repos/acme/app/actions/runs/42/attempts/3/jobs?per_page=100')
   // The record keeps what judge wrote.
   expect(record).toMatchObject({ schemaVersion: 'qare.metrics.v1', runId: 'pr-7', verdict: 'passed' })
   // A skipped job ran nothing, and publish is still running: neither is a wall clock.
