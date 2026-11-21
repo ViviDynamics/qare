@@ -144,12 +144,12 @@ inside it. The contract-conformant fixture stamped with the release version
 is the fallback for a release whose published base is not reachable, so the
 check stays about the example and the contract rather than the base.
 
-The shared core runtime pins nare **2026.11.104**, machine contract 3. All derived
+The shared core runtime pins nare **2026.11.107**, machine contract 3. All derived
 flavours and the pipeline planner/judge inherit that installation. Host callers
-can install the same wheel from the [nare release](https://github.com/ViviDynamics/nare/releases/tag/2026.11.104)
+can install the same wheel from the [nare release](https://github.com/ViviDynamics/nare/releases/tag/2026.11.107)
 in a separate Python 3.12+ environment.
 
-The upgrade to nare 2026.11.104 moves the subprocess contract from 2 to 3
+The upgrade to nare 2026.11.104 moved the subprocess contract from 2 to 3
 (#366). Contract 3 changes only nare's redaction rule set: its
 `credential-assignment` rule now redacts values that look like secrets and
 leaves code such as `authorId: number` alone. qare redacts the evidence it
@@ -164,6 +164,12 @@ starts fresh sessions, so nare's refusal to resume older sessions does not
 affect these runs. qare passes its system prompt explicitly, including an
 empty prompt, to avoid inheriting nare's coding-agent default.
 
+nare 2026.11.105 to 2026.11.107 keep contract 3. They add typed caller-tool
+outcomes, combine answer diagnostics with schema corrections, and add the
+`json_object` and `tool_call` answer encodings for the openai provider. All of
+it is additive: qare passes none of the new options, so its argv and the
+typed result it reads are unchanged.
+
 Schema-constrained backend output is opt-in in nare and remains off here:
 qare keeps nare's schema validation and correction without requiring a backend
 to support strict JSON schemas. The new turn-cap summaries retain an error
@@ -175,9 +181,9 @@ To exercise the installed wheel, contract, schema correction, read-only tool
 execution and fail-closed results against a local model fixture after building:
 
 ```sh
-docker build -f images/core/Dockerfile -t qare-core:nare-2026.11.104 .
-docker run --rm -i qare-core:nare-2026.11.104 node --input-type=module < scripts/nare-compat.mjs
+docker build -f images/core/Dockerfile -t qare-core:nare-2026.11.107 .
+docker run --rm -i qare-core:nare-2026.11.107 node --input-type=module < scripts/nare-compat.mjs
 ```
 
-This also asserts the installed nare and Pillow versions (2026.11.104 and 13.0.0).
+This also asserts the installed nare and Pillow versions (2026.11.107 and 13.0.0).
 The patched Pillow dependency addresses ViviDynamics/nare#112, part of qare #347.
