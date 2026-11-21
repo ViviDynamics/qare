@@ -50,6 +50,10 @@ commands:
     run: node -- .qa/checks/explore.mjs {{check}}
     about: "Exercises the checkout's exploration in the pipeline (#377) without a build, with docker stubbed and a stand-in page, needing no daemon, network, model or credentials, and prints what it observed. check=pipeline runs the plan job's own steps: the profile switch, each exploration step's condition, environment and place before the plan step (none names a secret, token or key file), serve handed no docker access, and the plan step's docker arguments off and on (on adds only --network host and --explore); check=plan shows the pages a snapshot recorded, a flow element read from that page kept with its page, and unseen elements refused by planRun. The real boot, browser and nare hand-off run in CI (scripts/explore-boot.sh)."
     scratch: [.qa/checks/scratch]
+  prompt-file-check:
+    run: node -- .qa/checks/prompt-file.mjs {{check}}
+    about: "Exercises how the checkout's nare runner hands over its prompt (#401) without a build, and prints what it observed. check=runner runs the checkout's NareAgentRunner on a prompt of 216004 bytes (past the 131071 one argument carries on Linux) against a stand-in nare that records what it was given: the argv (run --prompt-file <file> and the flags, no prompt text in any argument), the prompt file's text equal to the prompt byte for byte, the file's mode 600 and its directory's 700, and the file gone after the run, and after a failed run too. check=nare runs the same runner against the nare the image installs, with a model fixture on loopback and no credentials: with a window of 1000000 the model receives the large prompt byte for byte; with no window set the same prompt stops with stop reason context before any model call, showing the context window, not the argument size, bounds a prompt."
+    scratch: [.qa/checks/scratch]
 
 # The suites the main lane runs for the ledger's active criteria (#363): the
 # lane reads no plan, it runs what each entry's `suite:<name>` check names.
