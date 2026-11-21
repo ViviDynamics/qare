@@ -43,14 +43,12 @@ const server = createServer(async (request, response) => {
 })
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 const root = await mkdtemp(join(tmpdir(), 'qare-nare-compat-'))
-const runner = new NareAgentRunner({
-  root,
-  env: {
-    NARE_PROVIDER: 'openai', NARE_MODEL: 'fixture', NARE_STREAM: 'false',
-    NARE_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`,
-    OPENAI_API_KEY: 'local-fixture',
-  },
-})
+const env = {
+  NARE_PROVIDER: 'openai', NARE_MODEL: 'fixture', NARE_STREAM: 'false',
+  NARE_BASE_URL: `http://127.0.0.1:${server.address().port}/v1`,
+  OPENAI_API_KEY: 'local-fixture',
+}
+const runner = new NareAgentRunner({ root, env })
 const base = {
   prompt: 'Return the fixture verdict.', system: 'Use only the supplied evidence.',
   toolPolicy: 'none', budget: { maxOutputTokens: 512 },
@@ -96,6 +94,35 @@ try {
   assert.ok(requests[0].messages.every((message) => message.role !== 'system'))
   assert.ok(requests[1].messages.some((message) => message.role === 'tool' && message.content.includes('fixture evidence')))
   console.log('PASS: read-only tool execution, no ask/bash/write, empty persona preserved')
+
+  // A prompt past the 131071 bytes one argument carries on Linux reaches the
+  // model byte for byte (#401): multibyte text, CRLF and a trailing newline
+  // included. What bounds it now is the context window nare measures against,
+  // so this runner names one that holds it.
+  const large = `${'diff line ü ✓\r\n'.repeat(12000)}end\n`
+  assert.ok(Buffer.byteLength(large, 'utf8') > 131071)
+  // nare follows the task with its schema instruction, so the user message is
+  // compared against what nare sends for a short prompt under the same schema.
+  const wide = new NareAgentRunner({ root, env: { ...env, NARE_CONTEXT_WINDOW: '1000000' } })
+  const userText = () => requests[0].messages.find((message) => message.role === 'user').content
+  reset(answer('{"verdict":"short"}'))
+  assert.equal((await wide.run(base)).status, 'completed')
+  assert.ok(userText().startsWith(base.prompt))
+  const suffix = userText().slice(base.prompt.length)
+  reset(answer('{"verdict":"large"}'))
+  const big = await wide.run({ ...base, prompt: large })
+  assert.equal(big.status, 'completed')
+  assert.deepEqual(JSON.parse(big.output), { verdict: 'large' })
+  assert.equal(userText(), large + suffix)
+  // Without a window that holds it, the same prompt stops on the window, by
+  // name, and never reaches the model: the window is the bound, not argv.
+  reset(answer('{"verdict":"unreached"}'))
+  const narrow = await runner.run({ ...base, prompt: large })
+  assert.equal(narrow.status, 'failed')
+  assert.equal(narrow.stopReason, 'context')
+  assert.equal(requests.length, 0)
+  replies = []
+  console.log('PASS: a prompt past one argument\'s limit reaches the model intact, by file, and the context window bounds it')
 
   reset(answer('not JSON'), answer('still not JSON'))
   const invalid = await runner.run(base)
