@@ -73,7 +73,7 @@ try {
       }
     }
     console.log(JSON.stringify({ check, loaded, refused }, null, 2))
-  } else if (check === 'evidence') {
+  } else if (check === 'record') {
     // The evidence records the request and the response status, headers and
     // body, redacted by qare's rules.
     const { runHttpCheckJob } = await core('http-run.ts')
@@ -148,7 +148,7 @@ try {
     console.log(JSON.stringify({ check, flavour: 'core', offered: kinds, planned: plan.criteria[0].checks[0].kind }))
     console.log(lines.join('\n'))
   } else {
-    throw new Error(`unknown check ${JSON.stringify(check)}: expected plan, evidence, judge or planner`)
+    throw new Error(`unknown check ${JSON.stringify(check)}: expected plan, record, judge or planner`)
   }
 } finally {
   await rm(dir, { recursive: true, force: true })
