@@ -31,6 +31,9 @@ const APP_PROFILE: QaProfile = {
   stubs: [],
   visual: { widths: [], themes: [] },
   suites: [],
+  // The whole plan at the base: these tests are about the comparison, and
+  // the default is ledger since #381 (tested at the end of this file).
+  base: { criteria: 'all' },
 }
 
 const TARGET_PROFILE: QaProfile = {
@@ -298,7 +301,7 @@ test('a ledger limit that leaves nothing to run boots no base at all (#147)', as
 
 test('the profile can bound the base side by a time budget; what did not run is not compared (#147)', async () => {
   const trees = await twoTrees({ base: ['old.txt'], head: [] })
-  const job = jobFor(trees.head, [fileCheck('old-behaviour', 'old.txt')], { ...APP_PROFILE, base: { budget: '0s' } })
+  const job = jobFor(trees.head, [fileCheck('old-behaviour', 'old.txt')], { ...APP_PROFILE, base: { criteria: 'all', budget: '0s' } })
   const { result } = await runJob(job, { ...recordingBoot(), base: { repoPath: trees.base } })
 
   const criterion = criterionOf(result, 'old-behaviour')
@@ -387,11 +390,17 @@ test('a profile can turn the base side off: no checkout, no boot, and the run sa
 
 const validProfileDir = fileURLToPath(new URL('../fixtures/qa-valid/.qa', import.meta.url))
 
+/** The whole plan at the base for a profile on disk: the default is ledger since #381. */
+async function allAtTheBase(dir: string): Promise<void> {
+  await writeFile(join(dir, 'config.yml'), `${await readFile(join(dir, 'config.yml'), 'utf8')}\nbase:\n  criteria: all\n`)
+}
+
 test('the base boots from the base tree\'s own profile: a base without one is not compared (#147)', async () => {
   const trees = await twoTrees({ base: ['old.txt'], head: [] })
   // The head carries a profile on disk, named by an absolute path as the CLI
   // names it; the base revision predates it.
   await cp(validProfileDir, join(trees.head, '.qa'), { recursive: true })
+  await allAtTheBase(join(trees.head, '.qa'))
   // The profile's seed is the checkout's own bin/rails (#240).
   await mkdir(join(trees.head, 'bin'), { recursive: true })
   await writeFile(join(trees.head, 'bin', 'rails'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
@@ -410,6 +419,7 @@ test('the base boots from the base tree\'s own profile: a base without one is no
 test('a base whose profile names a running target boots nothing, so nothing is compared with it (#147)', async () => {
   const trees = await twoTrees({ base: ['old.txt'], head: [] })
   await cp(validProfileDir, join(trees.head, '.qa'), { recursive: true })
+  await allAtTheBase(join(trees.head, '.qa'))
   await mkdir(join(trees.base, '.qa'))
   await writeFile(join(trees.base, '.qa', 'QA.md'), 'The deployed site.\n')
   await writeFile(join(trees.base, '.qa', 'config.yml'), `target:\n  url: ${TARGET_URL}\n  health: { http: /up, timeout: 1s }\n`)
@@ -420,4 +430,47 @@ test('a base whose profile names a running target boots nothing, so nothing is c
   expect(result.base?.reason).toContain('names a running target')
   expect(existsSync(join(job.evidenceDir, 'base/checks'))).toBe(false)
   expect('regression' in criterionOf(result, 'old-behaviour')).toBe(false)
+})
+
+test('with no base.criteria the base side runs only what the base ledger carries, and says it is the default (#381)', async () => {
+  const trees = await twoTrees({ base: ['old.txt'], head: [] })
+  await new FileLedgerStore(join(trees.base, '.qa')).save([{ criterion: 'LED-1', status: 'active', source: ['#1'], proof: 'command' }])
+  const job = jobFor(trees.head, [fileCheck('LED-1', 'old.txt'), fileCheck('issue-9-1', 'old.txt')], { ...APP_PROFILE, base: undefined })
+  const { result } = await runJob(job, { ...recordingBoot(), base: { repoPath: trees.base } })
+  expect(criterionOf(result, 'LED-1')).toMatchObject({ outcome: 'failed', regression: true, base: { outcome: 'proven' } })
+  const fresh = criterionOf(result, 'issue-9-1')
+  expect(fresh).toMatchObject({ outcome: 'failed', base: { outcome: 'not-compared' } })
+  expect(fresh.base?.reason).toBe(
+    'not run at the base: the profile limits the base side to the criteria already in the ledger (base.criteria: ledger, the default; base.criteria: all compares every criterion), and the ledger at the base does not carry issue-9-1',
+  )
+  expect(existsSync(join(job.evidenceDir, 'base/checks/issue-9-1'))).toBe(false)
+})
+
+test('with no base.criteria and no ledger at the base, no base boots, and the reason names the default (#381)', async () => {
+  const trees = await twoTrees({ base: ['old.txt'], head: ['old.txt'] })
+  const boot = recordingBoot()
+  const { result } = await runJob(jobFor(trees.head, [fileCheck('issue-9-1', 'old.txt')], { ...APP_PROFILE, base: undefined }), { ...boot, base: { repoPath: trees.base } })
+  expect(result.base?.status).toBe('not-executed')
+  expect(result.base?.reason).toContain('base.criteria: ledger, the default')
+  expect(boot.calls.filter((args) => args.includes('up'))).toHaveLength(1)
+})
+
+test('by default a criterion decided against the base still runs there: a visual check, an a11y audit, a flow the profile audits (#381)', async () => {
+  const trees = await twoTrees({ base: ['old.txt'], head: [] })
+  const visual: JobCriterion = { id: 'issue-9-visual', text: 'the page looks the same', checks: [{ kind: 'command', run: 'test -f old.txt' }, { kind: 'visual', path: '/' } as never] }
+  const a11y: JobCriterion = { id: 'issue-9-a11y', text: 'the page is accessible', checks: [{ kind: 'command', run: 'test -f old.txt' }, { kind: 'a11y', path: '/' } as never] }
+  const flow: JobCriterion = { id: 'issue-9-flow', text: 'a person signs in', checks: [{ kind: 'command', run: 'test -f old.txt' }, { kind: 'flow', steps: [] } as never] }
+  const { gateOf } = await import('../src/run.js')
+  const plain = { ...APP_PROFILE, base: undefined }
+  const audited = { ...plain, a11y: { standing: true } } as QaProfile
+  const carried = new Set<string>()
+  expect(gateOf(plain, carried, visual)).toBe(true)
+  expect(gateOf(plain, carried, a11y)).toBe(true)
+  expect(gateOf(plain, carried, flow)).toBe(false)
+  expect(gateOf(audited, carried, flow)).toBe(true)
+  expect(gateOf(plain, carried, fileCheck('issue-9-1', 'old.txt'))).toBe(false)
+  expect(gateOf(plain, new Set(['issue-9-1']), fileCheck('issue-9-1', 'old.txt'))).toBe(true)
+  // An explicit ledger keeps its meaning: only what the ledger carries.
+  expect(gateOf({ ...plain, base: { criteria: 'ledger' } }, carried, visual)).toBe(false)
+  void trees
 })

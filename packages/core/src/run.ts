@@ -1804,28 +1804,53 @@ async function headProfilesOf(job: Job): Promise<HeadProfile[]> {
 }
 
 /**
+ * What `base.criteria` is when the profile says nothing (#381): `ledger` for
+ * a booted app, and `all` for a client, whose base is installed from an
+ * artefact with no base tree to read a ledger from.
+ */
+function baseCriteriaOf(profile: QaProfile): { criteria: 'all' | 'ledger' | 'none'; defaulted: boolean } {
+  if (profile.base?.criteria !== undefined) return { criteria: profile.base.criteria, defaulted: false }
+  return { criteria: profile.client !== undefined ? 'all' : 'ledger', defaulted: true }
+}
+
+/**
+ * Whether a criterion runs at the base under a ledger limit (#147, #381):
+ * when the ledger at the base carries it as active. When the limit is only
+ * the default, a criterion whose check is decided against the base runs
+ * there whatever the ledger says, so the default never changes a verdict:
+ * a visual check (#143), an accessibility audit (#149), and a flow check
+ * when the profile audits every flow. An explicit `ledger` means the
+ * ledger alone.
+ */
+export function gateOf(profile: QaProfile, carried: ReadonlySet<string>, criterion: JobCriterion): boolean {
+  const { criteria, defaulted } = baseCriteriaOf(profile)
+  if (criteria === 'all') return true
+  if (criteria === 'none') return false
+  if (carried.has(criterion.id)) return true
+  if (!defaulted) return false
+  const standing = profile.a11y?.standing === true
+  return (criterion.checks ?? []).some((check) => check.kind === 'visual' || check.kind === 'a11y' || (standing && check.kind === 'flow'))
+}
+
+const LEDGER_DEFAULT_NOTE = ' (base.criteria: ledger, the default; base.criteria: all compares every criterion)'
+
+/**
  * The base side's limits, from the profile the run was configured with
- * (#147): `base.criteria: ledger` runs only the criteria the ledger at the
- * base already carries as active, and `base.budget` bounds the side's wall
- * clock from the moment it starts. Both are read as a reason a criterion
- * does not run, so what the limits leave out is reported, not dropped.
+ * (#147): `base.criteria: ledger` (the default since #381) runs only the
+ * criteria the ledger at the base already carries as active, and
+ * `base.budget` bounds the side's wall clock from the moment it starts.
+ * Both are read as a reason a criterion does not run, so what the limits
+ * leave out is reported, not dropped.
  */
 async function baseLimits(
   profiles: HeadProfile[],
   basePath: string,
-): Promise<{ nothingToRun: boolean; gate: (criterion: JobCriterion) => string | undefined }> {
-  const ledgerOnly = new Set<string>()
-  const off = new Set<string>()
+): Promise<{ nothingToRun: boolean; reason: string; gate: (criterion: JobCriterion) => string | undefined }> {
+  const leftOutWhy = new Map<string, string>()
   const budgets = new Map<string, { ms: number; label: string }>()
-  for (const { profile, criteria } of profiles) {
-    for (const criterion of criteria) {
-      if (profile.base?.criteria === 'ledger') ledgerOnly.add(criterion.id)
-      if (profile.base?.criteria === 'none') off.add(criterion.id)
-      if (profile.base?.budget !== undefined) budgets.set(criterion.id, { ms: parseDurationMs(profile.base.budget), label: profile.base.budget })
-    }
-  }
+  const limited = profiles.some(({ profile }) => baseCriteriaOf(profile).criteria === 'ledger')
   let carried = new Set<string>()
-  if (ledgerOnly.size > 0) {
+  if (limited) {
     try {
       const entries = await new FileLedgerStore(join(basePath, '.qa')).load()
       carried = new Set(entries.filter((entry) => entry.status === 'active').map((entry) => entry.criterion))
@@ -1833,15 +1858,28 @@ async function baseLimits(
       // A ledger that cannot be read carries nothing: nothing runs at the base on its word.
     }
   }
-  const leftOut = (id: string): boolean => off.has(id) || (ledgerOnly.has(id) && !carried.has(id))
+  let defaultNote = ''
+  for (const { profile, criteria } of profiles) {
+    const { criteria: limit, defaulted } = baseCriteriaOf(profile)
+    for (const criterion of criteria) {
+      if (profile.base?.budget !== undefined) budgets.set(criterion.id, { ms: parseDurationMs(profile.base.budget), label: profile.base.budget })
+      if (gateOf(profile, carried, criterion)) continue
+      if (limit === 'none') leftOutWhy.set(criterion.id, `${NOT_RUN_AT_BASE}the profile runs no criteria at the base (base.criteria: none)`)
+      else {
+        const note = defaulted ? LEDGER_DEFAULT_NOTE : ''
+        if (defaulted) defaultNote = LEDGER_DEFAULT_NOTE
+        leftOutWhy.set(criterion.id, `${NOT_RUN_AT_BASE}the profile limits the base side to the criteria already in the ledger${note}, and the ledger at the base does not carry ${criterion.id}`)
+      }
+    }
+  }
   const all = profiles.flatMap((entry) => entry.criteria)
   const startedMs = Date.now()
   return {
-    nothingToRun: all.length > 0 && all.every((criterion) => leftOut(criterion.id)),
+    nothingToRun: all.length > 0 && all.every((criterion) => leftOutWhy.has(criterion.id)),
+    reason: `the profile's limits leave nothing to run at the base: the ledger at the base carries none of the criteria this run checks${defaultNote}`,
     gate: (criterion) => {
-      if (off.has(criterion.id)) return `${NOT_RUN_AT_BASE}the profile runs no criteria at the base (base.criteria: none)`
-      if (leftOut(criterion.id))
-        return `${NOT_RUN_AT_BASE}the profile limits the base side to the criteria already in the ledger, and the ledger at the base does not carry ${criterion.id}`
+      const why = leftOutWhy.get(criterion.id)
+      if (why !== undefined) return why
       const budget = budgets.get(criterion.id)
       if (budget !== undefined && Date.now() - startedMs >= budget.ms)
         return `${NOT_RUN_AT_BASE}the base side's time budget of ${budget.label} was spent before this criterion ran`
@@ -1926,11 +1964,7 @@ async function runBaseSide(
     checkout = outcome.checkout
     const basePath = checkout.path
     const limits = await baseLimits(profiles, basePath)
-    if (limits.nothingToRun)
-      return {
-        status: 'not-executed',
-        reason: "the profile's limits leave nothing to run at the base: the ledger at the base carries none of the criteria this run checks",
-      }
+    if (limits.nothingToRun) return { status: 'not-executed', reason: limits.reason }
     // The prebuilt images the head's profiles name for the base (#381),
     // each used only when it shows it was built from the base commit.
     const commit = COMMIT_ID.test(job.baseRef) ? job.baseRef : checkout.commit
