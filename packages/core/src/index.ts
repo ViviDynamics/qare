@@ -329,6 +329,7 @@ export { clientCellProblem, reapLiveCells, startClientCell, trackLiveCell } from
 export type { CellDocker, CellRecord, ClientCell } from './client-cell.js'
 export type { ReachedHost } from './cell-gate.js'
 export { matchesStub, missingStubReason, summarizeEgress, mergeVerdicts } from './egress.js'
+export { NO_EGRESS_IMAGE } from './stack-egress.js'
 export type { EgressAttempt, EgressFinding, EgressStub } from './egress.js'
 export { diffStubs, flagAddedStubs } from './stub-diff.js'
 export type { StubDiff } from './stub-diff.js'
