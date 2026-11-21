@@ -3,7 +3,7 @@ import { DRIVER_CHECK_KINDS, undeclaredCheckKinds, type FlowDriverCapabilities }
 import { EXPLORATION_TOOLS, isExplorableUrl, type ExplorationTool } from './explore.js'
 import { EXPLORATION_BRIDGE_ALIAS, type ExploredPage } from './explore-bridge.js'
 import { nareNameProblem, nareToolName } from './mcp.js'
-import { isUnsafeProfileName, type ProfileCommand } from './profile.js'
+import type { ProfileCommand } from './profile.js'
 import { sumUsage, type ModelUsage } from './metrics.js'
 import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
 import { placeholderValue, shellCharacter, tokenFillsTemplate } from './run.js'
@@ -115,8 +115,9 @@ export interface PlanInputs {
    * reaches them: one tool server the harness serves, where each registered
    * server answers MCP at `<endpoint>/<name>` (#399), listing what it
    * published through its profile allowlist. The session calls them the way
-   * it calls every other model tool, and every result is untrusted data. The profile has already refused any server that needs a
-   * credential a step that runs pull request code would hold.
+   * it calls every other model tool, and every result is untrusted data. The
+   * profile has already refused any server that needs a credential a step
+   * that runs pull request code would hold.
    */
   mcp?: {
     /** Where the harness's MCP tool server answers; each server at its own path under it. */
@@ -484,8 +485,9 @@ function mcpChannel(mcp: NonNullable<PlanInputs['mcp']>, exploring: boolean): Ag
   const servers = mcp.servers.map((server) => {
     if (typeof server?.name !== 'string' || server.name.trim() === '')
       throw new PlanStepError('a host MCP server on the channel carries no name, so its tools cannot be addressed')
-    if (isUnsafeProfileName(server.name) || nareNameProblem(server.name) !== undefined)
-      throw new PlanStepError(nareNameProblem(server.name) ?? `host MCP server name ${JSON.stringify(server.name)} must not carry a separator, ".." or a control character`)
+    // nare's alias rule is stricter than the profile's separator rule, so it covers that too.
+    const unnamed = nareNameProblem(server.name)
+    if (unnamed !== undefined) throw new PlanStepError(unnamed)
     if (exploring && server.name === EXPLORATION_BRIDGE_ALIAS)
       throw new PlanStepError(
         `host MCP server name ${JSON.stringify(server.name)} is the exploration channel's alias, and this plan explores: rename the server`,
