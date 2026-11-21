@@ -1947,6 +1947,13 @@ async function runBaseSide(
       const baseOpts: SideOpts = { ...opts }
       delete baseOpts.ledgerFeed
       delete baseOpts.quarantineDir
+    // The base side reads the build cache and never writes it (#381): the
+    // head's build is the one the next run's cache is made from.
+    if (opts.buildCache !== undefined) {
+      const { from } = opts.buildCache
+      if (from === undefined) delete baseOpts.buildCache
+      else baseOpts.buildCache = { from }
+    }
       if (opts.cacheDir !== undefined) baseOpts.cacheDir = join(opts.cacheDir, 'base')
       const { result } = await runSide({ ...job, evidenceDir: join(job.evidenceDir, 'base') }, baseOpts, side)
       if (side.ran) return { status: 'executed', result }
@@ -2003,6 +2010,13 @@ async function runBaseSide(
     delete baseOpts.isolation
     delete baseOpts.ledgerFeed
     delete baseOpts.quarantineDir
+    // The base side reads the build cache and never writes it (#381): the
+    // head's build is the one the next run's cache is made from.
+    if (opts.buildCache !== undefined) {
+      const { from } = opts.buildCache
+      if (from === undefined) delete baseOpts.buildCache
+      else baseOpts.buildCache = { from }
+    }
     if (opts.cacheDir !== undefined) baseOpts.cacheDir = join(opts.cacheDir, 'base')
     const { result } = await runSide(baseJobOf(job, basePath), baseOpts, side)
     if (!side.ran) {

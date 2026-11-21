@@ -474,3 +474,22 @@ test('by default a criterion decided against the base still runs there: a visual
   expect(gateOf({ ...plain, base: { criteria: 'ledger' } }, carried, visual)).toBe(false)
   void trees
 })
+
+test('the base side reads the build cache and never writes it: the head\'s build is the one exported (#381)', async () => {
+  const trees = await twoTrees({ base: ['old.txt'], head: ['old.txt'] })
+  const builds: Array<{ project?: string; env?: Record<string, string> }> = []
+  const boot: BootOpts = {
+    runCompose: async (args, _timeoutMs, env) => {
+      if (args.includes('config')) return { code: 0, stdout: JSON.stringify({ services: { admin: { build: { context: '.' } } } }), stderr: '' }
+      if (args.includes('build')) builds.push({ ...(args[1] === undefined ? {} : { project: args[1] }), ...(env === undefined ? {} : { env }) })
+      return { code: 0, stdout: '', stderr: '' }
+    },
+    probe: async () => ({ ok: true }),
+    pollIntervalMs: 1,
+  }
+  const to = await mkdtemp(join(tmpdir(), 'qare-cache-to-'))
+  await runJob(jobFor(trees.head, [fileCheck('kept', 'old.txt')]), { ...boot, buildCache: { from: to, to }, base: { repoPath: trees.base } })
+  expect(builds).toHaveLength(2)
+  expect(builds[0]?.env).not.toHaveProperty('BUILDX_BAKE_ENTITLEMENTS_FS')
+  expect(builds[1]?.env).toMatchObject({ BUILDX_BAKE_ENTITLEMENTS_FS: '0' })
+})

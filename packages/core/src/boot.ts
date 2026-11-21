@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import http from 'node:http'
 import https from 'node:https'
+import { existsSync } from 'node:fs'
 import { realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -80,6 +81,12 @@ export interface BootOpts {
    */
   runCompose?: (args: string[], timeoutMs: number, env?: Record<string, string>) => Promise<{ code: number; stdout: string; stderr: string }>
   probe?: (url: string) => Promise<{ ok: boolean }>
+  /**
+   * The opt-in buildx layer cache for the images the boot builds (#381):
+   * `from` is a directory to read each building service's cache from, `to`
+   * one to export it to. Absent, the boot builds with no cache, as before.
+   */
+  buildCache?: BuildCache
   /** Runs `docker` itself: how the base side pulls and inspects a prebuilt image (#381). The runner's docker by default. */
   runDocker?: (args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>
   pollIntervalMs?: number
@@ -320,6 +327,59 @@ export function baseImageOverrideFile(project: string): string {
  */
 export function baseImageOverride(service: string, image: string): string {
   return `services:\n  ${JSON.stringify(composeLiteral(service))}:\n    image: ${JSON.stringify(composeLiteral(image))}\n    pull_policy: never\n    build: !reset null\n`
+}
+
+/** Where a build cache is read from and written to (#381): one directory per service under each. */
+export interface BuildCache {
+  from?: string
+  to?: string
+}
+
+/** Where the run writes a boot's build cache override (#381): named for the project, so no two runs share one. */
+export function buildCacheOverrideFile(project: string): string {
+  return join(tmpdir(), `${project}.build-cache.json`)
+}
+
+/** A compose service name the cache directory may be named for: a plain name, never a path. */
+const PLAIN_SERVICE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+/**
+ * The override that gives each service that builds its cache (#381): read
+ * from `<from>/<service>` when a cache is there (`has`), and exported to
+ * `<to>/<service>` with every layer (`mode=max`). One directory per service,
+ * because a local cache export replaces the index of the directory it
+ * writes. Undefined when there is nothing to read or write.
+ */
+export function buildCacheOverride(services: string[], cache: BuildCache, has: (dir: string) => boolean = (dir) => existsSync(join(dir, 'index.json'))): { services: Record<string, { build: { cache_from?: string[]; cache_to?: string[] } }> } | undefined {
+  const entries: Record<string, { build: { cache_from?: string[]; cache_to?: string[] } }> = {}
+  for (const service of services) {
+    if (!PLAIN_SERVICE.test(service)) continue
+    const from = cache.from === undefined ? undefined : join(cache.from, service)
+    const build = {
+      ...(from !== undefined && has(from) ? { cache_from: [`type=local,src=${composeLiteral(from)}`] } : {}),
+      ...(cache.to === undefined ? {} : { cache_to: [`type=local,dest=${composeLiteral(join(cache.to, service))},mode=max`] }),
+    }
+    if (Object.keys(build).length > 0) entries[composeLiteral(service)] = { build }
+  }
+  return Object.keys(entries).length === 0 ? undefined : { services: entries }
+}
+
+/**
+ * The services the boot's compose files build, as compose itself resolves
+ * them (#381). A compose that cannot say is a boot with no cache, never a
+ * boot that fails for it: the cache is an optimisation.
+ */
+async function servicesThatBuild(app: ComposeApp, runCompose: NonNullable<BootOpts['runCompose']>, isolation: RunIsolation, env: Record<string, string> | undefined): Promise<string[]> {
+  try {
+    const config = await runCompose(['-p', isolation.project, ...composeFiles(app), 'config', '--format', 'json'], 60_000, env)
+    if (config.code !== 0) return []
+    const services = (JSON.parse(config.stdout) as { services?: Record<string, { build?: unknown }> }).services ?? {}
+    return Object.entries(services)
+      .filter(([, service]) => typeof service === 'object' && service !== null && service.build !== undefined && service.build !== null)
+      .map(([name]) => name)
+  } catch {
+    return []
+  }
 }
 
 /** The compose files a boot names, in order: the app's own, then the run's base image override. */
@@ -640,9 +700,28 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
     }
   }
 
+  // The opt-in build cache (#381): each service that builds reads its
+  // layers from the cache it is handed, and exports them when it is handed
+  // somewhere to write. Bake asks for a write entitlement outside the build
+  // context; the directory is the run's own, so the build is told it may.
+  let buildEnv = env
+  if (opts.buildCache !== undefined) {
+    const override = buildCacheOverride(await servicesThatBuild(app, runCompose, isolation, env), opts.buildCache)
+    if (override !== undefined) {
+      const file = buildCacheOverrideFile(isolation.project)
+      try {
+        await writeFile(file, `${JSON.stringify(override, null, 2)}\n`, { mode: 0o600 })
+        app = { ...app, overrides: [...(app.overrides ?? []), file] }
+        if (opts.buildCache.to !== undefined) buildEnv = { ...(env ?? {}), BUILDX_BAKE_ENTITLEMENTS_FS: '0' }
+      } catch (error) {
+        console.error(`the build cache override could not be written, so the images build with no cache: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  }
+
   // The images first, under their own bound (#241): the health deadline
   // below starts only once they are built, so it times the boot alone.
-  const unbuilt = await buildImages(app, runCompose, isolation, env)
+  const unbuilt = await buildImages(app, runCompose, isolation, buildEnv)
   if (unbuilt !== undefined) return { kind: 'blocked', ...unbuilt, isolation }
 
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -740,6 +819,7 @@ export async function stopApp(profile: QaProfile, opts: BootOpts = {}): Promise<
   } catch (error) {
     console.error(`compose down failed: ${String(error)}`)
   }
-  // The base image override goes with the stack it booted (#381).
-  if (opts.isolation !== undefined) await rm(baseImageOverrideFile(opts.isolation.project), { force: true }).catch(() => {})
+  // The base image and build cache overrides go with the stack they booted (#381).
+  if (opts.isolation !== undefined)
+    for (const file of [baseImageOverrideFile(opts.isolation.project), buildCacheOverrideFile(opts.isolation.project)]) await rm(file, { force: true }).catch(() => {})
 }

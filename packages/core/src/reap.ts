@@ -1,5 +1,5 @@
 import { rm } from 'node:fs/promises'
-import { baseImageOverrideFile, commandBootFile, defaultRunCompose } from './boot.js'
+import { baseImageOverrideFile, buildCacheOverrideFile, commandBootFile, defaultRunCompose } from './boot.js'
 
 /**
  * What reaping found: the qare projects torn down, and the ones compose could
@@ -94,7 +94,7 @@ export async function reapProjects(opts: ReapOpts = {}): Promise<ReapOutcome> {
 // Reap never waits forever on a compose call, so the down is bounded (#53); a
 // call the deadline killed resolves with a non-zero code and no output.
 // A project downed takes the file a command boot wrote for it along (#379),
-// and the base image override a compose boot's base side wrote (#381);
+// and the base image and build cache overrides a boot wrote (#381);
 // nothing else is touched.
 async function down(runCompose: NonNullable<ReapOpts['runCompose']>, project: string): Promise<{ code: number; stdout: string; stderr: string }> {
   const outcome = await runCompose(['-p', project, 'down', '--volumes'], REAP_CALL_TIMEOUT_MS).catch((error: unknown) => ({
@@ -103,6 +103,6 @@ async function down(runCompose: NonNullable<ReapOpts['runCompose']>, project: st
     stderr: String(error),
   }))
   if (outcome.code === 0)
-    for (const file of [commandBootFile(project), baseImageOverrideFile(project)]) await rm(file, { force: true }).catch(() => {})
+    for (const file of [commandBootFile(project), baseImageOverrideFile(project), buildCacheOverrideFile(project)]) await rm(file, { force: true }).catch(() => {})
   return outcome
 }
