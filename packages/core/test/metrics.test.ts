@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
@@ -171,4 +171,60 @@ test('the summary states the proven-or-failed rate of every recorded criterion o
 test('with no criterion outcome recorded the rate is not stated as zero (#373)', () => {
   const lines = metricsSummaryLines(summarizeMetrics({ runs: [], notes: [], malformed: 0 }))
   expect(lines).toContain('proven or failed: no criterion outcomes recorded')
+})
+
+function timedRun(index: number, jobs: Array<{ name: string; wallMs: number }> | undefined) {
+  const started = new Date(Date.parse('2026-11-01T00:00:00.000Z') + index * 3_600_000).toISOString()
+  return {
+    ...BASE_RECORD,
+    schemaVersion: METRICS_SCHEMA_VERSION,
+    recordedAt: started,
+    runId: `r${index}`,
+    startedAt: started,
+    ...(jobs === undefined ? {} : { jobs: jobs.map((job) => ({ ...job, startedAt: started, completedAt: started })) }),
+  }
+}
+
+test('the summary gives each job its median wall clock, the latest ten runs beside the ten before (#381)', () => {
+  // Twenty runs, oldest first: execute took 60s in the earlier ten and 30s in
+  // the latest ten, and collect took 20s throughout. Stored newest first, to
+  // show the order is read from startedAt, not from the store's lines.
+  const runs = Array.from({ length: 20 }, (_, index) =>
+    timedRun(index, [
+      { name: 'collect (GitHub token only)', wallMs: 20_000 },
+      { name: 'execute (no secrets)', wallMs: index < 10 ? 60_000 + index : 30_000 + index },
+    ]),
+  ).reverse()
+  const summary = summarizeMetrics({ runs, notes: [], malformed: 0 })
+  expect(summary.jobs['execute (no secrets)']).toHaveLength(20)
+  const lines = metricsSummaryLines(summary)
+  expect(lines).toContain('job wall clock, collect (GitHub token only): median 20s over the latest 10 runs, 20s over the 10 before')
+  expect(lines).toContain('job wall clock, execute (no secrets): median 30s over the latest 10 runs, 1m 0s over the 10 before')
+})
+
+test('with ten runs or fewer a job has one median, and a run that recorded no jobs counts for none (#381)', () => {
+  const runs = [timedRun(0, [{ name: 'plan (model key only)', wallMs: 40_000 }]), timedRun(1, undefined), timedRun(2, [{ name: 'plan (model key only)', wallMs: 50_000 }]), timedRun(3, [{ name: 'plan (model key only)', wallMs: 90_000 }])]
+  const lines = metricsSummaryLines(summarizeMetrics({ runs, notes: [], malformed: 0 }))
+  expect(lines).toContain('job wall clock, plan (model key only): median 50s over 3 runs')
+  expect(lines.filter((line) => line.startsWith('job wall clock'))).toHaveLength(1)
+})
+
+test('with no run that recorded its jobs the report says so, once (#381)', () => {
+  const lines = metricsSummaryLines(summarizeMetrics({ runs: [timedRun(0, undefined)], notes: [], malformed: 0 }))
+  expect(lines).toContain('job wall clock: no run recorded its jobs')
+})
+
+test('a record whose jobs are not the promised shape is still a run, and its jobs count for nothing (#381)', async () => {
+  const dir = await metricsDir()
+  try {
+    const good = { ...timedRun(0, [{ name: 'judge (model key only)', wallMs: 41_000 }]) }
+    const bad = { ...timedRun(1, undefined), jobs: [{ name: 7, wallMs: 'slow' }, null] }
+    await writeFile(join(dir, 'runs.jsonl'), `${JSON.stringify(good)}\n${JSON.stringify(bad)}\n`)
+    const store = await readMetricsStore(dir)
+    expect(store.runs).toHaveLength(2)
+    expect(store.malformed).toBe(0)
+    expect(summarizeMetrics(store).jobs).toEqual({ 'judge (model key only)': [41_000] })
+  } finally {
+    await rm(dir, { recursive: true })
+  }
 })

@@ -138,7 +138,8 @@ A run record line:
   "verdict": "passed",
   "criteria": { "selected": [{ "id": "...", "outcome": "proven" }], "counts": { "proven": 1 } },
   "model": { "plan": { "inputTokens": 0, "outputTokens": 0 }, "judge": { "inputTokens": 0, "outputTokens": 0 } },
-  "context": { "pr": 1, "base": "...", "head": "..." }
+  "context": { "pr": 1, "base": "...", "head": "..." },
+  "jobs": [{ "name": "execute (no secrets)", "startedAt": "2026-09-29T00:00:00Z", "completedAt": "2026-09-29T00:00:51Z", "wallMs": 51000 }]
 }
 ```
 
@@ -153,6 +154,7 @@ A run record line:
 | `criteria.counts` | document | required object: the same outcomes, counted |
 | `model` | document | optional `{ plan?, judge? }`; each side optional `{ inputTokens, outputTokens }` numbers. Absent when a step ran without a model |
 | `context` | document | optional `{ pr?, base?, head? }`: where the run happened, when the caller says |
+| `jobs` | document | optional array of `{ name, startedAt, completedAt, wallMs }` (#381): each job of the run that had finished when publish wrote the record, by its name without the caller's prefix. An entry that is not that shape counts for nothing, and the record is still a run |
 
 A note line carries `schemaVersion`, `recordedAt`, a `kind` of `"escape"`,
 `"false-block"` or `"qa-minutes"`, and per kind: `text` (what the note says),

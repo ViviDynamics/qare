@@ -312,10 +312,10 @@ either way).
 
 What this does not change: the key is still a secret of the job. GitHub
 hands a job's runner every secret the job's steps name, so what runs on the
-runner later in the same job (the build of the pinned qare in collect, report,
-advisory and requeue, by its lockfile and with no cache, and the step that
-enables pnpm with corepack) runs on a machine that was given the key, though never
-in its own environment. A container is not that machine. And "before
+runner later in the same job (the build of the pinned qare in report,
+advisory and requeue, by its lockfile and with no cache, the step that
+enables pnpm with corepack, and the image pull in collect and publish) runs on
+a machine that was given the key, though never in its own environment. A container is not that machine. And "before
 anything else of the run" is a statement about one job: a runner that
 outlives its jobs keeps what earlier jobs left on it, so on your own runners
 give execute a pool of its own with `execute-runs-on`.
@@ -387,7 +387,7 @@ it needs under it:
 | `contents: write` | publish, to push the run's screenshots to the `qa-assets` branch. Every other job reads. |
 | `checks: write` | publish and report, for the check run on the head commit. |
 | `pull-requests: write`, `issues: write` | publish, report, advisory and requeue, for the comment, the stub issues and the replies to advisory findings. collect reads issues. |
-| `actions: read` | report, to name the job and step that failed when no verdict was published. |
+| `actions: read` | report, to name the job and step that failed when no verdict was published; publish, to add each job's wall clock to the run's metrics record (#381). |
 | `issues: write`, `pull-requests: read`, `contents: write` | main_publish, when the main lane is on: to file what a run on the default branch found, to read the changes a finding blames, and, with `main-lane-record-passes`, to push the record of passes to the `qa-assets` branch. |
 
 These are the permissions of the run's own token. A GitHub App or a personal
@@ -418,11 +418,11 @@ actions' tags point at on the day.
 A GitHub-hosted runner has all of it. Your own runner needs `docker` with the
 buildx plugin and its `imagetools inspect` command, `git`,
 `curl` and `jq`. It does not need the GitHub CLI, nor node, pnpm or Python set up by hand:
-plan, execute, judge and publishing run qare and nare inside the published images
+collect, main_collect, plan, execute, judge and publishing run qare and nare inside the published images
 (`ghcr.io/vividynamics/qare-core` and the flavour the profile names), and
-the jobs that run anything outside an image (collect, main_collect, report,
-advisory, requeue, and the one step of publish and main_publish that mints the
-App's token) set up node themselves with `actions/setup-node`.
+the jobs that run anything outside an image (report, advisory, requeue, and
+the one step of collect, publish and main_publish that mints the App's token)
+set up node themselves with `actions/setup-node`.
 
 Planning, execution and judging resolve the selected release tag to its registry
 digest before pulling. Publishing uses the exact digest recorded by judging. Every container in that job uses the resolved digest, while evidence
@@ -445,6 +445,27 @@ the work directory into both containers. Nothing else has to be shared:
 execute copies the docker client and its plugins under `RUNNER_TEMP` and
 mounts them into the run's container from there, because a daemon that does
 not see the runner's `/usr/bin` cannot mount the client from it.
+
+## How long a run takes
+
+Each run's metrics record carries the wall clock of every job of the run
+that had finished when publish wrote it (#381): collect, plan, execute,
+judge, and any job of your own workflow the run includes, by the name the
+job has without your caller's prefix. A skipped job ran nothing and is left
+out. publish reads them from the Actions API with the run's own token, which
+is what its `actions: read` is for, and a read that fails leaves the record
+without them and the verdict as it was.
+
+The standing report (#49) gives each job one line: its median wall clock
+over the latest ten runs that recorded it, beside its median over the ten
+before, so a change to the pipeline, the profile or the runners shows as two
+numbers side by side. With ten runs or fewer it gives one median. A
+record written before publish added the jobs is still a run, and counts for
+nothing in these lines.
+
+collect runs the published core image of the pinned version, as plan does
+(#381), so no job of a pull request's run installs or builds qare from
+source.
 
 ## Self-hosted runner checklist
 
@@ -1045,7 +1066,7 @@ of the first; the newer revision is the one worth checking.
 
 | Job | Holds | What it does |
 | --- | --- | --- |
-| main_collect | the GitHub token | Reads the ledger at the revision and writes the plan from the checks the ledger records. No model is asked. |
+| main_collect | the GitHub token | Reads the ledger at the revision, with the published core image, and writes the plan from the checks the ledger records. No model is asked. |
 | main_execute | nothing | Boots the app and runs the plan, as execute does. It is the only job that runs your repository's code. |
 | main_judge | the model key | The verifier reads the evidence, told that no change is under review, and uploads its recorded result. |
 | main_publish | a fresh GitHub identity token | `main-findings` files from the judged result, or on a dry run prints. |

@@ -48,6 +48,20 @@ export interface RunMetricsRecord {
   model?: { plan?: ModelUsage; judge?: ModelUsage }
   /** Where the run happened, when the caller says. */
   context?: { pr?: number; base?: string; head?: string }
+  /**
+   * Each job of the run that had completed when the record was written, and
+   * its wall clock (#381), as the Actions API reports it. Absent in a record
+   * written before jobs were recorded, or by a caller outside the pipeline.
+   */
+  jobs?: RunJobTiming[]
+}
+
+/** One job of a run, by the name its workflow gives it, and how long it took. */
+export interface RunJobTiming {
+  name: string
+  startedAt: string
+  completedAt: string
+  wallMs: number
 }
 
 export type MetricsNoteKind = 'escape' | 'false-block' | 'qa-minutes'
@@ -184,6 +198,36 @@ export interface MetricsSummary {
   /** Human notes, by kind: escapes found later, false blocks, QA minutes. */
   notes: Record<MetricsNoteKind, number>
   qaMinutes: number
+  /**
+   * Each job's wall clock (#381), one entry per run that recorded the job,
+   * oldest run first by its startedAt.
+   */
+  jobs: Record<string, number[]>
+}
+
+/** How many runs each window of a job's wall clock line covers (#381). */
+export const JOB_WINDOW = 10
+
+function isJobTiming(value: unknown): value is RunJobTiming {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const job = value as Record<string, unknown>
+  return typeof job.name === 'string' && job.name !== '' && typeof job.wallMs === 'number' && Number.isFinite(job.wallMs) && job.wallMs >= 0
+}
+
+/**
+ * Each job's wall clock across the runs (#381): the runs in the order they
+ * started, whatever order the store holds them in. A record's `jobs` is
+ * optional, and one that is not the promised shape counts for nothing: the
+ * record is still a run.
+ */
+function jobWallClocks(runs: RunMetricsRecord[]): Record<string, number[]> {
+  const ordered = [...runs].sort((a, b) => (Date.parse(a.startedAt) || 0) - (Date.parse(b.startedAt) || 0))
+  const jobs: Record<string, number[]> = {}
+  for (const run of ordered) {
+    if (!Array.isArray(run.jobs)) continue
+    for (const job of run.jobs) if (isJobTiming(job)) (jobs[job.name] ??= []).push(job.wallMs)
+  }
+  return jobs
 }
 
 export function summarizeMetrics(store: MetricsStore): MetricsSummary {
@@ -207,7 +251,7 @@ export function summarizeMetrics(store: MetricsStore): MetricsSummary {
     notes[note.kind] += 1
     if (note.kind === 'qa-minutes' && typeof note.minutes === 'number' && Number.isFinite(note.minutes)) qaMinutes += note.minutes
   }
-  return { runs: store.runs.length, wallMs, model, outcomes, defectsCaughtBeforeMerge, notes, qaMinutes }
+  return { runs: store.runs.length, wallMs, model, outcomes, defectsCaughtBeforeMerge, notes, qaMinutes, jobs: jobWallClocks(store.runs) }
 }
 
 /** The summary as human-readable lines, for `qare ledger status` and the sweep issue. */
@@ -226,7 +270,32 @@ export function metricsSummaryLines(summary: MetricsSummary): string[] {
   lines.push(`false blocks: ${summary.notes['false-block']}`)
   lines.push(`human QA minutes: ${summary.qaMinutes}`)
   if (summary.notes['qa-minutes'] > 0) lines.push(`human QA notes: ${summary.notes['qa-minutes']}`)
+  lines.push(...jobLines(summary.jobs))
   return lines
+}
+
+/**
+ * Each job's wall clock (#381), so a change in run time is measurable: the
+ * median over the latest ten runs that recorded the job, beside the median
+ * over the ten before them. Ten runs or fewer have one median.
+ */
+function jobLines(jobs: Record<string, number[]>): string[] {
+  const names = Object.keys(jobs).sort()
+  if (names.length === 0) return ['job wall clock: no run recorded its jobs']
+  return names.map((name) => {
+    const times = jobs[name] ?? []
+    if (times.length <= JOB_WINDOW) return `job wall clock, ${name}: median ${formatDuration(median(times))} over ${times.length} run${times.length === 1 ? '' : 's'}`
+    const latest = times.slice(-JOB_WINDOW)
+    const before = times.slice(-2 * JOB_WINDOW, -JOB_WINDOW)
+    return `job wall clock, ${name}: median ${formatDuration(median(latest))} over the latest ${JOB_WINDOW} runs, ${formatDuration(median(before))} over the ${before.length} before`
+  })
+}
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b)
+  const middle = Math.floor(sorted.length / 2)
+  if (sorted.length === 0) return 0
+  return sorted.length % 2 === 1 ? (sorted[middle] as number) : ((sorted[middle - 1] as number) + (sorted[middle] as number)) / 2
 }
 
 /**
