@@ -436,3 +436,32 @@ test.each([
   }
   expect(report.ready).toBe(true)
 })
+
+const COMMAND_CONFIG = [
+  'app:',
+  '  boot: { command: "npm start", image: "node:22", port: 3000 }',
+  `  health: { http: "${url('localhost:{{run.app_port}}', '/up')}", timeout: 120s }`,
+  '  seed: { command: "true" }',
+  '  login: { fixture: fixtures/users.yml, role: admin }',
+  'stubs: []',
+  'visual: { widths: [1440], themes: [light] }',
+  'suites: []',
+  '',
+].join('\n')
+
+test('a profile that boots by command needs no compose file, and the report names the command (#379)', async () => {
+  const dir = await repoWith({ 'package.json': '{"scripts":{"start":"node server.js"}}' })
+  await withProfile(dir, COMMAND_CONFIG)
+  const inventory = await readinessInventory(dir)
+  expect(inventory.profile.commandBoot).toEqual({ command: 'npm start', image: 'node:22', port: 3000 })
+  expect(inventory.profile.boot).toBeUndefined()
+  expect(inventory.gaps.filter((gap) => gap.includes('compose'))).toEqual([])
+  expect(buildReadinessReport(inventory)).toContain('- command "npm start" in node:22, listening on 3000: booted by the run as a compose project of its own')
+})
+
+test('a compose file kept beside a command boot is not what boots, so its services are no gaps (#379)', async () => {
+  const dir = await repoWith({ 'compose.yaml': 'services:\n  db:\n    image: postgres:16\n' })
+  await withProfile(dir, COMMAND_CONFIG)
+  const inventory = await readinessInventory(dir)
+  expect(inventory.gaps.filter((gap) => gap.includes('healthcheck'))).toEqual([])
+})

@@ -28,13 +28,40 @@ export interface ProfileLogin {
   backupCode?: { value: string }
 }
 
+/** A boot from the repository's own compose file: the service that is the app. */
+export interface ComposeBoot {
+  compose: string
+  service: string
+  build?: { timeout: string }
+}
+
+/**
+ * A boot from a start command (#379): the command runs, from a copy of the
+ * checkout, in the named image, and the app listens on `port` inside it. The
+ * run turns it into a one-service compose project of its own, so it is
+ * isolated, published, seeded, reaped and torn down as a compose boot is.
+ */
+export interface CommandBoot {
+  command: string
+  image: string
+  port: number
+  build?: { timeout: string }
+}
+
+export type ProfileBoot = ComposeBoot | CommandBoot
+
+/** Whether a boot is the command form (#379). */
+export function isCommandBoot(boot: ProfileBoot): boot is CommandBoot {
+  return 'command' in boot
+}
+
 export interface ProfileApp {
   /**
    * `build.timeout` bounds the image build that runs before the boot (#241),
    * a duration like the health timeout; fifteen minutes when the profile
    * names none.
    */
-  boot: { compose: string; service: string; build?: { timeout: string } }
+  boot: ProfileBoot
   health: { http: string; timeout: string }
   /**
    * What plants the QA data (#240): run once the app is healthy, before any
@@ -588,7 +615,8 @@ export async function loadProfile(dir: string, shared?: { resources?: string }):
   // Fixtures and stubs feed the stack qare boots; a target profile has none.
   if (profile.app !== undefined) {
     await requireBootResource(dir, shared?.resources, 'fixtures', 'fixtures', 'the .qa/ fixtures directory')
-    await requireBootResource(dir, shared?.resources, 'stubs', 'stubs', 'the .qa/ stubs directory')
+    // A command boot takes no stubs (#379), so it keeps no directory of them.
+    if (!isCommandBoot(profile.app.boot)) await requireBootResource(dir, shared?.resources, 'stubs', 'stubs', 'the .qa/ stubs directory')
   }
   return { instructions, ...profile }
 }
@@ -599,9 +627,15 @@ export function validateProfileConfig(config: unknown): QaProfile {
   if (config.client !== undefined) return validateClientConfig(config)
   if (config.target !== undefined) return validateTargetConfig(config)
   const commands = config.commands === undefined ? undefined : parseCommands(config.commands)
+  const app = parseApp(config.app)
+  const stubs = parseStubs(config.stubs)
+  // A stub is provided by a compose service beside the app, and a command
+  // boot runs the app alone (#379).
+  if (isCommandBoot(app.boot) && stubs.length > 0)
+    fail('stubs', 'a command boot runs the app as the one service of its project, so no compose service is there to provide a stub; boot from a compose file to stub what the app reaches')
   return {
-    app: parseApp(config.app),
-    stubs: parseStubs(config.stubs),
+    app,
+    stubs,
     visual: parseVisual(config.visual),
     suites: parseSuites(config.suites),
     ...(config.flavour === undefined ? {} : { flavour: parseFlavour(config.flavour) }),
@@ -978,18 +1012,45 @@ function seedTimeout(value: unknown): string {
   return timeout
 }
 
+const COMPOSE_BOOT_KEYS = new Set(['compose', 'service', 'build'])
+const COMMAND_BOOT_KEYS = new Set(['command', 'image', 'port', 'build'])
+
+/**
+ * The boot recipe: a compose file and its service, or a start command, an
+ * image and a port (#379). The two forms do not mix, so a profile never
+ * reads as one form while booting as the other.
+ */
+function parseBoot(value: Record<string, unknown>): ProfileBoot {
+  const build = value.build === undefined ? {} : { build: bootBuild(value.build) }
+  const command = value.command !== undefined || value.image !== undefined || value.port !== undefined
+  if (command && (value.compose !== undefined || value.service !== undefined))
+    fail('app.boot', 'app.boot takes either compose and service, or command, image and port, not both')
+  const keys = command ? COMMAND_BOOT_KEYS : COMPOSE_BOOT_KEYS
+  for (const key of Object.keys(value))
+    if (!keys.has(key))
+      fail(`app.boot.${key}`, `app.boot takes ${command ? 'command, image, port and build' : 'compose, service and build'}, not ${JSON.stringify(key)}`)
+  if (!command)
+    return {
+      compose: nonEmptyString(value.compose, 'app.boot.compose', 'compose file'),
+      service: nonEmptyString(value.service, 'app.boot.service', 'compose service'),
+      ...build,
+    }
+  const image = nonEmptyString(value.image, 'app.boot.image', 'image')
+  if (/\s/.test(image)) fail('app.boot.image', `app.boot.image must be an image reference with no whitespace, got ${JSON.stringify(image)}`)
+  const port = value.port
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535)
+    fail('app.boot.port', `app.boot.port must be the port the app listens on inside the image, an integer from 1 to 65535, got ${JSON.stringify(port)}`)
+  return { command: nonEmptyString(value.command, 'app.boot.command', 'start command'), image, port, ...build }
+}
+
 function parseApp(value: unknown): ProfileApp {
   if (!isRecord(value)) fail('app', 'app must be a YAML object with boot, health, seed and login')
-  if (!isRecord(value.boot)) fail('app.boot', 'app.boot must be a YAML object with compose and service')
+  if (!isRecord(value.boot)) fail('app.boot', 'app.boot must be a YAML object with compose and service, or with command, image and port')
   if (!isRecord(value.health)) fail('app.health', 'app.health must be a YAML object with http and timeout')
   if (!isRecord(value.seed)) fail('app.seed', 'app.seed must be a YAML object with command')
   if (!isRecord(value.login)) fail('app.login', 'app.login must be a YAML object with fixture and role')
   return {
-    boot: {
-      compose: nonEmptyString(value.boot.compose, 'app.boot.compose', 'compose file'),
-      service: nonEmptyString(value.boot.service, 'app.boot.service', 'compose service'),
-      ...(value.boot.build === undefined ? {} : { build: bootBuild(value.boot.build) }),
-    },
+    boot: parseBoot(value.boot),
     health: {
       http: nonEmptyString(value.health.http, 'app.health.http', 'health URL'),
       timeout: nonEmptyString(value.health.timeout, 'app.health.timeout', 'health timeout'),

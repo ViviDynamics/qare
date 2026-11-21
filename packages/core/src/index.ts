@@ -36,7 +36,8 @@ export {
   loadResult,
   parseResult,
 } from './result.js'
-export { ProfileMissingError, ProfileValidationError, loadProfile, pathOnTarget, validateProfileConfig } from './profile.js'
+export { ProfileMissingError, ProfileValidationError, isCommandBoot, loadProfile, pathOnTarget, validateProfileConfig } from './profile.js'
+export type { CommandBoot, ComposeBoot, ProfileBoot } from './profile.js'
 export {
   BUILTIN_REDACTION_RULES,
   REDACTED,

@@ -31,7 +31,7 @@ import { mailReader, mailSourceOf, type DeclaredMailSource, type MailSource } fr
 import { assessDelivery } from './mail-auth.js'
 import { extractCode, mailEvidence, runMailCheck, type MailProof, type ReadMail } from './mailbox.js'
 import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCapabilities, mcpDriverServer, type McpToolResult } from './mcp.js'
-import { ProfileMissingError, clientExecutableName, loadProfile, pathOnTarget, validateProfileConfig, type ProfileClient, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
+import { ProfileMissingError, clientExecutableName, isCommandBoot, loadProfile, pathOnTarget, validateProfileConfig, type ProfileClient, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, mailEvidenceRules, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunProfileSummary, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
@@ -1494,7 +1494,7 @@ async function runOwnBootCriterion(criterion: JobCriterion, ctx: LaneContext): P
   }
   const cancelCleanup = installCancelCleanup(bootedShard, { ...opts, isolation: shardIsolation })
   try {
-    const boot = await bootApp(bootedShard, { ...opts, isolation: shardIsolation })
+    const boot = await bootApp(bootedShard, { ...opts, isolation: shardIsolation, root: job.repoPath })
     if (boot.kind === 'blocked') {
       // What the boot or its image build said (#75, #241) is kept with the
       // criterion it stopped, in the criterion's own evidence directory.
@@ -1739,6 +1739,9 @@ async function hasSecondSide(job: Job): Promise<boolean> {
 /** The base side boots the base tree's own recipe: its compose file resolves there. */
 function atBaseTree(profile: QaProfile, side: SideContext | undefined): QaProfile {
   if (side?.composePath === undefined || profile.app === undefined) return profile
+  // A command boot names no file: its context is the side's own checkout,
+  // which the boot is handed as its root (#379).
+  if (isCommandBoot(profile.app.boot)) return profile
   return { ...profile, app: { ...profile.app, boot: { ...profile.app.boot, compose: side.composePath(profile.app.boot.compose) } } }
 }
 
