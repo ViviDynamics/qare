@@ -5,7 +5,7 @@ import { A11Y_IMPACTS, A11Y_STANDARDS, type A11yAccepted, type A11yImpact, type 
 import { parseDurationMs, shellCharacter } from './duration.js'
 import { hostName } from './cell-wire.js'
 import { MAIL_SOURCE_KINDS, type DeclaredMailSource, type MailSourceKind } from './mail-source.js'
-import { channelToolName } from './mcp.js'
+import { channelToolName, nareNameProblem, nareToolName } from './mcp.js'
 import { RedactionError, redactionRules, validateMaskSelectors, type ProfileRedaction } from './redact.js'
 
 /**
@@ -1658,6 +1658,12 @@ function parseMcp(value: unknown): ProfileMcpServer[] {
       return step as McpStep
     })
     if (steps.length === 0) fail(`${base}.steps`, 'a server must name the steps it may run in')
+    // A plan-step server reaches the model session through nare's MCP client
+    // (#399), which carries only names it can offer a model: refused here, by
+    // name, rather than when nare starts.
+    if (steps.includes('plan'))
+      for (const problem of [nareNameProblem(name), ...tools.map((tool) => nareNameProblem(name, tool))])
+        if (problem !== undefined) fail(base, `${problem}, and this server runs in the plan step`)
     const credential =
       entry.credential === undefined ? undefined : nonEmptyString(entry.credential, `${base}.credential`, 'credential')
     if (credential !== undefined && steps.includes('execute'))
@@ -1693,6 +1699,13 @@ function parseMcp(value: unknown): ProfileMcpServer[] {
           `the channel names ${JSON.stringify(route)} twice: server tools cannot share one name, so rename a server or a tool`,
         )
       routes.add(route)
+    }
+  const offered = new Set<string>()
+  for (const server of servers.filter((entry) => entry.steps.includes('plan')))
+    for (const tool of server.tools) {
+      const name = nareToolName(server.name, tool)
+      if (offered.has(name)) fail('mcp', `nare would offer ${JSON.stringify(name)} twice to the plan step's model session, so rename a server or a tool`)
+      offered.add(name)
     }
   const drivers = servers.filter((server) => server.driver !== undefined)
   if (drivers.length > 1) fail('mcp', 'one server at most may carry a driver mapping: the flow is driven by one host, not two')

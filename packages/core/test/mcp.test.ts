@@ -11,6 +11,8 @@ import {
   callChannelTool,
   channelToolName,
   connectMcpServer,
+  nareNameProblem,
+  nareToolName,
   mcpDriverCapabilities,
   mcpRecordsFile,
   PLAN_SCHEMA_VERSION,
@@ -32,6 +34,7 @@ import {
   type QaProfile,
 } from '../src/index.js'
 import { startSampleServer, SECRET } from './sample-server.js'
+import { post } from './mcp-post.js'
 
 // The HTTP stand-in lives in a fixture file: test files hold no network
 // clients, so the fixture process is spawned and the test talks to it through
@@ -208,21 +211,60 @@ async function waitForPortFile(portFile: string): Promise<string> {
   throw new Error('the fixture server wrote no port to read')
 }
 
-test('the channel serves the allowed tools as server.tool and nothing else', async () => {
+test('each registered server answers MCP at its own path, listing only its allowed tools, and a call comes back fenced and recorded (#93, #399)', async () => {
   const spec = await fakeMcpServer({
+    tools: [
+      { name: 'power_on', description: 'power the rig', inputSchema: { type: 'object', properties: { volts: { type: 'number' } } } },
+      { name: 'secret_tool' },
+    ],
     call: (name, args) => ({ content: [{ type: 'text', text: `${name} saw ${JSON.stringify(args)}` }] }),
+  })
+  const records: McpCallRecord[] = []
+  const started = await startRegisteredMcpSources([spec], 'plan', { record: (record) => records.push(record) })
+  let server: Awaited<ReturnType<typeof startMcpToolServer>> | undefined
+  try {
+    server = await startMcpToolServer(started.sources)
+    expect(server.servers).toEqual([{ name: 'rig', url: `${server.url}/rig`, tools: ['power_on'] }])
+
+    const init = JSON.parse((await post(server.servers[0]!.url, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } })).body)
+    expect(init.result).toMatchObject({ protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'qare-host-rig' } })
+    const listed = JSON.parse((await post(server.servers[0]!.url, { jsonrpc: '2.0', id: 2, method: 'tools/list' })).body)
+    // secret_tool is published but not allowed, so it is never listed.
+    expect(listed.result.tools).toEqual([
+      { name: 'power_on', description: 'power the rig', inputSchema: { type: 'object', properties: { volts: { type: 'number' } } } },
+    ])
+    // A stream or a session is not kept, and the server says so.
+    expect((await post(server.servers[0]!.url, undefined, 'GET')).status).toBe(405)
+
+    const answer = await callChannelTool(server, 'rig', 'power_on', { volts: 5 })
+    expect(answer).toContain('[untrusted tool result: produced by a host tool server.')
+    expect(answer).toContain('power_on saw {"volts":5}')
+    expect(records).toEqual([{ server: 'rig', tool: 'power_on', arguments: { volts: 5 }, result: 'power_on saw {"volts":5}' }])
+    // Not listed, and not callable either.
+    await expect(callChannelTool(server, 'rig', 'secret_tool', {})).rejects.toThrow(/serves power_on, and not "secret_tool"/)
+    await expect(callChannelTool(server, 'ghost', 'power_on', {})).rejects.toThrow(/"ghost" is not one of them/)
+    expect(records).toHaveLength(1)
+  } finally {
+    await server?.close().catch(() => {})
+    await Promise.all(started.sources.map((source) => source.close()))
+  }
+})
+
+test('a tool the server publishes with no schema is listed taking an object, and a failed call is a fenced error result (#399)', async () => {
+  const spec = await fakeMcpServer({
+    tools: [{ name: 'power_on' }],
+    call: () => ({ isError: true, content: [{ type: 'text', text: 'the rig is unplugged' }] }),
   })
   const started = await startRegisteredMcpSources([spec], 'plan')
   let server: Awaited<ReturnType<typeof startMcpToolServer>> | undefined
   try {
     server = await startMcpToolServer(started.sources)
-    expect(server.tools).toEqual(['rig.power_on'])
-
-    const answer = await callChannelTool(server, 'rig.power_on', { volts: 5 })
-    expect(answer).toBe('power_on saw {"volts":5}')
-    // secret_tool is published but not allowed, so the channel does not name it.
-    await expect(callChannelTool(server, 'rig.secret_tool', {})).rejects.toThrow(/registers no tool/)
-    await expect(callChannelTool(server, 'ghost.power_on', {})).rejects.toThrow(/registers no tool/)
+    const listed = JSON.parse((await post(server.servers[0]!.url, { jsonrpc: '2.0', id: 2, method: 'tools/list' })).body)
+    expect(listed.result.tools).toEqual([{ name: 'power_on', inputSchema: { type: 'object' } }])
+    const failed = JSON.parse((await post(server.servers[0]!.url, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'power_on', arguments: {} } })).body)
+    expect(failed.result.isError).toBe(true)
+    expect(failed.result.content[0].text).toContain('[untrusted tool result: produced by a host tool server.')
+    expect(failed.result.content[0].text).toContain('the rig is unplugged')
   } finally {
     await server?.close().catch(() => {})
     await Promise.all(started.sources.map((source) => source.close()))
@@ -251,14 +293,14 @@ test('a server that names no step this run may not run in is never started', asy
   expect(started.failures).toEqual([])
 })
 
-test('the channel refuses a body past its cap, and tools it does not register', async () => {
+test('the channel refuses a body past its cap, and servers it does not register', async () => {
   const spec = await fakeMcpServer()
   const started = await startRegisteredMcpSources([spec], 'plan')
   let server: Awaited<ReturnType<typeof startMcpToolServer>> | undefined
   try {
     server = await startMcpToolServer(started.sources)
-    await expect(callChannelTool(server, 'ghost.power_on', {})).rejects.toThrow(/registers no tool/)
-    await expect(callChannelTool(server, 'rig.power_on', { blob: 'x'.repeat(65 * 1024) })).rejects.toThrow(
+    await expect(callChannelTool(server, 'ghost', 'power_on', {})).rejects.toThrow(/is not one of them/)
+    await expect(callChannelTool(server, 'rig', 'power_on', { blob: 'x'.repeat(65 * 1024) })).rejects.toThrow(
       /past the 64 KiB cap/,
     )
   } finally {
@@ -298,24 +340,18 @@ test('concurrent calls each keep their own answer', async () => {
   }
 })
 
-test('a channel name two servers would share is refused, by name', async () => {
-  const a: McpSource = { name: 'a', tools: [{ name: 'b.c' }], call: async () => 'x', close: async () => {} }
-  const ab: McpSource = { name: 'a.b', tools: [{ name: 'c' }], call: async () => 'x', close: async () => {} }
-  await expect(startMcpToolServer([a, ab])).rejects.toThrow(/names "a\.b\.c" twice/)
-})
-
-test('a tool whose name carries URL syntax still reaches its route', async () => {
-  const spec = await fakeMcpServer({ tools: [{ name: 'weird?x' }], allowlist: ['weird?x'] })
-  const started = await startRegisteredMcpSources([spec], 'plan')
-  let server: Awaited<ReturnType<typeof startMcpToolServer>> | undefined
-  try {
-    server = await startMcpToolServer(started.sources)
-    expect(server.tools).toEqual(['rig.weird?x'])
-    expect(await callChannelTool(server, 'rig.weird?x', {})).toBe('power: on')
-  } finally {
-    await server?.close().catch(() => {})
-    await Promise.all(started.sources.map((source) => source.close()))
-  }
+test('a tool is offered to nare as server__tool, and a name nare cannot carry is named before anything is served (#399)', async () => {
+  expect(nareToolName('rig', 'power_on')).toBe('rig__power_on')
+  expect(nareNameProblem('rig', 'power_on')).toBeUndefined()
+  expect(nareNameProblem('device rig')).toMatch(/not one nare can address a server by/)
+  expect(nareNameProblem('a__b')).toMatch(/no __/)
+  expect(nareNameProblem('1rig')).toMatch(/starts with a letter/)
+  expect(nareNameProblem('rig', 'page.text')).toMatch(/rig__page\.text must hold only letters, digits, _ and -/)
+  expect(nareNameProblem('rig', 'x'.repeat(60))).toMatch(/64 characters at most/)
+  const dotted: McpSource = { name: 'rig', tools: [{ name: 'weird?x' }], call: async () => 'x', callResult: async () => ({ text: 'x', isError: false }), close: async () => {} }
+  await expect(startMcpToolServer([dotted])).rejects.toThrow(/tool "weird\?x" on server "rig" is not one nare can offer/)
+  const spaced: McpSource = { ...dotted, name: 'device rig', tools: [{ name: 'tap' }] }
+  await expect(startMcpToolServer([spaced])).rejects.toThrow(/server name "device rig"/)
 })
 
 test('a result past the cap is cut off while it streams, not buffered whole', async () => {

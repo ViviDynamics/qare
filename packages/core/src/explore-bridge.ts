@@ -1,7 +1,7 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { createServer } from 'node:http'
 import { ExplorationError, isExplorableUrl, requestExplorationTool, untrustedToolResult } from './explore.js'
+import { respond, serveMcp, type McpServing } from './mcp-serve.js'
 import type { SnapshotNode } from './snapshot.js'
-import { VERSION } from './version.js'
 
 /**
  * The exploration channel as nare reaches it (#377). nare connects a session
@@ -39,9 +39,6 @@ export interface ExplorationBridge {
   close(): Promise<void>
 }
 
-/** The MCP revisions the bridge answers in: the client's own when it is one of these, else the latest. */
-const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05']
-
 const TOOL_LIST = [
   {
     name: 'observe',
@@ -65,9 +62,6 @@ const TOOL_LIST = [
     },
   },
 ]
-
-// A tool call carries a path at most; anything larger is refused unread.
-const MAX_BODY_BYTES = 64 * 1024
 
 /**
  * Start the bridge in front of the exploration server at `endpoint` (#377).
@@ -135,13 +129,27 @@ export function startExplorationBridge(
     }
   }
 
+  const serving: McpServing = {
+    serverName: 'qare-explore',
+    label: 'the exploration bridge',
+    tools: TOOL_LIST,
+    call: async (name, args) => {
+      try {
+        return { text: untrustedToolResult(JSON.stringify(await call(name, args))) }
+      } catch (error) {
+        // A failed call is a tool result the model can adapt to, and its words
+        // came from beside the app, so they are fenced like any other result.
+        const said = error instanceof Error ? error.message : String(error)
+        return { text: said.startsWith('[untrusted tool result') ? said : untrustedToolResult(said), isError: true }
+      }
+    },
+  }
+
   return new Promise((resolve, reject) => {
     const server = createServer((incoming, response) => {
       response.on('error', () => {})
-      handle(incoming, response, call).catch((error) => {
-        if (response.writableEnded) return
-        response.writeHead(500, { 'content-type': 'application/json' })
-        response.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32603, message: String(error instanceof Error ? error.message : error) } }))
+      serveMcp(incoming, response, serving).catch((error) => {
+        respond(response, 500, { jsonrpc: '2.0', id: null, error: { code: -32603, message: String(error instanceof Error ? error.message : error) } })
       })
     })
     server.on('error', reject)
@@ -176,100 +184,4 @@ function pathsOf(node: SnapshotNode): string[] {
   }
   walk(node)
   return paths
-}
-
-type JsonRpcMessage = { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: unknown }
-
-async function handle(
-  incoming: IncomingMessage,
-  response: ServerResponse,
-  call: (name: string, args: Record<string, unknown>) => Promise<unknown>,
-): Promise<void> {
-  // Streamable HTTP lets a client open a stream with GET and end a session
-  // with DELETE. The bridge keeps no stream and no session, and says so.
-  if (incoming.method !== 'POST') {
-    response.writeHead(405, { allow: 'POST' })
-    response.end()
-    return
-  }
-  const body = await readBody(incoming)
-  if (body === undefined) {
-    respond(response, 413, { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'the message ran past the 64 KiB cap' } })
-    return
-  }
-  let message: unknown
-  try {
-    message = JSON.parse(body)
-  } catch {
-    respond(response, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'the message is not JSON' } })
-    return
-  }
-  const messages = (Array.isArray(message) ? message : [message]) as JsonRpcMessage[]
-  const answers: unknown[] = []
-  for (const one of messages) {
-    // A notification or a response wants no answer.
-    if (one === null || typeof one !== 'object' || one.id === undefined || typeof one.method !== 'string') continue
-    answers.push(await answer(one, call))
-  }
-  if (answers.length === 0) {
-    response.writeHead(202)
-    response.end()
-    return
-  }
-  respond(response, 200, Array.isArray(message) ? answers : answers[0])
-}
-
-async function answer(message: JsonRpcMessage, call: (name: string, args: Record<string, unknown>) => Promise<unknown>): Promise<unknown> {
-  const id = message.id
-  const params = (message.params !== null && typeof message.params === 'object' ? message.params : {}) as Record<string, unknown>
-  switch (message.method) {
-    case 'initialize': {
-      const asked = params.protocolVersion
-      const protocolVersion = typeof asked === 'string' && PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0]
-      return { jsonrpc: '2.0', id, result: { protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'qare-explore', version: VERSION } } }
-    }
-    case 'ping':
-      return { jsonrpc: '2.0', id, result: {} }
-    case 'tools/list':
-      return { jsonrpc: '2.0', id, result: { tools: TOOL_LIST } }
-    case 'tools/call': {
-      const name = typeof params.name === 'string' ? params.name : ''
-      const args = (params.arguments !== null && typeof params.arguments === 'object' ? params.arguments : {}) as Record<string, unknown>
-      try {
-        const result = await call(name, args)
-        return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: untrustedToolResult(JSON.stringify(result)) }] } }
-      } catch (error) {
-        // A failed call is a tool result the model can adapt to, and its words
-        // came from beside the app, so they are fenced like any other result.
-        const said = error instanceof Error ? error.message : String(error)
-        const text = said.startsWith('[untrusted tool result') ? said : untrustedToolResult(said)
-        return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], isError: true } }
-      }
-    }
-    default:
-      return { jsonrpc: '2.0', id, error: { code: -32601, message: `the exploration bridge does not answer ${String(message.method)}` } }
-  }
-}
-
-function respond(response: ServerResponse, status: number, body: unknown): void {
-  response.writeHead(status, { 'content-type': 'application/json' })
-  response.end(JSON.stringify(body))
-}
-
-function readBody(incoming: IncomingMessage): Promise<string | undefined> {
-  return new Promise((resolve, reject) => {
-    let body = ''
-    let bytes = 0
-    let over = false
-    incoming.on('data', (chunk) => {
-      bytes += chunk.length
-      if (bytes > MAX_BODY_BYTES) {
-        over = true
-        return
-      }
-      body += String(chunk)
-    })
-    incoming.on('error', reject)
-    incoming.on('end', () => resolve(over ? undefined : body))
-  })
 }
