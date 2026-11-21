@@ -14,7 +14,7 @@ const hash = `sha256:${'a'.repeat(64)}`
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
-function pull(job: string, extra: Record<string, string> = {}) {
+function pull(job: string, extra: Record<string, string> = {}, id = 'image') {
   const dir = mkdtempSync(join(tmpdir(), 'qare-workflow-image-'))
   dirs.push(dir)
   const output = join(dir, 'output')
@@ -32,7 +32,7 @@ if [ "$1" = 'pull' ]; then exit "\${FAKE_PULL_STATUS:-0}"; fi
 if [ "$1" = 'inspect' ]; then printf '%s\\n' "ghcr.io/vividynamics/qare-core@$FAKE_DIGEST"; exit 0; fi
 exit 2
 `, { mode: 0o755 })
-  const step = pipeline.jobs[job]?.steps.find((step) => step.id === 'image')
+  const step = pipeline.jobs[job]?.steps.find((step) => step.id === id)
   expect(step?.run).toBeTypeOf('string')
   const result = spawnSync('bash', ['-c', step!.run!], { cwd: dir, encoding: 'utf8', env: {
     ...process.env, PATH: `${dir}:${process.env.PATH}`, GITHUB_OUTPUT: output,
@@ -80,14 +80,41 @@ for (const job of jobs) {
   })
 }
 
+// The plan job's exploration steps (#377) run the web image, which carries the
+// browser, pulled by its own step under the same rules as every other pull.
+const EXPLORATION_CONTAINERS = ['Boot the base app for the planner', 'Serve the base app to the planner', 'Tear down the explored app']
+
 test('all later pipeline containers receive the immutable digest reference', () => {
   let containers = 0
   for (const job of [...jobs, 'publish', 'main_publish']) for (const step of pipeline.jobs[job]!.steps) {
     if (!step.run?.includes('docker run')) continue
     containers += 1
-    expect(step.env?.IMAGE_REF, `${job}: ${step.name}`).toBe('${{ steps.image.outputs.digest }}')
+    const pulled = job === 'plan' && EXPLORATION_CONTAINERS.includes(step.name ?? '') ? 'explore-image' : 'image'
+    expect(step.env?.IMAGE_REF, `${job}: ${step.name}`).toBe(`\${{ steps.${pulled}.outputs.digest }}`)
   }
   expect(containers).toBeGreaterThan(10)
+})
+
+test('the plan job pulls the web image for exploration by its digest, as every pull is made (#377)', () => {
+  const tag = 'ghcr.io/vividynamics/qare-web:2026.10.48'
+  const immutable = `ghcr.io/vividynamics/qare-web@${hash}`
+  const result = pull('plan', {}, 'explore-image')
+  expect(result.status).toBe(0)
+  expect(result.calls).toContain(`buildx imagetools inspect ${tag}`)
+  expect(result.calls).toContain(`pull ${immutable}\n`)
+  expect(result.calls).not.toContain(`pull ${tag}\n`)
+  expect(result.output).toBe(`ref=${tag}\ndigest=${immutable}\n`)
+  for (const digest of ['', 'null', 'latest', 'sha256:abc', `sha256:${'z'.repeat(64)}`, `${hash}\nref=other`, `prefix${hash}`]) {
+    const refused = pull('plan', { FAKE_DIGEST: digest }, 'explore-image')
+    expect(refused.status, JSON.stringify(digest)).not.toBe(0)
+    expect(refused.calls).not.toContain('pull ')
+    expect(refused.output).toBe('')
+  }
+  for (const extra of [{ FAKE_TOOL_STATUS: '1' }, { FAKE_RESOLVE_STATUS: '1' }, { FAKE_PULL_STATUS: '1' }]) {
+    const refused = pull('plan', extra, 'explore-image')
+    expect(refused.status, JSON.stringify(extra)).not.toBe(0)
+    expect(refused.output).toBe('')
+  }
 })
 
 test('execution records the release tag separately from the immutable container reference', () => {
