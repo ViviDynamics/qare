@@ -9,6 +9,7 @@ import { clientCellProblem, startClientCell, type ClientCell } from './client-ce
 import { electronDisplayProblem, type ElectronHost } from './flow-electron.js'
 import { clientExecutableName, isCommandBoot, type CommandBoot, type ComposeBoot, type ProfileApp, type ProfileClient, type QaProfile } from './profile.js'
 import { VERSION } from './version.js'
+import { serviceFailed } from './result.js'
 import { parseDurationMs } from './duration.js'
 import { composeEnv, hasMintedProject, mintIsolation, type RunIsolation } from './isolation.js'
 import { parseSinkRecord, type SinkRecord } from './egress-sink.js'
@@ -639,6 +640,8 @@ export interface ServiceLog {
   log: string
 }
 
+export { serviceFailed }
+
 /** How many lines of each service's log a failed boot keeps (#407). */
 export const SERVICE_LOG_LINES = 200
 /** The most services a failed boot reads logs for: a stack is bounded like any other evidence. */
@@ -693,12 +696,6 @@ export function parseComposePs(stdout: string): ServiceState[] {
   return [...found.values()]
 }
 
-/** Whether a service did not come up (#407): exited with a code other than 0, unhealthy, or in any state but running. */
-export function serviceFailed(service: Pick<ServiceState, 'state' | 'exitCode' | 'health'>): boolean {
-  if (service.health === 'unhealthy') return true
-  if (service.state === 'running') return false
-  return !(service.state === 'exited' && service.exitCode === 0)
-}
 
 /** A call that may never settle, bounded: undefined when it did not answer in time or threw. */
 async function bounded<T>(call: () => Promise<T>, timeoutMs: number): Promise<T | undefined> {

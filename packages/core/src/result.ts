@@ -216,6 +216,13 @@ export interface RunBootService {
 /** How many lines of a failed service's log the result, and so the comment, carries (#407). */
 export const BOOT_TAIL_LINES = 20
 
+/** Whether a service did not come up (#407): exited with a code other than 0, unhealthy, or in any state but running. */
+export function serviceFailed(service: Pick<RunBootService, 'state' | 'exitCode' | 'health'>): boolean {
+  if (service.health === 'unhealthy') return true
+  if (service.state === 'running') return false
+  return !(service.state === 'exited' && service.exitCode === 0)
+}
+
 export interface RunBaseImage {
   ref: string
   used: boolean
