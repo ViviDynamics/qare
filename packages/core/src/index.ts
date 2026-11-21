@@ -344,7 +344,7 @@ export type {
 } from './judge.js'
 export { replayRun } from './replay.js'
 export type { ReplayDifference, ReplayReport, StoredVerdict } from './replay.js'
-export { codeSpan, renderComment, renderCheckRun } from './evidence.js'
+export { codeSpan, renderComment, renderCheckRun, type BlockedConclusion, type CheckRunOptions } from './evidence.js'
 export type { CheckRunPayload, EvidenceLinks, EvidencePoster } from './evidence.js'
 export { classifyPipelineFailure, renderPipelineFailureCheckRun, renderPipelineFailureComment } from './pipeline-failure.js'
 export type { PipelineFailure, PipelineFailureReport, PipelineJob, PipelineStep } from './pipeline-failure.js'

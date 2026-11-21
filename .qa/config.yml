@@ -30,6 +30,10 @@ commands:
     run: node -- .qa/checks/mail-evidence.mjs {{check}}
     about: Exercises the checkout's actual mail parser (check=quoted-auth) or missing-code delivery evidence writer (check=missing-code), asserting its result and printing the observed evidence; needs no build, test runner, mailbox or network.
     scratch: [.qa/checks/scratch]
+  pipeline-defaults-check:
+    run: node -- .qa/checks/pipeline-defaults.mjs {{check}}
+    about: Exercises the checkout's pipeline defaults (#380) without a build, printing what it observed; its step stubs are bash functions, so a noexec scratch is fine. check=flake runs the execute step script with docker and git stubbed (one retry and the base revision's quarantine store reach qare run) and the checkout's runJob (a check that fails then passes is quarantined and unverified, one that always fails is failed); check=exclude applies collect's default planner diff pathspecs to lockfiles, generated paths and source, and prints the Planner diff section the checkout's post-evidence writes for what was left out; check=blocked posts a blocked verdict through the checkout's post-evidence (neutral by default, failure on opt-in) and runs the publish step script to show the opt-in reaching post-evidence and a typo refused.
+    scratch: [.qa/checks/scratch]
 
 # The suites the main lane runs for the ledger's active criteria (#363): the
 # lane reads no plan, it runs what each entry's `suite:<name>` check names.

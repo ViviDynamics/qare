@@ -466,3 +466,82 @@ test('uploaded screenshot URLs encode filename delimiters while preserving the c
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+const blockedRun: RunResult = {
+  schemaVersion: RESULT_SCHEMA_VERSION,
+  verdict: 'blocked',
+  criteria: [{ id: 'export-csv', outcome: 'unverified', reason: 'environment: the app did not answer', evidence: [] }],
+}
+
+test('qare-action post-evidence reports a blocked verdict as failing only when the caller asks (#380)', async () => {
+  process.env.QARE_TEST_TOKEN = FAKE_TOKEN
+  const base = ['--pr', '12', '--sha', SHA, '--repository', 'octocat/qare', '--api-root', fake.url, '--token-env', 'QARE_TEST_TOKEN']
+  try {
+    const path = await resultFile(blockedRun)
+    expect(await main(['post-evidence', '--result', path, ...base], capture().writer, capture().writer)).toBe(0)
+    expect(await main(['post-evidence', '--result', path, '--blocked-conclusion', 'neutral', ...base], capture().writer, capture().writer)).toBe(0)
+    const out = capture()
+    expect(await main(['post-evidence', '--result', path, '--blocked-conclusion', 'failure', ...base], out.writer, capture().writer)).toBe(0)
+    expect(fake.checkRuns.map((run) => run.conclusion)).toEqual(['neutral', 'neutral', 'failure'])
+    expect(out.lines.join('')).toContain('check run failure')
+
+    // Anything else is a caller's typo, and a typo must not quietly gate nothing.
+    const err = capture()
+    expect(await main(['post-evidence', '--result', path, '--blocked-conclusion', 'red', ...base], capture().writer, err.writer)).toBe(1)
+    expect(err.lines.join('')).toContain('--blocked-conclusion')
+    expect(fake.checkRuns).toHaveLength(3)
+  } finally {
+    delete process.env.QARE_TEST_TOKEN
+  }
+})
+
+test('the evidence comment lists what the planner diff left out, and says the full diff was still judged (#380)', async () => {
+  process.env.QARE_TEST_TOKEN = FAKE_TOKEN
+  const base = ['--pr', '12', '--sha', SHA, '--repository', 'octocat/qare', '--api-root', fake.url, '--token-env', 'QARE_TEST_TOKEN']
+  try {
+    const dir = await mkdtemp(join(tmpdir(), 'qare-excluded-'))
+    const excluded = join(dir, 'planner-diff-excluded.json')
+    await writeFile(
+      excluded,
+      JSON.stringify({ patterns: ['pnpm-lock.yaml', '*/pnpm-lock.yaml', 'packages/*/test/*'], paths: ['pnpm-lock.yaml', 'packages/cli/test/a.test.ts'] }),
+      'utf8',
+    )
+    expect(await main(['post-evidence', '--result', await resultFile(failed), '--planner-diff-excluded', excluded, ...base], capture().writer, capture().writer)).toBe(0)
+    const comment = fake.issues.get(12)?.comments[0] ?? ''
+    expect(comment).toContain('## Planner diff')
+    expect(comment).toContain('`*/pnpm-lock.yaml`')
+    expect(comment).toContain('`packages/cli/test/a.test.ts`')
+    expect(comment).toContain('2 paths')
+    expect(comment).toMatch(/execute and judge read the whole diff/)
+  } finally {
+    delete process.env.QARE_TEST_TOKEN
+  }
+})
+
+test('a planner diff that left nothing out adds no section, and an unreadable record fails the post', async () => {
+  const none = { patterns: [], paths: [] }
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), failed, { plannerDiffExcluded: none })
+  expect(fake.issues.get(12)?.comments[0]).not.toContain('## Planner diff')
+
+  process.env.QARE_TEST_TOKEN = FAKE_TOKEN
+  try {
+    const dir = await mkdtemp(join(tmpdir(), 'qare-excluded-'))
+    const bad = join(dir, 'bad.json')
+    await writeFile(bad, JSON.stringify({ patterns: 'all' }), 'utf8')
+    const err = capture()
+    const base = ['--pr', '12', '--sha', SHA, '--repository', 'octocat/qare', '--api-root', fake.url, '--token-env', 'QARE_TEST_TOKEN']
+    expect(await main(['post-evidence', '--result', await resultFile(failed), '--planner-diff-excluded', bad, ...base], capture().writer, err.writer)).toBe(1)
+    expect(err.lines.join('')).toContain('planner diff')
+  } finally {
+    delete process.env.QARE_TEST_TOKEN
+  }
+})
+
+test('a long list of left-out paths is cut, with the count of the rest', async () => {
+  const paths = Array.from({ length: 60 }, (_, index) => `dist/chunk-${index}.js`)
+  await postEvidence(new GitHubEvidencePoster(client, 12, SHA), failed, { plannerDiffExcluded: { patterns: ['dist/*'], paths } })
+  const comment = fake.issues.get(12)?.comments[0] ?? ''
+  expect(comment).toContain('`dist/chunk-49.js`')
+  expect(comment).not.toContain('`dist/chunk-50.js`')
+  expect(comment).toContain('and 10 more')
+})

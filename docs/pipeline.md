@@ -111,11 +111,113 @@ UX review".
 | `ephemeral-runners` | empty | `true` declares that each job gets a fresh machine destroyed afterwards, with no docker daemon, volume or cache shared between jobs. This caller declaration is recorded in `result.json` and posted evidence; qare cannot verify the lifecycle. See "Your own runners". |
 | `self-hosted` | empty | `allow` lets a public repository's pipeline run on self-hosted runners. Empty, collect, plan and execute stop there by name, before any checkout. It changes nothing for a private repository or on hosted runners. See "Your own runners". |
 | `planner-diff-exclude` | empty | Space-separated git pathspecs left out of the planner's copy of the diff, for a diff too large to plan from whole. execute and judge still read the full diff. |
+| `planner-diff-default-exclude` | `true` | Whether the planner's copy of the diff also leaves out lockfiles and common generated paths, on top of `planner-diff-exclude`. `false` keeps them in. The evidence comment lists every path left out. See "Defaults for real repositories". |
+| `flake-attempts` | `2` | How many times execute runs a failing check before it judges it: one retry by default. A check that fails and then passes is quarantined and its criterion reported unverified, never proven. `1` turns retries off. See "Defaults for real repositories". |
+| `quarantine` | `.qa` | The directory, relative to the repository root, that holds the quarantine store (`quarantine.json`), the ledger directory by default. A pull request run reads the base revision's store, never the pull request's. Empty turns quarantine off. See "Defaults for real repositories". |
+| `blocked-check` | `neutral` | How the `QARE verdict` check run reports a blocked verdict. `failure` makes a run that disproved nothing but left a criterion unverified a failing check. See "Defaults for real repositories". |
 | `artefacts` | empty | The name of a workflow artifact that holds the builds a client profile installs, uploaded by an earlier job of your workflow. execute downloads it into `qare-artefacts/` at the repository root before the run. See "Profiles that install a build". |
 | `main-lane` | empty | `true` runs the main lane: on a push to your default branch, on a schedule or on a manual run, the pipeline boots the app, runs the suites the ledger records for its active criteria, judges them, and hands the result to `main-findings`. Empty, none of it runs. See "Findings on main". |
 | `main-lane-dry-run` | `true` | Whether the main lane only says what it would file. Anything but `false` is a dry run: it reads, prints the issues it would open and whom it would mention, and writes nothing. |
 | `main-lane-record-passes` | empty | `true` has the main lane record what each run proved, in `passes/main.json` on the `qa-assets` branch, so that a later failure is a `qa-regression` traced to the changes since. Anything else records nothing, and so does a dry run. See "Regressions" under "Findings on main". |
 | `qare-ref` | the release | The qare revision the pipeline runs. It defaults to the release the workflow file ships in. Leave it alone and pin the release in `uses:`. |
+
+## Defaults for real repositories
+
+Four settings are on by default, because a repository with a real test suite
+and a real lockfile needs them, and each one has a value that turns it off.
+
+### One retry for a failing check
+
+```yaml
+with:
+  flake-attempts: '1'   # off: every check is judged on its first attempt
+```
+
+By default (`flake-attempts: '2'`) a check that fails is run once more before
+it is judged. A retry never turns a failure into a pass:
+
+- A check that passes its first attempt is proven and is not run again.
+- A check that fails every attempt is a failure, as it was without retries.
+- A check that fails and then passes is unstable. It decided nothing, so its
+  criterion is reported unverified, never proven, with the reason
+  `quarantined (<date>): unstable: the check failed and passed across 2
+  attempts of this run`, and the evidence comment says the check was
+  quarantined. Each attempt keeps its own evidence directory
+  (`checks/<criterion>/<n>` for the first, `checks/<criterion>/<n>-attempt2`
+  for the retry), so both runs can be read.
+
+An unverified criterion makes the verdict blocked. That is a red execute job
+and, by default, a neutral `QARE verdict` check run (see `blocked-check`
+below). On the main lane a quarantined check files no finding: a flake is not
+a regression.
+
+### The quarantine store
+
+```yaml
+with:
+  quarantine: ''   # off: nothing is read or recorded
+```
+
+A check that failed and then passed is recorded in the quarantine store,
+`quarantine.json` in the directory `quarantine` names (relative to the
+repository root), with the reason and the date. The default is `.qa`, the
+ledger directory, which is where `qare ledger status` reads the store from to
+print it. A run that reads a store skips the checks it holds, and their
+criteria report unverified naming the record, until someone removes them
+from it.
+
+Where the store comes from is the point:
+
+- A pull request run reads the store from the base revision, never from the
+  pull request, so a pull request cannot quarantine its own failing check.
+  When the base cannot be checked out, the run starts from an empty store.
+- The main lane reads the default branch's own copy, which was reviewed.
+- Either way the run writes into a copy on the runner, and the store it wrote
+  is uploaded with the evidence as `quarantine.json`. Nothing is committed for
+  you: to keep a quarantine, commit that file where `quarantine` points, in a
+  pull request like any other change. To release a check, delete its record.
+
+### Lockfiles and generated paths left out of the planner's diff
+
+```yaml
+with:
+  planner-diff-default-exclude: 'false'   # off: only planner-diff-exclude applies
+```
+
+The planner's prompt travels as one argument, so a diff larger than that
+budget cannot reach the planner whole, and a lockfile is often most of a
+diff. By default the planner's copy of the diff leaves out these pathspecs, on
+top of anything `planner-diff-exclude` names:
+
+`pnpm-lock.yaml` `*/pnpm-lock.yaml` `package-lock.json` `*/package-lock.json`
+`npm-shrinkwrap.json` `*/npm-shrinkwrap.json` `yarn.lock` `*/yarn.lock`
+`bun.lock` `*/bun.lock` `bun.lockb` `*/bun.lockb` `Cargo.lock` `*/Cargo.lock`
+`Gemfile.lock` `*/Gemfile.lock` `poetry.lock` `*/poetry.lock` `Pipfile.lock`
+`*/Pipfile.lock` `uv.lock` `*/uv.lock` `composer.lock` `*/composer.lock`
+`go.sum` `*/go.sum` `*.min.js` `*.min.css` `*.js.map` `*.css.map` `dist/*`
+`*/dist/*` `node_modules/*` `*/node_modules/*` `vendor/*` `*/vendor/*`
+
+A pathspec's `*` matches across directories, so `*/dist/*` is any `dist`
+directory below the root. The evidence comment has a "Planner diff" section
+that names every pathspec applied and every path of the change it matched
+(the first 50, and a count of the rest), so a reviewer can see what the
+planner did not. execute and judge still read the full diff.
+
+### Blocked as a failing check
+
+```yaml
+with:
+  blocked-check: failure   # opt in; neutral is the default
+```
+
+A blocked verdict disproved nothing but left a criterion unverified: a check
+that could not reach the app, a quarantined check, a verifier that could not
+review. By default its `QARE verdict` check run is neutral, so a branch rule
+that requires the check does not stop the merge. With `blocked-check:
+failure` it is a failing check, and its summary says the caller chose that.
+Only blocked moves: passed is still a success, failed a failure, and refused
+and waived stay neutral. The opt-in needs a qare whose image knows it; an
+older image stops the publish step by name rather than posting neutral.
 
 ## Secrets
 

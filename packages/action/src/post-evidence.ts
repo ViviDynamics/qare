@@ -1,5 +1,5 @@
-import { redactResult, renderCheckRun, renderComment, renderQuestion } from '@qare/core'
-import type { CheckRunPayload, DismissedFinding, EvidencePoster, ResolutionQuestion, RunResult } from '@qare/core'
+import { codeSpan, redactResult, renderCheckRun, renderComment, renderQuestion } from '@qare/core'
+import type { BlockedConclusion, CheckRunPayload, DismissedFinding, EvidencePoster, ResolutionQuestion, RunResult } from '@qare/core'
 import { advisoryData } from './advisory-replies.js'
 import { GitHubApiError, GitHubClientError, type GitHubClient } from './github.js'
 import type { ScreenshotPusher } from './qa-assets.js'
@@ -83,6 +83,8 @@ export async function postEvidence(
     evidenceDir?: string
     questions?: ResolutionQuestion[]
     dismissed?: DismissedFinding[]
+    blockedConclusion?: BlockedConclusion
+    plannerDiffExcluded?: PlannerDiffExcluded
   } = {},
 ): Promise<void> {
   const screenshots =
@@ -100,12 +102,53 @@ export async function postEvidence(
   const redacted = redactResult(presentation)
   const comment =
     renderComment(redacted, { kind: 'artifact', url: opts.artifactUrl, screenshots }) +
+    renderPlannerDiffSection(opts.plannerDiffExcluded) +
     renderQuestionSection(opts.questions ?? []) +
     // The advisory findings again, as data (#150): a reply names one by id,
     // and qare reads it back from this comment to dismiss or promote it.
     advisoryData(redacted, screenshots)
   await poster.postComment(comment)
-  await poster.createCheckRun(renderCheckRun(result))
+  await poster.createCheckRun(renderCheckRun(result, opts.blockedConclusion === undefined ? {} : { blocked: opts.blockedConclusion }))
+}
+
+/**
+ * What collect left out of the planner's copy of the diff (#380): the
+ * pathspecs it applied, the pipeline's defaults and the caller's own, and the
+ * paths of the change they matched. The planner never saw those paths, so
+ * the comment says so; execute and judge read the whole diff either way.
+ */
+export interface PlannerDiffExcluded {
+  patterns: string[]
+  paths: string[]
+}
+
+/** The most left-out paths the comment names before it counts the rest. */
+const EXCLUDED_PATHS_SHOWN = 50
+
+/** Read the record collect wrote; anything else is a record nobody can trust. */
+export function loadPlannerDiffExcluded(text: string): PlannerDiffExcluded {
+  const data: unknown = JSON.parse(text)
+  const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+  if (typeof data !== 'object' || data === null || !strings((data as Record<string, unknown>).patterns) || !strings((data as Record<string, unknown>).paths))
+    throw new GitHubClientError('the planner diff exclusion record is not {"patterns": [...], "paths": [...]}')
+  const record = data as { patterns: string[]; paths: string[] }
+  return { patterns: record.patterns, paths: record.paths }
+}
+
+function renderPlannerDiffSection(excluded: PlannerDiffExcluded | undefined): string {
+  if (excluded === undefined || excluded.patterns.length === 0) return ''
+  const shown = excluded.paths.slice(0, EXCLUDED_PATHS_SHOWN)
+  const rest = excluded.paths.length - shown.length
+  const count = `${excluded.paths.length} path${excluded.paths.length === 1 ? '' : 's'}`
+  const lines = [
+    '',
+    '',
+    '## Planner diff',
+    '',
+    `The planner's copy of the diff left out these pathspecs: ${excluded.patterns.map(codeSpan).join(' ')}. They matched ${count} of this change, which the planner did not see; execute and judge read the whole diff.`,
+  ]
+  if (shown.length > 0) lines.push('', shown.map(codeSpan).join(', ') + (rest > 0 ? `, and ${rest} more.` : ''))
+  return lines.join('\n')
 }
 
 /**

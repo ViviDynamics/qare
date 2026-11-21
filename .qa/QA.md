@@ -20,6 +20,15 @@ image's shipped production YAML dependency; it does not use the image's built
 qare as the thing under test. Scratch is restricted to .qa/checks/scratch.
 The profile has no mailbox for mail checks against its target.
 
+Executable pipeline default checks (#380): the pipeline's flake retries and
+quarantine, its default planner diff exclusion and its blocked-check opt-in are
+proven by `node -- .qa/checks/pipeline-defaults.mjs <check>`, the declared
+pipeline-defaults-check command, with check `flake`, `exclude` or `blocked`.
+They run the workflow's own step scripts with docker and git stubbed and the
+checkout's core source, without a build. Choose them for those criteria; the
+repository's vitest and node --test files import built packages and cannot run
+in the image.
+
 qare repository QA profile (self-run target).
 
 What this is: the profile qare's own self-run executes, so a pull request

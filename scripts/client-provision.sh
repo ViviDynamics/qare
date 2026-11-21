@@ -105,6 +105,8 @@ run() {
   HEAD_SHA="$(git rev-parse HEAD)" \
   PR_NUMBER=0 \
   PROFILE="$profile" \
+  FLAKE_ATTEMPTS=1 \
+  QUARANTINE= \
     step 'Run the plan' || code=$?
   [ -f evidence/result.json ] || fail "$name: the execute step exited $code and recorded no evidence/result.json"
   mv evidence "$collected/provisioned-$name"
