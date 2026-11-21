@@ -220,12 +220,25 @@ export function metricsSummaryLines(summary: MetricsSummary): string[] {
   if (summary.model.judge !== undefined) lines.push(`model cost, judge: ${usageLine(summary.model.judge)}`)
   const outcomes = Object.entries(summary.outcomes)
   if (outcomes.length > 0) lines.push(`criteria by outcome: ${outcomes.sort().map(([k, v]) => `${k} ${v}`).join(', ')}`)
+  lines.push(decidedRateLine(summary.outcomes))
   lines.push(`defects caught before merge: ${summary.defectsCaughtBeforeMerge}`)
   lines.push(`escapes found later: ${summary.notes.escape}`)
   lines.push(`false blocks: ${summary.notes['false-block']}`)
   lines.push(`human QA minutes: ${summary.qaMinutes}`)
   if (summary.notes['qa-minutes'] > 0) lines.push(`human QA notes: ${summary.notes['qa-minutes']}`)
   return lines
+}
+
+/**
+ * How much of what the runs checked was decided (#373): the share of every
+ * recorded criterion outcome that was proven or failed rather than left
+ * unverified. With nothing recorded there is no rate, and it is not zero.
+ */
+function decidedRateLine(outcomes: Record<string, number>): string {
+  const total = Object.values(outcomes).reduce((sum, count) => sum + count, 0)
+  if (total === 0) return 'proven or failed: no criterion outcomes recorded'
+  const decided = (outcomes.proven ?? 0) + (outcomes.failed ?? 0)
+  return `proven or failed: ${decided} of ${total} criterion outcomes (${((decided / total) * 100).toFixed(1)}%)`
 }
 
 function usageLine(usage: ModelUsage): string {
