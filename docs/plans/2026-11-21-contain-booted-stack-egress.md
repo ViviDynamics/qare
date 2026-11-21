@@ -27,12 +27,12 @@ Out:
 - The sink and the relay run beside pull request code, so nothing the stack sends them is trusted: names are held to being names, and the record is capped.
 
 ## Tasks
-- [ ] 1. core `stack-egress.ts`: the containment plan from `compose config` (networks internal, services joined to the contained network, ports moved to the relay) and the reasons a stack cannot be contained: unit tests on config fixtures.
-- [ ] 2. core `egress-sink.ts`: the DNS sink (declared answered, undeclared NXDOMAIN and recorded once, capped) and the tcp relay: tests with real sockets.
-- [ ] 3. CLI `qare cell egress-dns` and `qare cell egress-relay`: dispatcher test.
-- [ ] 4. boot: `bootApp` contains the stack when an image is named and reports how, `stopApp` downs it with its overrides, reap removes the files: boot tests with a recorded compose runner.
-- [ ] 5. command cell: the gate joins the stack's contained network when there is one: test.
-- [ ] 6. run: the record read after each side, `result.egress` and `base.egress`, the verdict refused or blocked, result parsing: run tests.
-- [ ] 7. comment and stub issues: the egress lines, undeclared hosts listed, "not contained" stated; missing stubs read from `egress`: tests.
-- [ ] 8. examples/egress-app and CI: a stack whose app looks up an undeclared host is refused, with the host listed; the existing example boots still pass.
-- [ ] 9. docs: SPEC and pipeline.md describe containment, the record and its limits.
+- [x] 1. core `stack-egress.ts`: the containment plan from `compose config` (networks internal, services joined to the contained network, ports moved to the relay) and the reasons a stack cannot be contained: unit tests on config fixtures.
+- [x] 2. core `egress-sink.ts`: the DNS sink (declared answered, undeclared NXDOMAIN and recorded once, capped) and the tcp relay: tests with real sockets.
+- [x] 3. CLI `qare cell egress-dns` and `qare cell egress-relay`: dispatcher test.
+- [x] 4. boot: `bootApp` contains the stack when an image is named and reports how, `stopApp` downs it with its overrides, reap removes the files: boot tests with a recorded compose runner.
+- [x] 5. command cell: the gate joins the stack's contained network when there is one: test.
+- [x] 6. run: the record read after each side, `result.egress` and `base.egress`, the verdict refused or blocked, result parsing: run tests.
+- [x] 7. comment and stub issues: the egress lines, undeclared hosts listed, "not contained" stated; missing stubs read from `egress`: tests.
+- [x] 8. examples/egress-app and CI: a stack whose app looks up an undeclared host is refused, with the host listed; the existing example boots still pass.
+- [x] 9. docs: SPEC and pipeline.md describe containment, the record and its limits.

@@ -396,8 +396,7 @@ function containmentOf(
  * Execute a job's checks against the head revision and write result.json into the
  * job's evidence directory.
  *
- * Limitations of this slice: checks run against the head revision only (base
- * execution lands with the orchestrator), and each command's `run` string is
+ * Limitations of this slice: each command's `run` string is
  * split on whitespace and spawned directly without a shell, so quoting, pipes
  * and shell syntax are not interpreted. Flow checks run last-in-class: suite
  * flows through their declared command, action flows through the page seam.
