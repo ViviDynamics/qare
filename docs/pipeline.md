@@ -459,9 +459,9 @@ without them and the verdict as it was.
 The standing report (#49) gives each job one line: its median wall clock
 over the latest ten runs that recorded it, beside its median over the ten
 before, so a change to the pipeline, the profile or the runners shows as two
-numbers side by side. With ten runs or fewer it gives one median. Runs
-recorded before jobs were (2026.11 and earlier) are still runs, and count
-for nothing in these lines.
+numbers side by side. With ten runs or fewer it gives one median. A
+record written before publish added the jobs is still a run, and counts for
+nothing in these lines.
 
 collect runs the published core image of the pinned version, as plan does
 (#381), so no job of a pull request's run installs or builds qare from
