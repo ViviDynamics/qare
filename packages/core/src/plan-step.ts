@@ -268,7 +268,7 @@ function suiteFilterGuidance(inputs: PlanInputs): string[] {
 }
 
 /**
- * A suite check whose filter does not fit its suite (#376): a filter the suite
+ * A suite check whose filter does not match what its suite takes (#376): a filter the suite
  * cannot take, a filtered suite named without one, or a value that is not one
  * safe token. Caught here, where the planner can still name the test another way.
  */
