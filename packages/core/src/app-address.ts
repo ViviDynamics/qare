@@ -164,3 +164,36 @@ export function flowOpenUrl(url: string, context: FlowAddressContext, values: Ru
   if (page === undefined) return { ok: false, reason: `the path ${JSON.stringify(url)} climbs out of the app at ${origin}` }
   return { ok: true, url: page }
 }
+
+/**
+ * The URL an http check sends its request to (#378). The plan names a path,
+ * never a host, and the path is resolved on the app under test only: below
+ * the profile's target URL, or on the origin of the app the run booted and
+ * proved healthy, with the run's port pinned. A path that climbs out of
+ * either, a desktop build that has no address, a run with no app at all and
+ * a target URL that carries a credential are named, and nothing is sent.
+ */
+export function httpCheckUrl(path: string, context: FlowAddressContext, values: RunValues): { ok: true; url: string } | { ok: false; reason: string } {
+  if (!path.startsWith('/') || path.startsWith('//'))
+    return { ok: false, reason: `the http check's path ${JSON.stringify(path)} is not a path on the app; an http check never names a host` }
+  if (context.client === true) return { ok: false, reason: 'the app is a desktop build with no address, so an http check has nothing to send its request to' }
+  let base: string
+  if (context.targetUrl !== undefined) base = context.targetUrl
+  else if (context.appHealth !== undefined) {
+    const origin = bootedAppOrigin(context.appHealth, values)
+    if (origin === undefined)
+      return { ok: false, reason: `the app's health URL ${JSON.stringify(context.appHealth)} names no origin an http check can send its request to` }
+    base = origin
+  } else return { ok: false, reason: 'the run booted no app and the profile names no target, so an http check has no app to send its request to' }
+  let parsed: URL
+  try {
+    parsed = new URL(base)
+  } catch {
+    return { ok: false, reason: 'the app under test has no URL an http check can send its request to' }
+  }
+  if (parsed.username !== '' || parsed.password !== '')
+    return { ok: false, reason: 'the target URL carries a credential, which an http check never sends' }
+  const url = pathOnTarget(base, path)
+  if (url === undefined) return { ok: false, reason: `the path ${JSON.stringify(path)} climbs out of the app at ${parsed.origin}` }
+  return { ok: true, url }
+}

@@ -968,7 +968,8 @@ export function evaluateToolAssertions(asserts: readonly ToolAssertion[], result
   })
 }
 
-function judgeToolAssertion(assertion: ToolAssertion, result: McpToolResult): boolean {
+/** One matcher on a tool result, decided in code; the http check judges its JSON body the same way (#378). */
+export function judgeToolAssertion(assertion: ToolAssertion, result: McpToolResult): boolean {
   if (assertion.path === undefined) {
     if (assertion.equals !== undefined) return typeof assertion.equals === 'string' && result.text === assertion.equals
     if (assertion.contains !== undefined) return result.text.includes(assertion.contains)
@@ -1004,7 +1005,9 @@ function resolvePath(value: unknown, path: string): { ok: true; value: unknown }
   for (const segment of path.split('.')) {
     if (current === undefined || current === null || typeof current !== 'object') return { ok: false }
     const shaped = current as Record<string, unknown>
-    if (!(segment in shaped)) return { ok: false }
+    // Own keys only: a path that names what every object inherits
+    // (constructor, toString) is not in the result.
+    if (!Object.hasOwn(shaped, segment)) return { ok: false }
     current = shaped[segment]
   }
   return { ok: true, value: current }
