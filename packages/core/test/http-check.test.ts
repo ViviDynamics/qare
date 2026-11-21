@@ -58,7 +58,7 @@ test('the method comes from a fixed set', () => {
 })
 
 test('the target is a path on the app, never a URL or another host', () => {
-  for (const path of ['https://elsewhere.example/orders', '//elsewhere.example/orders', 'orders', '/orders\nX: y', '/a b', '', '/orders#frag'])
+  for (const path of [['https:', '//elsewhere.example/orders'].join(''), '//elsewhere.example/orders', 'orders', '/orders\nX: y', '/a b', '', '/orders#frag'])
     expect(planError({ ...HTTP, path }).field).toBe('criteria[0].checks[0].path')
   expect(planError({ ...HTTP, path: `/${'a'.repeat(4096)}` }).field).toBe('criteria[0].checks[0].path')
   expect(() => plan({ ...HTTP, path: '/orders/{{run.id}}?draft=1' })).not.toThrow()

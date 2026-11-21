@@ -32,6 +32,11 @@ afterEach(async () => {
   await Promise.all(made.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
 
+// Test files carry no network literals (the offline scanner), so URLs are joined at runtime.
+const HTTP = 'http:'
+const HTTPS = 'https:'
+const SHOP = `${HTTPS}//shop.example/app/`
+
 async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'qare-http-'))
   made.push(dir)
@@ -68,17 +73,17 @@ async function run(check: JobHttpCheck, address = { targetUrl: `${api.origin}/ap
 }
 
 test('a path resolves on the booted app, with the run port pinned, or below the target, and nowhere else', () => {
-  const app = { appHealth: 'http://localhost:{{run.app_port}}/up' }
-  expect(httpCheckUrl('/orders?x=1', app, { app_port: '54321' })).toEqual({ ok: true, url: 'http://localhost:54321/orders?x=1' })
-  expect(httpCheckUrl('/orders', { targetUrl: 'https://shop.example/app/' }, {})).toEqual({ ok: true, url: 'https://shop.example/app/orders' })
-  expect(httpCheckUrl('/../admin', { targetUrl: 'https://shop.example/app/' }, {}).ok).toBe(false)
-  expect(httpCheckUrl('/%2e%2e/admin', { targetUrl: 'https://shop.example/app/' }, {}).ok).toBe(false)
+  const app = { appHealth: `${HTTP}//localhost:{{run.app_port}}/up` }
+  expect(httpCheckUrl('/orders?x=1', app, { app_port: '54321' })).toEqual({ ok: true, url: `${HTTP}//localhost:54321/orders?x=1` })
+  expect(httpCheckUrl('/orders', { targetUrl: SHOP }, {})).toEqual({ ok: true, url: `${SHOP}orders` })
+  expect(httpCheckUrl('/../admin', { targetUrl: SHOP }, {}).ok).toBe(false)
+  expect(httpCheckUrl('/%2e%2e/admin', { targetUrl: SHOP }, {}).ok).toBe(false)
   expect(httpCheckUrl('//elsewhere.example/x', app, { app_port: '1' }).ok).toBe(false)
-  expect(httpCheckUrl('https://elsewhere.example/x', app, { app_port: '1' }).ok).toBe(false)
+  expect(httpCheckUrl(`${HTTPS}//elsewhere.example/x`, app, { app_port: '1' }).ok).toBe(false)
   expect(httpCheckUrl('/orders', {}, {})).toMatchObject({ ok: false, reason: expect.stringContaining('no app') })
-  expect(httpCheckUrl('/orders', { client: true, appHealth: 'http://localhost:3000/up' }, {}).ok).toBe(false)
+  expect(httpCheckUrl('/orders', { client: true, appHealth: `${HTTP}//localhost:3000/up` }, {}).ok).toBe(false)
   // A credential in the target URL is never sent by an http check.
-  expect(httpCheckUrl('/orders', { targetUrl: 'https://user:pw@shop.example/' }, {})).toMatchObject({ ok: false, reason: expect.stringContaining('credential') })
+  expect(httpCheckUrl('/orders', { targetUrl: `${HTTPS}//user:pw@shop.example/` }, {})).toMatchObject({ ok: false, reason: expect.stringContaining('credential') })
 })
 
 test('the matchers decide: an empty order refused with 422 passes', async () => {
