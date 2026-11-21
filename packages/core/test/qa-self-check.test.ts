@@ -31,3 +31,13 @@ test.each(['quoted-auth', 'missing-code'])('the raw-checkout mail self-check exe
 test('the mail self-check refuses an unknown check rather than passing without assertions', async () => {
   await expect(exec(process.execPath, [script, 'unknown'], { cwd: checkout })).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('unknown mail self-check') })
 })
+
+// The http check self-checks (#378) run the checkout's source the same way,
+// and each prints what it observed under its own name.
+const httpScript = fileURLToPath(new URL('../../../.qa/checks/http-check.mjs', import.meta.url))
+test.each(['plan', 'evidence', 'judge', 'planner'])('the raw-checkout http self-check executes %s and reports what it observed', async (check) => {
+  const { stdout } = await exec(process.execPath, [httpScript, check], { cwd: checkout })
+  expect(stdout.replace(/\s+/g, '')).toContain(`"check":"${check}"`)
+  if (check === 'judge') expect(stdout).toContain('the response status was 422, expected 201')
+  if (check === 'evidence') expect(stdout).toContain('"set-cookie": "[redacted]"')
+})
