@@ -820,3 +820,15 @@ test("a suite's filter must be a placeholder of its own command, and its report 
   expect(unknown.field).toBe('suites[0]')
   expect(unknown.message).toContain('junit-xml')
 })
+
+test('a base section may name a prebuilt image for the base side, with the base commit as {base} (#381)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\nbase:\n  image: ghcr.io/acme/app:{base}\n`)
+  expect((await loadProfile(dir)).base).toEqual({ image: 'ghcr.io/acme/app:{base}' })
+  for (const image of ['', 'ghcr.io/acme/app with space', 'ghcr.io/acme/app:{head}', 7]) {
+    writeFileSync(join(dir, 'config.yml'), `${fixtureConfig()}\nbase:\n  image: ${JSON.stringify(image)}\n`)
+    const error = await profileError(() => loadProfile(dir))
+    expect(error.field, String(image)).toBe('base.image')
+  }
+  rmSync(dir, { recursive: true })
+})

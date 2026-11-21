@@ -114,3 +114,10 @@ test('a client profile bounds its base side once it names a base artefact, and n
   )
   expect(() => validateProfileConfig({ client: { driver: 'electron', executable: 'dist/app/app' }, base: { budget: '5m' } })).toThrow(/base: a client profile that names no base artefact has one side only/)
 })
+
+test('a client profile installs its base from an artefact, so it names no base image (#381)', () => {
+  const two = { ...ARTEFACT, base: { path: 'artefacts/base.tar.gz' } }
+  expect(() => validateProfileConfig({ ...(client(two) as object), base: { image: 'ghcr.io/acme/app:{base}' } })).toThrow(
+    /base\.image: a client profile's base side is installed from the artefact client\.artefact\.base names, so no image stands in for it/,
+  )
+})

@@ -19,6 +19,8 @@ function profileSeededBy(command: string, timeout?: string): QaProfile {
     stubs: [],
     suites: [],
     visual: { widths: [], themes: [] },
+    // The whole plan at the base, which the two-sided tests read; the default is ledger since #381.
+    base: { criteria: 'all' },
   }
 }
 

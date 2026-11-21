@@ -5,6 +5,7 @@ import { a11yConfigOf, type A11yCounts, type ProfileA11y } from './a11y.js'
 import { DEFAULT_A11Y_THEME, settleA11y, type A11yContext } from './a11y-run.js'
 import { parseDurationMs, shellCharacter } from './duration.js'
 import { prepareBaseCheckout, type BaseCheckout, type BaseCheckoutInput, type BaseCheckoutOutcome } from './base-checkout.js'
+import { defaultRunDocker, resolveBaseImage } from './base-image.js'
 import { collectCriterionFiles, criterionCacheKey, FileCheckCache, planFingerprint, profileFingerprint, resolveRefSha } from './cache.js'
 import { Artefacts, type ArtefactField } from './artefacts.js'
 import { inspectRunnerSafety, type RunnerSafetyProbes } from './runner-safety.js'
@@ -33,7 +34,7 @@ import { extractCode, mailEvidence, runMailCheck, type MailProof, type ReadMail 
 import { connectMcpDriver, connectMcpServer, evaluateToolAssertions, mcpDriverCapabilities, mcpDriverServer, type McpToolResult } from './mcp.js'
 import { ProfileMissingError, clientExecutableName, isCommandBoot, loadProfile, pathOnTarget, validateProfileConfig, type ProfileClient, type ProfileCommand, type ReportFormat, type ProfileMcpServer, type ProfileSuite, type ProfileTarget, type QaProfile } from './profile.js'
 import { BUILTIN_REDACTION_RULES, REDACTED, redactResult, redactText, mailEvidenceRules, redactValue, redactionRules, valueRules, type RedactionRule } from './redact.js'
-import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunProfileSummary, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
+import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionResult, type RunBase, type RunBaseImage, type RunProfileSummary, type RunRepairRecord, type RunResult, type RunVerdict } from './result.js'
 import { shardCriteria, type LanePlan } from './shards.js'
 import { flowOpenUrl } from './app-address.js'
 import { runHttpCheckJob } from './http-run.js'
@@ -620,7 +621,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
   if ('profiles' in job) return runSeveralProfiles(job, opts, execution, startedAt, side)
   let profile: QaProfile
   try {
-    profile = atBaseTree(await resolveProfileRef(job.repoPath, job.profile), side)
+    profile = atBaseTree(await resolveProfileRef(job.repoPath, job.profile), side, '')
   } catch (error) {
     if (!(error instanceof ProfileMissingError)) throw error
     // The base revision may predate the profile: nothing boots there, and
@@ -991,7 +992,7 @@ async function runSeveralProfiles(
   const planned: Array<{ group: JobProfileGroup; profile?: QaProfile; refusal?: string; requirements?: Requirements }> = []
   for (const group of groups) {
     try {
-      const profile = atBaseTree(await resolveProfileRef(job.repoPath, group.profile), side)
+      const profile = atBaseTree(await resolveProfileRef(job.repoPath, group.profile), side, group.name)
       // The driver mapping is preflighted before anything runs (#94): an
       // action the mapping does not bind refuses this app's group here,
       // wherever the plan came from, so no group runs while a later one's
@@ -1667,6 +1668,13 @@ interface SideContext {
   visualBase?: Extract<VisualComparison, { with: 'base' }>
   /** The base boots from the base tree: where a compose path of the profile lands there. */
   composePath?: (path: string) => string
+  /**
+   * The prebuilt image each app runs at the base in place of its build
+   * (#381), by the key of the head profile that named it (the group's name,
+   * or '' for a run of one profile): only images shown to be the base
+   * commit's are here.
+   */
+  baseImages?: ReadonlyMap<string, string>
   /** The tree a client artefact's build command runs in on this side (#75): a checkout of the base, at the base. */
   buildRoot?: string
   gate?: (criterion: JobCriterion) => string | undefined
@@ -1712,13 +1720,20 @@ function a11yContextOf(profile: QaProfile, comparison: VisualComparison, side: S
   }
 }
 
-/** The base side as the comparison reads it: the raw result of a base that ran, or why none did. */
+/**
+ * The base side as the comparison reads it: the raw result of a base that
+ * ran, or why none did. `images` are the prebuilt images the base side was
+ * offered (#381), and what it did with each.
+ */
 type BaseSideOutcome =
-  | { status: 'executed'; result: RunResult }
+  | { status: 'executed'; result: RunResult; images?: RunBaseImage[] }
   /** `evidence` is what the base side saved on its way to not running: the log of a provisioning that blocked (#75). */
-  | { status: 'not-executed'; reason: string; evidence?: string[] }
+  | { status: 'not-executed'; reason: string; evidence?: string[]; images?: RunBaseImage[] }
 
 const NOT_RUN_AT_BASE = 'not run at the base: '
+
+/** A full commit id: a base ref that is one names the base commit itself (#381). */
+const COMMIT_ID = /^[0-9a-f]{40,64}$/i
 
 /**
  * A job has a second side when it boots an app (#147). A target profile is
@@ -1736,13 +1751,19 @@ async function hasSecondSide(job: Job): Promise<boolean> {
   }
 }
 
-/** The base side boots the base tree's own recipe: its compose file resolves there. */
-function atBaseTree(profile: QaProfile, side: SideContext | undefined): QaProfile {
+/**
+ * The base side boots the base tree's own recipe: its compose file resolves
+ * there. A prebuilt image the head's profile named, shown to be the base
+ * commit's, runs in place of the build (#381).
+ */
+function atBaseTree(profile: QaProfile, side: SideContext | undefined, key: string): QaProfile {
   if (side?.composePath === undefined || profile.app === undefined) return profile
+  const prebuilt = side.baseImages?.get(key)
+  const image = prebuilt === undefined ? {} : { prebuilt }
   // A command boot names no file: its context is the side's own checkout,
   // which the boot is handed as its root (#379).
-  if (isCommandBoot(profile.app.boot)) return profile
-  return { ...profile, app: { ...profile.app, boot: { ...profile.app.boot, compose: side.composePath(profile.app.boot.compose) } } }
+  if (isCommandBoot(profile.app.boot)) return prebuilt === undefined ? profile : { ...profile, app: { ...profile.app, boot: { ...profile.app.boot, ...image } } }
+  return { ...profile, app: { ...profile.app, boot: { ...profile.app.boot, compose: side.composePath(profile.app.boot.compose), ...image } } }
 }
 
 /** Where a path inside the head checkout lands in the base checkout; undefined for a path outside it. */
@@ -1764,13 +1785,20 @@ function baseJobOf(job: Job, basePath: string): Job {
   return { ...job, repoPath: basePath, evidenceDir, profile: ref(job.profile) }
 }
 
+/** A head profile, the key its app is known by on the base side (#381), and the criteria it checks. */
+interface HeadProfile {
+  key: string
+  profile: QaProfile
+  criteria: JobCriterion[]
+}
+
 /** The head's profiles with the criteria each one checks: where the base side's limits and the head's redaction rules are read from. */
-async function headProfilesOf(job: Job): Promise<Array<{ profile: QaProfile; criteria: JobCriterion[] }>> {
-  const groups = 'profiles' in job ? job.profiles : [{ profile: job.profile, criteria: job.criteria }]
-  const loaded: Array<{ profile: QaProfile; criteria: JobCriterion[] }> = []
+async function headProfilesOf(job: Job): Promise<HeadProfile[]> {
+  const groups = 'profiles' in job ? job.profiles : [{ name: '', profile: job.profile, criteria: job.criteria }]
+  const loaded: HeadProfile[] = []
   for (const group of groups) {
     try {
-      loaded.push({ profile: await resolveProfileRef(job.repoPath, group.profile), criteria: group.criteria })
+      loaded.push({ key: 'profiles' in job ? group.name : '', profile: await resolveProfileRef(job.repoPath, group.profile), criteria: group.criteria })
     } catch {
       // A profile the head cannot read sets no limits; the head side says what is wrong with it.
     }
@@ -1779,28 +1807,53 @@ async function headProfilesOf(job: Job): Promise<Array<{ profile: QaProfile; cri
 }
 
 /**
+ * What `base.criteria` is when the profile says nothing (#381): `ledger` for
+ * a booted app, and `all` for a client, whose base is installed from an
+ * artefact with no base tree to read a ledger from.
+ */
+function baseCriteriaOf(profile: QaProfile): { criteria: 'all' | 'ledger' | 'none'; defaulted: boolean } {
+  if (profile.base?.criteria !== undefined) return { criteria: profile.base.criteria, defaulted: false }
+  return { criteria: profile.client !== undefined ? 'all' : 'ledger', defaulted: true }
+}
+
+/**
+ * Whether a criterion runs at the base under a ledger limit (#147, #381):
+ * when the ledger at the base carries it as active. When the limit is only
+ * the default, a criterion whose check is decided against the base runs
+ * there whatever the ledger says, because the base decides its outcome: a
+ * visual check (#143), an accessibility audit (#149), and a flow check when
+ * the profile audits every flow. An explicit `ledger` means the ledger
+ * alone.
+ */
+export function gateOf(profile: QaProfile, carried: ReadonlySet<string>, criterion: JobCriterion): boolean {
+  const { criteria, defaulted } = baseCriteriaOf(profile)
+  if (criteria === 'all') return true
+  if (criteria === 'none') return false
+  if (carried.has(criterion.id)) return true
+  if (!defaulted) return false
+  const standing = profile.a11y?.standing === true
+  return (criterion.checks ?? []).some((check) => check.kind === 'visual' || check.kind === 'a11y' || (standing && check.kind === 'flow'))
+}
+
+const LEDGER_DEFAULT_NOTE = ' (base.criteria: ledger, the default; base.criteria: all compares every criterion)'
+
+/**
  * The base side's limits, from the profile the run was configured with
- * (#147): `base.criteria: ledger` runs only the criteria the ledger at the
- * base already carries as active, and `base.budget` bounds the side's wall
- * clock from the moment it starts. Both are read as a reason a criterion
- * does not run, so what the limits leave out is reported, not dropped.
+ * (#147): `base.criteria: ledger` (the default since #381) runs only the
+ * criteria the ledger at the base already carries as active, and
+ * `base.budget` bounds the side's wall clock from the moment it starts.
+ * Both are read as a reason a criterion does not run, so what the limits
+ * leave out is reported, not dropped.
  */
 async function baseLimits(
-  profiles: Array<{ profile: QaProfile; criteria: JobCriterion[] }>,
+  profiles: HeadProfile[],
   basePath: string,
-): Promise<{ nothingToRun: boolean; gate: (criterion: JobCriterion) => string | undefined }> {
-  const ledgerOnly = new Set<string>()
-  const off = new Set<string>()
+): Promise<{ nothingToRun: boolean; reason: string; gate: (criterion: JobCriterion) => string | undefined }> {
+  const leftOutWhy = new Map<string, string>()
   const budgets = new Map<string, { ms: number; label: string }>()
-  for (const { profile, criteria } of profiles) {
-    for (const criterion of criteria) {
-      if (profile.base?.criteria === 'ledger') ledgerOnly.add(criterion.id)
-      if (profile.base?.criteria === 'none') off.add(criterion.id)
-      if (profile.base?.budget !== undefined) budgets.set(criterion.id, { ms: parseDurationMs(profile.base.budget), label: profile.base.budget })
-    }
-  }
+  const limited = profiles.some(({ profile }) => baseCriteriaOf(profile).criteria === 'ledger')
   let carried = new Set<string>()
-  if (ledgerOnly.size > 0) {
+  if (limited) {
     try {
       const entries = await new FileLedgerStore(join(basePath, '.qa')).load()
       carried = new Set(entries.filter((entry) => entry.status === 'active').map((entry) => entry.criterion))
@@ -1808,15 +1861,28 @@ async function baseLimits(
       // A ledger that cannot be read carries nothing: nothing runs at the base on its word.
     }
   }
-  const leftOut = (id: string): boolean => off.has(id) || (ledgerOnly.has(id) && !carried.has(id))
+  let defaultNote = ''
+  for (const { profile, criteria } of profiles) {
+    const { criteria: limit, defaulted } = baseCriteriaOf(profile)
+    for (const criterion of criteria) {
+      if (profile.base?.budget !== undefined) budgets.set(criterion.id, { ms: parseDurationMs(profile.base.budget), label: profile.base.budget })
+      if (gateOf(profile, carried, criterion)) continue
+      if (limit === 'none') leftOutWhy.set(criterion.id, `${NOT_RUN_AT_BASE}the profile runs no criteria at the base (base.criteria: none)`)
+      else {
+        const note = defaulted ? LEDGER_DEFAULT_NOTE : ''
+        if (defaulted) defaultNote = LEDGER_DEFAULT_NOTE
+        leftOutWhy.set(criterion.id, `${NOT_RUN_AT_BASE}the profile limits the base side to the criteria already in the ledger${note}, and the ledger at the base does not carry ${criterion.id}`)
+      }
+    }
+  }
   const all = profiles.flatMap((entry) => entry.criteria)
   const startedMs = Date.now()
   return {
-    nothingToRun: all.length > 0 && all.every((criterion) => leftOut(criterion.id)),
+    nothingToRun: all.length > 0 && all.every((criterion) => leftOutWhy.has(criterion.id)),
+    reason: `the profile's limits leave nothing to run at the base: the ledger at the base carries none of the criteria this run checks${defaultNote}`,
     gate: (criterion) => {
-      if (off.has(criterion.id)) return `${NOT_RUN_AT_BASE}the profile runs no criteria at the base (base.criteria: none)`
-      if (leftOut(criterion.id))
-        return `${NOT_RUN_AT_BASE}the profile limits the base side to the criteria already in the ledger, and the ledger at the base does not carry ${criterion.id}`
+      const why = leftOutWhy.get(criterion.id)
+      if (why !== undefined) return why
       const budget = budgets.get(criterion.id)
       if (budget !== undefined && Date.now() - startedMs >= budget.ms)
         return `${NOT_RUN_AT_BASE}the base side's time budget of ${budget.label} was spent before this criterion ran`
@@ -1836,7 +1902,7 @@ async function runBaseSide(
   job: Job,
   opts: SideOpts,
   request: BaseSideRequest,
-  profiles: Array<{ profile: QaProfile; criteria: JobCriterion[] }>,
+  profiles: HeadProfile[],
   headRules: readonly RedactionRule[],
 ): Promise<BaseSideOutcome> {
   const booted: BootedApp[] = []
@@ -1901,11 +1967,19 @@ async function runBaseSide(
     checkout = outcome.checkout
     const basePath = checkout.path
     const limits = await baseLimits(profiles, basePath)
-    if (limits.nothingToRun)
-      return {
-        status: 'not-executed',
-        reason: "the profile's limits leave nothing to run at the base: the ledger at the base carries none of the criteria this run checks",
-      }
+    if (limits.nothingToRun) return { status: 'not-executed', reason: limits.reason }
+    // The prebuilt images the head's profiles name for the base (#381),
+    // each used only when it shows it was built from the base commit.
+    const commit = COMMIT_ID.test(job.baseRef) ? job.baseRef : checkout.commit
+    const images: RunBaseImage[] = []
+    const baseImages = new Map<string, string>()
+    for (const { key, profile } of profiles) {
+      if (profile.base?.image === undefined || profile.app === undefined) continue
+      const record = await resolveBaseImage(profile.base.image, commit, opts.runDocker ?? defaultRunDocker)
+      images.push(record)
+      if (record.used) baseImages.set(key, record.digest ?? record.ref)
+    }
+    const offered = images.length === 0 ? {} : { images }
     const side: SideContext = {
       name: 'base',
       tracesRoot: resolve(job.evidenceDir, '..', 'traces', 'base'),
@@ -1918,6 +1992,7 @@ async function runBaseSide(
         return owner === undefined ? undefined : { ...(owner.a11y === undefined ? {} : { a11y: owner.a11y }), visual: owner.visual }
       },
       composePath: (path) => intoBaseTree(job.repoPath, basePath, resolve(path)) ?? (isAbsolute(path) ? path : resolve(basePath, path)),
+      baseImages,
       gate: limits.gate,
     }
     // The base side is a comparison, not a record: it feeds no ledger and
@@ -1938,9 +2013,10 @@ async function runBaseSide(
         // What stopped the side is kept with it: a seed that failed at the
         // base left its log there (#240), as a blocked provisioning does.
         ...(first?.evidence === undefined ? {} : { evidence: first.evidence }),
+        ...offered,
       }
     }
-    return { status: 'executed', result }
+    return { status: 'executed', result, ...offered }
   } catch (error) {
     return { status: 'not-executed', reason: `the base side stopped before it finished: ${error instanceof Error ? error.message : String(error)}` }
   } finally {
@@ -2038,8 +2114,9 @@ function compareSides(job: Job, head: RunResult, base: BaseSideOutcome, startedA
   const regressed = new Set(
     judgeRun({ base: toBaseSideResults({ criteria }), head: toSideResults({ criteria }) }).regressions.map((regression) => regression.criterionId),
   )
+  const offered = base.images === undefined ? {} : { images: base.images }
   const status: RunBase =
-    base.status === 'executed' ? { ref: job.baseRef, status: 'executed' } : { ref: job.baseRef, status: 'not-executed', reason: base.reason }
+    base.status === 'executed' ? { ref: job.baseRef, status: 'executed', ...offered } : { ref: job.baseRef, status: 'not-executed', reason: base.reason, ...offered }
   // A client's two sides are two builds (#75): the result names the one the
   // base was provisioned from, and claims a comparison only when it ran.
   const baseArtefact = base.status === 'executed' ? base.result.client?.artefact : undefined

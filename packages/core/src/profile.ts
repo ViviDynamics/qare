@@ -33,6 +33,12 @@ export interface ComposeBoot {
   compose: string
   service: string
   build?: { timeout: string }
+  /**
+   * The image the service runs in place of its build (#381): set by the run
+   * on the base side, from `base.image` once the image is shown to be the
+   * base commit's. The loader never reads it from a profile.
+   */
+  prebuilt?: string
 }
 
 /**
@@ -46,6 +52,8 @@ export interface CommandBoot {
   image: string
   port: number
   build?: { timeout: string }
+  /** As a compose boot's (#381): the image run in place of the build, set by the run on the base side. */
+  prebuilt?: string
 }
 
 export type ProfileBoot = ComposeBoot | CommandBoot
@@ -410,19 +418,33 @@ export interface ProfileUx {
 
 export interface ProfileBase {
   /**
-   * `all` (the default) runs the whole plan at the base; `ledger` only the
-   * criteria the ledger at the base already carries; `none` runs nothing
-   * there, so the run has one side and says so.
+   * `ledger` (the default for a booted app since #381) runs only the
+   * criteria the ledger at the base already carries, and under the default
+   * also those whose check is decided against the base (visual, a11y, a
+   * flow under a standing audit); `all` (a client's default) runs the whole
+   * plan at the base; `none` runs nothing there, so the run has one side and
+   * says so. Absent means the default.
    */
   criteria?: 'all' | 'ledger' | 'none'
   /** The base side's wall clock bound, as a duration like `10m`. */
   budget?: string
+  /**
+   * A prebuilt image the base side runs as the app's service in place of
+   * building it (#381), as written: `{base}` stands for the full base
+   * commit. The run uses it only when the image's
+   * `org.opencontainers.image.revision` label is the base commit, and builds
+   * the base as before otherwise.
+   */
+  image?: string
 }
 
+/** What `{base}` in `base.image` stands for: the full base commit (#381). */
+export const BASE_IMAGE_COMMIT = '{base}'
+
 function parseProfileBase(value: unknown): ProfileBase {
-  if (!isRecord(value)) fail('base', 'base must be a YAML object with criteria and budget')
+  if (!isRecord(value)) fail('base', 'base must be a YAML object with criteria, budget and image')
   for (const key of Object.keys(value))
-    if (key !== 'criteria' && key !== 'budget') fail(`base.${key}`, `base takes criteria and budget, not ${JSON.stringify(key)}`)
+    if (key !== 'criteria' && key !== 'budget' && key !== 'image') fail(`base.${key}`, `base takes criteria, budget and image, not ${JSON.stringify(key)}`)
   if (value.criteria !== undefined && value.criteria !== 'all' && value.criteria !== 'ledger' && value.criteria !== 'none')
     fail('base.criteria', `base.criteria must be "all", "ledger" or "none", not ${JSON.stringify(value.criteria)}`)
   let budget: string | undefined
@@ -434,9 +456,18 @@ function parseProfileBase(value: unknown): ProfileBase {
       fail('base.budget', `base.budget ${error instanceof Error ? error.message : String(error)}`)
     }
   }
+  let image: string | undefined
+  if (value.image !== undefined) {
+    image = nonEmptyString(value.image, 'base.image', 'base image')
+    if (/\s/.test(image)) fail('base.image', `base.image must be an image reference with no whitespace, got ${JSON.stringify(image)}`)
+    const placeholders = (image.match(/\{[^}]*\}/g) ?? []).filter((found) => found !== BASE_IMAGE_COMMIT)
+    if (placeholders.length > 0 || /[{}]/.test(image.replaceAll(BASE_IMAGE_COMMIT, '')))
+      fail('base.image', `base.image takes ${BASE_IMAGE_COMMIT} for the base commit and no other placeholder, got ${JSON.stringify(image)}`)
+  }
   return {
     ...(value.criteria === undefined ? {} : { criteria: value.criteria }),
     ...(budget === undefined ? {} : { budget }),
+    ...(image === undefined ? {} : { image }),
   }
 }
 
@@ -712,6 +743,8 @@ function validateClientConfig(config: Record<string, unknown>): QaProfile {
   const base = config.base === undefined ? undefined : parseProfileBase(config.base)
   if (base?.criteria === 'ledger')
     fail('base.criteria', 'a client profile\'s base side is installed from an artefact, with no base checkout to read a ledger from; use "all" or "none"')
+  if (base?.image !== undefined)
+    fail('base.image', "a client profile's base side is installed from the artefact client.artefact.base names, so no image stands in for it")
   const visual = config.visual === undefined ? { widths: [], themes: [] } : parseVisual(config.visual)
   if (visual.widths.length > 0 || visual.themes.length > 0)
     fail('visual', `the ${client.driver} driver declares no visual check, so a client profile names no widths and no themes to capture at`)

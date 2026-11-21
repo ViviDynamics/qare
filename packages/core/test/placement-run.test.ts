@@ -203,7 +203,8 @@ test('a profile that requires nothing records no requirement, and still names th
 
 test('each side of a two-sided run names the host that produced it (#76)', async () => {
   const touched: string[] = []
-  const job = await jobFor(app())
+  // The whole plan at the base, so the base side runs; the default is ledger since #381.
+  const job = await jobFor({ ...app(), base: { criteria: 'all' } })
   const baseRepo = await repo()
   const { result } = await runJob(job, {
     ...provisioning(touched),

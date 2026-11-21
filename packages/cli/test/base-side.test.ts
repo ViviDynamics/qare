@@ -24,7 +24,8 @@ function capture(): { text: () => string; writer: Writer } {
  * two files: `old.txt`, which only the base has, and `later.txt`, which
  * neither has.
  */
-async function twoSidedJob(base?: string): Promise<{ jobPath: string; evidenceDir: string; baseRepo: string }> {
+// The whole plan at the base unless a test says otherwise: the default is ledger since #381.
+async function twoSidedJob(base: string | undefined = '{ criteria: all }'): Promise<{ jobPath: string; evidenceDir: string; baseRepo: string }> {
   const repoPath = await mkdtemp(join(tmpdir(), 'qare-cli-head-'))
   const baseRepo = await mkdtemp(join(tmpdir(), 'qare-cli-base-'))
   await writeFile(join(baseRepo, 'old.txt'), 'base\n')

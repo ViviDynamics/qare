@@ -78,12 +78,22 @@ regression: a waived criterion that regressed still fails the run, and the
 comment says so on its row.
 
 The base side has a cost, two boots and two runs of the plan, and the profile
-states it (`base` in `config.yml`). `criteria: ledger` runs at the base only
-the criteria the ledger at the base already carries as active, which are the
-old behaviours a regression can be found in; `criteria: none` runs nothing
-there; `budget: 10m` bounds the base side's wall clock from the moment it
-starts. Whatever those leave out is reported as not compared, with the limit
-named.
+states it (`base` in `config.yml`). `criteria: ledger`, the default since
+#381, runs at the base only the criteria the ledger at the base already
+carries as active, which are the old behaviours a regression can be found
+in; when it is only the default, a criterion with a visual or a11y check, or
+a flow check under a standing audit, still runs there, because its outcome
+is decided against the base. A criterion the default leaves out is not
+compared, so it cannot be a regression, and a waiver on it is not overruled
+by one. `criteria: all` runs the whole plan there (the
+default before #381, and still a client profile's); `criteria: none` runs
+nothing there; `budget: 10m` bounds the base side's wall clock from the
+moment it starts. Whatever those leave out is reported as not compared, with
+the limit named. `image: ghcr.io/acme/app:{base}` (#381) runs a prebuilt
+image as the app's service at the base in place of building it, only when
+its `org.opencontainers.image.revision` label is the base commit; otherwise
+the base is built as before. `base.images` in the result says which image
+the base side used, and why one was not.
 
 A run against a target (#122) has one side by definition and says so, and so
 does `qare check`, which checks the app as it runs.
@@ -224,8 +234,9 @@ commands:                        # optional: invocations the planner may rely on
     about: runs the whole suite with the network its step has
     egress: uncontained          # optional; scratch beside egress: uncontained is refused at load
 base:                            # optional: what the base side of a run costs (#147)
-  criteria: ledger               # all (default), ledger (only criteria the base's ledger carries), or none
+  criteria: ledger               # ledger (default: only criteria the base's ledger carries, #381), all, or none
   budget: 10m                    # the base side's wall clock; what did not run is "not compared"
+  image: ghcr.io/acme/app:{base} # optional: a prebuilt base image, used when its revision label is the base commit (#381)
 a11y:                            # optional: what an accessibility audit holds a page to (#149)
   standard: wcag22aa             # the rule set: wcag2a, wcag2aa, wcag21a, wcag21aa or wcag22aa (default)
   fail: [serious, critical]      # the impacts that fail a check (default); minor and moderate are reported

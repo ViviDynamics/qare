@@ -638,6 +638,58 @@ included. Images the stack built stay in the runner's cache.
 shape. qare's CI runs the pipeline's own execute steps against it on every
 change, so this path is exercised and not only described.
 
+### The base side: what runs there, and a prebuilt image
+
+A profile that boots an app is checked at the base commit too, so a
+criterion that worked there and fails now is reported as a regression
+(#147). That costs a second build and boot. Two settings in `base` keep it
+down:
+
+```yaml
+# .qa/config.yml
+base:
+  criteria: ledger                   # the default: see below
+  image: ghcr.io/acme/app:{base}     # optional: run this image at the base instead of building it
+```
+
+**`base.criteria` defaults to `ledger`** (#381). With no `base.criteria`, the
+base side runs only the criteria the ledger at the base carries as active,
+which are the old behaviours a regression can be found in. This is less than
+before, when the default was `all`: a criterion the base's ledger does not
+carry yet (every criterion a pull request introduces, and every criterion of
+a repository with no ledger) is no longer run at the base. It is reported
+"not compared", with the default named in the reason, and a head failure of
+it is not labelled a regression. The head still decides every outcome, and a
+criterion whose check is decided against the base still runs there whatever
+the ledger carries (a visual check, an accessibility audit, and a flow check
+when `a11y.standing` audits every flow), so those outcomes are as before.
+One verdict can change: a waiver does not cover a regression, so a waived
+criterion that would have regressed failed the run before, and when the base
+no longer runs it, the run ends `waived`. Set `base.criteria: all` for the
+old behaviour. A profile that installs a build
+(`client`) cannot read a ledger at the base, so its default stays `all`.
+
+**`base.image`** names an image to run as the app's service on the base side
+in place of building it there, usually one your own CI pushed for each
+commit. `{base}` in it is replaced by the full base commit. It is read from
+the profile the run is configured with, never from the model. The run pulls
+it and reads its `org.opencontainers.image.revision` label, which
+`docker/metadata-action` writes. The image is used only when that label is
+the base commit. When the pull fails, the label is missing, or it names
+another commit, the base side is built from the base tree as before, so a
+wrong image never stands in for the base and a missing one costs only the
+time it would have saved. `base.images` in the run's `result.json` names
+each image offered, the digest it resolved to, the commit its label names,
+and whether it was used, with the reason when it was not.
+
+It works for both boot forms. For a compose boot the run adds an override
+that sets the service's `image`, resets its `build` (`!reset`, which needs
+compose 2.24 or later) and turns pulls off; the service's dependencies are
+still built. For a command boot the project the run writes names the image
+in place of its build, so the image must hold the app as the build would:
+the checkout at `/app` on top of `app.boot.image`. The head is always built
+from the pull request.
+
 ## Profiles that install a build
 
 A desktop application is not booted: it is a build that qare installs,
