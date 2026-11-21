@@ -53,7 +53,9 @@ test('the same app under a profile that requires macOS is what CI holds a refusa
   // CI runs the pipeline's own execute step against it, and holds the run to
   // refusing before the compose app is booted.
   const script = await readFile(new URL('../../scripts/compose-boot.sh', import.meta.url), 'utf8')
-  assert.match(script, /PROFILE=examples\/compose-app\/needs-macos/)
+  // The script defaults to this example, and the refusal runs for an example that carries needs-macos.
+  assert.match(script, /example="\$\{2:-examples\/compose-app\}"/)
+  assert.match(script, /PROFILE="\$example\/needs-macos"/)
   assert.match(script, /refused: unmet requirement: a macos host \(requires\.os\): this host is linux\. Nothing was provisioned\./)
   assert.match(script, /\.environment\.host\.os == "linux"/)
 })
@@ -90,7 +92,7 @@ test('every CI fixture invocation supplies the execute step environment', async 
       invocations++
       // Execute the caller's actual assignments; the stand-in step validates
       // the real workflow interface without starting Docker or the app.
-      const script = `image=qare:test; profile=.qa\nstep() { '${process.execPath}' -e 'const missing=JSON.parse(process.env.REQUIRED).filter(n=>process.env[n]===undefined); if(missing.length){console.error(missing.join(", "));process.exit(1)}'; }\n${match[0]}`
+      const script = `image=qare:test; profile=.qa; example=examples/compose-app\nstep() { '${process.execPath}' -e 'const missing=JSON.parse(process.env.REQUIRED).filter(n=>process.env[n]===undefined); if(missing.length){console.error(missing.join(", "));process.exit(1)}'; }\n${match[0]}`
       const run = spawnSync('bash', ['--noprofile', '--norc', '-eu', '-c', script], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH, REQUIRED: JSON.stringify(required) } })
       assert.equal(run.status, 0, `${file}: ${run.stderr}`)
     }
