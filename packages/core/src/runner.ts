@@ -258,9 +258,10 @@ export class NareAgentRunner implements AgentRunner {
     try {
       // The prompt travels by file (#401), never as an argument: an argument
       // is capped at 128 KiB on Linux, and a diff is often larger. nare reads
-      // the file as UTF-8, every byte kept. What still bounds a prompt is the
-      // model's context window (NARE_CONTEXT_WINDOW, #391), which nare
-      // measures each turn against and stops at with stop reason context.
+      // the file as UTF-8, every byte kept.
+      // What still bounds a prompt is the model's context window (#391):
+      // NARE_CONTEXT_WINDOW, which nare measures each turn against and stops
+      // at with stop reason context.
       const promptPath = join(workDir, 'prompt.txt')
       await writeFile(promptPath, request.prompt, { encoding: 'utf8', mode: 0o600 })
       const argv = ['run', '--prompt-file', promptPath, '--yes', '--jsonl', '--contract', String(NARE_CONTRACT)]

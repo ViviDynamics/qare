@@ -196,7 +196,7 @@ async function citations() {
   console.log(`searched ${files.length} files under ${roots.join(', ')} for ${tag}, MAX_ARG_BYTES, "can carry on Linux" and "argument budget"`)
   console.log(`hits: ${hits.length}`)
   for (const hit of hits) console.log(hit)
-  for (const [file, needle] of [['packages/core/src/runner.ts', '--prompt-file'], ['.github/workflows/pipeline.yml', 'reaches nare by file (#401)'], ['docs/pipeline.md', 'reaches nare by file'], ['docs/images.md', '--prompt-file'], ['packages/core/src/runner.ts', 'What still bounds a prompt is the'], ['docs/images.md', 'No argument size bounds a prompt now'], ['docs/pipeline.md', "What bounds it is the model's context window"]]) {
+  for (const [file, needle] of [['packages/core/src/runner.ts', '--prompt-file'], ['.github/workflows/pipeline.yml', 'reaches nare by file (#401)'], ['docs/pipeline.md', 'reaches nare by file'], ['docs/images.md', '--prompt-file']]) {
     const line = readFileSync(join(root, file), 'utf8').split('\n').findIndex((text) => text.includes(needle))
     console.log(`${file}:${line + 1} carries "${needle}"`)
     assert.ok(line >= 0)
@@ -204,7 +204,25 @@ async function citations() {
   assert.equal(hits.length, 0)
 }
 
-const checks = { runner, nare, ci, citations }
+async function bounds() {
+  // Where the checkout states what bounds a prompt now: the context window,
+  // not an argument size. Each statement is printed with its file and line.
+  const statements = [
+    ['packages/core/src/runner.ts', "What still bounds a prompt is the model's context window"],
+    ['docs/images.md', "No argument size bounds a prompt now; the model's context window bounds it"],
+    ['docs/pipeline.md', "What bounds it is the model's context window (`nare-context-window`)"],
+    ['.github/workflows/pipeline.yml', "size bounds it: the model's context window does"],
+    ['.github/workflows/qare.yml', 'bounds it; the context window does.'],
+  ]
+  for (const [file, needle] of statements) {
+    const lines = readFileSync(join(root, file), 'utf8').split('\n')
+    const at = lines.findIndex((text) => text.includes(needle))
+    console.log(at >= 0 ? `${file}:${at + 1}: ${lines[at].trim()}` : `${file}: missing "${needle}"`)
+    assert.ok(at >= 0, `${file} does not state the bound`)
+  }
+}
+
+const checks = { runner, nare, ci, citations, bounds }
 const name = process.argv[2]
 assert.ok(name in checks, `check is one of ${Object.keys(checks).join(', ')}`)
 await checks[name]()
