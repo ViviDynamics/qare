@@ -67,7 +67,12 @@ export interface InitPlan {
 interface ComposeService {
   name: string
   build: boolean
+  /** The host port the service publishes the app on, as the compose file's default names it. */
   hostPort?: string
+  /** The port inside the container the published port leads to. */
+  containerPort?: string
+  /** True when the published port is the one the run hands compose as QARE_APP_PORT. */
+  runPort: boolean
   healthPath?: string
   /** The scheme the service's own healthcheck asks with; http when it names none. */
   healthScheme?: string
@@ -165,6 +170,11 @@ export function callerWorkflow(opts: { model: string; requeue?: { branch: string
     'on:',
     '  pull_request:',
     ...(opts.requeue === undefined ? [] : ['  push:', `    branches: [${yamlString(opts.requeue.branch)}]`, "    paths: ['.qa/**']"]),
+    // A newer push supersedes the run of the older one, which would
+    // otherwise run to the end and be paid for (#374).
+    'concurrency:',
+    '  group: qare-${{ github.event.pull_request.number || github.ref }}',
+    '  cancel-in-progress: true',
     'jobs:',
     '  qare:',
     '    permissions:',
@@ -213,6 +223,7 @@ function targetConfig(url: string, health: string | undefined, suites: Suite[]):
     '  hosts: []',
     '# The image the checks run in: web carries the browser the flows drive.',
     'flavour: web',
+    // Nothing is booted beside a target, so its suites run where the run does.
     ...suiteLines(suites, false),
     '',
   ].join('\n')
@@ -220,22 +231,20 @@ function targetConfig(url: string, health: string | undefined, suites: Suite[]):
 
 function appConfig(service: ComposeService, composeLabel: string, inventory: ReadinessInventory, suites: Suite[]): string {
   const compose = composeLabel.replace(/^\.\//, '')
-  const guessed = service.hostPort === undefined
-  const health = `${service.healthScheme ?? 'http'}://localhost:${service.hostPort ?? '3000'}${service.healthPath ?? '/'}`
+  // Each run publishes the app on a port it allocates and hands compose as
+  // QARE_APP_PORT (#53), so the health URL names that port and no number.
+  const health = `${service.healthScheme ?? 'http'}://localhost:{{run.app_port}}${service.healthPath ?? '/'}`
+  const exec = `docker compose -p qare-{{run.id}} -f ${shellWord(compose)} exec -T ${shellWord(service.name)}`
   const hosts = [...new Set(inventory.origins.map((hit) => hit.origin.slice(hit.origin.indexOf('://') + 3).replace(/:\d+$/, '')))].sort()
   return [
     ...HEADER,
     'app:',
     `  boot: { compose: ${JSON.stringify(compose)}, service: ${JSON.stringify(service.name)} }`,
-    ...(guessed
-      ? [
-          `  # ${INIT_PLACEHOLDER} the service ${JSON.stringify(service.name)} publishes no port: publish one, and correct the health URL`,
-        ]
-      : []),
+    ...(service.runPort ? [] : [`  # ${INIT_PLACEHOLDER} ${portChange(service, compose)}`]),
     `  health: { http: ${JSON.stringify(health)}, timeout: 120s }`,
     `  # ${INIT_PLACEHOLDER} name the command that seeds the QA data, in place of "true"`,
     '  # qare runs it once the app is healthy, before any check, from the runner. A',
-    `  # seed inside the service: docker compose -p qare-{{run.id}} -f ${compose} exec -T ${service.name} <command>`,
+    `  # seed inside the service: ${exec} <command>`,
     '  seed: { command: "true" }',
     `  # ${INIT_PLACEHOLDER} describe the user QA signs in as in .qa/fixtures/users.yml, and name its role here`,
     '  login: { fixture: fixtures/users.yml, role: admin }',
@@ -256,9 +265,33 @@ function appConfig(service: ComposeService, composeLabel: string, inventory: Rea
     '  themes: [light]',
     '# The image the checks run in: web carries the browser the flows drive.',
     'flavour: web',
-    ...suiteLines(suites, true),
+    // The run image has none of the app's runtime, so a suite runs inside
+    // the booted service, where its dependencies and the stack's hostnames are.
+    ...suiteLines(
+      suites.map((suite) => ({ ...suite, command: `${exec} ${suite.command}` })),
+      true,
+    ),
     '',
   ].join('\n')
+}
+
+/**
+ * The compose change a service needs to be published on the run's port: the
+ * one it names is fixed, or there is none, and a run's app is never there.
+ */
+function portChange(service: ComposeService, compose: string): string {
+  const hostPort = service.hostPort ?? '3000'
+  const why =
+    service.hostPort === undefined
+      ? `the service ${JSON.stringify(service.name)} publishes no port`
+      : `the service ${JSON.stringify(service.name)} publishes the fixed port ${service.hostPort}`
+  const entry = JSON.stringify(`127.0.0.1:\${QARE_APP_PORT:-${hostPort}}:${service.containerPort ?? hostPort}`)
+  return `${why}, and each run publishes the app on its own: in ${compose} give it ports: [${entry}], then remove this line`
+}
+
+/** A word a shell reads as itself: bare when it can be, single-quoted when not. */
+function shellWord(word: string): string {
+  return /^[A-Za-z0-9._/@:+=-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`
 }
 
 /** A stub is named for its whole host, so two hosts never share a name. */
@@ -348,10 +381,11 @@ async function chooseService(repo: string, composeLabel: string, named: string |
       )
     return service
   }
+  const published = (service: ComposeService) => service.runPort || service.hostPort !== undefined
   return (
-    services.find((service) => service.build && service.hostPort !== undefined) ??
+    services.find((service) => service.build && published(service)) ??
     services.find((service) => service.build) ??
-    services.find((service) => service.hostPort !== undefined) ??
+    services.find(published) ??
     (services[0] as ComposeService)
   )
 }
@@ -367,44 +401,79 @@ function composeServices(text: string): ComposeService[] {
   return Object.entries(services)
     .map(([name, raw]) => {
       const record = isRecord(raw) ? raw : {}
-      const hostPort = Array.isArray(record.ports) ? record.ports.map(publishedPort).find((port) => port !== undefined) : undefined
+      const ports = (Array.isArray(record.ports) ? record.ports : []).map(publishedPort).filter((port) => port !== undefined)
+      // The run's port wins: it is the one the app is reached on.
+      const port = ports.find((candidate) => candidate.runPort) ?? ports.find((candidate) => candidate.host !== undefined)
       const health = healthOf(record.healthcheck)
+      const containerPort = port?.container ?? health?.port
       return {
         name,
         build: record.build !== undefined && record.build !== null,
-        ...(hostPort === undefined ? {} : { hostPort }),
+        runPort: port?.runPort ?? false,
+        ...(port?.host === undefined ? {} : { hostPort: port.host }),
+        ...(containerPort === undefined ? {} : { containerPort }),
         ...(health === undefined ? {} : { healthPath: health.path, healthScheme: health.scheme }),
       }
     })
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
 }
 
-/**
- * The host side of a compose port entry: `8080:3000`, `127.0.0.1:8080:3000`,
- * `${QARE_APP_PORT:-8080}:3000` (the default is the port), or the long form's
- * `published`. An entry with no host side publishes on a port nobody chose.
- */
-function publishedPort(entry: unknown): string | undefined {
-  if (isRecord(entry)) return /^\d+$/.test(String(entry.published ?? '')) ? String(entry.published) : undefined
-  if (typeof entry !== 'string' && typeof entry !== 'number') return undefined
-  const text = String(entry)
-    .replace(/\$\{[^}:]*:-(\d+)\}/g, '$1')
-    .replace(/\/\w+$/, '')
-  const parts = text.split(':')
-  const host = parts.length >= 2 ? parts[parts.length - 2] : undefined
-  const first = host?.split('-')[0]
-  return first !== undefined && /^\d+$/.test(first) ? first : undefined
+interface PublishedPort {
+  /** The host side as a number: `8080`, or the default of `${QARE_APP_PORT:-8080}`. */
+  host?: string
+  container?: string
+  /** The host side is QARE_APP_PORT, the port the run allocates. */
+  runPort: boolean
 }
 
-/** The scheme and path the service's own healthcheck asks with, when it names a URL. */
-function healthOf(healthcheck: unknown): { scheme: string; path: string } | undefined {
+const RUN_PORT_VARIABLE = /\$\{?QARE_APP_PORT\b/
+
+/**
+ * A compose port entry: `8080:3000`, `127.0.0.1:8080:3000`,
+ * `${QARE_APP_PORT:-8080}:3000` (the default is the host port), or the long
+ * form's `published` and `target`. An entry with no host side publishes on a
+ * port nobody chose.
+ */
+function publishedPort(entry: unknown): PublishedPort | undefined {
+  const number = (value: string | undefined) => {
+    const first = value?.replace(/\$\{[^}:]*:-(\d+)\}/g, '$1').split('-')[0]
+    return first !== undefined && /^\d+$/.test(first) ? first : undefined
+  }
+  if (isRecord(entry)) {
+    const published = entry.published === undefined || entry.published === null ? undefined : String(entry.published)
+    const host = number(published)
+    const container = number(entry.target === undefined ? undefined : String(entry.target))
+    const runPort = published !== undefined && RUN_PORT_VARIABLE.test(published)
+    if (host === undefined && !runPort) return undefined
+    return { runPort, ...(host === undefined ? {} : { host }), ...(container === undefined ? {} : { container }) }
+  }
+  if (typeof entry !== 'string' && typeof entry !== 'number') return undefined
+  // A variable's default may hold a colon of its own, so variables are set
+  // aside before the entry is split into its sides.
+  const variables: string[] = []
+  const parts = String(entry)
+    .replace(/\/\w+$/, '')
+    .replace(/\$\{[^}]*\}/g, (variable) => `\uE000${variables.push(variable) - 1}\uE000`)
+    .split(':')
+    .map((part) => part.replace(/\uE000(\d+)\uE000/g, (_, index: string) => variables[Number(index)] as string))
+  if (parts.length < 2) return undefined
+  const hostSide = parts[parts.length - 2] as string
+  const host = number(hostSide)
+  const container = number(parts[parts.length - 1])
+  const runPort = RUN_PORT_VARIABLE.test(hostSide)
+  if (host === undefined && !runPort) return undefined
+  return { runPort, ...(host === undefined ? {} : { host }), ...(container === undefined ? {} : { container }) }
+}
+
+/** The scheme, path and port the service's own healthcheck asks with, when it names a URL. */
+function healthOf(healthcheck: unknown): { scheme: string; path: string; port?: string } | undefined {
   if (!isRecord(healthcheck)) return undefined
   const test = Array.isArray(healthcheck.test) ? healthcheck.test.map(String).join(' ') : String(healthcheck.test ?? '')
   const match = /https?:\/\/[^\s"'|;&)]+/.exec(test)
   if (match === null) return undefined
   try {
     const url = new URL(match[0])
-    return { scheme: url.protocol.replace(/:$/, ''), path: `${url.pathname}${url.search}` }
+    return { scheme: url.protocol.replace(/:$/, ''), path: `${url.pathname}${url.search}`, ...(url.port === '' ? {} : { port: url.port }) }
   } catch {
     return undefined
   }

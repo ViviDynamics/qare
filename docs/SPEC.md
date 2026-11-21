@@ -2449,10 +2449,14 @@ caller workflow is left alone, and init prints what it would have written.
 
 - A repository with a compose file gets a profile that boots it: the compose
   file, the service that is the application (the one built from the
-  repository, or `--service <name>`), the health URL its healthcheck and
-  published port give, one stub per outbound origin the scan read, and the
-  suites init recognises by their files (Cucumber, Playwright, RSpec system
-  tests).
+  repository, or `--service <name>`), the health URL its healthcheck gives on
+  the run's own port (`{{run.app_port}}`), one stub per outbound origin the
+  scan read, and the suites init recognises by their files (Cucumber,
+  Playwright, RSpec system tests), each run inside that service as
+  `docker compose -p qare-{{run.id}} -f <compose> exec -T <service> <command>`,
+  because the run image carries none of the app's runtime (#374). A service
+  that publishes a fixed port, or none, gets a placeholder naming the
+  `${QARE_APP_PORT:-<port>}` entry that puts it on the run's port.
 - A repository with no compose file gets a target profile for
   `--target <url>`. With neither, init writes nothing and names the flag.
   The health check passes on a 200 alone, so `--health <path>` names a page

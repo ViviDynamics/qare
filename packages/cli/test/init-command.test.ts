@@ -66,7 +66,7 @@ test('on a repository with a compose file, init writes a profile that loads, the
 
   const profile = await loadProfile(join(repo, '.qa'))
   expect(profile.app?.boot).toEqual({ compose: 'docker-compose.yml', service: 'web' })
-  expect(profile.app?.health.http).toBe(url('http', 'localhost:3000/up'))
+  expect(profile.app?.health.http).toBe(url('http', 'localhost:{{run.app_port}}/up'))
   expect(await readFile(join(repo, '.github/workflows/qare.yml'), 'utf8')).toContain(`pipeline.yml@${VERSION}`)
 
   // Every gap readiness finds in what was written is a next step, and
@@ -76,7 +76,7 @@ test('on a repository with a compose file, init writes a profile that loads, the
   const steps = out.slice(out.indexOf('next steps\n'), out.indexOf('stub issues'))
   expect(steps.split('\n').filter((line) => line.startsWith('- '))).toEqual([
     ...inventory.gaps.map((gap) => `- ${gap}`),
-    '- add the repository secret OPENAI_API_KEY: the workflow reads the model key from it',
+    '- add the repository secret OPENAI_API_KEY, which the workflow reads the model key from: gh secret set OPENAI_API_KEY',
   ])
   const readiness = await run(['readiness', repo])
   for (const gap of inventory.gaps) expect(readiness.out).toContain(`- ${gap}\n`)
