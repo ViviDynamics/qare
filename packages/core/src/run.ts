@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { lstat, mkdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { a11yConfigOf, type A11yCounts, type ProfileA11y } from './a11y.js'
+import { a11yConfigOf, asksForAccessibility, type A11yCounts, type ProfileA11y } from './a11y.js'
 import { DEFAULT_A11Y_THEME, settleA11y, type A11yContext } from './a11y-run.js'
 import { parseDurationMs, shellCharacter } from './duration.js'
 import { prepareBaseCheckout, type BaseCheckout, type BaseCheckoutInput, type BaseCheckoutOutcome } from './base-checkout.js'
@@ -627,7 +627,7 @@ async function runSide(job: Job, opts: SideOpts = {}, side?: SideContext): Promi
     // The base revision may predate the profile: nothing boots there, and
     // the comparison says so (#147).
     if (side?.name === 'base')
-      return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `the base revision has no usable .qa/ profile, so nothing boots at the base: ${error.message}`, undefined, undefined, execution, startedAt)
+      return refuseRun(job, opts, BUILTIN_REDACTION_RULES, `${BASE_HAS_NO_PROFILE}, so nothing boots at the base: ${error.message}`, undefined, undefined, execution, startedAt)
     // A repository that has not onboarded is refused, not a caller mistake
     // (#107). Every criterion is still reported, unverified, naming the gap,
     // so the evidence says what nobody checked and what onboarding needs.
@@ -1143,7 +1143,10 @@ async function runSeveralProfiles(
       // Absent is refusal — for this app alone, so the other apps still run (#107).
       planned.push({
         group,
-        refusal: `this repository has no usable .qa/ profile for ${group.name} yet, so qare will not claim to have checked it: ${error.message}`,
+        refusal:
+          side?.name === 'base'
+            ? `${BASE_HAS_NO_PROFILE} for ${group.name}, so nothing boots for it at the base: ${error.message}`
+            : `this repository has no usable .qa/ profile for ${group.name} yet, so qare will not claim to have checked it: ${error.message}`,
       })
     }
   }
@@ -1876,6 +1879,9 @@ type BaseSideOutcome =
 
 const NOT_RUN_AT_BASE = 'not run at the base: '
 
+/** How the base side names a base revision with no profile to run under (#147, #419). */
+const BASE_HAS_NO_PROFILE = 'the base revision has no usable .qa/ profile'
+
 /** A full commit id: a base ref that is one names the base commit itself (#381). */
 const COMMIT_ID = /^[0-9a-f]{40,64}$/i
 
@@ -2217,7 +2223,12 @@ async function runBothSides(job: Job, opts: SideOpts, request: BaseSideRequest):
     ran: false,
     // The base screenshots of a visual check are the ones the base side just
     // saved (#143): there is no second way to capture a base.
-    visualBase: { with: 'base', evidenceDir: join(job.evidenceDir, 'base'), why: (criterionId) => noBaseScreenshots(base, criterionId) },
+    visualBase: {
+      with: 'base',
+      evidenceDir: join(job.evidenceDir, 'base'),
+      why: (criterionId) => noBaseScreenshots(base, criterionId),
+      noProfile: (criterionId) => baseHasNoProfile(base, criterionId),
+    },
   }
   const head = await runSide({ ...job, evidenceDir: join(job.evidenceDir, 'head') }, headOpts, headSide)
   const compared = redactResult(compareSides(job, head.result, base, startedAt), [...BUILTIN_REDACTION_RULES, ...headRules])
@@ -2229,6 +2240,18 @@ async function runBothSides(job: Job, opts: SideOpts, request: BaseSideRequest):
     ...(head.isolation === undefined ? {} : { isolation: head.isolation }),
     ...(head.isolations === undefined ? {} : { isolations: head.isolations }),
   }
+}
+
+/**
+ * Why the base revision had no profile to run a criterion under, or
+ * undefined when it had one (#419). Only this cause makes an inferred audit
+ * advisory: a base that has a profile and would not boot is a fault, and its
+ * audits stay unverified.
+ */
+function baseHasNoProfile(base: BaseSideOutcome, criterionId: string): string | undefined {
+  const atBase = base.status === 'executed' ? base.result.criteria.find((entry) => entry.id === criterionId) : undefined
+  const reason = base.status === 'not-executed' ? base.reason : atBase?.outcome === 'unverified' ? atBase.reason : undefined
+  return reason?.startsWith(BASE_HAS_NO_PROFILE) === true ? BASE_HAS_NO_PROFILE : undefined
 }
 
 /** Why the base side saved no screenshots for a criterion's visual check (#143). */
@@ -2784,6 +2807,8 @@ async function runCriterion(
   // result carries, and why an audit failed a check, which names the rule
   // and the element so the failure reads without opening the record.
   const a11yCounts = new Map<number, A11yCounts>()
+  // Why each check's audit only advised (#419), by check.
+  const a11yAdvisories = new Map<number, string>()
   // The messages the criterion's mail checks read (#65), carried onto its
   // result so the comment can show the message that proved it.
   const criterionMail: MailProof[] = []
@@ -2949,6 +2974,9 @@ async function runCriterion(
               widths: named.widths ?? flow.a11y.defaults.widths,
               themes: themes.length === 0 ? [DEFAULT_A11Y_THEME] : themes,
               standing: substituted.kind === 'flow',
+              // A plan's word that the audit was inferred holds only where the
+              // criterion's own words do not ask for accessibility (#419).
+              inferred: substituted.kind === 'a11y' && substituted.inferred === true && !asksForAccessibility(criterion.text),
               criterionId: criterion.id,
               index,
             }
@@ -3003,6 +3031,8 @@ async function runCriterion(
         if (outcome.transient === true) notCacheable = true
         // Each attempt audits afresh: the counts are the last attempt's.
         if (outcome.a11y !== undefined) a11yCounts.set(index, outcome.a11y)
+        if (outcome.a11yAdvisory !== undefined) a11yAdvisories.set(index, redactText(outcome.a11yAdvisory, sweepRules))
+        else a11yAdvisories.delete(index)
         if (outcome.status === 'failed' && outcome.reason !== undefined && outcome.a11yFailed === true)
           failedReasons.set(index, redactText(outcome.reason, sweepRules))
         else failedReasons.delete(index)
@@ -3207,12 +3237,14 @@ async function runCriterion(
 
   // The audits' counts, summed over the criterion's checks (#149). A
   // criterion nothing audited carries none.
-  const audited: { a11y?: A11yCounts; mail?: MailProof[] } = criterionMail.length === 0 ? {} : { mail: criterionMail }
+  const audited: { a11y?: A11yCounts; a11yAdvisory?: string; mail?: MailProof[] } = criterionMail.length === 0 ? {} : { mail: criterionMail }
   if (a11yCounts.size > 0) {
-    const sum: A11yCounts = { new: 0, existing: 0, accepted: 0, reported: 0, uncompared: 0 }
-    for (const counts of a11yCounts.values()) for (const key of Object.keys(sum) as Array<keyof A11yCounts>) sum[key] += counts[key]
-    audited.a11y = sum
+    const sum = { new: 0, existing: 0, accepted: 0, reported: 0, uncompared: 0, advisory: 0 }
+    for (const counts of a11yCounts.values()) for (const key of Object.keys(sum) as Array<keyof typeof sum>) sum[key] += counts[key] ?? 0
+    const { advisory, ...rest } = sum
+    audited.a11y = advisory === 0 ? rest : { ...rest, advisory }
   }
+  if (a11yAdvisories.size > 0) audited.a11yAdvisory = [...a11yAdvisories.values()].join('; ')
   let composed: CriterionResult
   if (failed) {
     composed = {
@@ -3433,6 +3465,8 @@ interface A11yRun {
   themes: readonly string[]
   /** The profile made the audit standing; no plan asked for it. */
   standing: boolean
+  /** The planner added the audit and the criterion's words do not ask for accessibility (#419). */
+  inferred: boolean
   criterionId: string
   index: number
 }
@@ -3446,6 +3480,8 @@ interface FlowJobOutcome {
   a11y?: A11yCounts
   /** The flow itself passed, and the audit is what failed the check. */
   a11yFailed?: true
+  /** Why the audit's violations only advised (#419): an inferred audit with no base profile to compare with. */
+  a11yAdvisory?: string
   /** The outcome is this run's only: the base had no audit to compare with. */
   transient?: true
 }
@@ -3669,7 +3705,7 @@ async function runFlowCheckJob(
     let settled: Awaited<ReturnType<typeof settleA11y>> | undefined
     if (a11y !== undefined && outcome?.a11y !== undefined) {
       settled = await settleA11y({
-        check: { ...(check.name === undefined ? {} : { name: check.name }), standing: a11y.standing },
+        check: { ...(check.name === undefined ? {} : { name: check.name }), standing: a11y.standing, inferred: a11y.inferred },
         audited: outcome.a11y,
         context: a11y.context,
         criterionId: a11y.criterionId,
@@ -3719,12 +3755,17 @@ async function runFlowCheckJob(
         ...(settled.status === 'failed' ? { a11yFailed: true as const } : {}),
         ...(settled.transient === true ? { transient: true as const } : {}),
       }
+    // An advisory audit (#419) leaves the flow's outcome as it was, and says
+    // why it decided nothing; the next run may have a base to compare with.
+    const advised =
+      outcome.outcome === 'passed' && settled?.advisory !== undefined ? { a11yAdvisory: settled.advisory, ...(settled.transient === true ? { transient: true as const } : {}) } : {}
     return {
       status: outcome.outcome,
       ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
       ...(outcome.repairs === undefined ? {} : { repairs: outcome.repairs }),
       evidence,
       ...audited,
+      ...advised,
     }
   }
   let driven: FlowJobOutcome

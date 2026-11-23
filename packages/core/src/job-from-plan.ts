@@ -91,6 +91,8 @@ function runnable(check: PlanCheck): JobCheck | undefined {
         ...(check.actions === undefined ? {} : { actions: check.actions }),
         ...(check.widths === undefined || check.widths.length === 0 ? {} : { widths: check.widths }),
         ...(check.themes === undefined || check.themes.length === 0 ? {} : { themes: check.themes }),
+        // Whether the planner added it is what decides an audit with no base to compare with (#419).
+        ...(check.inferred === true ? { inferred: true as const } : {}),
       }
     default:
       // Every kind a plan carries today runs. A plan written by a newer

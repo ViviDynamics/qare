@@ -356,12 +356,22 @@ test('the comment lists what the accessibility audits found, existing violations
   const body = renderComment(run)
   expect(body).toContain('## Accessibility')
   expect(body).toContain('Only violations new at the head fail a criterion.')
-  expect(body).toContain('| criterion | new | existing | accepted | reported | not compared |')
-  expect(body).toContain('| settings | 0 | 2 | 1 | 3 | 0 |')
-  expect(body).toContain('| billing | 1 | 0 | 0 | 0 | 0 |')
+  expect(body).toContain('| criterion | new | existing | accepted | reported | not compared | advisory |')
+  expect(body).toContain('| settings | 0 | 2 | 1 | 3 | 0 | 0 |')
+  expect(body).toContain('| billing | 1 | 0 | 0 | 0 | 0 | 0 |')
   expect(body).not.toContain('| about | 0 |')
   // The failure names the rule and the element in the table itself.
   expect(body).toContain('| billing | failed | 1 new accessibility violation: button-name on document/main/button (/billing) |')
+})
+
+test('the comment counts advisory violations and names why they decided nothing (#419)', () => {
+  const reason = '4 accessibility violations reported as advisory (color-contrast on nav a (/)): the base revision has no usable .qa/ profile'
+  const run = result('passed', [
+    { id: 'signin', outcome: 'proven', evidence: ['head/checks/signin/1/a11y.json'], a11y: { new: 0, existing: 0, accepted: 0, reported: 0, uncompared: 0, advisory: 4 }, a11yAdvisory: reason },
+  ])
+  const body = renderComment(run)
+  expect(body).toContain('| signin | 0 | 0 | 0 | 0 | 0 | 4 |')
+  expect(body).toContain(`- signin, advisory: ${reason}`)
 })
 
 test('a run nothing audited, or whose audits found nothing, renders no accessibility section (#149)', () => {

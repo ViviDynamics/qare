@@ -93,6 +93,11 @@ export interface JobA11yCheck {
   themes?: string[]
   /** How long the flow and its audits may take. */
   timeoutMs?: number
+  /**
+   * The planner added the audit; the criterion did not ask for it (#419).
+   * With no base profile to compare with, its findings are advisory.
+   */
+  inferred?: true
 }
 
 /** Sends one request to the app under test and judges the response by its matchers (#378). */
@@ -487,6 +492,7 @@ function parseA11yCheck(value: Record<string, unknown>, base: string): JobA11yCh
   }
   const { widths, themes } = parseViewports(value, base)
   const timeoutMs = parseTimeoutMs(value.timeoutMs, `${base}.timeoutMs`)
+  if (value.inferred !== undefined && typeof value.inferred !== 'boolean') fail(`${base}.inferred`, 'inferred must be a boolean')
   return {
     kind: 'a11y',
     ...(name !== undefined ? { name } : {}),
@@ -495,6 +501,7 @@ function parseA11yCheck(value: Record<string, unknown>, base: string): JobA11yCh
     ...(widths !== undefined ? { widths } : {}),
     ...(themes !== undefined ? { themes } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(value.inferred === true ? { inferred: true as const } : {}),
   }
 }
 

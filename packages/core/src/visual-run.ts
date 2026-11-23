@@ -47,7 +47,16 @@ export const playwrightVisualSession: VisualSessionFactory = async ({ masks }) =
 export type VisualComparison =
   | { with: 'nothing'; reason: string }
   | { with: 'base-side' }
-  | { with: 'base'; evidenceDir: string; why: (criterionId: string) => string }
+  | {
+      with: 'base'
+      evidenceDir: string
+      why: (criterionId: string) => string
+      /**
+       * Why nothing at the base can be compared for a criterion because the
+       * base revision has no usable profile (#419); undefined when it has one.
+       */
+      noProfile?: (criterionId: string) => string | undefined
+    }
 
 /** What a run's visual checks run with: the screenshot seam, the profile's defaults and masks, and the comparison. */
 export interface VisualContext {

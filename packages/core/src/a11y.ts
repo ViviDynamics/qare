@@ -128,7 +128,7 @@ export interface A11yFlowAudits {
   error?: string
 }
 
-export type A11yStatus = 'new' | 'existing' | 'accepted' | 'reported' | 'uncompared'
+export type A11yStatus = 'new' | 'existing' | 'accepted' | 'reported' | 'uncompared' | 'advisory'
 
 /** One violation on one element, as the record lists it. */
 export interface A11yFinding {
@@ -137,7 +137,7 @@ export interface A11yFinding {
   help: string
   helpUrl?: string
   status: A11yStatus
-  /** Why it is accepted; carried exactly when the status is `accepted`. */
+  /** Why it is accepted, or why it is only advisory; carried exactly when the status is `accepted` or `advisory`. */
   reason?: string
   page: string
   point: number
@@ -158,7 +158,13 @@ export type A11yBaseline =
   | { with: 'base-side' }
   /** The base side's audits, or why there are none. */
   | { with: 'base'; audits: readonly A11yFlowAudit[] }
-  | { with: 'base'; unavailable: string }
+  /**
+   * `advisory` is set when nothing at the base can hold a violation and the
+   * criterion never asked for the audit (#419): the base revision has no
+   * usable profile and the planner added the audit. Its violations are then
+   * `advisory`, naming why, and decide nothing.
+   */
+  | { with: 'base'; unavailable: string; advisory?: string }
 
 export interface A11yCounts {
   new: number
@@ -166,6 +172,8 @@ export interface A11yCounts {
   accepted: number
   reported: number
   uncompared: number
+  /** Violations an inferred audit found with no base profile to hold them against (#419); absent when none. */
+  advisory?: number
 }
 
 export interface A11yDecision {
@@ -173,8 +181,21 @@ export interface A11yDecision {
   reason?: string
   /** The outcome says nothing lasting: the base had no audit this time, so a cache must not serve it. */
   transient?: true
+  /** Why the audit's violations are advisory, when they are (#419). */
+  advisory?: string
   findings: A11yFinding[]
   counts: A11yCounts
+}
+
+/**
+ * Whether a criterion's own words ask for an accessibility outcome (#419).
+ * The planner marks an audit `inferred` when the criterion did not ask for
+ * it, and an inferred audit with no base to compare with is only advisory.
+ * Code holds the mark to the criterion's text, so a plan cannot relax an
+ * audit the criterion asked for by calling it inferred.
+ */
+export function asksForAccessibility(text: string | undefined): boolean {
+  return text !== undefined && /accessib|\ba11y\b|\bwcag|screen ?-?reader|assistive|\baria\b|contrast|keyboard|\bfocus|\b(tap|touch) targets?\b|\balt text\b/i.test(text)
 }
 
 /** The path of a URL, which is what an accepted violation and a record name a page by. */
@@ -238,7 +259,10 @@ const auditKey = (entry: { point: number; width: number; theme: string }): strin
  * it is `existing` when the base audit of the same point, width and theme
  * had it, `new` when that audit did not, and `uncompared` when the base has
  * no such audit. A new violation fails the check, an uncompared one leaves
- * it unverified, and anything else passes it. The base side records and
+ * it unverified, and anything else passes it. With no base profile at all
+ * and an audit the planner inferred, the baseline names why, and each
+ * violation that would have been uncompared is `advisory` instead (#419):
+ * it is reported and decides nothing. The base side records and
  * always passes.
  */
 export function decideA11y(audits: readonly A11yFlowAudit[], config: A11yConfig, baseline: A11yBaseline): A11yDecision {
@@ -265,7 +289,8 @@ export function decideA11y(audits: readonly A11yFlowAudit[], config: A11yConfig,
     else if (flat.impact === undefined || !(config.fail as readonly string[]).includes(flat.impact)) findings.push({ ...flat, status: 'reported' })
     else {
       pending.push({ flat, index: findings.length })
-      findings.push({ ...flat, status: baseline.with === 'base' ? 'uncompared' : 'new' })
+      const advisory = baseline.with === 'base' && 'unavailable' in baseline ? baseline.advisory : undefined
+      findings.push(advisory === undefined ? { ...flat, status: baseline.with === 'base' ? 'uncompared' : 'new' } : { ...flat, status: 'advisory', reason: advisory })
     }
   }
   if (baseline.with === 'base' && 'audits' in baseline) {
@@ -294,8 +319,10 @@ export function decideA11y(audits: readonly A11yFlowAudit[], config: A11yConfig,
     }
   }
 
-  const counts: A11yCounts = { new: 0, existing: 0, accepted: 0, reported: 0, uncompared: 0 }
-  for (const finding of findings) counts[finding.status] += 1
+  const tally = { new: 0, existing: 0, accepted: 0, reported: 0, uncompared: 0, advisory: 0 }
+  for (const finding of findings) tally[finding.status] += 1
+  const { advisory: advised, ...rest } = tally
+  const counts: A11yCounts = advised === 0 ? rest : { ...rest, advisory: advised }
   if (baseline.with === 'base-side') {
     // The base only records: what it found is what the head is excused.
     for (const finding of findings) if (finding.status === 'new') finding.status = 'existing'
@@ -320,6 +347,17 @@ export function decideA11y(audits: readonly A11yFlowAudit[], config: A11yConfig,
     return {
       status: 'unverified',
       reason: `${names.length} accessibility violation${names.length === 1 ? '' : 's'} could not be told new from existing (${names.join('; ')}): ${why}`,
+      transient: true,
+      findings,
+      counts,
+    }
+  }
+  if (advised > 0 && baseline.with === 'base' && 'unavailable' in baseline && baseline.advisory !== undefined) {
+    const names = named('advisory')
+    return {
+      status: 'passed',
+      advisory: `${names.length} accessibility violation${names.length === 1 ? '' : 's'} reported as advisory (${names.join('; ')}): ${baseline.advisory}`,
+      // The next run may have a base to compare with, and decide otherwise.
       transient: true,
       findings,
       counts,

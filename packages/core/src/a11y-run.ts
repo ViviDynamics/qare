@@ -25,8 +25,13 @@ export interface A11yContext {
 }
 
 export interface A11ySettleInput {
-  /** What the record calls the check, and whether a plan asked for it or the profile made it standing. */
-  check: { name?: string; standing: boolean }
+  /**
+   * What the record calls the check, and whether a plan asked for it or the
+   * profile made it standing. `inferred` is a planned audit the criterion did
+   * not ask for (#419): the planner marked it so, and the criterion's words do
+   * not ask for accessibility.
+   */
+  check: { name?: string; standing: boolean; inferred?: boolean }
   audited: A11yFlowAudits
   context: A11yContext
   criterionId: string
@@ -43,6 +48,8 @@ export interface A11ySettleOutcome {
   reason?: string
   /** The outcome is this run's only: the base had no audit to compare with, so a cache must not serve it. */
   transient?: true
+  /** Why the audit's violations are advisory and decided nothing, when they are (#419). */
+  advisory?: string
   counts: A11yCounts
   evidence: string[]
 }
@@ -53,7 +60,13 @@ async function baseAuditsOf(input: A11ySettleInput, comparison: Extract<VisualCo
   try {
     record = JSON.parse(await readFile(join(comparison.evidenceDir, 'checks', input.criterionId, String(input.index), A11Y_RECORD), 'utf8')) as typeof record
   } catch {
-    return { with: 'base', unavailable: `no base audit to compare with: ${comparison.why(input.criterionId)}` }
+    const unavailable = `no base audit to compare with: ${comparison.why(input.criterionId)}`
+    // A base with no profile at all has nothing to hold any violation
+    // against, so an audit the criterion never asked for only advises (#419).
+    const noProfile = input.check.inferred === true && input.check.standing !== true ? comparison.noProfile?.(input.criterionId) : undefined
+    return noProfile === undefined
+      ? { with: 'base', unavailable }
+      : { with: 'base', unavailable, advisory: `the audit was inferred by the planner, not asked for by the criterion, and ${noProfile}, so there is nothing to tell existing violations from new ones` }
   }
   const audits: A11yFlowAudit[] = []
   const byKey = new Map<string, A11yFlowAudit>()
@@ -103,15 +116,21 @@ export async function settleA11y(input: A11ySettleInput): Promise<A11ySettleOutc
     comparison.with === 'nothing' ? { with: 'nothing' } : comparison.with === 'base-side' ? { with: 'base-side' } : await baseAuditsOf(input, comparison)
   const decision = decideA11y(audits, context.config, baseline)
 
-  let decided: Pick<A11ySettleOutcome, 'status' | 'reason' | 'transient'>
+  let decided: Pick<A11ySettleOutcome, 'status' | 'reason' | 'transient' | 'advisory'>
   if (input.audited.error !== undefined) decided = { status: 'unverified', reason: input.audited.error }
   else if (audits.length === 0) decided = { status: 'unverified', reason: 'the flow reached no page to audit, so nothing says the pages it visits are accessible' }
-  else decided = { status: decision.status, ...(decision.reason === undefined ? {} : { reason: decision.reason }), ...(decision.transient === true ? { transient: true as const } : {}) }
+  else
+    decided = {
+      status: decision.status,
+      ...(decision.reason === undefined ? {} : { reason: decision.reason }),
+      ...(decision.transient === true ? { transient: true as const } : {}),
+      ...(decision.advisory === undefined ? {} : { advisory: decision.advisory }),
+    }
 
   const engine = audits[0]?.engine
   const record = {
     ...(input.check.name === undefined ? {} : { check: input.check.name }),
-    asked: input.check.standing ? 'standing: the profile audits every flow' : 'planned',
+    asked: input.check.standing ? 'standing: the profile audits every flow' : input.check.inferred === true ? 'inferred: the planner added it' : 'planned',
     side: comparison.with === 'base-side' ? 'base' : 'head',
     standard: context.config.standard,
     fail: context.config.fail,
@@ -139,6 +158,7 @@ export async function settleA11y(input: A11ySettleInput): Promise<A11ySettleOutc
     counts: decision.counts,
     outcome: decided.status,
     ...(decided.reason === undefined ? {} : { reason: decided.reason }),
+    ...(decided.advisory === undefined ? {} : { advisory: decided.advisory }),
   }
   const outDir = join(input.evidenceDir, checkDir)
   await mkdir(outDir, { recursive: true })
