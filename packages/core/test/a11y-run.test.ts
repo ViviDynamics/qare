@@ -546,3 +546,87 @@ test('a name the run redacts reads the same at both sides, so it is not a new vi
   expect(head).toMatchObject({ status: 'passed', counts: { existing: 1, new: 0 } })
   expect(await readFile(join(dir, 'head/checks/settings/0/a11y.json'), 'utf8')).not.toContain('jane@pilot.example')
 })
+
+// A base with no usable profile (#419): every onboarding pull request.
+
+const SAVE_FLOW: JobCriterion['checks'] = [
+  { kind: 'flow', name: 'save settings', actions: [{ action: 'open', url: `${['http:', '//localhost:'].join('')}{{run.app_port}}/settings` }, { action: 'assertText', text: 'Saved' }] },
+]
+
+async function onboarding(): Promise<{ head: string; base: string }> {
+  const trees = await twoTrees()
+  // The change adds the profile: the base revision has none.
+  await writeProfile(trees.head, '')
+  return trees
+}
+
+test('an inferred audit with no base profile to compare with is advisory: the criterion decides on its flow and names the missing base (#419)', async () => {
+  const trees = await onboarding()
+  const browser = fakeBrowser(() => [UNNAMED_BUTTON])
+  const criterion: JobCriterion = {
+    id: 'saves',
+    text: 'saving the settings shows Saved',
+    checks: [...(SAVE_FLOW ?? []), { kind: 'a11y', name: 'settings page', url: '/settings', inferred: true }],
+  }
+  const job: Job = { ...jobFor(trees.head, [criterion], APP_PROFILE), profile: { path: '.qa' } }
+
+  const { result } = await runJob(job, { ...recordingBoot(), flowSession: browser.session, base: { repoPath: trees.base } })
+
+  expect(result.base).toMatchObject({ status: 'not-executed' })
+  expect(result.verdict).toBe('passed')
+  const saved = criterionOf(result, 'saves')
+  expect(saved).toMatchObject({ outcome: 'proven', base: { outcome: 'not-compared' }, a11y: { new: 0, uncompared: 0, advisory: 1 } })
+  expect(saved.a11yAdvisory).toContain('the base revision has no usable .qa/ profile')
+  const record = await readJson(join(job.evidenceDir, 'head/checks/saves/1/a11y.json'))
+  expect(record).toMatchObject({ asked: 'inferred: the planner added it', outcome: 'passed', counts: { advisory: 1 } })
+  expect(record.advisory).toContain('the base revision has no usable .qa/ profile')
+  expect((record.findings as Array<Record<string, unknown>>).map((finding) => [finding.rule, finding.status])).toEqual([['button-name', 'advisory']])
+})
+
+test('an audit the criterion asked for still decides with no base profile: unverified, naming why (#419)', async () => {
+  const trees = await onboarding()
+  const browser = fakeBrowser(() => [UNNAMED_BUTTON])
+  const job: Job = { ...jobFor(trees.head, [a11y('settings', { url: '/settings' })], APP_PROFILE), profile: { path: '.qa' } }
+
+  const { result } = await runJob(job, { ...recordingBoot(), flowSession: browser.session, base: { repoPath: trees.base } })
+
+  const criterion = criterionOf(result, 'settings')
+  expect(criterion).toMatchObject({ outcome: 'unverified', a11y: { uncompared: 1 } })
+  expect(criterion.reason).toContain('could not be told new from existing')
+  expect('a11yAdvisory' in criterion).toBe(false)
+})
+
+test('an audit marked inferred on a criterion whose words ask for accessibility still decides with no base profile (#419)', async () => {
+  const trees = await onboarding()
+  const browser = fakeBrowser(() => [UNNAMED_BUTTON])
+  const criterion: JobCriterion = {
+    id: 'settings',
+    text: 'the settings page is accessible to screen reader users',
+    checks: [{ kind: 'a11y', name: 'settings page', url: '/settings', inferred: true }],
+  }
+  const job: Job = { ...jobFor(trees.head, [criterion], APP_PROFILE), profile: { path: '.qa' } }
+
+  const { result } = await runJob(job, { ...recordingBoot(), flowSession: browser.session, base: { repoPath: trees.base } })
+
+  expect(criterionOf(result, 'settings')).toMatchObject({ outcome: 'unverified', a11y: { uncompared: 1 } })
+})
+
+test('an inferred audit whose base has a profile but did not boot is unverified as before: only a missing profile makes it advisory (#419)', async () => {
+  const trees = await twoTrees()
+  const browser = fakeBrowser(() => [UNNAMED_BUTTON])
+  const job = jobFor(trees.head, [a11y('settings', { url: '/settings', inferred: true })], APP_PROFILE)
+
+  const { result } = await runJob(job, { ...recordingBoot((call) => call === 1), flowSession: browser.session, base: { repoPath: trees.base } })
+
+  expect(criterionOf(result, 'settings')).toMatchObject({ outcome: 'unverified', a11y: { uncompared: 1 } })
+})
+
+test('an inferred audit on a run with one side still fails on a violation: nothing excuses it (#419)', async () => {
+  const repo = await tempRepo()
+  const browser = fakeBrowser(() => [UNNAMED_BUTTON])
+  const job = jobFor(repo, [a11y('settings', { url: '/settings', inferred: true })], TARGET_PROFILE)
+
+  const { result } = await runJob(job, { ...UP, flowSession: browser.session })
+
+  expect(criterionOf(result, 'settings')).toMatchObject({ outcome: 'failed', a11y: { new: 1 } })
+})

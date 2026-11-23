@@ -452,15 +452,18 @@ export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 
       '',
       '## Accessibility',
       '',
-      'Accessibility violations the audits found, counted by criterion. Only violations new at the head fail a criterion. Existing ones were already there at the base, accepted ones are carried by the profile with a reason, reported ones sit below the impacts that fail, and ones not compared had no base audit to be held against. Each is named, with its rule and element, in the `a11y.json` of the criterion.',
+      'Accessibility violations the audits found, counted by criterion. Only violations new at the head fail a criterion. Existing ones were already there at the base, accepted ones are carried by the profile with a reason, reported ones sit below the impacts that fail, ones not compared had no base audit to be held against, and advisory ones were found by an audit the planner added where the base had no profile to compare with, so they decide nothing. Each is named, with its rule and element, in the `a11y.json` of the criterion.',
       '',
-      '| criterion | new | existing | accepted | reported | not compared |',
-      '| --- | --- | --- | --- | --- | --- |',
+      '| criterion | new | existing | accepted | reported | not compared | advisory |',
+      '| --- | --- | --- | --- | --- | --- | --- |',
       ...audited.map((criterion) => {
         const counts = criterion.a11y!
-        return `| ${cell(criterion.id)} | ${counts.new} | ${counts.existing} | ${counts.accepted} | ${counts.reported} | ${counts.uncompared} |`
+        return `| ${cell(criterion.id)} | ${counts.new} | ${counts.existing} | ${counts.accepted} | ${counts.reported} | ${counts.uncompared} | ${counts.advisory ?? 0} |`
       }),
     )
+    // Why advisory violations decided nothing (#419), by criterion.
+    const advised = audited.filter((criterion) => criterion.a11yAdvisory !== undefined)
+    if (advised.length > 0) lines.push('', ...advised.map((criterion) => `- ${cell(criterion.id)}, advisory: ${cell(criterion.a11yAdvisory!)}`))
   }
   // The message that proved a criterion (#65), as the harness read it. Every
   // cell is the app's own text, so on a pull request it is a code span: a

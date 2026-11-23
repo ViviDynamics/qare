@@ -445,6 +445,15 @@ test('a criterion result may carry what its accessibility audits counted (#149)'
   expect(resultError(() => parseResult(withCriterion({ id: 'c', outcome: 'proven', evidence: ['a.txt'], a11y: { new: 1 } }))).field).toBe('criteria[0].a11y.existing')
 })
 
+test('a criterion result may carry advisory accessibility findings and why they decided nothing (#419)', () => {
+  const withCriterion = (criterion: unknown) => ({ schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [criterion] })
+  const counts = { new: 0, existing: 0, accepted: 0, reported: 0, uncompared: 0, advisory: 4 }
+  const advised = { id: 'c', outcome: 'proven', evidence: ['a11y.json'], a11y: counts, a11yAdvisory: 'the base revision has no usable .qa/ profile' }
+  expect(parseResult(withCriterion(advised)).criteria[0]).toMatchObject({ a11y: counts, a11yAdvisory: 'the base revision has no usable .qa/ profile' })
+  expect(resultError(() => parseResult(withCriterion({ ...advised, a11y: { ...counts, advisory: 1.5 } }))).field).toBe('criteria[0].a11y.advisory')
+  expect(resultError(() => parseResult(withCriterion({ ...advised, a11yAdvisory: '' }))).field).toBe('criteria[0].a11yAdvisory')
+})
+
 test('a criterion result may carry the messages its mail checks read (#65)', () => {
   const withCriterion = (criterion: unknown) => ({ schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [criterion] })
   const mail = [{ check: 'confirmation', from: 'App <no-reply@app.test>', subject: 'Confirm', excerpt: 'Hello.', links: ['/confirm'] }]

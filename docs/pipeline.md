@@ -772,6 +772,26 @@ in place of its build, so the image must hold the app as the build would:
 the checkout at `/app` on top of `app.boot.image`. The head is always built
 from the pull request.
 
+**A base with no profile** (#419). The pull request that onboards a
+repository adds `.qa/`, so its base revision has none and nothing runs
+there: every criterion is reported "not compared", naming the missing
+profile. The head still decides every outcome, with one rule for the
+accessibility audits the planner adds on its own. An audit the planner
+inferred, marked `inferred` because the criterion did not ask for it, has no
+base audit to tell old violations from new ones, so its violations are
+reported as advisory: counted under "advisory" in the comment's
+Accessibility section, with the missing base named as the reason, and the
+criterion decides on its other checks. An audit the criterion asked for
+still decides as it would with any other missing base audit: violations at
+a failing impact leave the criterion unverified, naming why. The planner's
+mark holds only where the criterion's own words say nothing about
+accessibility (accessible, WCAG, contrast, screen reader, keyboard, focus,
+tap targets, alt text, ARIA), so a plan cannot relax an audit a criterion
+asked for by calling it inferred. A base that has a profile and does not
+boot is a different case: its audits stay unverified, because that base is a
+fault and not an onboarding. The advisory outcome is not cached, so the next
+run, with a profile at the base, compares as usual.
+
 ### The build cache
 
 A booted app's images are built on fresh hosted runners with no layer

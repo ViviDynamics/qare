@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { a11yConfigOf, decideA11y, pageOf, type A11yAuditViolation, type A11yFlowAudit } from '../src/index.js'
+import { a11yConfigOf, asksForAccessibility, decideA11y, pageOf, type A11yAuditViolation, type A11yFlowAudit } from '../src/index.js'
 
 const PAGE = ['http:', '//127.0.0.1:3000/settings?tab=profile'].join('')
 
@@ -125,4 +125,22 @@ test('the same violation at two widths is named once in the reason and listed at
   const decision = decideA11y([audit([UNNAMED]), audit([UNNAMED], { width: 390 })], config, { with: 'nothing' })
   expect(decision.reason).toBe('1 accessibility violation: button-name on document/main/button (/settings)')
   expect(decision.findings).toHaveLength(2)
+})
+
+test('with no base profile an inferred audit reports its violations as advisory and passes, naming why (#419)', () => {
+  const baseline = { with: 'base', unavailable: 'no base audit to compare with', advisory: 'the base revision has no usable .qa/ profile' } as const
+  const decision = decideA11y([audit([UNNAMED, violation('region', 'moderate', { target: 'div' })])], config, baseline)
+  expect(decision).toMatchObject({ status: 'passed', transient: true, counts: { new: 0, uncompared: 0, reported: 1, advisory: 1 } })
+  expect(decision.advisory).toBe('1 accessibility violation reported as advisory (button-name on document/main/button (/settings)): the base revision has no usable .qa/ profile')
+  expect(decision.findings[0]).toMatchObject({ status: 'advisory', reason: 'the base revision has no usable .qa/ profile' })
+  // Nothing advisory: no count and no reason.
+  const clean = decideA11y([audit([])], config, baseline)
+  expect(clean).toEqual({ status: 'passed', findings: [], counts: { new: 0, existing: 0, accepted: 0, reported: 0, uncompared: 0 } })
+})
+
+test('a criterion asks for accessibility in its own words, and code reads them (#419)', () => {
+  for (const text of ['the form is accessible', 'meets WCAG 2.2 AA', 'nav links have enough contrast', 'usable with a screen reader', 'reachable by keyboard', 'tap targets are large enough', 'images carry alt text', 'buttons have aria labels'])
+    expect(asksForAccessibility(text), text).toBe(true)
+  for (const text of ['saving the settings shows Saved', 'sign in reaches the dashboard', 'the variable is renamed', undefined])
+    expect(asksForAccessibility(text), String(text)).toBe(false)
 })

@@ -200,7 +200,8 @@ test('an a11y check is carried to the job with its page or its actions, widths a
   )
 
   expect(job.criteria[0]?.checks).toEqual([
-    { kind: 'a11y', name: 'home' },
+    // Whether the planner added the audit travels too (#419).
+    { kind: 'a11y', name: 'home', inferred: true },
     { kind: 'a11y', name: 'settings on a phone', url: '/settings', widths: [390], themes: ['dark'] },
     // Nothing chosen: the run takes the profile's widths and themes.
     { kind: 'a11y', name: 'after sign in', actions },
@@ -233,6 +234,8 @@ test('the job loader validates an a11y check, naming the field (#149)', async ()
   expect(fieldOf({ widths: [0] })).toBe('criteria[0].checks[0].widths[0]')
   expect(fieldOf({ themes: ['a/b'] })).toBe('criteria[0].checks[0].themes[0]')
   expect(fieldOf({ timeoutMs: 0 })).toBe('criteria[0].checks[0].timeoutMs')
+  expect(fieldOf({ inferred: true })).toBe('accepted')
+  expect(fieldOf({ inferred: 'yes' })).toBe('criteria[0].checks[0].inferred')
 })
 
 test('a plan whose criteria are all unrunnable says so', () => {

@@ -54,6 +54,12 @@ interface CriterionComparison {
    */
   a11y?: A11yCounts
   /**
+   * Why this criterion's audits only advised (#419): an audit the planner
+   * inferred, with no base profile to hold its violations against. Its
+   * violations are counted as `advisory` and decided nothing.
+   */
+  a11yAdvisory?: string
+  /**
    * The messages this criterion's mail checks read (#65): sender, subject, an
    * excerpt and its links, swept of addresses and codes. Harness-produced
    * data, never a model's claim. Absent when no mail check read a message.
@@ -918,9 +924,10 @@ function parseCriterionResult(value: unknown, index: number): CriterionResult {
   const cached = value.cached === undefined ? undefined : ({ cached: true } as const)
   const comparison = parseComparison(value, base, outcome as CriterionOutcome)
   const a11y = value.a11y === undefined ? undefined : parseA11yCounts(value.a11y, `${base}.a11y`)
+  const a11yAdvisory = value.a11yAdvisory === undefined ? undefined : nonEmptyString(value.a11yAdvisory, `${base}.a11yAdvisory`, 'a11yAdvisory')
   const mail = value.mail === undefined ? undefined : parseMailProofs(value.mail, `${base}.mail`)
   const text = value.text === undefined ? undefined : nonEmptyString(value.text, `${base}.text`, 'text')
-  const withCached = <T>(record: T): T => ({ ...record, ...(text === undefined ? {} : { text }), ...(cached ?? {}), ...comparison, ...(a11y === undefined ? {} : { a11y }), ...(mail === undefined ? {} : { mail }) })
+  const withCached = <T>(record: T): T => ({ ...record, ...(text === undefined ? {} : { text }), ...(cached ?? {}), ...comparison, ...(a11y === undefined ? {} : { a11y }), ...(a11yAdvisory === undefined ? {} : { a11yAdvisory }), ...(mail === undefined ? {} : { mail }) })
 
   switch (outcome as CriterionOutcome) {
     case 'proven':
@@ -953,15 +960,19 @@ function parseCriterionResult(value: unknown, index: number): CriterionResult {
   }
 }
 
-/** What a criterion's accessibility audits counted (#149): five whole numbers, none below zero. */
+/** What a criterion's accessibility audits counted (#149): five whole numbers, none below zero, and an advisory count when there is one (#419). */
 function parseA11yCounts(value: unknown, base: string): A11yCounts {
   if (!isRecord(value)) fail(base, 'a11y must be a JSON object counting new, existing, accepted, reported and uncompared violations')
-  const count = (key: keyof A11yCounts): number => {
+  const count = (key: Exclude<keyof A11yCounts, 'advisory'>): number => {
     const entry = value[key]
     if (typeof entry !== 'number' || !Number.isInteger(entry) || entry < 0) fail(`${base}.${key}`, `a11y.${key} must be a whole number of at least 0`)
     return entry
   }
-  return { new: count('new'), existing: count('existing'), accepted: count('accepted'), reported: count('reported'), uncompared: count('uncompared') }
+  const counts: A11yCounts = { new: count('new'), existing: count('existing'), accepted: count('accepted'), reported: count('reported'), uncompared: count('uncompared') }
+  const advisory = value.advisory
+  if (advisory === undefined) return counts
+  if (typeof advisory !== 'number' || !Number.isInteger(advisory) || advisory < 0) fail(`${base}.advisory`, 'a11y.advisory must be a whole number of at least 0')
+  return { ...counts, advisory }
 }
 
 /** The messages a criterion's mail checks read (#65): text fields and a list of links. */

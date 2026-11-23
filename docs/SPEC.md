@@ -66,7 +66,11 @@ criterion, what the base showed:
 
 Not compared is never passed and never a regression. A base that has no
 checkout, has no profile, or will not boot is not compared, for every
-criterion, and the result names why once. A check that cannot run at the base
+criterion, and the result names why once. A base with no usable profile (the
+pull request that onboards a repository, #419) also decides one thing at the
+head: an accessibility audit the planner inferred has nothing to hold its
+violations against, so they are advisory and decide nothing (see
+[Accessibility checks](#accessibility-checks)). A check that cannot run at the base
 (the behaviour is new, so what it needs is not there) is not compared for its
 criterion alone. The verdict is the head's: the base side decides only which
 of the head's failures are regressions, so nothing that happens at the base
@@ -627,12 +631,23 @@ fail it.
 | Two sides, and every failing violation was already there at the base | `proven`; each is listed as `existing` |
 | Two sides, and a failing violation the base audit did not have | `failed`, naming the rule and the element; a regression by the rule above |
 | Two sides, failing violations at the head, and no base audit to hold them against (the base did not boot, the profile's `base` limits left the criterion out, its flow stopped earlier) | `unverified`, naming why, never `failed`; not cached (#47) |
+| Two sides, failing violations at the head, the base revision has no usable profile, and the audit is one the planner inferred | `proven` as far as the audit goes: each violation is listed as `advisory`, naming the missing base, and the criterion decides on its other checks; not cached (#419) |
 | One side (a target, #122, or a run nobody asked a base of) and a failing violation | `failed`: nothing excuses it |
 | The audit could not be made (a driver with no audit, axe-core missing, the page threw) | `unverified`, naming why |
 | The flow part failed an assertion, or could not run an action | the flow's own outcome; what was audited on the way is still recorded |
 
 A head with nothing wrong is proven without reading the base: nothing can be
 new on a clean page.
+
+An audit is inferred when the plan marks it `inferred` and the criterion's
+own words do not ask for accessibility (#419). Code reads the words: a
+criterion that says accessible, WCAG, contrast, screen reader, keyboard,
+focus, tap targets, alt text or ARIA asked for the audit whatever the plan
+says, so a plan cannot turn an asked-for audit advisory. Only a base with no
+usable profile makes an inferred audit advisory. A base that has a profile
+and did not boot, or a limit that left the criterion out at the base, is the
+row above, and a run with one side holds an inferred audit as it holds any
+other. A standing audit is the profile's own ask and is never advisory.
 
 Evidence, under the check's directory beside the flow's own: `a11y.json` and
 `a11y/<point>-<width>x<theme>.png`, a full-page screenshot of each audited
@@ -642,15 +657,18 @@ set, impacts and accepted list in force, each audit, and each violation on
 each element: its rule, impact and help text, its status (`new`, `existing`,
 `accepted` with the reason, `reported`, `uncompared`), the page, the
 element's role, accessible name and path from the normalised snapshot (#82),
-its selector, and the screenshot it appears in. An element the snapshot does
+its selector, and the screenshot it appears in. An advisory violation carries
+the reason, and so does the record's `advisory`. An element the snapshot does
 not hold (the document itself, text with no role of its own) is named by its
 selector alone. Markup is not recorded: it is where fixture data leaks. The
 record is redacted like any other evidence, and the audits are swept before
 they are compared, so a redacted name reads the same at both sides.
 
-The criterion's result carries the counts (`a11y`), and the comment lists
-them by criterion under "Accessibility", so violations that fail nothing are
-still reported where the verdict is read.
+The criterion's result carries the counts (`a11y`, with `advisory` only when
+there are advisory violations) and, for advisory ones, why (`a11yAdvisory`).
+The comment lists them by criterion under "Accessibility", with the reason
+for each criterion whose violations were advisory, so violations that fail
+nothing are still reported where the verdict is read.
 
 ### Advisory UX review
 
