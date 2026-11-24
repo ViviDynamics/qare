@@ -367,7 +367,7 @@ test('the planner never sees the seeded values the diff carries (#64)', async ()
   expect(prompt).not.toContain(secret)
   expect(prompt).toContain('[redacted]')
   // The profile's suites reach the planner too, and their commands are swept the same way (#258).
-  expect(prompt).toContain('- sign-in (a flow suite: bin/sign-in --otp-seed [redacted])')
+  expect(prompt).toContain('- sign-in (a flow suite): run it as {"kind":"flow","name":...,"suite":"sign-in"}; qare then runs bin/sign-in --otp-seed [redacted]')
 })
 
 test('qare plan declares the run contract paths to the planner (#162)', async () => {
@@ -920,7 +920,7 @@ test('a profile whose flavour ships no browser is planned with its suites and co
   expect(code).toBe(0)
   const prompt = await nare.prompt()
   expect(prompt).toContain("The checks run in the qare-core image (the profile's flavour is core), which ships no browser")
-  expect(prompt).toContain('- sign-in (a flow suite: bundle exec cucumber features/sign_in.feature)')
+  expect(prompt).toContain('- sign-in (a flow suite): run it as {"kind":"flow","name":...,"suite":"sign-in"}; qare then runs bundle exec cucumber features/sign_in.feature')
   expect(prompt).not.toContain('"kind":"visual"')
   expect(prompt).not.toContain('"actions"')
   expect(out.lines.join('')).toMatch(/flavour is core.*no browser.*flavour: web/)
@@ -969,8 +969,8 @@ test('a profile whose flavour ships a browser plans browser checks as before, an
   expect(prompt).not.toContain('ships no browser')
   expect(prompt).toContain('"kind":"visual"')
   // The profile's suites, and the ones the caller named that it does not declare.
-  expect(prompt).toContain('- sign-in (a flow suite: bundle exec cucumber features/sign_in.feature)')
-  expect(prompt).toContain('- smoke\n')
+  expect(prompt).toContain('- sign-in (a flow suite): run it as {"kind":"flow","name":...,"suite":"sign-in"}; qare then runs bundle exec cucumber features/sign_in.feature')
+  expect(prompt).toContain('- smoke: run it as {"kind":"flow","name":...,"suite":"smoke"}\n')
   expect(prompt.match(/^- sign-in/gm)).toHaveLength(1)
   const plan = JSON.parse(await readFile(join(dir, 'plan.json'), 'utf8')) as { criteria: Array<{ checks?: Array<{ kind: string }> }> }
   expect(plan.criteria.map((criterion) => criterion.checks?.[0]?.kind)).toEqual(['flow', 'visual'])
@@ -997,7 +997,7 @@ test('a suite that takes a filter reaches the planner as one, so a criterion can
 
   expect(code).toBe(0)
   const prompt = await nare.prompt()
-  expect(prompt).toContain('- unit (a command suite: bin/rails test {{test}}) [takes a filter: {{test}} is the test name or path it runs]')
+  expect(prompt).toContain('- unit (a command suite): run it as {"kind":"flow","name":...,"suite":"unit","filter":"the test name or path to run"}; qare then runs bin/rails test {{test}} with {{test}} set to the filter')
   expect(prompt).toMatch(/before any grep of the source/)
   const plan = JSON.parse(await readFile(join(dir, 'plan.json'), 'utf8')) as { criteria: Array<{ checks?: Array<{ suite?: string; filter?: string }> }> }
   expect(plan.criteria[0]?.checks?.[0]).toMatchObject({ suite: 'unit', filter: 'test/models/session_test.rb' })

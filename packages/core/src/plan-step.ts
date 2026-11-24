@@ -307,25 +307,37 @@ const NO_SUITES_CLAIM =
   /\b(?:declares?|declared|defines?|has|have|there\s+(?:is|are)|with)\s+no\s+(?:test\s+)?suites?\b|\bno\s+(?:test\s+)?suites?\s+(?:(?:is|are)\s+)?(?:declared|defined|available|configured|exists?|to\s+run)\b/i
 
 /**
- * An unplannable reason that the declared suites contradict (#414): one that
- * says no suite is declared when the profile declares some, or one that leaves
- * a suite that takes a filter unmentioned, when a named test from it is the
- * check the guidance puts first.
+ * An unplannable reason that says no suite is declared when the profile
+ * declares some (#414): a claim the inputs contradict, so it is corrected and
+ * then refused like any other.
  */
-function suiteClaimGap(plan: Plan, inputs: PlanInputs): string | undefined {
+function noSuitesClaimGap(plan: Plan, inputs: PlanInputs): string | undefined {
   const suites = inputs.suites ?? []
   if (suites.length === 0) return undefined
-  const filtered = suites.filter(takesFilter).map(suiteName)
   for (const criterion of plan.criteria) {
-    if (!('unplannable' in criterion)) continue
-    const reason = criterion.unplannable
-    if (NO_SUITES_CLAIM.test(reason))
+    if ('unplannable' in criterion && NO_SUITES_CLAIM.test(criterion.unplannable))
       return (
         `criterion ${criterion.id} is unplannable because no suite is declared, but the profile declares ${suites.map(suiteName).join(', ')}; ` +
         'plan a flow check naming the suite that covers it, or say why none of them does'
       )
-    const lower = reason.toLowerCase()
-    if (filtered.length > 0 && !filtered.some((name) => lower.includes(name.toLowerCase())))
+  }
+  return undefined
+}
+
+/**
+ * An unplannable reason that leaves a suite that takes a filter unmentioned
+ * (#414), when a named test from it is the check the guidance puts first. Only
+ * a nudge: the planner is asked once, and a second answer stands, since a
+ * criterion no test could show (a page only a browser renders) is rightly
+ * unplannable however the reason is worded.
+ */
+function unnamedFilteredSuiteGap(plan: Plan, inputs: PlanInputs): string | undefined {
+  const filtered = (inputs.suites ?? []).filter(takesFilter).map(suiteName)
+  if (filtered.length === 0) return undefined
+  for (const criterion of plan.criteria) {
+    if (!('unplannable' in criterion)) continue
+    const reason = criterion.unplannable.toLowerCase()
+    if (!filtered.some((name) => reason.includes(name.toLowerCase())))
       return (
         `criterion ${criterion.id} is unplannable without saying why ${filtered.join(', ')}, ` +
         `${filtered.length === 1 ? 'a suite that takes a filter, has' : 'suites that take a filter, have'} no test that covers it; ` +
@@ -1838,7 +1850,7 @@ async function planTurns(
       correction = `${filterGap}.`
       continue
     }
-    const claim = suiteClaimGap(plan, inputs)
+    const claim = noSuitesClaimGap(plan, inputs)
     if (claim !== undefined) {
       correction = `${claim}.`
       continue
@@ -1884,6 +1896,13 @@ async function planTurns(
     const unseen = exploredGap(plan, inputs)
     if (unseen !== undefined) {
       correction = `${unseen}.`
+      continue
+    }
+    // A nudge, not a refusal (#414), and last, so it never spends the one
+    // correction a refusing gap needs: on the last attempt the answer stands.
+    const unnamed = attempt === 0 ? unnamedFilteredSuiteGap(plan, inputs) : undefined
+    if (unnamed !== undefined) {
+      correction = `${unnamed}.`
       continue
     }
     return plan

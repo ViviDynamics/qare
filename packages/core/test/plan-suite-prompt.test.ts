@@ -111,7 +111,7 @@ test('with no suites declared, a reason saying so stands', async () => {
   expect(plan.criteria[0]).toMatchObject({ unplannable: 'The repository declares no suites, so nothing runs the test.' })
 })
 
-test('an unplannable criterion while a filtered suite is declared must say why that suite does not apply', async () => {
+test('an unplannable criterion while a filtered suite is declared is asked once why that suite does not apply', async () => {
   const silent = 'Nothing could observe this.'
   const why = 'pytest has no test for the portfolio page, so no filter names one.'
   const runner = new FakeAgentRunner([completed(answer({ unplannable: silent })), completed(answer({ unplannable: why }))])
@@ -123,6 +123,24 @@ test('an unplannable criterion while a filtered suite is declared must say why t
   )
   expect(plan.criteria[0]).toMatchObject({ unplannable: why })
   expect(runner.requests[0].prompt).toMatch(/unplannable while a suite that takes a filter is declared/)
+
+  // Asked once: a criterion no test could show is rightly unplannable, so a second answer stands.
+  const stubborn = new FakeAgentRunner([completed(answer({ unplannable: silent })), completed(answer({ unplannable: silent }))])
+  const kept = await planRun(stubborn, COMMAND_ONLY)
+  expect(kept.criteria[0]).toMatchObject({ unplannable: silent })
+  expect(stubborn.requests).toHaveLength(2)
+})
+
+test('the nudge to name a filtered suite never spends the correction a refused answer needs', async () => {
+  const bad = { kind: 'flow', name: 'smoke', suite: 'smoke', filter: 'tests/test_smoke.py' }
+  const runner = new FakeAgentRunner([
+    completed(answer({ unplannable: 'Nothing could observe this.' }, { checks: [bad] })),
+    completed(answer({ checks: [NAMED_TEST] })),
+  ])
+
+  await planRun(runner, COMMAND_ONLY)
+
+  expect(runner.requests[1].prompt).toContain('takes no filter')
 })
 
 test('without a filtered suite, an unplannable reason need not name a suite', async () => {
