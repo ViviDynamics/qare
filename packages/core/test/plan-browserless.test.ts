@@ -99,8 +99,8 @@ test('without a browser the planner is offered suites, commands and mail, and no
   expect(request.prompt).toMatch(/ships no browser/)
   expect(request.prompt).toMatch(/suite or a command/)
   // The suites are named with what they run, so the planner can tell which covers a criterion.
-  expect(request.prompt).toContain('- sign-in (a flow suite: bundle exec cucumber features/sign_in.feature)')
-  expect(request.prompt).toContain('- unit (a command suite: bin/rails test)')
+  expect(request.prompt).toContain('- sign-in (a flow suite): run it as {"kind":"flow","name":...,"suite":"sign-in"}; qare then runs bundle exec cucumber features/sign_in.feature')
+  expect(request.prompt).toContain('- unit (a command suite): run it as {"kind":"flow","name":...,"suite":"unit"}; qare then runs bin/rails test')
 })
 
 test('with no suites declared and no browser, a flow is not offered at all', async () => {
@@ -171,6 +171,6 @@ test('a suite command reaches the planner redacted, by the built-in rules and th
   const [request] = runner.requests
   expect(request.prompt).not.toContain('hunter2-live-value')
   expect(request.prompt).not.toContain('fixture-account-7781')
-  expect(request.prompt).toContain('- sign-in (a flow suite: bundle exec cucumber features/sign_in.feature API_TOKEN=[redacted])')
-  expect(request.prompt).toContain('- billing (a flow suite: bin/billing --account [redacted])')
+  expect(request.prompt).toContain('- sign-in (a flow suite): run it as {"kind":"flow","name":...,"suite":"sign-in"}; qare then runs bundle exec cucumber features/sign_in.feature API_TOKEN=[redacted]')
+  expect(request.prompt).toContain('- billing (a flow suite): run it as {"kind":"flow","name":...,"suite":"billing"}; qare then runs bin/billing --account [redacted]')
 })

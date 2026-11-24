@@ -46,8 +46,8 @@ test('the planner is told which suites take a filter, and to prefer a named test
   await planRun(runner, INPUTS)
 
   const [request] = runner.requests
-  expect(request.prompt).toContain(`- rspec (a command suite: ${RSPEC}) [takes a filter: {{test}} is the test name or path it runs]`)
-  expect(request.prompt).toContain('- sign-in (a flow suite: bundle exec cucumber features/sign_in.feature)\n')
+  expect(request.prompt).toContain(`- rspec (a command suite): run it as {"kind":"flow","name":...,"suite":"rspec","filter":"the test name or path to run"}; qare then runs ${RSPEC} with {{test}} set to the filter`)
+  expect(request.prompt).toContain('- sign-in (a flow suite): run it as {"kind":"flow","name":...,"suite":"sign-in"}; qare then runs bundle exec cucumber features/sign_in.feature\n')
   expect(request.prompt).toContain('{"kind":"flow","name":...,"suite":"a suite that takes a filter","filter":"the test name or path to run"}')
   expect(request.prompt).toMatch(/criterion about what the code does.*suite check whose filter names a test/s)
   expect(request.prompt).toMatch(/before any grep/)
