@@ -248,13 +248,35 @@ function suiteName(suite: string | PlanSuite): string {
  * A suite's command crosses to the model like QA.md does, so it is swept by
  * the same rules first: a token or a fixture value written into a command
  * never reaches the prompt (#258).
+ *
+ * Each suite is shown as the flow check that runs it (#421), whatever its
+ * kind: shown as "a command suite: docker compose ...", a suite read as a raw
+ * command the planner may not run, and it refused one it could have named.
  */
 function suiteLine(suite: string | PlanSuite, rules: readonly RedactionRule[]): string {
-  if (typeof suite === 'string') return `- ${suite}`
+  if (typeof suite === 'string') return `- ${suite}: run it as {"kind":"flow","name":...,"suite":${JSON.stringify(suite)}}`
+  const kind = suite.kind === undefined ? '' : ` (a ${suite.kind} suite)`
+  const filter = suite.filter === undefined ? '' : ',"filter":"the test name or path to run"'
+  const check = `run it as {"kind":"flow","name":...,"suite":${JSON.stringify(suite.name)}${filter}}`
   const command = suite.command === undefined ? undefined : redactText(suite.command, rules)
-  const what = [suite.kind === undefined ? undefined : `a ${suite.kind} suite`, command].filter((part) => part !== undefined)
-  const filter = suite.filter === undefined ? '' : ` [takes a filter: {{${suite.filter}}} is the test name or path it runs]`
-  return `${what.length === 0 ? `- ${suite.name}` : `- ${suite.name} (${what.join(': ')})`}${filter}`
+  const runs =
+    command === undefined
+      ? ''
+      : `; qare then runs ${command}${suite.filter === undefined ? '' : ` with {{${suite.filter}}} set to the filter`}`
+  return `- ${suite.name}${kind}: ${check}${runs}`
+}
+
+/** What the planner is told of every declared suite, before the list (#421). */
+function suitesBlock(inputs: PlanInputs): string {
+  if (!inputs.suites?.length) return 'This repository declares no suites, so every check must stand on its own.'
+  return [
+    "Suites this repository declares. A check runs a suite by naming it in a flow check, whatever the suite's kind",
+    "(command, flow or visual), and qare runs the suite's own command for it, where the project runs its tests.",
+    "Never copy a suite's command into a command check, and never pass over a suite because its command is one",
+    'a command check could not run: naming the suite is how it runs.',
+    'A criterion naming a test, a test file or a suite is planned with the suite that runs it.',
+    ...inputs.suites.map((suite) => suiteLine(suite, redactionRules(inputs.redact))),
+  ].join('\n')
 }
 
 /**
@@ -273,8 +295,56 @@ function suiteFilterGuidance(inputs: PlanInputs): string[] {
     'the test shows the behaviour, while a grep shows only that some text is there, and a wrong pattern fails a criterion that holds.',
     'Plan a grep only for a criterion about the text itself, or when no declared test covers the criterion.',
     'A suite that takes a filter is always given one, and a suite that takes none is never given one.',
+    // #414: one run planned the filtered suite, the next marked the same criterion unplannable without it.
+    'A criterion you mark unplannable while a suite that takes a filter is declared names that suite in its reason,',
+    'and says why none of its tests covers the criterion.',
     '',
   ]
+}
+
+/** A reason that says the repository declares no suites (#414). */
+const NO_SUITES_CLAIM =
+  /\b(?:declares?|declared|defines?|has|have|there\s+(?:is|are)|with)\s+no\s+(?:test\s+)?suites?\b|\bno\s+(?:test\s+)?suites?\s+(?:(?:is|are)\s+)?(?:declared|defined|available|configured|exists?|to\s+run)\b/i
+
+/**
+ * An unplannable reason that says no suite is declared when the profile
+ * declares some (#414): a claim the inputs contradict, so it is corrected and
+ * then refused like any other.
+ */
+function noSuitesClaimGap(plan: Plan, inputs: PlanInputs): string | undefined {
+  const suites = inputs.suites ?? []
+  if (suites.length === 0) return undefined
+  for (const criterion of plan.criteria) {
+    if ('unplannable' in criterion && NO_SUITES_CLAIM.test(criterion.unplannable))
+      return (
+        `criterion ${criterion.id} is unplannable because no suite is declared, but the profile declares ${suites.map(suiteName).join(', ')}; ` +
+        'plan a flow check naming the suite that covers it, or say why none of them does'
+      )
+  }
+  return undefined
+}
+
+/**
+ * An unplannable reason that leaves a suite that takes a filter unmentioned
+ * (#414), when a named test from it is the check the guidance puts first. Only
+ * a nudge: the planner is asked once, and a second answer stands, since a
+ * criterion no test could show (a page only a browser renders) is rightly
+ * unplannable however the reason is worded.
+ */
+function unnamedFilteredSuiteGap(plan: Plan, inputs: PlanInputs): string | undefined {
+  const filtered = (inputs.suites ?? []).filter(takesFilter).map(suiteName)
+  if (filtered.length === 0) return undefined
+  for (const criterion of plan.criteria) {
+    if (!('unplannable' in criterion)) continue
+    const reason = criterion.unplannable.toLowerCase()
+    if (!filtered.some((name) => reason.includes(name.toLowerCase())))
+      return (
+        `criterion ${criterion.id} is unplannable without saying why ${filtered.join(', ')}, ` +
+        `${filtered.length === 1 ? 'a suite that takes a filter, has' : 'suites that take a filter, have'} no test that covers it; ` +
+        'plan a flow check whose filter names the test, or name the suite in the reason and say why none of its tests applies'
+      )
+  }
+  return undefined
 }
 
 /**
@@ -725,9 +795,7 @@ function prompt(inputs: PlanInputs, correction?: string): string {
   const noBrowser = inputs.noBrowser
   // Nothing a browser serves is offered when there is none to launch (#258).
   const unserved = noBrowser === undefined ? undeclaredCheckKinds(inputs.driver) : [...DRIVER_CHECK_KINDS]
-  const suites = inputs.suites?.length
-    ? `Suites this repository declares, which a check may name:\n${inputs.suites.map((suite) => suiteLine(suite, redactionRules(inputs.redact))).join('\n')}`
-    : 'This repository declares no suites, so every check must stand on its own.'
+  const suites = suitesBlock(inputs)
   const qaMd =
     inputs.qaMd === undefined
       ? undefined
@@ -1713,6 +1781,9 @@ async function planTurns(
   spend: (usage: ModelUsage | undefined) => void,
 ): Promise<Plan> {
   let correction: string | undefined
+  // A plan that passed every refusing check, held while the planner is nudged
+  // to name a filtered suite (#414): the nudge may improve it, never lose it.
+  let nudged: Plan | undefined
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const run = await runner.run({
       prompt: prompt(inputs, correction),
@@ -1740,6 +1811,8 @@ async function planTurns(
         'Keep every requested criterion and all required assertions; mark a criterion unplannable if no executable check can prove it.'
       continue
     }
+    if (nudged !== undefined && (run.status !== 'completed' || run.stopReason === 'max_tokens' || typeof run.output !== 'string'))
+      return nudged
     if (run.status !== 'completed' || run.stopReason === 'max_tokens')
       throw new PlanStepError(
         `the planning run did not complete (stop reason ${stopDetail(run.stopReason, budget)}), so there is no plan` +
@@ -1780,6 +1853,11 @@ async function planTurns(
     const filterGap = suiteFilterGap(plan, inputs)
     if (filterGap !== undefined) {
       correction = `${filterGap}.`
+      continue
+    }
+    const claim = noSuitesClaimGap(plan, inputs)
+    if (claim !== undefined) {
+      correction = `${claim}.`
       continue
     }
     const interpreter = interpreterGap(plan, inputs)
@@ -1825,8 +1903,17 @@ async function planTurns(
       correction = `${unseen}.`
       continue
     }
+    // A nudge, not a refusal (#414), and last, so it never spends the one
+    // correction a refusing gap needs: on the last attempt the answer stands.
+    const unnamed = attempt === 0 ? unnamedFilteredSuiteGap(plan, inputs) : undefined
+    if (unnamed !== undefined) {
+      correction = `${unnamed}.`
+      nudged = plan
+      continue
+    }
     return plan
   }
+  if (nudged !== undefined) return nudged
 
   throw new PlanStepError(`the model could not produce a usable plan: ${correction}`)
 }

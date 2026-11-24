@@ -619,6 +619,15 @@ things hold:
   filter, so a ledger `suite:<name>` reference to one is unverified: declare a
   second suite without a filter for a whole-suite run.
 
+  Every suite, whatever its `kind`, is shown to the planner as the flow check
+  that runs it, with the command qare then runs, so a `kind: command` suite is
+  never mistaken for a command check (#421). A plan that marks a criterion
+  unplannable because "no suites are declared" while the profile declares some
+  is corrected, then refused. One that marks a criterion unplannable while a
+  suite takes a filter, without naming that suite, is asked once to say why
+  none of its tests covers it; its second answer stands, since a criterion only
+  a browser could show is rightly unplannable (#414).
+
 - **The seed runs inside the booted service the same way.** The run executes
   `app.seed.command` once the app is healthy and before any check. It runs
   inside the run image, where your application's runtime is not, so a seed
