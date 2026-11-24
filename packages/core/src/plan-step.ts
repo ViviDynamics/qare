@@ -1781,6 +1781,9 @@ async function planTurns(
   spend: (usage: ModelUsage | undefined) => void,
 ): Promise<Plan> {
   let correction: string | undefined
+  // A plan that passed every refusing check, held while the planner is nudged
+  // to name a filtered suite (#414): the nudge may improve it, never lose it.
+  let nudged: Plan | undefined
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const run = await runner.run({
       prompt: prompt(inputs, correction),
@@ -1808,6 +1811,8 @@ async function planTurns(
         'Keep every requested criterion and all required assertions; mark a criterion unplannable if no executable check can prove it.'
       continue
     }
+    if (nudged !== undefined && (run.status !== 'completed' || run.stopReason === 'max_tokens' || typeof run.output !== 'string'))
+      return nudged
     if (run.status !== 'completed' || run.stopReason === 'max_tokens')
       throw new PlanStepError(
         `the planning run did not complete (stop reason ${stopDetail(run.stopReason, budget)}), so there is no plan` +
@@ -1903,10 +1908,12 @@ async function planTurns(
     const unnamed = attempt === 0 ? unnamedFilteredSuiteGap(plan, inputs) : undefined
     if (unnamed !== undefined) {
       correction = `${unnamed}.`
+      nudged = plan
       continue
     }
     return plan
   }
+  if (nudged !== undefined) return nudged
 
   throw new PlanStepError(`the model could not produce a usable plan: ${correction}`)
 }

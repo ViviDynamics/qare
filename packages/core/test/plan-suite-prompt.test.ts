@@ -151,3 +151,19 @@ test('without a filtered suite, an unplannable reason need not name a suite', as
   expect(plan.criteria[0]).toMatchObject({ unplannable: 'Nothing could observe this.' })
   expect(runner.requests).toHaveLength(1)
 })
+
+test('a nudged plan is kept when the answer to the nudge is refused', async () => {
+  const silent = 'Nothing could observe this.'
+  const runner = new FakeAgentRunner([
+    completed(answer({ unplannable: silent })),
+    completed(answer({ checks: [{ kind: 'flow', name: 'smoke', suite: 'smoke', filter: 'tests/test_smoke.py' }] })),
+  ])
+
+  const plan = await planRun(runner, COMMAND_ONLY)
+
+  expect(runner.requests).toHaveLength(2)
+  expect(plan.criteria).toMatchObject([{ id: 'c1', unplannable: silent }, { id: 'c2', checks: [SMOKE_CHECK] }])
+
+  const failed = new FakeAgentRunner([completed(answer({ unplannable: silent })), { status: 'failed', stopReason: 'error', usage: { inputTokens: 1, outputTokens: 0 }, output: undefined, error: 'proxy' }])
+  expect((await planRun(failed, COMMAND_ONLY)).criteria[0]).toMatchObject({ unplannable: silent })
+})
