@@ -148,6 +148,13 @@ export interface PlannedCriterion {
    * would silently ignore it.
    */
   profile?: string
+  /**
+   * Why the checks are not of the proof type the criterion's text names
+   * (#423): a criterion tagged (http) planned with a suite because only a
+   * signed-in request could show it, say. The planner writes it; the plan
+   * step refuses an (http) criterion with no http check and no proofNote.
+   */
+  proofNote?: string
 }
 
 export interface UnplannableCriterion {
@@ -354,6 +361,8 @@ function parseCriterion(value: unknown, index: number, extraFlowActions: readonl
     fail(base, `criterion "${id}" maps to no checks; carry a checks array or an unplannable reason`)
   if (hasChecks && hasUnplannable)
     fail(base, `criterion "${id}" carries both checks and unplannable; a criterion is planned or unplannable, not both`)
+  if (hasUnplannable && value.proofNote !== undefined)
+    fail(`${base}.proofNote`, `criterion "${id}" is unplannable, so it has no checks for a proofNote to explain; its unplannable reason says why`)
   if (hasUnplannable)
     return {
       id,
@@ -374,6 +383,7 @@ function parseCriterion(value: unknown, index: number, extraFlowActions: readonl
     checks: value.checks.map((check, checkIndex) => parseCheck(check, `${base}.checks[${checkIndex}]`, extraFlowActions)),
     ...(value.isolated === undefined ? {} : { isolated: value.isolated as boolean }),
     ...(profile === undefined ? {} : { profile }),
+    ...(value.proofNote === undefined ? {} : { proofNote: nonEmptyString(value.proofNote, `${base}.proofNote`, 'proofNote') }),
   }
 }
 
