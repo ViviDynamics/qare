@@ -818,6 +818,15 @@ running app answers, and to keep a named test from a suite for behaviour
 inside the code that no request shows. A planned http check with nothing to
 address is corrected.
 
+A criterion whose text ends in `(http)` names an http check as its proof
+(#423). Where the kind is offered, the planner is told to plan one for it, or
+to keep other checks and write why in the criterion's `proofNote` (for
+example, that only a signed-in request shows it). The plan step corrects, then
+refuses, a tagged criterion planned with no http check and no `proofNote`. The
+tag is read from the criterion as asked, not from the model's copy of it.
+`proofNote` is an optional non-empty string on a planned criterion, and the
+loader refuses one on an unplannable criterion, whose reason already says why.
+
 ### Mail checks
 
 A `mail` check waits for one message at an address and reads it. The address

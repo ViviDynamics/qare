@@ -675,6 +675,7 @@ function planSchemaOver(checkKinds: string[], kinds: string[]) {
           id: { type: 'string' },
           text: { type: 'string' },
           unplannable: { type: 'string' },
+          proofNote: { type: 'string' },
           checks: {
             type: 'array',
             items: {
@@ -1078,8 +1079,35 @@ function httpGuidance(): string[] {
     'JSON value. Prefer it to a command and to a grep of the source for that behaviour. A named test from a suite stays the check for',
     'behaviour inside the code that no request shows. The run adds no credential to a request and none may be written into one:',
     'a criterion that only a signed-in request can show is planned with a declared suite or command, or marked unplannable.',
+    // #423: across four runs the planner gave (http) criteria a whole test file and never a request.
+    'A criterion that ends in (http) names an http check as its proof: plan one that sends the request the criterion describes and',
+    'expects the status, headers or JSON it names. If no http check can show it, plan the check that can and write why in the',
+    'criterion\'s "proofNote", such as that only a signed-in request shows it; a plan that does neither is refused.',
     '',
   ]
+}
+
+/** A criterion whose text ends in the (http) tag, the proof type its author named (#423). */
+const HTTP_TAG = /\(\s*http\s*\)[\s.]*$/i
+
+/**
+ * A criterion tagged (http) planned with no http check and no proofNote
+ * saying why (#423), where an http check could have been planned: the
+ * criterion names its proof, and a suite in its place is a different proof.
+ */
+function httpTagGap(plan: Plan, inputs: PlanInputs): string | undefined {
+  if (!httpOffered(inputs)) return undefined
+  // The tag is read from the criterion as asked, never from the model's copy of it.
+  const tagged = new Set(inputs.criteria.filter((criterion) => HTTP_TAG.test(criterion.text)).map((criterion) => criterion.id))
+  for (const criterion of plan.criteria) {
+    if (!('checks' in criterion) || !tagged.has(criterion.id)) continue
+    if (criterion.checks.some((check) => check.kind === 'http') || criterion.proofNote !== undefined) continue
+    return (
+      `criterion ${criterion.id} is tagged (http), but none of its checks is an http check and its proofNote does not say why; ` +
+      'plan an http check that sends the request it describes, or keep the checks and write in "proofNote" why no request shows it'
+    )
+  }
+  return undefined
 }
 
 /**
@@ -1848,6 +1876,11 @@ async function planTurns(
     const http = httpGap(plan, inputs)
     if (http !== undefined) {
       correction = `${http}. Plan the criterion with a command or a declared suite, or mark it unplannable.`
+      continue
+    }
+    const httpTag = httpTagGap(plan, inputs)
+    if (httpTag !== undefined) {
+      correction = `${httpTag}.`
       continue
     }
     const filterGap = suiteFilterGap(plan, inputs)
