@@ -50,7 +50,7 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   jq -nc '{schema:"PREFLIGHT_RESULT", state:"refused", reason:"uncommitted changes: commit first so the result describes HEAD"}'; exit 4
 fi
 table="$VIVI_ROOT/${VIVI_TEST_COMMANDS_FILE:-.agents/test-commands.md}"
-[ -f "$table" ] || vivi_die 2 "test commands file not found: $table (see ADOPTING.md)"
+[ -f "$table" ] || vivi_die 2 "test commands file not found: $table (create it: a table of Area, Paths, Command)"
 base_ref="origin/$VIVI_DEFAULT_BRANCH"
 git rev-parse -q --verify "$base_ref^{commit}" >/dev/null || vivi_die 2 "$base_ref not found: git fetch origin $VIVI_DEFAULT_BRANCH first"
 base_sha=$(git merge-base HEAD "$base_ref")

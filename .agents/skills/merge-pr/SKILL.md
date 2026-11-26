@@ -1,7 +1,7 @@
 ---
 name: merge-pr
 description: Use when a pull request looks ready to merge, when mergeStateStatus shows BLOCKED or BEHIND with green checks, or when deciding whether a stacked child PR can merge ahead of its parent.
-license: Proprietary
+license: Elastic-2.0
 compatibility: Requires gh, jq, git and a committed repo.env.example in the consumer repo. Scripts are bash 3.2 compatible.
 metadata:
   version: "1.4.0"
@@ -33,7 +33,7 @@ merge (ViviDynamics/elm#3867). This check, at merge time, does the same job for 
 when it is ready.
 
 `merge-verified` enforces it with exact SHAs, never timestamps. `VIVI_MERGE_FRESHNESS`
-(ADOPTING.md) says how fresh is proven: `record` (default), `contains`, or `off`.
+(repo.env.example) says how fresh is proven: `record` (default), `contains`, or `off`.
 
 - **Fresh:** the head already contains the current default branch, or (`record`) the run
   recorded the merge it tested, in a CI step named `Record the tested merge <sha>`, and

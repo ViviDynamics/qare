@@ -1,8 +1,8 @@
 ---
 name: ship-issue
 description: Use when a GitHub issue should go all the way to a merged PR without a human in the loop, including when invoked by an unattended session or orchestrator.
-license: Proprietary
-compatibility: Requires gh, jq, git and a committed repo.env.example in the consumer repo (see ADOPTING.md). Scripts are bash 3.2 compatible.
+license: Elastic-2.0
+compatibility: Requires gh, jq, git and a committed repo.env.example (the conventions skill says how). Scripts are bash 3.2 compatible.
 metadata:
   version: "2.2.0"
   owner: Vivi Dynamics
@@ -267,7 +267,7 @@ write, not when the PR opens. Another agent may be minutes into the same issue.
 
     $S/claim <issue>
 
-It assigns the issue to `VIVI_ASSIGNEE` (see ADOPTING.md), or to the token's own login
+It assigns the issue to `VIVI_ASSIGNEE` (see the conventions skill), or to the token's own login
 when that is unset, and reads the assignment back. It also adds every label in
 `VIVI_CLAIM_LABELS` and, when `VIVI_PROJECT_OWNER` and `VIVI_PROJECT_NUMBER` are set,
 the project board item, so the issue shows up where the team looks. A label or board

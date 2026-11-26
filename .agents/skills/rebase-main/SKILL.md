@@ -1,7 +1,7 @@
 ---
 name: rebase-main
 description: Use when a feature branch has a merge conflict with the default branch, or when the default branch holds a fix a failing lane needs. Rebases, resolves conflicts, re-runs the affected tests, force-pushes with lease, and logs the rebase on the PR.
-license: Proprietary
+license: Elastic-2.0
 compatibility: Requires gh, jq, git and a committed repo.env.example in the consumer repo. Scripts are bash 3.2 compatible.
 metadata:
   version: "1.0.0"

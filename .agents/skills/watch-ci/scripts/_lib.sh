@@ -57,13 +57,13 @@ vivi_load_env() {
   if [ -f "$base" ]; then
     _vivi_read_env "$base" all
     if [ "${VIVI_TEMPLATE:-}" = true ]; then
-      vivi_die 2 "$base is the unedited template from ViviDynamics/skills (VIVI_TEMPLATE=true): fill in this repository's values and delete the VIVI_TEMPLATE line (see ADOPTING.md)"
+      vivi_die 2 "$base is the unedited template from ViviDynamics/skills (VIVI_TEMPLATE=true): fill in this repository's values and delete the VIVI_TEMPLATE line"
     fi
     if [ -f "$file" ]; then _vivi_read_env "$file" personal; fi
   elif [ -f "$file" ]; then
     _vivi_read_env "$file" all
   else
-    vivi_die 2 "no repo.env.example at $base (commit one with this repository's settings; see ADOPTING.md)"
+    vivi_die 2 "no repo.env.example at $base (commit one with this repository's settings)"
   fi
   if [ -n "$env_assignee" ]; then export VIVI_ASSIGNEE="$env_assignee"; fi
   export VIVI_ROOT="$root"
@@ -195,14 +195,10 @@ vivi_require() {
 # CI, or when gh has auth configured (gh auth status succeeds). Dies with
 # exit 2 only when no file, no env token, and gh has no auth.
 vivi_token_file() {
-  local org
   if [ -n "${VIVI_GH_TOKEN_FILE:-}" ] && [ -f "$VIVI_GH_TOKEN_FILE" ]; then echo "$VIVI_GH_TOKEN_FILE"; return; fi
-  if [ -f "$HOME/Workspaces/.gh_token" ]; then echo "$HOME/Workspaces/.gh_token"; return; fi
-  org=${VIVI_REPO%%/*}
-  if [ -n "$org" ] && [ -f "$HOME/Workspaces/$org/.gh_token" ]; then echo "$HOME/Workspaces/$org/.gh_token"; return; fi
   if [ -n "${GH_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ]; then echo ""; return; fi
   if gh auth status >/dev/null 2>&1; then echo ""; return; fi
-  vivi_die 2 "no GitHub token file found (VIVI_GH_TOKEN_FILE, ~/Workspaces/.gh_token, ~/Workspaces/<org>/.gh_token), no GH_TOKEN/GITHUB_TOKEN in the environment, and gh has no configured auth"
+  vivi_die 2 "no GitHub token: set VIVI_GH_TOKEN_FILE in repo.env to a readable file, or GH_TOKEN/GITHUB_TOKEN in the environment, or configure gh auth"
 }
 
 # VIVI_SLEEP is a test-only override: the test harness sets it to 0 so poll

@@ -26,8 +26,11 @@ jobs:
       - name: Check the scripts parse
         run: |
           for f in .agents/skills/ci-safety/scripts/*; do
-            case "$f" in *.json) continue;; esac
-            bash -n "$f"
+            case "$f" in
+              *.json) continue;;
+              *.mjs) node --check "$f";;
+              *) bash -n "$f";;
+            esac
           done
 
   quality-guard:

@@ -1,7 +1,7 @@
 ---
 name: ci-safety
 description: Use when reading CI state, deciding whether a CI failure is a flake, retrying a GitHub Actions run, or writing any poll loop over CI. Background rules for watch-ci, merge-pr, and ship-issue.
-license: Proprietary
+license: Elastic-2.0
 compatibility: Requires gh, jq, git. Scripts are bash 3.2 compatible.
 metadata:
   version: "1.3.0"
@@ -10,8 +10,7 @@ metadata:
 
 # CI safety
 
-Ground rules for touching CI. Each rule exists because breaking it cost hours; the
-incidents are in `references/incidents.md` (read that file, do not execute it). The
+Ground rules for touching CI. Each rule exists because breaking it cost hours. The
 scripts in `scripts/` enforce most rules mechanically. Where a rule is enforced by a
 script, your job is to run the script and read its JSON, not to re-derive the check.
 

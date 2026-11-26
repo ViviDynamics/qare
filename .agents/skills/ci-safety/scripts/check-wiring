@@ -17,7 +17,7 @@ if [ ! -f "$root/repo.env.example" ]; then
   [ -f "$root/repo.env" ] || finish
 fi
 if grep -qE '^VIVI_ASSIGNEE="?[A-Za-z0-9]' "$root/repo.env.example" 2>/dev/null; then
-  add "repo.env.example sets VIVI_ASSIGNEE; leave it empty so each contributor sets their own login (see ADOPTING.md)"
+  add "repo.env.example sets VIVI_ASSIGNEE; leave it empty so each contributor sets their own login in repo.env"
 fi
 if grep -qE '^VIVI_TEMPLATE=true' "$root/repo.env.example" 2>/dev/null; then
   add "repo.env.example is the unedited ViviDynamics/skills template: fill in this repository's values and delete the VIVI_TEMPLATE line"
