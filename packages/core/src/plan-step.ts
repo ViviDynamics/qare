@@ -275,6 +275,9 @@ function suitesBlock(inputs: PlanInputs): string {
     "Never copy a suite's command into a command check, and never pass over a suite because its command is one",
     'a command check could not run: naming the suite is how it runs.',
     'A criterion naming a test, a test file or a suite is planned with the suite that runs it.',
+    // #429: the (command) tag held the planner to a command check, and it gave up on a criterion a suite proves.
+    'A criterion tagged (command) that names a test or a test file is proven by the flow check that runs its suite:',
+    "a suite runs the project's own command, so that check is the command the tag asks for.",
     ...inputs.suites.map((suite) => suiteLine(suite, redactionRules(inputs.redact))),
   ].join('\n')
 }
@@ -1222,14 +1225,106 @@ function interpreterGap(plan: Plan, inputs: PlanInputs): string | undefined {
   return undefined
 }
 
-function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
-  // The allowlist follows the run contract, not the declared commands: a
-  // profile may declare none, and then every standard tool is the only
-  // executable a command check may run.
+/**
+ * The programs a command check may run (#156, #162), or undefined when the
+ * run contract sets no allowlist. The allowlist follows the run contract, not
+ * the declared commands: a profile may declare none, and then every standard
+ * tool is the only executable a command check may run.
+ */
+function allowedPrograms(inputs: PlanInputs): Set<string> | undefined {
   if (inputs.runInputs === undefined && inputs.commands === undefined) return undefined
-  const declared = new Set(
-    Object.values(inputs.commands ?? {}).map((command) => command.run.split(/\s+/).find((token) => token !== '')),
-  )
+  const declared = Object.values(inputs.commands ?? {}).map((command) => command.run.split(/\s+/).find((token) => token !== ''))
+  return new Set([...declared.filter((program): program is string => program !== undefined), ...EXECUTE_PATH_TOOLS])
+}
+
+/** Whether the runner would refuse this command: shell syntax it does not interpret, or a program it may not run. */
+function refusedCommand(command: string, inputs: PlanInputs): boolean {
+  if (commandContractViolation(command) !== undefined) return true
+  const program = command.split(/\s+/).find((token) => token !== '')
+  const allowed = allowedPrograms(inputs)
+  return program !== undefined && allowed !== undefined && !allowed.has(program)
+}
+
+function tokens(command: string): string[] {
+  return command.split(/\s+/).filter((token) => token !== '')
+}
+
+/** A suite token matches a check token; a placeholder in it ({{run.id}}) matches anything. */
+function suiteTokenMatches(suiteToken: string, token: string): boolean {
+  if (!suiteToken.includes('{{')) return suiteToken === token
+  const pattern = suiteToken
+    .split(/\{\{[^}]*\}\}/)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('.+')
+  return new RegExp(`^${pattern}$`).test(token)
+}
+
+/**
+ * The declared suite whose own command a command check copies (#429): the
+ * check starts with the suite's program and arguments, up to the token its
+ * filter fills, with any other placeholder matching whatever the planner
+ * wrote there. A suite that is the whole command wins over a filtered one.
+ * The filter is the check's token where the suite's filter goes, when the
+ * suite takes one.
+ */
+function copiedSuite(command: string, suites: readonly (string | PlanSuite)[]): { suite: PlanSuite; filter?: string } | undefined {
+  const check = tokens(command)
+  let prefixed: { suite: PlanSuite; filter?: string } | undefined
+  for (const suite of suites) {
+    if (typeof suite === 'string' || suite.command === undefined) continue
+    const own = tokens(suite.command)
+    const at = suite.filter === undefined ? -1 : own.findIndex((token) => token.includes(`{{${suite.filter}}}`))
+    const prefix = at === -1 ? own : own.slice(0, at)
+    // A program alone is no copy of a suite: that is the hint unknownProgramGap gives.
+    if (prefix.length < 2 || check.length < prefix.length) continue
+    if (!prefix.every((token, index) => suiteTokenMatches(token, check[index]!))) continue
+    if (at === -1) {
+      if (check.length === own.length) return { suite }
+      prefixed ??= { suite }
+      continue
+    }
+    const filter = check[at]
+    prefixed ??= filter === undefined || suiteFilterViolation(filter) !== undefined ? { suite } : { suite, filter }
+  }
+  return prefixed
+}
+
+/**
+ * A command check the runner would refuse that copies a declared suite's own
+ * command (#429): corrected by naming the suite and the flow check that runs
+ * it, which is how that command runs, instead of being told only to use a
+ * declared command or a standard tool. A command the runner accepts is left
+ * as the planner wrote it.
+ */
+function suiteCommandGap(plan: Plan, inputs: PlanInputs): string | undefined {
+  const suites = inputs.suites ?? []
+  if (suites.length === 0) return undefined
+  for (const criterion of plan.criteria) {
+    if (!('checks' in criterion)) continue
+    for (const check of criterion.checks) {
+      if (check.kind !== 'command' || !refusedCommand(check.command, inputs)) continue
+      const copied = copiedSuite(check.command, suites)
+      if (copied === undefined) continue
+      const { suite, filter } = copied
+      const flow = JSON.stringify({
+        kind: 'flow',
+        name: check.name,
+        suite: suite.name,
+        ...(suite.filter === undefined ? {} : { filter: filter ?? 'the test name or path to run' }),
+      })
+      return (
+        `criterion ${criterion.id} command check "${check.name}" runs the command of the declared suite ${suite.name}, ` +
+        `which a command check cannot run and a suite check runs for you, where the project runs its tests; ` +
+        `plan ${flow} in its place. A criterion tagged (command) that names a test is proven by that suite check`
+      )
+    }
+  }
+  return undefined
+}
+
+function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
+  const allowed = allowedPrograms(inputs)
+  if (allowed === undefined) return undefined
   for (const criterion of plan.criteria) {
     if (!('checks' in criterion)) continue
     for (const check of criterion.checks) {
@@ -1241,10 +1336,17 @@ function unknownProgramGap(plan: Plan, inputs: PlanInputs): string | undefined {
           `criterion ${criterion.id} command check "${check.name}": "${HARNESS_CLI}" is this harness's own CLI, ` +
           'and a check that runs the harness proves what the harness wrote, never that the change holds'
         )
-      if (declared.has(program) || EXECUTE_PATH_TOOLS.includes(program)) continue
+      if (allowed.has(program)) continue
+      // A suite that runs this program is how it runs (#429).
+      const running = (inputs.suites ?? [])
+        .filter((suite): suite is PlanSuite => typeof suite !== 'string' && suite.command !== undefined && tokens(suite.command)[0] === program)
+        .map(suiteName)
       return (
         `criterion ${criterion.id} command check "${check.name}": the program ${program} is neither a program of ` +
-        'the declared commands nor a standard tool the runner carries (node, grep, test, python3)'
+        'the declared commands nor a standard tool the runner carries (node, grep, test, python3)' +
+        (running.length === 0
+          ? ''
+          : `; the declared ${running.length === 1 ? `suite ${running[0]} runs` : `suites ${running.join(', ')} run`} ${program} for you: name one in a flow check`)
       )
     }
   }
@@ -1891,6 +1993,11 @@ async function planTurns(
     const claim = noSuitesClaimGap(plan, inputs)
     if (claim !== undefined) {
       correction = `${claim}.`
+      continue
+    }
+    const suiteCommand = suiteCommandGap(plan, inputs)
+    if (suiteCommand !== undefined) {
+      correction = `${suiteCommand}.`
       continue
     }
     const interpreter = interpreterGap(plan, inputs)
