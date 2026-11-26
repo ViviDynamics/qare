@@ -20,7 +20,7 @@ Rules that agents must follow when working on this repository.
 
 ## Workflow skills
 
-`.agents/skills/` holds the workflow skills (`.claude/skills` and `.opencode/skill` point at the same copies), adapted from the org's internal skill set at tag `2026.09.17` (Copilot review policy from `2026.10.4`) and tuned to qare. Never weaken a lint, type, test or CI gate to get green: the quality guard blocks it unless the PR body justifies each file under `### Quality gate changes`.
+`.agents/skills/` holds the workflow skills (`.claude/skills` and `.opencode/skill` point at the same copies), copied from the org's internal skill set at tag `2026.11.13` and tuned to qare (an Elastic-2.0 license line, no home directory token paths, no references to files outside this repository, and `conventions` in place of `vivi-conventions`). After a merge, run `$S/cleanup --pr <N>` from the main clone to remove the worktree, branches and scratch state the run left. Never weaken a lint, type, test or CI gate to get green: the quality guard blocks it unless the PR body justifies each file under `### Quality gate changes`.
 
 ## Code requirements
 

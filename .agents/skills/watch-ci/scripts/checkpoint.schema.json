@@ -13,6 +13,9 @@
     "pr": { "type": "integer" },
     "plan": { "type": "string" },
     "preflight": { "type": "object" },
+    "context": { "type": "object" },
+    "review_rounds_log": { "type": "array", "items": { "type": "object", "required": ["round", "head_sha", "findings"] } },
+    "rebase_log": { "type": "array", "items": { "type": "object", "required": ["n", "head_sha", "text"] } },
     "budgets": {
       "type": "object",
       "required": ["retries", "rebases", "review_rounds"],

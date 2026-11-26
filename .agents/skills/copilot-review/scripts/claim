@@ -4,9 +4,15 @@
 # An issue is held by someone else when another login is assigned, or when an open
 # PR by another login is linked as closing it (GitHub's own closing references). Two claims racing: the earliest assignment wins
 # and the loser unassigns itself.
+# After a claim (claimed or already-mine) it also puts the issue where the team looks:
+# every label in VIVI_CLAIM_LABELS (comma-separated) is added and read back, and when
+# VIVI_PROJECT_OWNER and VIVI_PROJECT_NUMBER are set the issue is added to that project
+# board (idempotent). Board writes need the project scope; a refused one is retried with
+# gh's own signed-in auth. Neither changes the claim's status or exit code: a failure is
+# listed in "warnings".
 # usage: claim <issue>            claim the issue
 #        claim <issue> --pr <pr>  assign the PR to the same login, read back
-# exit: 0 claimed|already-mine|assigned, 1 held|lost-race|closed|not-assigned (stop),
+# exit: 0 claimed|already-mine, 1 held|lost-race|closed|not-assigned (stop),
 #       2 usage or config, 3 transient gh failure
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
@@ -35,18 +41,45 @@ else
 fi
 [ -n "$login" ] || vivi_die 2 "no login to claim with"
 
+extra='{}'
 emit() {  # status holders_json evidence_json
   jq -nc --argjson issue "$issue" --arg login "$login" --arg src "$source_" --arg status "$1" \
-    --argjson holders "$2" --argjson evidence "$3" --arg pr "$pr" \
+    --argjson holders "$2" --argjson evidence "$3" --arg pr "$pr" --argjson extra "$extra" \
     '{schema:"CLAIM_RESULT", issue:$issue, login:$login, login_source:$src, status:$status, holders:$holders, evidence:$evidence}
-     + (if $pr != "" then {pr:($pr|tonumber)} else {} end)'
+     + (if $pr != "" then {pr:($pr|tonumber)} else {} end) + $extra'
+}
+# Labels and board item for a claimed issue. Fills $extra; never exits.
+place() {
+  local want got missing warnings='[]' board=skipped item="" url labels_json code
+  if [ -n "${VIVI_CLAIM_LABELS:-}" ]; then
+    want=$(printf '%s' "$VIVI_CLAIM_LABELS" | jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')
+    code=0; vivi_gh issue edit "$issue" --repo "$R" --add-label "$(printf '%s' "$want" | jq -r 'join(",")')" >/dev/null 2>&1 || code=$?
+    [ "$code" -eq 0 ] || warnings=$(printf '%s' "$warnings" | jq -c --arg c "$code" '. + ["adding labels failed (gh exit \($c))"]')
+    got=$(vivi_gh issue view "$issue" --repo "$R" --json labels --jq '[.labels[].name]' 2>/dev/null) || got='[]'
+    printf '%s' "$got" | jq -e . >/dev/null 2>&1 || got='[]'
+    missing=$(jq -nc --argjson w "$want" --argjson g "$got" '$w - $g')
+    [ "$missing" = "[]" ] || warnings=$(printf '%s' "$warnings" | jq -c --argjson m "$missing" '. + ["labels missing after the read-back: \($m | join(", "))"]')
+    labels_json=$(jq -nc --argjson w "$want" --argjson m "$missing" '{wanted:$w, missing:$m}')
+  else
+    labels_json=null
+  fi
+  if [ -n "${VIVI_PROJECT_OWNER:-}" ] && [ -n "${VIVI_PROJECT_NUMBER:-}" ]; then
+    url="https://github.com/$R/issues/$issue"
+    item=$(vivi_gh project item-add "$VIVI_PROJECT_NUMBER" --owner "$VIVI_PROJECT_OWNER" --url "$url" --format json --jq .id 2>/dev/null) \
+      || item=$(env -u GH_TOKEN -u GITHUB_TOKEN gh project item-add "$VIVI_PROJECT_NUMBER" --owner "$VIVI_PROJECT_OWNER" --url "$url" --format json --jq .id 2>/dev/null) \
+      || item=""
+    if [ -n "$item" ]; then board=added
+    else board=failed; warnings=$(printf '%s' "$warnings" | jq -c '. + ["adding the issue to the project board failed (needs the project scope)"]'); fi
+  fi
+  extra=$(jq -nc --argjson l "$labels_json" --arg b "$board" --arg i "$item" --argjson w "$warnings" \
+    '{board:$b} + (if $l then {labels:$l} else {} end) + (if $i != "" then {board_item:$i} else {} end) + (if ($w|length) > 0 then {warnings:$w} else {} end)')
 }
 
 if [ -n "$pr" ]; then
-  write pr edit "$pr" --repo "$R" --add-assignee "$login"
+  write api -X POST "repos/$R/issues/$pr/assignees" -f "assignees[]=$login"
   got=$(vivi_gh pr view "$pr" --repo "$R" --json assignees) || fail $? "pr view $pr failed"
   if printf '%s' "$got" | jq -e --arg l "$login" 'any(.assignees[]; .login == $l)' >/dev/null; then
-    emit assigned '[]' '[]'; exit 0
+    emit claimed '[]' '[]'; exit 0
   fi
   emit not-assigned '[]' "$(jq -nc --arg e "pr #$pr assignees read back without $login" '[$e]')"; exit 1
 fi
@@ -71,7 +104,7 @@ if [ "$evidence" != "[]" ]; then
 fi
 
 if printf '%s' "$before" | jq -e --arg l "$login" 'any(.assignees[]; .login == $l)' >/dev/null; then
-  emit already-mine '[]' '[]'; exit 0
+  place; emit already-mine '[]' '[]'; exit 0
 fi
 
 write issue edit "$issue" --repo "$R" --add-assignee "$login"
@@ -101,4 +134,5 @@ if [ "$(printf '%s' "$assignees" | jq 'length')" -gt 1 ]; then
     emit lost-race "$others" "$evidence"; exit 1
   fi
 fi
+place
 emit claimed '[]' '[]'

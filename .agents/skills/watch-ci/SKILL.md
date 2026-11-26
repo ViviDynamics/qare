@@ -2,9 +2,9 @@
 name: watch-ci
 description: Use when a pull request has CI running or red and you need to wait for it, retry safely, or find out why it failed. Also use when asked "is CI green" or "watch the build".
 license: Elastic-2.0
-compatibility: Requires gh, jq, git and a repo.env (copy repo.env.example to repo.env). Scripts are bash 3.2 compatible.
+compatibility: Requires gh, jq, git and a committed repo.env.example (the conventions skill says how). Scripts are bash 3.2 compatible.
 metadata:
-  version: "1.0.0"
+  version: "1.2.0"
   owner: Vivi Dynamics
   requires: ci-safety
 ---
@@ -40,7 +40,13 @@ Read the budget already spent before acting: `$S/state get <issue>`.
 
 1. Record the phase: `$S/state set <issue> phase watching`.
 
-2. Watch: `$S/ci-watch <pr> --expect-head "$(git rev-parse HEAD)" > .agents/state/<issue>-ci.json`.
+2. Watch: `mkdir -p .agents/state && $S/ci-watch <pr> --issue <issue> --expect-head "$(git rev-parse HEAD)" > .agents/state/<issue>-ci.json`.
+   `--issue` records the run (`ci_head`, `ci_run_ids`) in that issue's checkpoint
+   context as soon as it starts, so a resumed worker reads the same run instead of
+   starting over; with no ship-issue checkpoint for the issue it records nothing. The watch can take up to
+   60 minutes, longer than many harnesses allow one foreground command: run it in the
+   background and wait for the exit, or pass `--timeout-min 9` and repeat while it exits
+   4 `timed_out` (ci-safety §6).
    Pass `--expect-head` whenever you just pushed: GitHub can report the previous
    head for a few seconds, and its run may already be green, so without it the
    watch can end green on poll 1 for code that was never tested. This blocks until a
@@ -48,7 +54,16 @@ Read the budget already spent before acting: `$S/state get <issue>`.
    - exit 0, `state: green`: go to step 6.
    - exit 4, `state: timed_out`: report the last state and elapsed time (ci-safety §6),
      go to step 6.
-   - exit 1, `state: failed`: continue.
+   - exit 5, `state: parked`: runs on the head concluded `action_required` or executed
+     zero jobs, so CI never ran. Never green. Follow ci-safety §7 to release it, then
+     watch the new head; on a PR that is not yours, report `parked` and stop.
+   - exit 1, `state: failed`: continue. A run in `failed_runs` failed before any job
+     started (for example `startup_failure`); it has no job log to classify, so read
+     the run in the Actions UI and treat it as `real` until shown otherwise.
+   - exit 1, `state: failing`: a job already failed while other jobs or runs are still
+     going (`in_progress_run_ids`). The head cannot turn green, so the watch stopped at
+     once instead of waiting for the rest. Continue exactly as for `failed`; step 5 says
+     what to do with the runs still going.
    - any other exit: the JSON has an `error`; report it and stop.
 
 3. Save what you saw, mechanically; do not retype values from the JSON:
@@ -74,7 +89,20 @@ Read the budget already spent before acting: `$S/state get <issue>`.
      `unknown` is treated as `real` for the retry decision.
 
 5. Act:
-   - Any job is `real` or `unknown`: do not retry. Go to step 7.
+   - Any job is `real` or `unknown`: do not retry. Go to step 7. If the state was
+     `failing`, the runs in `in_progress_run_ids` are doomed: do not wait for them.
+     Fix, preflight and push; the push cancels them when the PR workflow's concurrency
+     group cancels in progress (`concurrency: { group: <workflow>-<PR>, cancel-in-progress: true }`).
+     Where it does not, cancel each one after the push with
+     `$S/vgh run cancel <run_id> --repo "$($S/repo-config VIVI_REPO)"` so it stops
+     holding runners. Never cancel a run on a head that is not yours.
+   - `failing` with only `infra` or first-occurrence `known_flake` jobs: a run still in
+     progress cannot be re-run. Watch again with
+     `$S/ci-watch <pr> --expect-head <sha> --until-complete`, which does not stop at
+     `failing`, until it is `failed`, then retry as below. On that second result,
+     classify only the failures whose `job_id` was not in the first one: those are new
+     failures from later in the run. The ones already classified keep their bucket (a
+     second classification would count their signatures as a second occurrence).
    - All jobs are `infra` or first-occurrence `known_flake`, and retries spent < 2:
      first check base freshness (ci-safety §5). If `main` touches the failing lane,
      report "rebase needed" and go to step 6. Otherwise run
@@ -110,7 +138,7 @@ Read the budget already spent before acting: `$S/state get <issue>`.
    1. Name the failing test, file and line from `log_tail`.
    2. Read that file and the PR's diff to it.
    3. Reproduce locally using the command for that area from the file named by
-      `VIVI_TEST_COMMANDS_FILE` in `repo.env`. If it passes locally and failed in CI
+      `VIVI_TEST_COMMANDS_FILE` in `repo.env.example`. If it passes locally and failed in CI
       twice, that is a timing bug in the code, not a flake.
    4. Propose or apply the minimal fix. Never disable or delete a test to get green.
    5. If the fix needs a decision outside the PR's scope, stop and report.

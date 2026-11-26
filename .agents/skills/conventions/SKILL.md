@@ -4,14 +4,14 @@ description: Use when starting work in qare, when unsure which workflow skill ap
 license: Elastic-2.0
 compatibility: Any agent that can run bash, gh, jq and git.
 metadata:
-  version: "1.1.0"
+  version: "1.2.0"
 ---
 
 # How we work at Vivi Dynamics
 
 Workflow skills are shared across repositories from the `ViviDynamics/skills`
-repository. Repo-specific facts live in the consumer's `repo.env`; skills never contain
-them. Scripts do the mechanical work and print JSON; you make the judgment calls the
+repository. Repo-specific facts live in the committed `repo.env.example`; skills never
+contain them. Scripts do the mechanical work and print JSON; you make the judgment calls the
 skill names, and you cite the script output for every claim.
 
 **Where the scripts are.** `S` is a skill's `scripts/` directory, next to its SKILL.md.
@@ -37,12 +37,13 @@ as `$S/<script>`.
 1. Every `gh` call in a skill goes through the skill's scripts: a purpose-built script,
    or `$S/vgh` for one-off reads. The scripts read the token from the file named by
    `VIVI_GH_TOKEN_FILE` in `repo.env`, falling back to `GH_TOKEN` or `GITHUB_TOKEN` in
-   the environment.
+   the environment, then to gh's own configured auth.
 2. A claim needs a read-back. "Merged" means `merge-verified` printed `merged`.
    "Retried" means `verified-rerun` exited 0. "Assigned" means the assignee list read
    back non-empty.
-3. State for a long chain lives in `.agents/state/<issue>.json` via `$S/state`.
-   Read it before deciding, write it after acting. It is gitignored.
+3. State for a long chain lives in the git common dir (`vivi-state/<issue>.json`), via
+   `$S/state` and `$S/checkpoint`, so every worktree of the clone sees it. Read it before
+   deciding, write it after acting.
 4. Never force-push except inside `rebase-main` on your own unmerged branch, and then
    only with a lease. Never push to the default branch.
 5. Nothing from live infrastructure reaches a public repository: no internal addresses,
@@ -55,10 +56,23 @@ as `$S/<script>`.
 8. Claim an issue before working it, and leave it alone when it is someone else's.
    An issue assigned to another person, or with their open PR, is theirs. ship-issue
    claims through `$S/claim`, which assigns `VIVI_ASSIGNEE`: set it to your own GitHub
-   login in your uncommitted `repo.env`, or, for Claude Code, in
+   login in your uncommitted `repo.env` (which may set only `VIVI_ASSIGNEE` and
+   `VIVI_GH_TOKEN_FILE`; everything else comes from the committed `repo.env.example`),
+   or, for Claude Code, in
    `.claude/settings.local.json` under `env`. Never in `repo.env.example` or a committed
    `.claude/settings.json`, where one login would claim everyone's work. Unset, the
    token's own login is used.
+9. A change to UI paths (`VIVI_UI_PATHS`) gets an independent design review of the
+   rendered screens as well as the code review. qare leaves `VIVI_UI_PATHS` empty, so
+   the design gate is off here.
+10. Leave nothing behind. Once a PR merges, `$S/cleanup` removes its worktree, local and
+    remote branch, helper worktrees, test stack, scratch dir and published screenshots,
+    after checking nothing unsaved would go with them. Record every worktree, stack and
+    scratch dir you start in the checkpoint context, or cleanup cannot find it. When
+    more work follows, create the next worktree first and clean up with
+    `--carry-to <it>`, so the files git does not hold (`repo.env`, uncommitted work for
+    the next issue) come across before the old worktree goes. Run it from the main
+    clone, never from inside the worktree it removes.
 
 ## Model tiers (guidance for whoever routes work)
 
@@ -73,9 +87,9 @@ Skills do not select models. They are written so the cheapest tier can follow th
 
 ## Adopting these skills in a repo
 
-Copy `repo.env.example` to `repo.env` (it is gitignored, as is `.agents/state/`), then:
+The scripts read the committed `repo.env.example`. A gitignored `repo.env` is optional
+and adds only your own `VIVI_ASSIGNEE` and `VIVI_GH_TOKEN_FILE`. Then:
 
-    cp repo.env.example repo.env
     .agents/skills/ci-safety/scripts/check-wiring
 
 `check-wiring` prints `{"ok":true}` when everything is in place, or a `problems` list.

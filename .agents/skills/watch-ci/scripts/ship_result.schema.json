@@ -43,9 +43,19 @@
     "review_gate": {
       "type": "string",
       "enum": [
+        "independent",
         "harness",
         "copilot",
         "self",
+        "unsatisfied"
+      ]
+    },
+    "design_gate": {
+      "type": "string",
+      "enum": [
+        "independent",
+        "not_ui",
+        "off",
         "unsatisfied"
       ]
     },
@@ -132,6 +142,16 @@
         "clean",
         "justified",
         "blocked"
+      ]
+    },
+    "cleanup": {
+      "type": "string",
+      "enum": [
+        "cleaned",
+        "partial",
+        "refused",
+        "deferred",
+        "kept"
       ]
     },
     "resumed_from": {

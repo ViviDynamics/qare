@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Is the PR's review gate the one this repository configured?
+# usage: review-gate <pr>                read the PR body (and review decision) from GitHub
+#        review-gate --body-file <file>  check a draft body
+# The gate is recorded in the PR body under "### Code review gate", on a line
+#   Gate: <tool>
+# where <tool> is the VIVI_REVIEW_TOOL that ran: independent | harness | copilot | self.
+# It must equal the configured VIVI_REVIEW_TOOL (unset means self; an unknown value is a
+# configuration error, exit 2, so a typo never quietly allows self-reviews), so a
+# repository that asks for an independent reviewer cannot be merged on a self-review.
+# "Gate: unsatisfied" (the configured gate could not run) never passes. A section with
+# no Gate: line, as PRs opened before this check wrote it, passes only where the
+# configured gate is self. An APPROVED review decision (GitHub's own: a reviewer with
+# write access approved) also satisfies the gate.
+# exit: 0 satisfied, 1 not (reason in the JSON), 2 usage, 3 transient
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+vivi_load_env
+pr=""; body_file=""
+case "${1:-}" in
+  --body-file) body_file=${2:-}; [ -n "$body_file" ] || vivi_die 2 "usage: review-gate <pr> | --body-file <file>";;
+  ''|*[!0-9]*) vivi_die 2 "usage: review-gate <pr> | --body-file <file>";;
+  *) pr=$1;;
+esac
+configured=$(printf '%s' "${VIVI_REVIEW_TOOL:-self}" | tr '[:upper:]' '[:lower:]')
+case "$configured" in independent|harness|copilot|self) ;; *) vivi_die 2 "VIVI_REVIEW_TOOL=$configured is not a review gate (want independent, harness, copilot or self)";; esac
+tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+decision=""
+if [ -n "$pr" ]; then
+  vivi_require VIVI_REPO
+  code=0; view=$(vivi_gh pr view "$pr" --repo "$VIVI_REPO" --json body,reviewDecision) || code=$?
+  [ "$code" -eq 3 ] && exit 3
+  [ "$code" -eq 0 ] || vivi_die 2 "could not read PR #$pr"
+  printf '%s' "$view" | jq -r '.body // ""' > "$tmp"
+  decision=$(printf '%s' "$view" | jq -r '.reviewDecision // ""')
+else
+  [ -f "$body_file" ] || vivi_die 2 "no such file: $body_file"
+  cp "$body_file" "$tmp"
+fi
+section=$(awk '/^#+[[:space:]]*Code review gate[[:space:]]*$/ {on=1; next} /^#/ {on=0} on {print}' "$tmp")
+recorded=$(printf '%s\n' "$section" | sed -n 's/^[-*[:space:]]*[Gg]ate:[[:space:]]*\([A-Za-z_-]*\).*/\1/p' | head -n 1 | tr '[:upper:]' '[:lower:]')
+emit() { jq -nc --arg pr "$pr" --arg c "$configured" --arg r "$recorded" --arg d "$decision" --argjson ok "$1" --arg why "$2" \
+  '{schema:"REVIEW_GATE_RESULT", configured:$c, recorded:$r, ok:$ok} + (if $pr != "" then {pr:($pr|tonumber)} else {} end)
+   + (if $d != "" then {review_decision:$d} else {} end) + (if $why != "" then {reason:$why} else {} end)'; }
+if [ "$decision" = APPROVED ]; then emit true "approved by a reviewer"; exit 0; fi
+if [ -z "$section" ]; then emit false "no ### Code review gate section in the PR body"; exit 1; fi
+if [ -z "$recorded" ]; then
+  if [ "$configured" = self ]; then emit true "no Gate: line (an older record); the configured gate is self"; exit 0; fi
+  emit false "the ### Code review gate section has no 'Gate: <tool>' line; add one naming the gate that actually ran, and run $configured first if that was not it"; exit 1
+fi
+if [ "$recorded" = unsatisfied ]; then emit false "the gate is recorded as unsatisfied"; exit 1; fi
+if [ "$recorded" != "$configured" ]; then emit false "the gate recorded is $recorded, but this repository configures VIVI_REVIEW_TOOL=$configured"; exit 1; fi
+emit true ""

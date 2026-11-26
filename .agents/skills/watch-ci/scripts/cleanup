@@ -1,0 +1,377 @@
+#!/usr/bin/env bash
+# Leaves nothing behind once a PR has merged: the run's worktree, its local and remote
+# branch, helper worktrees (reviewers, the design gate's "before" checkout), the test
+# stack, the scratch dir and the published UI evidence. With --carry-to, first copies
+# into the next run's worktree what that run still needs from this one.
+#
+# usage: cleanup <issue> [--pr N] [options]   one ship-issue run (its checkpoint names the
+#                                             PR, branch, worktree and context)
+#        cleanup --pr N [options]             a PR with no ship-issue checkpoint
+#        cleanup pending                      runs that merged but left something behind
+# options:
+#   --carry-to DIR    a worktree of this clone that the next run works in. Before
+#                     anything is removed, every VIVI_WORKTREE_CARRY path (default
+#                     repo.env), every --carry PATH and the checkpoint's env_file (when it
+#                     lives in the old worktree) are copied there. A path the new worktree
+#                     already has is never overwritten.
+#   --carry PATH      one more path, relative to the worktree root, to copy (repeatable).
+#   --carry-changes   also move the old worktree's uncommitted work: the diff of tracked
+#                     files (applied with git apply) and every untracked file that is not
+#                     ignored. Refused, with nothing changed, when the diff does not apply.
+#   --discard         remove uncommitted and untracked work you judged worthless.
+#   --keep-stack      leave the test stack up (VIVI_TEARDOWN_CMD / the compose project),
+#                     for a next run that takes the same worker slot.
+#   --keep-evidence   leave refs/vivi-evidence/<issue> and the local screenshots.
+#   --abandon         clean up a run whose PR is closed unmerged, or that never opened
+#                     one. Never with an open PR, and never when the branch has commits
+#                     that no PR holds.
+#   --dry-run         check everything and print the plan; change nothing.
+#
+# Never loses work: everything is checked before anything is removed. It refuses (exit 1,
+# state refused, nothing changed) when the PR is still open, when the branch has commits
+# the merged PR does not, or when the worktree has uncommitted or untracked files that
+# are neither carried nor discarded. Ignored files (node_modules, build output) are
+# removed with the worktree. Run it from the main checkout or the next run's worktree,
+# never from inside the worktree it removes.
+#
+# Repository configuration (repo.env.example):
+#   VIVI_WORKTREE_CARRY  space-separated paths --carry-to copies (default repo.env)
+#   VIVI_TEARDOWN_CMD    command that takes down what a run started (dev servers, a
+#                        worker's stack). Run from the repository root with the worktree
+#                        as its argument and VIVI_CLEANUP_ISSUE, VIVI_CLEANUP_WORKTREE and
+#                        VIVI_CLEANUP_CONTEXT (the checkpoint context, JSON) set. Unset:
+#                        the checkpoint's compose_project is taken down with
+#                        docker compose -p <project> down --volumes --remove-orphans.
+# A compose project or scratch dir that another active run also records is kept.
+#
+# Prints CLEANUP_RESULT JSON and records it under "cleanup" in the issue's state.
+# exit: 0 cleaned (or dry run), 1 refused or partial (JSON says what is left), 2 usage or
+#       config, 3 transient GitHub failure
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+source "$here/_lib.sh"
+vivi_load_env
+usage="usage: cleanup <issue> [--pr N] [--carry-to DIR] [--carry PATH]... [--carry-changes] [--discard] [--keep-stack] [--keep-evidence] [--abandon] [--dry-run] | cleanup --pr N [options] | cleanup pending"
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# add <var> <text>: append text to the JSON array held in var
+add() { local cur=${!1}; printf -v "$1" '%s' "$(printf '%s' "$cur" | jq -c --arg v "$2" '. + [$v]')"; }
+# canon <path>: the physical path when it exists, else the path as given
+canon() { if [ -d "$1" ]; then (cd "$1" && pwd -P); else printf '%s\n' "${1%/}"; fi; }
+# Registered worktrees, as "path<TAB>branch-or-(detached)" lines.
+worktrees() {
+  git worktree list --porcelain | awk '
+    /^worktree /{ w = substr($0, 10); b = "" }
+    /^branch refs\/heads\//{ b = substr($0, 19) }
+    /^detached/{ b = "(detached)" }
+    /^$/{ if (w != "") print w "\t" b; w = "" }
+    END { if (w != "") print w "\t" b }'
+}
+wt_branch() {  # <path>: the branch checked out there, (detached), or nothing if not a worktree
+  local want p b; want=$(canon "$1")
+  while IFS=$'\t' read -r p b; do [ "$(canon "$p")" = "$want" ] && { printf '%s\n' "$b"; return 0; }; done < <(worktrees)
+  return 1
+}
+wt_for_branch() { local p b; while IFS=$'\t' read -r p b; do [ "$b" = "$1" ] && { printf '%s\n' "$p"; return 0; }; done < <(worktrees); return 1; }
+inside() { case "$1/" in "$2"/*) return 0;; *) return 1;; esac; }  # <path> <dir>: path is dir or under it
+
+if [ "${1:-}" = pending ]; then
+  dir=$(vivi_state_dir) || exit 2
+  out='[]'
+  for f in "$dir"/*.json; do
+    [ -e "$f" ] || continue
+    cp=$(jq -c '.checkpoint // empty' "$f" 2>/dev/null || true)
+    [ -n "$cp" ] || continue
+    case "$(printf '%s' "$cp" | jq -r .stage)" in merge|closure|done) ;; *) continue;; esac
+    br=$(printf '%s' "$cp" | jq -r '.branch // ""'); w=$(printf '%s' "$cp" | jq -r '.worktree // ""')
+    we=false; [ -n "$w" ] && [ -d "$w" ] && we=true
+    be=false; [ -n "$br" ] && git show-ref --verify -q "refs/heads/$br" && be=true
+    ew='[]'
+    for x in $(printf '%s' "$cp" | jq -r '.context.extra_worktrees // ""' | tr ',' ' '); do
+      if [ -d "$x" ]; then add ew "$x"; fi
+    done
+    [ "$we" = true ] || [ "$be" = true ] || [ "$ew" != "[]" ] || continue
+    out=$(printf '%s' "$out" | jq -c --argjson c "$cp" --argjson we "$we" --argjson be "$be" --argjson ew "$ew" \
+      '. + [{issue:$c.issue, stage:$c.stage, pr:$c.pr, branch:$c.branch, worktree:$c.worktree,
+             worktree_exists:$we, branch_exists:$be, extra_worktrees:$ew}]')
+  done
+  printf '%s\n' "$out"; exit 0
+fi
+
+issue=""; pr=""; carry_to=""; carry_extra='[]'; carry_changes=false; discard=false
+keep_stack=false; keep_evidence=false; abandon=false; dry=false
+case "${1:-}" in [0-9]*) issue=$1; shift;; --pr) ;; *) vivi_die 2 "$usage";; esac
+case "$issue" in *[!0-9]*) vivi_die 2 "$usage";; esac
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --pr|--carry-to|--carry) [ $# -ge 2 ] || vivi_die 2 "$1 needs a value";;
+  esac
+  case "$1" in
+    --pr) pr=$2; case "$pr" in ''|*[!0-9]*) vivi_die 2 "--pr wants a number";; esac; shift 2;;
+    --carry-to) carry_to=$2; shift 2;;
+    --carry) add carry_extra "$2"; shift 2;;
+    --carry-changes) carry_changes=true; shift;;
+    --discard) discard=true; shift;;
+    --keep-stack) keep_stack=true; shift;;
+    --keep-evidence) keep_evidence=true; shift;;
+    --abandon) abandon=true; shift;;
+    --dry-run) dry=true; shift;;
+    *) vivi_die 2 "unknown option $1 ($usage)";;
+  esac
+done
+[ -n "$issue" ] || [ -n "$pr" ] || vivi_die 2 "$usage"
+if [ "$carry_extra" != '[]' ] || $carry_changes; then [ -n "$carry_to" ] || vivi_die 2 "--carry and --carry-changes need --carry-to <next worktree>"; fi
+if $carry_changes && $discard; then vivi_die 2 "--carry-changes and --discard contradict each other"; fi
+vivi_require VIVI_REPO VIVI_DEFAULT_BRANCH
+B=$VIVI_DEFAULT_BRANCH
+
+cp=""; [ -z "$issue" ] || cp=$("$here/state" get "$issue" checkpoint)
+cpj=${cp:-"{}"}
+ctx() { [ -n "$cp" ] || return 0; printf '%s' "$cp" | jq -r --arg k "$1" '.context[$k] // empty'; }
+[ -n "$pr" ] || pr=$(printf '%s' "$cpj" | jq -r '.pr // empty')
+branch=$(printf '%s' "$cpj" | jq -r '.branch // empty')
+
+reasons='[]'; carried='[]'; removed='[]'; left='[]'; warnings='[]'
+pr_state=none; head_oid=""
+if [ -n "$pr" ]; then
+  pj=$(vivi_gh pr view "$pr" --repo "$VIVI_REPO" --json state,headRefName,headRefOid) || exit $?
+  pr_state=$(printf '%s' "$pj" | jq -r .state); head_oid=$(printf '%s' "$pj" | jq -r .headRefOid)
+  pr_branch=$(printf '%s' "$pj" | jq -r .headRefName)
+  if [ -z "$branch" ]; then branch=$pr_branch
+  elif [ "$branch" != "$pr_branch" ]; then vivi_die 2 "the checkpoint's branch is $branch but PR $pr is from $pr_branch"; fi
+fi
+[ -n "$branch" ] || vivi_die 2 "no branch to clean up: issue ${issue:-?} has no checkpoint and no --pr was given"
+case "$pr_state" in
+  MERGED) ;;
+  OPEN) add reasons "PR $pr is still open: nothing is cleaned up before it merges";;
+  CLOSED) $abandon || add reasons "PR $pr was closed without merging: pass --abandon to clean it up";;
+  none) $abandon || add reasons "no PR recorded for this run: pass --abandon to clean up a run that never opened one";;
+  *) add reasons "PR $pr is in state $pr_state";;
+esac
+
+main_wt=$(worktrees | head -n1 | cut -f1); main_c=$(canon "$main_wt")
+# The run's worktree: wherever the branch is checked out now, else the recorded path.
+wt=$(wt_for_branch "$branch" || true)
+[ -n "$wt" ] || wt=$(printf '%s' "$cpj" | jq -r '.worktree // .context.worktree // empty')
+wt_c=""; wt_live=false
+if [ -n "$wt" ] && [ -d "$wt" ] && on=$(wt_branch "$wt"); then
+  wt_c=$(canon "$wt")
+  if [ "$on" != "$branch" ]; then
+    # Reused since (the next run switched it to its own branch): not this run's to remove.
+    add warnings "$wt is on $on now, not $branch: left in place"; wt=""; wt_c=""
+  elif [ "$wt_c" = "$main_c" ]; then
+    add reasons "$branch is checked out in the main checkout ($main_wt): switch it to $B first; the main checkout is never removed"
+  else
+    wt_live=true
+    if inside "$(pwd -P)" "$wt_c"; then vivi_die 2 "run cleanup from the main checkout or the next run's worktree, not from inside $wt (cd $main_wt)"; fi
+  fi
+fi
+if [ -n "$carry_to" ]; then
+  [ -d "$carry_to" ] && wt_branch "$carry_to" >/dev/null || vivi_die 2 "--carry-to $carry_to is not a worktree of this clone"
+  carry_to=$(canon "$carry_to")
+  [ "$carry_to" != "$wt_c" ] || vivi_die 2 "--carry-to is the worktree being removed"
+fi
+
+# Commits on the local branch that no PR holds would be lost with it.
+local_head=$(git rev-parse -q --verify "refs/heads/$branch" 2>/dev/null || true)
+if [ -n "$local_head" ]; then
+  if [ -n "$head_oid" ]; then
+    git cat-file -e "$head_oid^{commit}" 2>/dev/null || git fetch -q --no-tags origin "pull/$pr/head" 2>/dev/null || true
+    if git cat-file -e "$head_oid^{commit}" 2>/dev/null; then
+      extra=$(git rev-list --max-count=20 "$head_oid..$local_head" | tr '\n' ' ')
+    else
+      extra="(cannot read PR $pr's head $head_oid to compare)"
+    fi
+  else
+    git fetch -q --no-tags origin "$B" 2>/dev/null || add warnings "could not fetch origin/$B"
+    base=""
+    for ref in "refs/remotes/origin/$B" "refs/heads/$B"; do
+      if git show-ref --verify -q "$ref"; then base=$ref; break; fi
+    done
+    if [ -n "$base" ]; then extra=$(git rev-list --max-count=20 "$base..$local_head" | tr '\n' ' ')
+    else extra="(no $B to compare with)"; fi
+  fi
+  [ -z "$extra" ] || add reasons "branch $branch has commits no PR holds: $extra(push them in a PR, or cherry-pick them into the next branch)"
+fi
+
+# Uncommitted work in the worktree: carried, discarded, or a refusal.
+carry_paths='[]'
+if [ -n "$carry_to" ]; then
+  for p in ${VIVI_WORKTREE_CARRY:-repo.env}; do add carry_paths "$p"; done
+  carry_paths=$(jq -nc --argjson a "$carry_paths" --argjson b "$carry_extra" '$a + $b | unique')
+  ef=$(ctx env_file)
+  if [ -n "$ef" ] && [ -n "$wt_c" ]; then
+    case "$ef" in
+      /*) ef_c=$(canon "$(dirname "$ef")")/$(basename "$ef")
+          if inside "$ef_c" "$wt_c"; then add carry_paths "${ef_c#"$wt_c"/}"; fi;;
+      *) add carry_paths "$ef";;
+    esac
+  fi
+  while IFS= read -r p; do
+    case "/$p/" in /*/../*|//*) vivi_die 2 "carry path $p must be relative to the worktree root, without ..";; esac
+  done < <(printf '%s' "$carry_paths" | jq -r '.[]')
+fi
+covered() {  # <file>: under a carry path
+  local p; while IFS= read -r p; do case "$1" in "$p"|"$p"/*) return 0;; esac; done < <(printf '%s' "$carry_paths" | jq -r '.[]'); return 1
+}
+dirty=""; untracked=""; patch=""
+if $wt_live; then
+  dirty=$(git -C "$wt" status --porcelain --untracked-files=no | cut -c4- | tr '\n' ' ')
+  untracked=$(git -C "$wt" ls-files --others --exclude-standard)
+  loose=""
+  while IFS= read -r f; do [ -n "$f" ] || continue; covered "$f" || loose="$loose$f "; done <<<"$untracked"
+  if [ -n "$dirty" ] && ! $carry_changes && ! $discard; then
+    add reasons "uncommitted changes in $wt: $dirty(--carry-to <next worktree> --carry-changes to move them, --discard to drop them)"
+  fi
+  if [ -n "$loose" ] && ! $carry_changes && ! $discard; then
+    add reasons "untracked files in $wt: $loose(--carry PATH or --carry-changes to move them, --discard to drop them)"
+  fi
+  if $carry_changes && [ -n "$dirty" ]; then
+    patch=$(mktemp); git -C "$wt" diff HEAD --binary > "$patch"
+    git -C "$carry_to" apply --check "$patch" 2>/dev/null || add reasons "the uncommitted diff in $wt does not apply to $carry_to: move it by hand"
+  fi
+fi
+
+result() {  # <state>
+  jq -nc --arg s "$1" --arg i "$issue" --arg pr "$pr" --arg b "$branch" --arg w "$wt" --arg ct "$carry_to" \
+    --argjson r "$reasons" --argjson c "$carried" --argjson rm "$removed" --argjson l "$left" --argjson wn "$warnings" --arg t "$(now)" '
+    {schema:"CLEANUP_RESULT", state:$s}
+    + (if $i != "" then {issue:($i|tonumber)} else {} end) + (if $pr != "" then {pr:($pr|tonumber)} else {} end)
+    + {branch:$b, worktree:$w} + (if $ct != "" then {carry_to:$ct} else {} end)
+    + {reasons:$r, carried:$c, removed:$rm, left_behind:$l, warnings:$wn, at:$t}'
+}
+emit() {  # <state> <exit>
+  local r; r=$(result "$1")
+  if [ -n "$issue" ] && [ "$1" != dry-run ]; then "$here/state" set "$issue" cleanup "$r" >/dev/null || true; fi
+  [ -z "$patch" ] || rm -f "$patch"
+  printf '%s\n' "$r"; exit "$2"
+}
+[ "$reasons" = '[]' ] || emit refused 1
+
+# What other unfinished runs still use is never taken down.
+others=$("$here/checkpoint" active 2>/dev/null | jq -c --arg i "$issue" '[.[] | select((.issue|tostring) != $i)]' || echo '[]')
+shared() {  # <key> <value>: another active run records the same value
+  local i; for i in $(printf '%s' "$others" | jq -r '.[].issue'); do
+    [ "$("$here/state" get "$i" checkpoint | jq -r --arg k "$1" '.context[$k] // empty')" = "$2" ] && return 0
+  done; return 1
+}
+
+if $dry; then
+  $wt_live && add removed "worktree $wt"
+  [ -z "$local_head" ] || add removed "local branch $branch"
+  while IFS= read -r p; do if [ -n "$p" ] && [ -e "$wt/$p" ]; then add carried "$p"; fi; done < <(printf '%s' "$carry_paths" | jq -r '.[]')
+  emit dry-run 0
+fi
+
+# 1. Carry what the next run needs, before anything is removed.
+if [ -n "$carry_to" ] && $wt_live; then
+  while IFS= read -r p; do
+    [ -n "$p" ] && [ -e "$wt/$p" ] || continue
+    if [ -e "$carry_to/$p" ]; then add warnings "not carried, $carry_to already has $p"; continue; fi
+    if mkdir -p "$(dirname "$carry_to/$p")" && cp -Rp "$wt/$p" "$carry_to/$p"; then add carried "$p"
+    else add reasons "could not copy $p to $carry_to"; fi
+  done < <(printf '%s' "$carry_paths" | jq -r '.[]')
+  if $carry_changes; then
+    if [ -n "$patch" ] && [ -s "$patch" ]; then
+      if git -C "$carry_to" apply "$patch"; then add carried "uncommitted diff: $dirty"
+      else add reasons "the uncommitted diff in $wt did not apply to $carry_to"; fi
+    fi
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue; covered "$f" && continue
+      if [ -e "$carry_to/$f" ]; then
+        if ! cmp -s "$wt/$f" "$carry_to/$f"; then add reasons "untracked $f differs from $carry_to/$f: move it by hand"; continue; fi
+      elif ! { mkdir -p "$(dirname "$carry_to/$f")" && cp -p "$wt/$f" "$carry_to/$f"; }; then
+        add reasons "could not copy $f to $carry_to"; continue
+      fi
+      add carried "$f"
+    done <<<"$untracked"
+  fi
+  # A failed or clashing copy: stop before removing the only other copy. What was
+  # already carried stays in the new worktree (listed in carried).
+  [ "$reasons" = '[]' ] || emit refused 1
+fi
+
+# 2. Take down what the run started.
+context_json=$(printf '%s' "$cpj" | jq -c '.context // {}')
+proj=$(ctx compose_project)
+if $keep_stack; then
+  [ -z "$proj" ] || add left "compose project $proj (--keep-stack)"
+elif [ -n "${VIVI_TEARDOWN_CMD:-}" ]; then
+  if [ -n "$proj" ] && shared compose_project "$proj"; then add left "teardown skipped: compose project $proj is used by another active run"
+  else
+    set -f; # shellcheck disable=SC2086
+    if (cd "$VIVI_ROOT" && VIVI_CLEANUP_ISSUE=$issue VIVI_CLEANUP_WORKTREE=$wt VIVI_CLEANUP_CONTEXT=$context_json $VIVI_TEARDOWN_CMD "$wt") >&2; then
+      add removed "teardown: $VIVI_TEARDOWN_CMD"
+    else add left "teardown failed: $VIVI_TEARDOWN_CMD"; fi
+    set +f
+  fi
+elif [ -n "$proj" ]; then
+  if shared compose_project "$proj"; then add left "compose project $proj (used by another active run)"
+  elif ! command -v docker >/dev/null 2>&1; then add left "compose project $proj (docker not found)"
+  elif docker compose -p "$proj" down --volumes --remove-orphans >&2; then add removed "compose project $proj"
+  else add left "compose project $proj (docker compose down failed)"; fi
+fi
+sd=$(ctx scratch_dir)
+if [ -n "$sd" ] && [ -e "$sd" ]; then
+  sd_c=$(canon "$sd")
+  case "$sd" in /*) ;; *) sd_c="";; esac
+  if [ -z "$sd_c" ] || [ "$sd_c" = / ] || [ "$sd_c" = "$(canon "$HOME")" ] || inside "$main_c" "$sd_c"; then
+    add left "scratch dir $sd (not an absolute path that is safe to delete)"
+  elif shared scratch_dir "$sd"; then add left "scratch dir $sd (used by another active run)"
+  else rm -rf "$sd" && add removed "scratch dir $sd"; fi
+fi
+
+# 3. Helper worktrees (reviewers, the "before" checkout): detached ones only.
+for x in $(ctx extra_worktrees | tr ',' ' '); do
+  if b=$(wt_branch "$x"); then
+    if [ "$b" = "(detached)" ]; then
+      if inside "$(pwd -P)" "$(canon "$x")"; then add left "worktree $x (the current directory)"
+      elif git worktree remove --force "$x" 2>/dev/null; then add removed "worktree $x"
+      else add left "worktree $x (git worktree remove failed)"; fi
+    else add left "worktree $x (on branch $b, not a detached helper)"; fi
+  elif [ -e "$x" ]; then add left "$x (recorded as a helper worktree, but not a worktree of this clone)"
+  fi
+done
+
+# 4. The run's worktree and branches.
+if $wt_live; then
+  # Everything in it was checked, carried or discarded above; what remains is ignored
+  # files, which --force removes with it.
+  if git worktree remove --force "$wt" 2>/dev/null; then add removed "worktree $wt"; else add left "worktree $wt (git worktree remove failed)"; fi
+fi
+git worktree prune
+if [ -n "$local_head" ]; then
+  if holder=$(wt_for_branch "$branch"); then add left "local branch $branch (checked out in $holder)"
+  elif git branch -q -D "$branch"; then add removed "local branch $branch"
+  else add left "local branch $branch (git branch -D failed)"; fi
+fi
+if remote=$(git ls-remote --heads origin "$branch" 2>/dev/null); then
+  rsha=$(printf '%s' "$remote" | awk -v r="refs/heads/$branch" '$2 == r { print $1 }')
+  if [ -n "$rsha" ]; then
+    if [ "$pr_state" != MERGED ]; then add left "remote branch $branch (its PR did not merge)"
+    elif [ "$rsha" != "$head_oid" ]; then add left "remote branch $branch (moved to $rsha after PR $pr merged $head_oid)"
+    elif git push -q origin --delete "$branch" 2>/dev/null; then add removed "remote branch $branch"
+    else add left "remote branch $branch (delete refused)"; fi
+  fi
+else add warnings "could not read origin's branches"; fi
+
+# 5. Published UI evidence (after the merge, per ui-evidence).
+if [ -n "$issue" ] && ! $keep_evidence && [ "$pr_state" != none ]; then
+  if git ls-remote origin "refs/vivi-evidence/$issue" 2>/dev/null | grep -q .; then
+    if "$here/ui-evidence" unpublish "$issue" >/dev/null 2>&1; then add removed "refs/vivi-evidence/$issue"
+    else add left "refs/vivi-evidence/$issue (unpublish failed)"; fi
+  fi
+  ev="$(vivi_state_dir)/ui-evidence/$issue"
+  if [ -d "$ev" ]; then rm -rf "$ev" && add removed "local screenshots $ev"; fi
+fi
+
+# 6. Refresh: stale remote-tracking branches, and the local default branch.
+git fetch -q --prune origin 2>/dev/null || add warnings "git fetch --prune origin failed"
+if holder=$(wt_for_branch "$B"); then
+  if [ -n "$(git -C "$holder" status --porcelain --untracked-files=no)" ]; then add warnings "local $B not updated: $holder has uncommitted changes"
+  else git -C "$holder" merge -q --ff-only "origin/$B" 2>/dev/null || add warnings "local $B not updated: not a fast-forward of origin/$B"; fi
+elif git show-ref --verify -q "refs/heads/$B"; then
+  git fetch -q origin "$B:$B" 2>/dev/null || add warnings "local $B not updated: not a fast-forward of origin/$B"
+fi
+
+[ "$left" = '[]' ] || emit partial 1
+emit cleaned 0

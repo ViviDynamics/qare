@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
-# Per-issue JSON state for resumable skill chains.
+# Per-issue JSON state for resumable skill chains, in the git common dir (vivi-state/),
+# so every worktree of the clone reads and writes the same record. A record left at the
+# old place, <worktree>/.agents/state/<issue>.json, is moved there on first use.
 # usage: state get <issue> [key] | set <issue> <key> <value> | incr <issue> <key> | append <issue> <key> <value> | clear <issue>
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 vivi_load_env
 cmd=${1:-}; issue=${2:-}
 [ -n "$issue" ] || vivi_die 2 "usage: state <get|set|incr|append|clear> <issue> ..."
-dir="$VIVI_ROOT/.agents/state"; file="$dir/$issue.json"
-mkdir -p "$dir"
+dir=$(vivi_state_dir) || exit 2; file="$dir/$issue.json"
+legacy="$VIVI_ROOT/.agents/state/$issue.json"
+# Writes (and the one-time move of an old record) hold the issue's lock; reads do not
+# need it, since every write replaces the file in one rename.
+case "$cmd" in
+  set|incr|append|clear) vivi_state_lock "$issue" || exit $?; trap vivi_state_unlock EXIT ;;
+esac
+if [ ! -f "$file" ] && [ -f "$legacy" ]; then
+  vivi_state_lock "$issue" || exit $?; trap vivi_state_unlock EXIT
+  t=$(mktemp "$file.XXXXXX") && cp "$legacy" "$t" && mv "$t" "$file" && rm -f "$legacy"
+fi
 # Prints the current state on stdout, or returns non-zero if the file exists
 # but is not valid JSON. Never emits anything on failure so callers can rely
 # on the exit code rather than parsing the output.
@@ -19,7 +30,7 @@ current() {
     echo '{}'
   fi
 }
-write() { printf '%s\n' "$1" > "$file.tmp" && mv "$file.tmp" "$file"; printf '%s\n' "$1"; }
+write() { local t; t=$(mktemp "$file.XXXXXX") && printf '%s\n' "$1" > "$t" && mv "$t" "$file"; printf '%s\n' "$1"; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 case "$cmd" in
   get)
@@ -49,6 +60,11 @@ case "$cmd" in
       | .[$k]=(if (.[$k] | index($v)) != null then .[$k] else .[$k] + [$v] end)
       | .updated_at=$t') || vivi_die 1 "state update failed for $file"
     write "$new" ;;
-  clear) rm -f "$file" ;;
+  clear)
+    rm -f "$file" "$legacy"
+    # An old record in another worktree of the clone would come back on its next use.
+    git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | while IFS= read -r w; do
+      rm -f "$w/.agents/state/$issue.json"
+    done ;;
   *) vivi_die 2 "unknown command: $cmd (want get|set|incr|append|clear)" ;;
 esac

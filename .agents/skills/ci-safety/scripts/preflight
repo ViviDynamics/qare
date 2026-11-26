@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Run the local test commands the diff touches, before a push, and record the result.
-# usage: preflight <issue>           run and record; exit 0 pass|nothing, 1 fail, 4 dirty tree
-#        preflight --check <issue>   exit 0 when the recorded run passed for HEAD, else 1
+# usage: preflight [--jobs N] <issue>  run and record; exit 0 pass|nothing, 1 fail, 4 dirty tree
+#        preflight --check <issue>     exit 0 when the recorded run passed for HEAD, else 1
+# --jobs N runs up to N matching rows at once and records every result (no early stop).
+# Use it only when the table's rows are independent: rows that share a database, ports
+# or a build directory must run one at a time (the default, --jobs 1).
 # Rows come from VIVI_TEST_COMMANDS_FILE, a markdown table of
 #   | Area | Paths | Command |   (Paths: comma-separated globs, or "always")
 #   | Area | Command |         (two columns: always runs)
@@ -12,9 +15,20 @@ here=$(cd "$(dirname "$0")" && pwd)
 source "$here/_lib.sh"
 vivi_load_env; vivi_require VIVI_DEFAULT_BRANCH
 
-check=false
-if [ "${1:-}" = "--check" ]; then check=true; shift; fi
-issue=${1:-}; [ -n "$issue" ] || vivi_die 2 "usage: preflight [--check] <issue>"
+check=false; jobs=1; issue=""
+usage="usage: preflight [--jobs N] <issue> | --check <issue>"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --check) check=true; shift;;
+    --jobs) jobs=${2:-}; shift 2 || shift
+            case "$jobs" in ''|*[!0-9]*|0) vivi_die 2 "--jobs wants a positive number";; esac;;
+    -*) vivi_die 2 "$usage";;
+    *) [ -z "$issue" ] || vivi_die 2 "$usage"
+       case "$1" in *[!0-9]*) vivi_die 2 "$usage";; esac
+       issue=$1; shift;;
+  esac
+done
+[ -n "$issue" ] || vivi_die 2 "$usage"
 cd "$VIVI_ROOT"
 head_sha=$(git rev-parse HEAD)
 
@@ -69,6 +83,9 @@ clean_env() {
 }
 
 results='[]'; state=nothing; failed='null'; started=$(date +%s)
+todo=$(mktemp -d)
+trap 'rm -f "$rows"; rm -rf "$todo"' EXIT
+n=0
 while IFS= read -r line; do
   body=${line#|}; body=${body%|}
   ncols=$(printf '%s' "$body" | awk -F'|' '{print NF}')
@@ -101,22 +118,54 @@ while IFS= read -r line; do
   files=""
   while IFS= read -r f; do [ -n "$f" ] && files="$files $(printf '%q' "$f")"; done <<< "$matched"
   run=${cmd//\{files\}/${files# }}
-  t0=$(date +%s); code=0
-  out=$(clean_env bash -c "$run" 2>&1 </dev/null) || code=$?
-  dur=$(( $(date +%s) - t0 ))
-  results=$(printf '%s' "$results" | jq -c --arg a "$area" --arg c "$run" --argjson e "$code" --argjson d "$dur" '. + [{area:$a, command:$c, exit:$e, duration_sec:$d}]')
-  if [ "$code" -ne 0 ]; then
-    state=fail
-    failed=$(jq -nc --arg a "$area" --arg c "$run" --arg t "$(printf '%s' "$out" | tail -n 40)" '{area:$a, command:$c, log_tail:$t}')
+  n=$((n + 1))
+  printf '%s' "$area" > "$todo/$n.area"; printf '%s' "$run" > "$todo/$n.cmd"
+done < "$rows"
+
+# One row: output, exit code and duration into $todo/<i>.*
+run_row() {
+  local i=$1 t0 code=0
+  t0=$(date +%s)
+  clean_env bash -c "$(cat "$todo/$i.cmd")" > "$todo/$i.out" 2>&1 </dev/null || code=$?
+  echo "$code" > "$todo/$i.exit"; echo $(( $(date +%s) - t0 )) > "$todo/$i.dur"
+}
+i=1
+while [ "$i" -le "$n" ]; do
+  if [ "$jobs" -le 1 ]; then
+    run_row "$i"; last=$i
+  else
+    # A batch of up to $jobs rows at once; bash 3.2 has no wait -n.
+    last=$(( i + jobs - 1 )); [ "$last" -le "$n" ] || last=$n
+    j=$i; while [ "$j" -le "$last" ]; do run_row "$j" & j=$((j + 1)); done
+    wait
+  fi
+  j=$i
+  while [ "$j" -le "$last" ]; do
+    code=$(cat "$todo/$j.exit"); area=$(cat "$todo/$j.area"); run=$(cat "$todo/$j.cmd")
+    results=$(printf '%s' "$results" | jq -c --arg a "$area" --arg c "$run" --argjson e "$code" --argjson d "$(cat "$todo/$j.dur")" '. + [{area:$a, command:$c, exit:$e, duration_sec:$d}]')
+    if [ "$code" -ne 0 ]; then
+      if [ "$state" != fail ]; then
+        failed=$(jq -nc --arg a "$area" --arg c "$run" --arg t "$(tail -n 40 "$todo/$j.out")" '{area:$a, command:$c, log_tail:$t}')
+      fi
+      state=fail
+    elif [ "$state" != fail ]; then
+      state=pass
+    fi
+    j=$((j + 1))
+  done
+  # One at a time, the first failure stops the run, as before. (Consumers mirror this
+  # parser and check for this line's shape: keep the break on a line of its own.)
+  if [ "$state" = fail ] && [ "$jobs" -le 1 ]; then
     break
   fi
-  state=pass
-done < "$rows"
+  i=$((last + 1))
+done
 
 result=$(jq -nc --argjson issue "$issue" --arg h "$head_sha" --arg b "$base_sha" --arg s "$state" \
   --argjson n "$(printf '%s' "$changed" | grep -c . || true)" --argjson cmds "$results" --argjson f "$failed" \
   --argjson d "$(( $(date +%s) - started ))" \
-  '{schema:"PREFLIGHT_RESULT", issue:$issue, head_sha:$h, base_sha:$b, state:$s, changed_files:$n, commands:$cmds, duration_sec:$d} + (if $f then {failed:$f} else {} end)')
+  --argjson jobs "$jobs" \
+  '{schema:"PREFLIGHT_RESULT", issue:$issue, head_sha:$h, base_sha:$b, state:$s, changed_files:$n, commands:$cmds, duration_sec:$d, jobs:$jobs} + (if $f then {failed:$f} else {} end)')
 "$here/state" set "$issue" preflight "$result" >/dev/null
 printf '%s\n' "$result"
 [ "$state" = fail ] && exit 1

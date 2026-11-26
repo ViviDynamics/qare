@@ -1,0 +1,345 @@
+#!/usr/bin/env bash
+# The design gate: an independent review of the RENDERED screens, next to the code review.
+# A code reviewer reads the diff; nobody reads the screen. This gate is what makes a UI
+# change get looked at as a page before it is pushed and before it is merged.
+#
+# usage: design-gate touches                 local diff: list its UI files; exit 0 when it
+#                                            has some, 1 when it has none
+#        design-gate fingerprint             local: the UI fingerprint of HEAD
+#        design-gate record <issue> --verdict PASS|FAIL --rounds N [--kind ui|spec]
+#                    [--routes "..."] [--viewports "..."] [--themes "..."] [--evidence URL]
+#                    [--fixtures "why real pages were impossible"]
+#                                            record a design review of HEAD in the issue's state
+#                                            (ui: needs before and after screenshots, all
+#                                            taken, the after ones of HEAD's UI; spec: only
+#                                            for files in VIVI_UI_SPEC_PATHS)
+#        design-gate check <issue>           prepush: a UI-touching HEAD needs a passed
+#                                            record whose fingerprint is HEAD's
+#        design-gate section <issue>         print the PR body's "### Design review gate"
+#                                            header lines from the record
+#        design-gate pr <pr>                 merge: the PR as GitHub has it needs a passed
+#                                            gate in its body for its current UI, and, when
+#                                            labelled for it, the owner's sign-off
+#
+# Which paths are UI: VIVI_UI_PATHS, space-separated patterns matched against the whole
+# repository path, where * matches any characters including / (so console/* is all of
+# console/). A pattern starting with ! excludes. Empty or unset: the gate is off and every
+# command passes.
+#
+# THE UI FINGERPRINT. A review is of the UI as it stood, not of a commit: the UI files this
+# change touches (merge base with the default branch to HEAD, renames as delete plus add),
+# each with its blob at HEAD or marked removed, sorted and hashed, so a change that only
+# deletes UI files still has a UI of its own and never matches the default branch's. A later commit that touches no UI file, a
+# rebase, or a merge from the default branch that leaves those files alone, keeps the
+# fingerprint, so the review still stands (as a code review round stands for a CI fix). A
+# change to any of those files, or a new UI file, changes it, and the gate is stale: new
+# screenshots of the new head and a new review. GitHub's PR file list gives the same
+# fingerprint (filename, status, blob sha), so prepush and merge-verified agree.
+#
+# PR BODY RECORD (merge-verified reads it):
+#   ### Design review gate
+#   Design gate: independent
+#   Verdict: PASS
+#   Reviewed head: <sha>
+#   UI fingerprint: <16 hex>
+#   ...routes, viewports, themes, rounds, evidence, findings with their fixes...
+#
+# OWNER HOLD (opt-in, never applied by an agent): a PR, or an issue it closes, labelled
+# VIVI_DESIGN_HOLD_LABEL (default needs-owner-design-review) is not merged until
+# VIVI_DESIGN_OWNER has commented on the PR with a line that is exactly
+#   Design approved: <UI fingerprint>
+# naming the PR's current UI fingerprint (all 16 characters; for a held PR that touches no
+# UI path, 7 or more characters of its head sha). A UI change after the approval changes
+# the fingerprint, so the owner approves again. A PR review approval is impossible for a
+# solo author, hence a comment. Agents never post that line: where they run on the owner's
+# own account, the scripts cannot tell who typed it. Off, like the whole gate, when
+# VIVI_UI_PATHS is empty.
+#
+# exit: 0 passes (or not applicable), 1 refused (reason in the JSON), 2 usage or config,
+#       3 transient
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+source "$here/_lib.sh"
+vivi_load_env
+usage="usage: design-gate touches | fingerprint | record <issue> --verdict PASS|FAIL --rounds N [...] | check <issue> | section <issue> | pr <pr>"
+cmd=${1:-}; [ -n "$cmd" ] || vivi_die 2 "$usage"; shift
+hold_label=${VIVI_DESIGN_HOLD_LABEL:-needs-owner-design-review}
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+
+ui_paths() { printf '%s' "${VIVI_UI_PATHS:-}"; }
+gate_on() { [ -n "$(ui_paths | tr -d '[:space:]')" ]; }
+# ui_match <path>: 0 when the path is UI. set -f so the patterns are never expanded
+# against the working directory when the list is split into words.
+ui_match() {
+  local p hit=1 pats
+  pats=$(ui_paths)
+  set -f
+  for p in $pats; do
+    case "$p" in
+      !*) case "$1" in ${p#!}) set +f; return 1;; esac ;;
+      *) case "$1" in $p) hit=0;; esac ;;
+    esac
+  done
+  set +f
+  return "$hit"
+}
+# spec_match <path>: 0 when the path is a design spec or mockup (VIVI_UI_SPEC_PATHS, the
+# same pattern syntax), the only UI files a --kind spec review may cover.
+spec_match() {
+  local p hit=1 pats=${VIVI_UI_SPEC_PATHS:-}
+  set -f
+  for p in $pats; do
+    case "$p" in
+      !*) case "$1" in ${p#!}) set +f; return 1;; esac ;;
+      *) case "$1" in $p) hit=0;; esac ;;
+    esac
+  done
+  set +f
+  return "$hit"
+}
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
+# fingerprint_of <file of "path<TAB>blob" lines, one per UI path touched; "-" for a removed
+# one, so a change that only deletes UI files is still a UI of its own, never main's>
+fingerprint_of() { LC_ALL=C sort -u "$1" | sha256 | cut -c1-16; }
+
+# Local: writes $tmp/ui (every UI path touched, any status) and $tmp/fp_in (path, and its
+# blob at HEAD or "-" when removed).
+local_ui() {
+  local base_ref mb status path
+  vivi_require VIVI_DEFAULT_BRANCH
+  cd "$VIVI_ROOT"
+  base_ref="origin/$VIVI_DEFAULT_BRANCH"
+  git rev-parse -q --verify "$base_ref^{commit}" >/dev/null || vivi_die 2 "$base_ref not found: git fetch origin $VIVI_DEFAULT_BRANCH first"
+  mb=$(git merge-base HEAD "$base_ref") || vivi_die 2 "HEAD has no merge base with $base_ref"
+  : > "$tmp/ui"; : > "$tmp/fp_in"
+  # -z: a path git would quote (a quote, backslash or tab in it) is read as it is, the
+  # same name GitHub's file list carries.
+  while IFS= read -r -d '' status && IFS= read -r -d '' path; do
+    [ -n "$path" ] || continue
+    ui_match "$path" || continue
+    printf '%s\n' "$path" >> "$tmp/ui"
+    case "$status" in D*) printf '%s\t-\n' "$path" >> "$tmp/fp_in";; *) printf '%s\t%s\n' "$path" "$(git rev-parse "HEAD:$path")" >> "$tmp/fp_in";; esac
+  done < <(git diff -z --no-renames --name-status "$mb" HEAD)
+}
+
+json_files() { jq -Rsc 'split("\n") | map(select(length > 0)) | unique' "$1"; }
+
+# The "### Design review gate" section of a body file, and one field of it.
+section_of() { awk '/^#+[[:space:]]*Design review gate[[:space:]]*$/ {on=1; next} /^#/ {on=0} on {print}' "$1"; }
+field() {  # <section file> <field name>: the value of "<name>: value", first one
+  sed -n "s/^[-*[:space:]]*$2:[[:space:]]*//p" "$1" | head -n 1 | sed 's/[[:space:]]*$//'
+}
+
+case "$cmd" in
+  touches)
+    if ! gate_on; then jq -nc '{schema:"DESIGN_GATE_RESULT", gate:"off", ui:false, files:[]}'; exit 1; fi
+    local_ui
+    n=$(wc -l < "$tmp/ui" | tr -d ' ')
+    jq -nc --argjson f "$(json_files "$tmp/ui")" '{schema:"DESIGN_GATE_RESULT", gate:"independent", ui:($f|length > 0), files:$f}'
+    [ "$n" -gt 0 ] ;;
+
+  fingerprint)
+    gate_on || vivi_die 2 "VIVI_UI_PATHS is empty: the design gate is off"
+    local_ui
+    fingerprint_of "$tmp/fp_in" ;;
+
+  record)
+    issue=${1:-}; case "$issue" in ''|*[!0-9]*) vivi_die 2 "$usage";; esac; shift
+    verdict=""; rounds=""; kind=ui; routes=""; viewports=""; themes=""; evidence=""; fixtures=""
+    while [ $# -gt 0 ]; do
+      [ $# -ge 2 ] || vivi_die 2 "$1 needs a value"
+      case "$1" in
+        --verdict) verdict=$(printf '%s' "$2" | tr '[:lower:]' '[:upper:]');;
+        --rounds) rounds=$2;;
+        --kind) kind=$2;;
+        --routes) routes=$2;;
+        --viewports) viewports=$2;;
+        --themes) themes=$2;;
+        --evidence) evidence=$2;;
+        --fixtures) fixtures=$2;;
+        *) vivi_die 2 "unknown option $1";;
+      esac
+      shift 2
+    done
+    case "$verdict" in PASS|FAIL) ;; *) vivi_die 2 "--verdict must be PASS or FAIL";; esac
+    case "$rounds" in ''|*[!0-9]*) vivi_die 2 "--rounds must be a number (review rounds so far, this one included)";; esac
+    case "$kind" in ui|spec) ;; *) vivi_die 2 "--kind must be ui or spec";; esac
+    gate_on || vivi_die 2 "VIVI_UI_PATHS is empty: the design gate is off, nothing to record"
+    local_ui
+    [ -s "$tmp/ui" ] || vivi_die 1 "this change touches no UI path (VIVI_UI_PATHS); there is no design gate to record"
+    [ -z "$(git status --porcelain --untracked-files=no)" ] || vivi_die 1 "uncommitted changes: the record is for HEAD, so commit first"
+    head_sha=$(git rev-parse HEAD); fp=$(fingerprint_of "$tmp/fp_in")
+    # A spec review has no screenshots, so it may cover only specs and mockups: a code or
+    # style file under a spec review would skip the screenshots entirely.
+    if [ "$kind" = spec ]; then
+      [ -n "${VIVI_UI_SPEC_PATHS:-}" ] || vivi_die 1 "--kind spec needs VIVI_UI_SPEC_PATHS (which UI paths are specs and mockups); without it every UI change is reviewed on screenshots"
+      while IFS= read -r f; do
+        spec_match "$f" || vivi_die 1 "--kind spec covers only specs and mockups (VIVI_UI_SPEC_PATHS), and $f is not one: take screenshots and review it as --kind ui"
+      done < "$tmp/ui"
+    fi
+    # A UI review is of screenshots of THIS UI: the after shots must be of this
+    # fingerprint, and before shots must exist. A spec-only change is judged as a spec.
+    if [ "$kind" = ui ]; then
+      ev=$(vivi_state_dir)/ui-evidence/$issue
+      [ -f "$ev/after/manifest.json" ] || vivi_die 1 "no after screenshots: run ui-evidence $issue --label after first"
+      [ -f "$ev/before/manifest.json" ] || vivi_die 1 "no before screenshots: run ui-evidence $issue --label before (the same routes on $VIVI_DEFAULT_BRANCH) first"
+      # Screenshots, all of them taken: a manifest with no shots, or with failed ones, is
+      # not evidence of anything.
+      [ "$(jq '(.shots // []) | length' "$ev/after/manifest.json")" -gt 0 ] || vivi_die 1 "the after manifest has no screenshots"
+      [ "$(jq '(.failures // []) | length' "$ev/after/manifest.json")" -eq 0 ] || vivi_die 1 "some after screenshots failed ($(jq -r '[.failures[] | "\(.name) \(.width // "")/\(.theme // ""): \(.error | split("\n")[0])"] | .[0:3] | join("; ")' "$ev/after/manifest.json")): fix the routes or the stack and take them again"
+      [ "$(jq '(.shots // []) | length' "$ev/before/manifest.json")" -gt 0 ] || vivi_die 1 "the before manifest has no screenshots"
+      [ "$(jq '(.failures // []) | length' "$ev/before/manifest.json")" -eq 0 ] || vivi_die 1 "some before screenshots failed: take them again"
+      # Before is the default branch's UI, unedited: the tree served for it must be on
+      # that branch and clean. After is the change: never a tree on the default branch.
+      bh=$(jq -r '.head_sha // ""' "$ev/before/manifest.json")
+      if [ -z "$bh" ] || ! git merge-base --is-ancestor "$bh" "origin/$VIVI_DEFAULT_BRANCH" 2>/dev/null; then
+        vivi_die 1 "the before screenshots are of ${bh:-an unknown head}, which is not on origin/$VIVI_DEFAULT_BRANCH: serve a checkout of the default branch for them"
+      fi
+      [ "$(jq -r 'if .dirty == false then "clean" else "dirty" end' "$ev/before/manifest.json")" = clean ] || vivi_die 1 "the before screenshots were taken from a tree with uncommitted changes: serve a clean checkout of the default branch"
+      ah=$(jq -r '.head_sha // ""' "$ev/after/manifest.json")
+      if [ -z "$ah" ] || git merge-base --is-ancestor "$ah" "origin/$VIVI_DEFAULT_BRANCH" 2>/dev/null; then
+        vivi_die 1 "the after screenshots are of ${ah:-an unknown head}, which is the default branch, not this change: serve this worktree (ui-evidence $issue --label after --serve <worktree>)"
+      fi
+      afp=$(jq -r '.ui_fingerprint // ""' "$ev/after/manifest.json")
+      [ "$afp" = "$fp" ] || vivi_die 1 "the after screenshots are of UI fingerprint ${afp:-unknown}, not HEAD's $fp: the UI changed since they were taken, so take them again (ui-evidence $issue --label after) and review those"
+      [ "$(jq -r 'if .dirty == false then "clean" else "dirty" end' "$ev/after/manifest.json")" = clean ] || vivi_die 1 "the after screenshots were taken from a tree with uncommitted UI changes; commit, then take them again"
+      [ -n "$routes" ] || routes=$(jq -r '[.shots[].path] | unique | join(", ")' "$ev/after/manifest.json")
+      [ -n "$viewports" ] || viewports=$(jq -r '[.shots[].width | tostring] | unique | join(", ")' "$ev/after/manifest.json")
+      [ -n "$themes" ] || themes=$(jq -r '[.shots[].theme] | unique | join(", ")' "$ev/after/manifest.json")
+    fi
+    rec=$(jq -nc --arg h "$head_sha" --arg fp "$fp" --arg v "$verdict" --argjson r "$rounds" --arg k "$kind" \
+      --arg routes "$routes" --arg vp "$viewports" --arg th "$themes" --arg ev "$evidence" --arg fx "$fixtures" \
+      --argjson files "$(json_files "$tmp/ui")" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+      {schema:"DESIGN_GATE_RECORD", gate:"independent", head_sha:$h, ui_fingerprint:$fp, verdict:$v, rounds:$r,
+       kind:$k, routes:$routes, viewports:$vp, themes:$th, ui_files:$files, recorded_at:$t}
+      + (if $ev != "" then {evidence:$ev} else {} end) + (if $fx != "" then {fixtures:$fx} else {} end)')
+    "$here/state" set "$issue" design_gate "$rec" >/dev/null
+    printf '%s\n' "$rec" ;;
+
+  check)
+    issue=${1:-}; case "$issue" in ''|*[!0-9]*) vivi_die 2 "$usage";; esac
+    emit() { jq -nc --argjson issue "$issue" --arg s "$1" --argjson ok "$2" --arg why "$3" --arg fp "${4:-}" \
+      '{schema:"DESIGN_GATE_RESULT", issue:$issue, state:$s, ok:$ok} + (if $fp != "" then {ui_fingerprint:$fp} else {} end) + (if $why != "" then {reason:$why} else {} end)'; }
+    if ! gate_on; then emit off true ""; exit 0; fi
+    local_ui
+    if [ ! -s "$tmp/ui" ]; then emit not_ui true ""; exit 0; fi
+    fp=$(fingerprint_of "$tmp/fp_in")
+    rec=$("$here/state" get "$issue" design_gate 2>/dev/null || true)
+    if [ -z "$rec" ]; then emit missing false "this change touches UI paths ($(paste -sd, "$tmp/ui")) and has no design review recorded: take before and after screenshots (ui-evidence), run the independent design review, then design-gate record $issue" "$fp"; exit 1; fi
+    rfp=$(printf '%s' "$rec" | jq -r '.ui_fingerprint // ""')
+    if [ "$rfp" != "$fp" ]; then emit stale false "the design review was of UI fingerprint $rfp at $(printf '%s' "$rec" | jq -r '.head_sha[0:8]'), and the UI changed since (now $fp): new after screenshots of this head and a new review round" "$fp"; exit 1; fi
+    if [ "$(printf '%s' "$rec" | jq -r .verdict)" != PASS ]; then emit failed false "the design review of this UI is FAIL: fix its Critical and Important findings and review fresh screenshots again" "$fp"; exit 1; fi
+    emit passed true "" "$fp" ;;
+
+  section)
+    issue=${1:-}; case "$issue" in ''|*[!0-9]*) vivi_die 2 "$usage";; esac
+    rec=$("$here/state" get "$issue" design_gate 2>/dev/null || true)
+    [ -n "$rec" ] || vivi_die 1 "no design review recorded for issue $issue (design-gate record)"
+    printf '%s' "$rec" | jq -r '
+      "### Design review gate",
+      "Design gate: independent",
+      "Verdict: \(.verdict)",
+      "Reviewed head: \(.head_sha)",
+      "UI fingerprint: \(.ui_fingerprint)",
+      "Kind: \(.kind)",
+      (if .kind == "ui" then "Routes: \(.routes)", "Viewports: \(.viewports)", "Themes: \(.themes)" else "Specs: \(.ui_files | join(", "))" end),
+      "Rounds: \(.rounds)",
+      (if .evidence then "Evidence: \(.evidence)" else empty end),
+      (if .fixtures then "Fixture data: \(.fixtures)" else empty end)' ;;
+
+  pr)
+    pr=${1:-}; case "$pr" in ''|*[!0-9]*) vivi_die 2 "$usage";; esac
+    vivi_require VIVI_REPO
+    held=false; approved=""
+    emit() { jq -nc --argjson pr "$pr" --arg s "$1" --argjson ok "$2" --arg why "$3" --arg fp "${4:-}" --argjson held "$held" --arg ap "$approved" \
+      '{schema:"DESIGN_GATE_RESULT", pr:$pr, state:$s, ok:$ok, owner_hold:$held}
+       + (if $ap != "" then {owner_approval:$ap} else {} end)
+       + (if $fp != "" then {ui_fingerprint:$fp} else {} end) + (if $why != "" then {reason:$why} else {} end)'; }
+    if ! gate_on; then emit off true ""; exit 0; fi
+    code=0; view=$(vivi_gh pr view "$pr" --repo "$VIVI_REPO" --json body,headRefOid,baseRefName,changedFiles,labels,closingIssuesReferences 2>"$tmp/err") || code=$?
+    [ "$code" -eq 3 ] && exit 3
+    [ "$code" -eq 0 ] || vivi_die 2 "could not read PR #$pr: $(head -n1 "$tmp/err")"
+    printf '%s' "$view" | jq -r '.body // ""' > "$tmp/body"
+    head_sha=$(printf '%s' "$view" | jq -r '.headRefOid // ""')
+    # Every file, any status, previous names of renames too (a rename out of a UI path
+    # touches it, as the delete does locally).
+    code=0; vivi_gh api --paginate "repos/$VIVI_REPO/pulls/$pr/files?per_page=100" > "$tmp/files.json" 2>"$tmp/err" || code=$?
+    [ "$code" -eq 3 ] && exit 3
+    [ "$code" -eq 0 ] || vivi_die 2 "could not read the files of PR #$pr: $(head -n1 "$tmp/err")"
+    # --paginate prints one array per page; slurped and joined here.
+    # NUL-separated, so a name is read exactly as git -z gives it locally (@tsv would
+    # escape a backslash or tab and the fingerprints would never agree).
+    jq -js 'add // [] | .[] | "\(.status)\u0000\(.sha // "")\u0000\(.filename)\u0000\(if .status == "renamed" then (.previous_filename // "") else "" end)\u0000"' "$tmp/files.json" > "$tmp/files" \
+      || vivi_die 2 "the file list of PR #$pr is not JSON"
+    # GitHub lists at most 3000 files; a UI file past that point would read as no UI.
+    listed=$(jq -s 'add // [] | length' "$tmp/files.json"); changed=$(printf '%s' "$view" | jq -r '.changedFiles // empty')
+    if [ -n "$changed" ] && [ "$listed" -lt "$changed" ]; then
+      emit unreadable false "GitHub listed $listed of the PR's $changed changed files, so whether it touches UI paths cannot be told; split the PR" ""; exit 1
+    fi
+    : > "$tmp/ui"; : > "$tmp/fp_in"
+    while IFS= read -r -d '' status && IFS= read -r -d '' blob && IFS= read -r -d '' path && IFS= read -r -d '' prev; do
+      [ -n "$path" ] || continue
+      # A rename's old name is removed, as the local --no-renames diff sees it.
+      if [ -n "$prev" ] && ui_match "$prev"; then printf '%s\n' "$prev" >> "$tmp/ui"; printf '%s\t-\n' "$prev" >> "$tmp/fp_in"; fi
+      ui_match "$path" || continue
+      printf '%s\n' "$path" >> "$tmp/ui"
+      if [ "$status" = removed ]; then printf '%s\t-\n' "$path" >> "$tmp/fp_in"; else printf '%s\t%s\n' "$path" "$blob" >> "$tmp/fp_in"; fi
+    done < "$tmp/files"
+    fp=""; reviewed=""
+    section_of "$tmp/body" > "$tmp/section"
+    if [ -s "$tmp/ui" ]; then
+      fp=$(fingerprint_of "$tmp/fp_in")
+      # The fingerprint is of the change against the default branch, as prepush computes
+      # it; a PR stacked on another branch lists files against that branch instead.
+      base=$(printf '%s' "$view" | jq -r '.baseRefName // ""')
+      if [ -n "$base" ] && [ -n "${VIVI_DEFAULT_BRANCH:-}" ] && [ "$base" != "$VIVI_DEFAULT_BRANCH" ]; then
+        emit stacked false "the PR is based on $base, not $VIVI_DEFAULT_BRANCH, so its UI fingerprint cannot be compared with the review's; retarget it to $VIVI_DEFAULT_BRANCH (after its parent merges) and run again" "$fp"; exit 1
+      fi
+      if [ ! -s "$tmp/section" ]; then emit missing false "the PR touches UI paths ($(sort -u "$tmp/ui" | head -n 5 | paste -sd, -)) and its body has no ### Design review gate section: run the design gate (ship-issue Stage 2b) and record it" "$fp"; exit 1; fi
+      gate=$(field "$tmp/section" "Design gate" | tr '[:upper:]' '[:lower:]'); gate=${gate%%[!a-z]*}
+      if [ "$gate" != independent ]; then emit wrong_gate false "the design gate recorded is '${gate:-none}', not 'Design gate: independent'" "$fp"; exit 1; fi
+      verdict=$(field "$tmp/section" "Verdict" | tr '[:lower:]' '[:upper:]'); verdict=${verdict%%[!A-Z]*}
+      if [ "$verdict" != PASS ]; then emit failed false "the design gate verdict is '${verdict:-none}', not PASS" "$fp"; exit 1; fi
+      rfp=$(field "$tmp/section" "UI fingerprint"); rfp=${rfp%%[!0-9a-f]*}
+      reviewed=$(field "$tmp/section" "Reviewed head"); reviewed=${reviewed%%[!0-9a-f]*}
+      if [ "$rfp" != "$fp" ]; then emit stale false "the design review was of UI fingerprint ${rfp:-none} (head ${reviewed:0:8}), and the PR's UI is now $fp: the UI changed after the review, so it needs new screenshots and a new review round" "$fp"; exit 1; fi
+    fi
+    # The owner hold, on the PR or on any issue it closes.
+    printf '%s' "$view" | jq -r '.labels[]?.name' > "$tmp/labels"
+    # Each closing issue in its own repository ("Fixes other/repo#12" is not #12 here).
+    for ref in $(printf '%s' "$view" | jq -r --arg r "$VIVI_REPO" '.closingIssuesReferences[]? | "\(if .repository.owner.login and .repository.name then "\(.repository.owner.login)/\(.repository.name)" else $r end)#\(.number)"'); do
+      n=${ref##*#}; irepo=${ref%#*}
+      code=0; il=$(vivi_gh issue view "$n" --repo "$irepo" --json labels 2>"$tmp/err") || code=$?
+      [ "$code" -eq 3 ] && exit 3
+      [ "$code" -eq 0 ] || vivi_die 2 "could not read the labels of issue #$n: $(head -n1 "$tmp/err")"
+      printf '%s' "$il" | jq -r '.labels[]?.name' >> "$tmp/labels"
+    done
+    if grep -qxF "$hold_label" "$tmp/labels"; then
+      held=true
+      owner=${VIVI_DESIGN_OWNER:-}
+      case "$owner" in ''|*[!A-Za-z0-9-]*) emit owner_hold false "the PR is labelled $hold_label, and VIVI_DESIGN_OWNER is not set to a GitHub login, so nobody can approve it" "$fp"; exit 1;; esac
+      # The approval names the UI the owner looked at: its fingerprint, which the PR's
+      # files prove (never a sha the PR body merely claims). A held PR with no UI change
+      # is approved by its head.
+      want=${fp:-$head_sha}; minlen=7; [ -z "$fp" ] || minlen=16
+      code=0; vivi_gh api --paginate "repos/$VIVI_REPO/issues/$pr/comments?per_page=100" > "$tmp/comments.json" 2>"$tmp/err" || code=$?
+      [ "$code" -eq 3 ] && exit 3
+      [ "$code" -eq 0 ] || vivi_die 2 "could not read the comments of PR #$pr: $(head -n1 "$tmp/err")"
+      jq -rs --arg o "$owner" 'add // [] | .[] | select((.user.login | ascii_downcase) == ($o | ascii_downcase)) | .body' "$tmp/comments.json" > "$tmp/comments" \
+        || vivi_die 2 "the comments of PR #$pr are not JSON"
+      while IFS= read -r line; do
+        line=${line%$'\r'}
+        case "$line" in "Design approved: "*) ;; *) continue;; esac
+        s=${line#Design approved: }; s=${s%"${s##*[![:space:]]}"}
+        case "$s" in *[!0-9a-f]*|'') continue;; esac
+        [ "${#s}" -ge "$minlen" ] || continue
+        case "$want" in "$s"*) approved=$s; break;; esac
+      done < "$tmp/comments"
+      if [ -z "$approved" ]; then
+        emit owner_hold false "the PR is labelled $hold_label: waiting for $owner to comment 'Design approved: ${want:0:$([ -n "$fp" ] && echo 16 || echo 12)}' after looking at the screenshots linked in the PR body" "$fp"; exit 1
+      fi
+    fi
+    if [ -s "$tmp/ui" ]; then emit passed true "" "$fp"; else emit not_ui true "" ""; fi ;;
+
+  *) vivi_die 2 "$usage" ;;
+esac
