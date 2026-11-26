@@ -2,16 +2,45 @@
 # Verify a consumer repo is wired for the Vivi skills. Run from inside the consumer.
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
-problems='[]'
+problems='[]'; notes='[]'
 add() { problems=$(printf '%s' "$problems" | jq -c --arg p "$1" '. + [$p]'); }
-finish() { if [ "$problems" = "[]" ]; then echo '{"ok":true}'; exit 0; fi; printf '{"ok":false,"problems":%s}\n' "$problems"; exit 2; }
+note() { notes=$(printf '%s' "$notes" | jq -c --arg p "$1" '. + [$p]'); }
+finish() {
+  if [ "$problems" = "[]" ]; then jq -nc --argjson n "$notes" '{ok:true} + (if ($n|length) > 0 then {notes:$n} else {} end)'; exit 0; fi
+  jq -nc --argjson p "$problems" --argjson n "$notes" '{ok:false, problems:$p} + (if ($n|length) > 0 then {notes:$n} else {} end)'; exit 2
+}
 root=$(git rev-parse --show-toplevel 2>/dev/null) || { add "not inside a git repository"; finish; }
-[ -f "$root/repo.env.example" ] || add "repo.env.example missing at $root/repo.env.example (commit one so CI and other clones can recreate repo.env)"
-if grep -qE '^VIVI_ASSIGNEE="?[A-Za-z0-9]' "$root/repo.env.example" 2>/dev/null; then
-  add "repo.env.example sets VIVI_ASSIGNEE; leave it empty so each contributor sets their own login in repo.env"
+# repo.env.example is the configuration every clone and worktree reads; repo.env is an
+# optional per-person overlay (VIVI_ASSIGNEE, VIVI_GH_TOKEN_FILE).
+if [ ! -f "$root/repo.env.example" ]; then
+  add "repo.env.example missing at $root/repo.env.example (commit one: it is the configuration every clone and worktree reads)"
+  [ -f "$root/repo.env" ] || finish
 fi
-[ -f "$root/repo.env" ] || { add "repo.env missing at $root/repo.env"; finish; }
+if grep -qE '^VIVI_ASSIGNEE="?[A-Za-z0-9]' "$root/repo.env.example" 2>/dev/null; then
+  add "repo.env.example sets VIVI_ASSIGNEE; leave it empty so each contributor sets their own login (see ADOPTING.md)"
+fi
+if grep -qE '^VIVI_TEMPLATE=true' "$root/repo.env.example" 2>/dev/null; then
+  add "repo.env.example is the unedited ViviDynamics/skills template: fill in this repository's values and delete the VIVI_TEMPLATE line"
+  finish
+fi
 vivi_load_env
+# A key in repo.env that differs from the example is ignored, so what this machine's
+# copy says is not what runs: a problem until it is deleted from repo.env.
+for k in $VIVI_IGNORED_KEYS; do
+  add "repo.env sets $k to a value repo.env.example does not have; it is ignored (only $VIVI_PERSONAL_KEYS are read from repo.env). Delete it from repo.env, or change repo.env.example in a PR"
+done
+# A config copied from the template, or from another repository, names the wrong repo.
+origin=$(git -C "$root" remote get-url origin 2>/dev/null || true)
+if [ -n "$origin" ] && [ -n "${VIVI_REPO:-}" ]; then
+  # Any URL form (https, ssh, scp-style, enterprise host): drop a trailing / and .git,
+  # then the path must end in /owner/name or :owner/name.
+  o=$(printf '%s' "$origin" | tr '[:upper:]' '[:lower:]'); o=${o%/}; o=${o%.git}
+  r=$(printf '%s' "$VIVI_REPO" | tr '[:upper:]' '[:lower:]')
+  case "$o" in
+    */"$r"|*:"$r") ;;
+    *) add "VIVI_REPO=$VIVI_REPO does not match the origin remote ($origin)";;
+  esac
+fi
 for k in VIVI_REPO VIVI_DEFAULT_BRANCH VIVI_MERGE_FLAGS; do eval "[ -n \"\${$k:-}\" ]" || add "required key unset: $k"; done
 for k in VIVI_FLAKE_SIGNATURES_FILE VIVI_TEST_COMMANDS_FILE; do
   v=$(eval "printf '%s' \"\${$k:-}\"")

@@ -1,8 +1,8 @@
 ---
 name: copilot-review
 description: Use only when the developer explicitly asks for a GitHub Copilot code review, or when ship-issue's review gate is copilot and the local review is clean. Requests one review, waits for it, and fixes or answers each comment. Never the first reviewer, and never re-requested to check its own fixes.
-license: Elastic-2.0
-compatibility: Requires gh, jq, git and a repo.env in the consumer repo. Copilot code review must be enabled for the repository. Scripts are bash 3.2 compatible.
+license: Proprietary
+compatibility: Requires gh, jq, git and a committed repo.env.example in the consumer repo. Copilot code review must be enabled for the repository. Scripts are bash 3.2 compatible.
 metadata:
   version: "2.0.0"
   owner: Vivi Dynamics
@@ -49,9 +49,9 @@ then run every `gh` call as `$S/vgh`. Let `R=$($S/repo-config VIVI_REPO)`.
        $S/vgh api -X POST   "repos/$R/pulls/<pr>/requested_reviewers" -f 'reviewers[]=copilot-pull-request-reviewer[bot]'
        $S/vgh api "repos/$R/pulls/<pr>" --jq '[.requested_reviewers[].login]'
 
-   If `Copilot` is absent, try `$S/vgh pr edit <pr> --add-reviewer @copilot` and read
-   back again. Still absent: stop with `review_received: false`, reason "request did
-   not land (is Copilot review enabled?)". Record the UTC request time.
+   If `copilot-pull-request-reviewer[bot]` is absent, stop with
+   `review_received: false`, reason "request did not land (is Copilot review
+   enabled?)". Record the UTC request time.
 
 2. **Wait for the review.** Every 2 minutes, up to 20 minutes, read
    `$S/vgh api "repos/$R/pulls/<pr>/reviews"` for a review whose `user.login` contains

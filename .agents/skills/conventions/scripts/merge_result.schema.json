@@ -6,8 +6,15 @@
   "properties": {
     "schema": { "type": "string", "enum": ["MERGE_RESULT"] },
     "pr": { "type": "integer" },
-    "state": { "type": "string", "enum": ["merged", "blocked", "preconditions_failed"] },
+    "state": { "type": "string", "enum": ["merged", "blocked", "preconditions_failed", "updated", "waiting", "queued", "dequeued"] },
     "merge_commit": { "type": "string" },
-    "reason": { "type": "string" }
+    "head_sha": { "type": "string" },
+    "reason": { "type": "string" },
+    "lease": { "type": "object" },
+    "queue_enabled": { "type": "string" },
+    "queue": { "type": "object" },
+    "dequeue_reason": { "type": "string" },
+    "merge_group_run": { "type": "object" },
+    "design_gate": { "type": "string" }
   }
 }

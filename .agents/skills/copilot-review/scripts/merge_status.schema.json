@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MERGE_STATUS",
+  "type": "object",
+  "required": ["schema", "pr", "pr_state", "mode", "verdict", "lease"],
+  "properties": {
+    "schema": { "type": "string", "enum": ["MERGE_STATUS"] },
+    "pr": { "type": "integer" },
+    "pr_state": { "type": "string", "enum": ["OPEN", "MERGED", "CLOSED"] },
+    "head_sha": { "type": "string" },
+    "ci_state": { "type": "string", "enum": ["none", "pending", "failing", "failed", "parked", "green"] },
+    "freshness": { "type": "string", "enum": ["fresh", "stale", "unknown", "not_checked"] },
+    "freshness_mode": { "type": "string", "enum": ["record", "contains", "off"] },
+    "mode": { "type": "string", "enum": ["lease", "queue"] },
+    "configured_mode": { "type": "string", "enum": ["lease", "queue", "auto"] },
+    "queue_enabled": { "type": "string", "enum": ["yes", "no", "unknown"] },
+    "verdict": { "type": "string" },
+    "reason": { "type": "string" },
+    "default_branch_sha": { "type": "string" },
+    "lease": { "type": "object", "required": ["held"] }
+  }
+}

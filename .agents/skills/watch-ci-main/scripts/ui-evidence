@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# Screenshots of real rendered pages, for the design gate (design-gate, ship-issue Stage 2b).
+#
+# usage: ui-evidence <issue> --label before|after --routes FILE [--serve TREE]
+#                    [--base-url URL] [--widths 1280,375] [--themes light,dark]
+#        ui-evidence publish <issue>     push the shots to refs/vivi-evidence/<issue> and
+#                                        write before/after markdown for the PR body
+#        ui-evidence unpublish <issue>   delete that ref (after the merge)
+#        ui-evidence dir <issue> [label] print where the shots are
+#
+# Shots and a manifest go to <git common dir>/vivi-state/ui-evidence/<issue>/<label>/,
+# which every worktree of the clone (the design reviewer's included) can read. Each run of
+# a label replaces that label's shots, so they are always one coherent set.
+#
+# The routes FILE is JSON, an array of
+#   {"name": "usage, filters open", "path": "/usage", "state": "populated",
+#    "as": "<persona>", "actions": [{"click": "button:has-text('Filters')"}],
+#    "fullPage": true}
+# state: populated (default) | empty | loading | error | any label you like. loading and
+# error are simulated at the network: requests matching the route's "api" glob, else
+# VIVI_UI_API_PATTERN (default **/api/**), never answer, or answer 500. Narrow "api" to the
+# page's own data requests when the app shell boots from the same API, or the shot shows
+# the shell's boot screen instead of the page's loading or error state. empty normally needs a persona whose data is
+# empty: "as" is handed to the repository's login module. actions: click, fill
+# [selector, value], press, hover, wait (a selector), sleep (ms), in order.
+#
+# --serve TREE runs VIVI_UI_SERVE_CMD with TREE as its argument before anything else (the
+# base URL is read after it), so the stack serves
+# that tree's UI: the worktree itself for "after", a detached checkout of the default
+# branch for "before". The served tree is remembered per base URL, and the manifest
+# describes it (head, UI fingerprint, uncommitted changes), so after shots of a stack
+# still serving the default branch never pass for the change. Without --serve, the tree
+# last served there is photographed; with no VIVI_UI_SERVE_CMD at all, the worktree.
+# The base URL is --base-url, else the output of VIVI_UI_BASE_URL_CMD.
+#
+# Repository configuration (repo.env.example):
+#   VIVI_UI_PLAYWRIGHT_DIR  directory whose node_modules has playwright (required)
+#   VIVI_UI_LOGIN_MODULE    ES module exporting signIn(page, {baseUrl, persona}) (required)
+#   VIVI_UI_SERVE_CMD       command that makes the stack serve the tree given as $1
+#   VIVI_UI_BASE_URL_CMD    command that prints the stack's base URL
+#   VIVI_UI_API_PATTERN     Playwright URL glob of the data requests (loading, error)
+# publish runs only in a private repository (VIVI_REPO_VISIBILITY, else GitHub says).
+# Commands run from the repository root, split into words (no shell syntax).
+#
+# exit: 0 done, 1 a shot failed or a step was refused (JSON says which), 2 usage or config
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+source "$here/_lib.sh"
+vivi_load_env
+usage="usage: ui-evidence <issue> --label before|after --routes FILE [--serve TREE] [--base-url URL] [--widths W,W] [--themes light,dark] | publish <issue> | unpublish <issue> | dir <issue> [label]"
+sub=shoot
+case "${1:-}" in publish|unpublish|dir) sub=$1; shift;; esac
+issue=${1:-}; case "$issue" in ''|*[!0-9]*) vivi_die 2 "$usage";; esac; shift
+root_dir="$(vivi_state_dir)/ui-evidence/$issue"
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+# run_cmd <config value> [args...]: a configured command, split into words, from the root
+run_cmd() { local c=$1; shift; set -f; # shellcheck disable=SC2086
+  (cd "$VIVI_ROOT" && $c "$@"); local rc=$?; set +f; return $rc; }
+
+case "$sub" in
+  dir)
+    printf '%s\n' "$root_dir${1:+/$1}"; exit 0 ;;
+
+  unpublish)
+    vivi_require VIVI_REPO
+    cd "$VIVI_ROOT"
+    git push -q origin ":refs/vivi-evidence/$issue" 2>"$tmp/err" || { grep -qi 'unable to delete\|does not exist' "$tmp/err" || vivi_die 1 "could not delete refs/vivi-evidence/$issue: $(head -n1 "$tmp/err")"; }
+    jq -nc --argjson i "$issue" '{schema:"UI_EVIDENCE_PUBLISH", issue:$i, ref:"refs/vivi-evidence/\($i)", deleted:true}' ;;
+
+  publish)
+    vivi_require VIVI_REPO
+    # Screenshots show whatever the page shows. A public repository never gets them
+    # pushed by a script. Visibility as disclosure-guard reads it: VIVI_REPO_VISIBILITY,
+    # else GitHub; unknown counts as public.
+    visibility=$(printf '%s' "${VIVI_REPO_VISIBILITY:-}" | tr '[:upper:]' '[:lower:]')
+    if [ -z "$visibility" ]; then
+      visibility=$(vivi_gh repo view "$VIVI_REPO" --json visibility --jq .visibility 2>/dev/null | tr '[:upper:]' '[:lower:]') || visibility=""
+    fi
+    case "$visibility" in private|internal) ;; *) vivi_die 1 "publish pushes screenshots to the repository, so it runs only in a private one (visibility: ${visibility:-unknown}); attach them by hand in a public one";; esac
+    [ -f "$root_dir/after/manifest.json" ] || vivi_die 1 "no after screenshots for issue $issue"
+    cd "$VIVI_ROOT"
+    export GIT_INDEX_FILE="$tmp/index"
+    for label in before after; do
+      [ -d "$root_dir/$label" ] || continue
+      for f in "$root_dir/$label"/*; do
+        [ -f "$f" ] || continue
+        sha=$(git hash-object -w "$f")
+        git update-index --add --cacheinfo "100644,$sha,$label/$(basename "$f")"
+      done
+    done
+    tree=$(git write-tree); unset GIT_INDEX_FILE
+    commit=$(git -c user.name=ui-evidence -c user.email=ui-evidence@localhost commit-tree "$tree" -m "UI evidence for #$issue (not code; never merged)")
+    git push -q -f origin "$commit:refs/vivi-evidence/$issue" 2>"$tmp/err" || vivi_die 1 "could not push refs/vivi-evidence/$issue: $(head -n1 "$tmp/err")"
+    url="https://github.com/$VIVI_REPO/blob/$commit"
+    md="$root_dir/evidence.md"
+    jq -r --arg u "$url" --slurpfile b <(cat "$root_dir/before/manifest.json" 2>/dev/null || echo '{"shots":[]}') '
+      ($b[0].shots | map({key: "\(.name)|\(.width)|\(.theme)", value: .file}) | from_entries) as $before |
+      "| View | Width | Theme | Before | After |", "| --- | --- | --- | --- | --- |",
+      (.shots[] | "| \(.name) (\(.state)) | \(.width) | \(.theme) | "
+        + (if $before["\(.name)|\(.width)|\(.theme)"] then "[before](\($u)/before/\($before["\(.name)|\(.width)|\(.theme)"])?raw=true)" else "none" end)
+        + " | [after](\($u)/after/\(.file)?raw=true) |")' "$root_dir/after/manifest.json" > "$md"
+    jq -nc --argjson i "$issue" --arg c "$commit" --arg md "$md" --arg u "$url" '{schema:"UI_EVIDENCE_PUBLISH", issue:$i, ref:"refs/vivi-evidence/\($i)", commit:$c, base_url:$u, markdown:$md}' ;;
+
+  shoot)
+    label=""; routes=""; serve=""; base_url=""; widths=1280,375; themes=light,dark
+    while [ $# -gt 0 ]; do
+      [ $# -ge 2 ] || vivi_die 2 "$1 needs a value"
+      case "$1" in
+        --label) label=$2;; --routes) routes=$2;; --serve) serve=$2;; --base-url) base_url=$2;;
+        --widths) widths=$2;; --themes) themes=$2;;
+        *) vivi_die 2 "unknown option $1";;
+      esac
+      shift 2
+    done
+    case "$label" in before|after) ;; *) vivi_die 2 "--label must be before or after";; esac
+    [ -f "$routes" ] || vivi_die 2 "--routes: no such file: ${routes:-<none>}"
+    jq -e 'type == "array" and length > 0 and all(.[]; (.name|type) == "string" and (.path|type) == "string" and (.path|startswith("/"))
+           and (.api == null or ((.api|type) == "string" and (.api|length) > 0))
+           and (.fullPage == null or (.fullPage|type) == "boolean") and (.as == null or (.as|type) == "string")
+           and (.state == null or (.state|type) == "string") and (.actions == null or (.actions|type) == "array"))' "$routes" >/dev/null 2>&1 \
+      || vivi_die 2 "--routes must be a JSON array of {name, path (starting with /), state?, as?, api?, actions? (array), fullPage?}"
+    case "$widths$themes" in *[[:space:]]*) vivi_die 2 "--widths and --themes are comma-separated with no spaces";; esac
+    for w in $(printf '%s' "$widths" | tr ',' ' '); do
+      case "$w" in ''|*[!0-9]*) vivi_die 2 "--widths: comma-separated pixel widths";; esac
+      [ "$w" -ge 200 ] || vivi_die 2 "--widths: $w is not a viewport width (at least 200)"
+    done
+    case ",$widths," in *,,*) vivi_die 2 "--widths: an empty entry in $widths";; esac
+    [ -n "$(printf '%s' "$themes" | tr -d ', ')" ] || vivi_die 2 "--themes: light and/or dark"
+    case ",$themes," in *,,*) vivi_die 2 "--themes: an empty entry in $themes";; esac
+    for t in $(printf '%s' "$themes" | tr ',' ' '); do case "$t" in light|dark) ;; *) vivi_die 2 "--themes: light and/or dark";; esac; done
+    vivi_require VIVI_UI_PLAYWRIGHT_DIR VIVI_UI_LOGIN_MODULE
+    pw="$VIVI_UI_PLAYWRIGHT_DIR"; [[ "$pw" == /* ]] || pw="$VIVI_ROOT/$pw"
+    lm="$VIVI_UI_LOGIN_MODULE"; [[ "$lm" == /* ]] || lm="$VIVI_ROOT/$lm"
+    [ -d "$pw/node_modules/playwright" ] || vivi_die 2 "no playwright under $pw/node_modules: install the repository's Playwright tooling first (npm ci there)"
+    [ -f "$lm" ] || vivi_die 2 "VIVI_UI_LOGIN_MODULE: no such file: $lm"
+    if [ -n "$serve" ]; then
+      [ -d "$serve" ] || vivi_die 2 "--serve: no such directory: $serve"
+      serve=$(cd "$serve" && pwd)
+      [ -n "${VIVI_UI_SERVE_CMD:-}" ] || vivi_die 2 "--serve needs VIVI_UI_SERVE_CMD in repo.env.example"
+    fi
+    describe() {  # <tree>: what serving it puts on the stack; fails rather than describe nothing
+      local t=$1 h d=false f=""
+      h=$(git -C "$t" rev-parse HEAD 2>/dev/null) || return 1
+      [ -z "$(git -C "$t" status --porcelain --untracked-files=no)" ] || d=true
+      f=$(cd "$t" && "$here/design-gate" fingerprint 2>/dev/null) || f=""
+      jq -nc --arg t "$t" --arg h "$h" --argjson d "$d" --arg f "$f" '{tree:$t, head_sha:$h, dirty:$d} + (if $f != "" then {ui_fingerprint:$f} else {} end)'
+    }
+    # WHAT THE STACK SERVES. The shots are of the tree the stack serves, which is not
+    # necessarily this worktree: after a before run it serves the default branch. So the
+    # tree a --serve put on a stack is recorded per base URL, and the manifest describes
+    # that tree (its head, its UI fingerprint, whether it had uncommitted changes), never
+    # the worktree the command happens to run in.
+    sdir="$(vivi_state_dir)/ui-evidence"; mkdir -p "$sdir"
+    served_file_for() { printf '%s/served-%s.json\n' "$sdir" "$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '_')"; }
+    resolve_url() {
+      if [ -n "$base_url" ]; then printf '%s\n' "$base_url"; return 0; fi
+      [ -n "${VIVI_UI_BASE_URL_CMD:-}" ] || return 2
+      run_cmd "$VIVI_UI_BASE_URL_CMD" | tail -n 1
+    }
+    if [ -n "$serve" ]; then
+      describe "$serve" >/dev/null || vivi_die 2 "--serve: $serve is not a git checkout"
+      # Forget what this stack served BEFORE serving: a serve that half works, or a URL
+      # that cannot be read after it, must leave no record naming the previous tree.
+      pre=$(resolve_url 2>/dev/null) || pre=""
+      [ -z "$pre" ] || rm -f "$(served_file_for "$pre")"
+      # Serve first: the base URL may come from the running stack, which serving can
+      # start or move.
+      # A serve that fails may have changed any stack (and moved it), so no record is
+      # trusted after one.
+      run_cmd "$VIVI_UI_SERVE_CMD" "$serve" >&2 || { rm -f "$sdir"/served-*.json; vivi_die 1 "VIVI_UI_SERVE_CMD failed for $serve"; }
+    fi
+    [ -n "$base_url" ] || [ -n "${VIVI_UI_BASE_URL_CMD:-}" ] || vivi_die 2 "no --base-url and no VIVI_UI_BASE_URL_CMD"
+    if ! base_url=$(resolve_url) || [ -z "$base_url" ]; then
+      # After a serve, the stack it changed is unknown, so no served record can be
+      # trusted: drop them all (another worktree's stack only has to be served again).
+      [ -z "$serve" ] || rm -f "$sdir"/served-*.json
+      vivi_die 1 "VIVI_UI_BASE_URL_CMD failed"
+    fi
+    case "$base_url" in http://*|https://*) ;; *) [ -z "$serve" ] || rm -f "$sdir"/served-*.json; vivi_die 2 "base URL is not http(s): $base_url";; esac
+    served_file=$(served_file_for "$base_url")
+    [ -z "$serve" ] || rm -f "$served_file"
+    if [ -n "$serve" ]; then
+      # Described AFTER serving: a serve command that rewrites tracked files served that.
+      served=$(describe "$serve") || vivi_die 2 "--serve: $serve is not a git checkout"
+      printf '%s\n' "$served" > "$served_file"
+    elif [ -n "${VIVI_UI_SERVE_CMD:-}" ]; then
+      [ -f "$served_file" ] || vivi_die 1 "nothing is known to be served at $base_url: pass --serve <tree> (this worktree for after, a checkout of the default branch for before)"
+      served=$(cat "$served_file")
+      # The served tree may have moved on since (a commit, an edit a dev server reloads),
+      # or be gone: then what the stack serves is no longer known, so serve again.
+      st=$(printf '%s' "$served" | jq -r .tree)
+      [ -d "$st" ] || vivi_die 1 "$st, last served at $base_url, no longer exists: serve a tree again with --serve"
+      now=$(describe "$st") || now=""
+      if [ "$(printf '%s' "$now" | jq -c '{head_sha, dirty, ui_fingerprint}' 2>/dev/null)" != "$(printf '%s' "$served" | jq -c '{head_sha, dirty, ui_fingerprint}')" ]; then
+        vivi_die 1 "$st changed since it was served at $base_url (head, uncommitted changes or UI): serve it again with --serve"
+      fi
+    else
+      # No serve command: the repository's stack serves the working tree itself.
+      served=$(describe "$VIVI_ROOT") || vivi_die 2 "$VIVI_ROOT is not a git checkout"
+    fi
+    if [ "$label" = before ]; then served=$(printf '%s' "$served" | jq -c 'del(.ui_fingerprint)'); fi
+    out="$root_dir/$label"
+    rm -rf "$out"; mkdir -p "$out"
+    cp "$routes" "$out/routes.json"
+    meta=$(printf '%s' "$served" | jq -c --argjson i "$issue" --arg l "$label" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{issue:$i, label:$l, taken_at:$at} + .')
+    UIE_OUT="$out" UIE_BASE_URL="$base_url" UIE_WIDTHS="$widths" UIE_THEMES="$themes" UIE_ROUTES="$out/routes.json" \
+    UIE_API_PATTERN="${VIVI_UI_API_PATTERN:-**/api/**}" UIE_PLAYWRIGHT_DIR="$pw" UIE_LOGIN_MODULE="$lm" UIE_META="$meta" \
+      "${VIVI_UI_NODE:-node}" "$here/ui-evidence.mjs" ;;
+esac

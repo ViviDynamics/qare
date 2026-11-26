@@ -1,10 +1,10 @@
 ---
 name: watch-ci-main
 description: Use when asked whether the default branch is green, to watch the latest CI run on the default branch or another long-lived branch, retry its flakes safely, or report a real breakage.
-license: Elastic-2.0
-compatibility: Requires gh, jq, git and a repo.env in the consumer repo. Scripts are bash 3.2 compatible.
+license: Proprietary
+compatibility: Requires gh, jq, git and a committed repo.env.example in the consumer repo. Scripts are bash 3.2 compatible.
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
   owner: Vivi Dynamics
   requires: ci-safety
 ---
@@ -31,8 +31,16 @@ then run every script as `$S/<script>`. Let `R=$($S/repo-config VIVI_REPO)`.
        $S/vgh api "repos/$R/actions/runs?branch=<branch>&head_sha=$tip&per_page=100" \
          --jq '[.workflow_runs[] | {id, name, path, status, conclusion, run_attempt}]'
 
-   An empty list means "not started yet", never "green": poll again. If
-   `VIVI_CI_WORKFLOW` is set, only runs whose `path` ends in that file count.
+   An empty list means "not started yet", never "green": poll again. Every run on
+   the tip counts. If `VIVI_CI_WORKFLOW` is set, a run whose `path` ends in that file
+   must also exist before the tip can be green. Workflows in
+   `VIVI_CI_IGNORE_WORKFLOWS` do not count. A run that concluded `action_required`, or
+   completed with zero jobs, is parked: nothing ran, so it is never green (ci-safety
+   §7). The list above has no job count, so for each completed run check it:
+
+       $S/vgh api "repos/$R/actions/runs/<id>/jobs?per_page=100&filter=latest" --jq .total_count
+
+   `0` means parked.
 
 2. **Poll to completion.** Every 60 seconds, re-read the tip and its runs. If the tip
    moved, switch to the new tip; the old runs are superseded. Retry transient `gh`
@@ -66,7 +74,7 @@ then run every script as `$S/<script>`. Let `R=$($S/repo-config VIVI_REPO)`.
 
     WATCH_MAIN_RESULT
     branch: <branch>  tip: <sha>
-    state: green | failed | timed_out
+    state: green | failed | parked | timed_out
     jobs: <job>: <infra|known_flake|real> because <evidence>   (one per failed job)
     retries_verified: <n>/2
     suspects: <commits or none>

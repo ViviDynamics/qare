@@ -1,8 +1,8 @@
 ---
 name: rebase-main
 description: Use when a feature branch has a merge conflict with the default branch, or when the default branch holds a fix a failing lane needs. Rebases, resolves conflicts, re-runs the affected tests, force-pushes with lease, and logs the rebase on the PR.
-license: Elastic-2.0
-compatibility: Requires gh, jq, git and a repo.env in the consumer repo. Scripts are bash 3.2 compatible.
+license: Proprietary
+compatibility: Requires gh, jq, git and a committed repo.env.example in the consumer repo. Scripts are bash 3.2 compatible.
 metadata:
   version: "1.0.0"
   owner: Vivi Dynamics
@@ -13,12 +13,14 @@ metadata:
 
 **Where the scripts are.** `S` is this skill's `scripts/` directory, next to this
 SKILL.md. Set it once per session, for example `S=.agents/skills/rebase-main/scripts`,
-then run every script as `$S/<script>`. Let `B=$($S/repo-config VIVI_DEFAULT_BRANCH)`.
+then run every script as `$S/<script>`. Let `B=$($S/repo-config VIVI_DEFAULT_BRANCH)`
+and `R=$($S/repo-config VIVI_REPO)`.
 
 ## When not to rebase
 
 A green PR that is merely behind `$B`, with `mergeable: MERGEABLE`, does not need a
-rebase: merge it (merge-pr). Rebase only for `CONFLICTING`, or when ci-safety §5 shows
+rebase, and must not be updated by hand either: merge-pr's `merge-verified` updates it
+when its run is stale, under the merge lease. Rebase only for `CONFLICTING`, or when ci-safety §5 shows
 `$B` already holds a fix for a failing lane. Every rebase costs a full CI cycle.
 
 ## Steps
@@ -61,9 +63,21 @@ rebase: merge it (merge-pr). Rebase only for `CONFLICTING`, or when ci-safety §
 
        - Rebased onto <B> at <short sha> (YYYY-MM-DD); conflicts in <files> | no conflicts
 
-   Write it with `$S/vgh pr edit <pr> --body-file <file>`, then read the body back.
+   Write it with `$S/vgh api -X PATCH "repos/$R/pulls/<pr>" -F "body=@<file>"`,
+   then read the body back with `$S/vgh pr view <pr> --repo "$R" --json body --jq .body`.
 
 ## Report
 
-One line: `rebased onto <B>@<sha>: <no conflicts | resolved: files> ; tests: <pass | fail: area>`,
-or `aborted: <files>`. The caller counts one rebase against its budget either way.
+One line: `rebased onto <B>@<sha>: <no conflicts | mechanical: files | manual: files> ; tests: <pass | fail: area>`,
+or `aborted: <files>`.
+
+- `mechanical`: every conflict was resolved without writing new code: one side taken
+  verbatim, both sides kept unchanged (two PRs each editing an adjacent line of a list),
+  or a generated file or lockfile regenerated.
+- `manual`: at least one conflict needed code that combines both sides' intent. Name
+  those files.
+
+Only `manual` counts against a caller's rebase budget (ship-issue records it with
+`checkpoint write <issue> ci --rebase "<files>"`). `no conflicts` and `mechanical` never
+count, nor does an `update-branch` or a merge from `$B`. The manually resolved commits
+are new code: they get a review before the push, like any other change after review.

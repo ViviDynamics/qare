@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# The gate before every push: refuses unless preflight, disclosure-guard and
+# quality-guard all passed for the current HEAD, and, when HEAD touches UI paths
+# (VIVI_UI_PATHS), a passed design review is recorded for HEAD's UI (design-gate check).
+# ship-issue runs it before each push.
+# usage: prepush <issue> [--body-file FILE | --pr PR]
+# The guards judge the LOCAL diff (merge-base with origin/<default>..HEAD), which is what
+# the push would publish. The PR body that justifies a hit comes from --body-file (a
+# draft) or, once the PR exists, from --pr (its current body).
+# Preflight is not re-run here: it must already be recorded for this HEAD
+# (preflight <issue>), since it can take minutes. A dirty tree is refused, because the
+# checks would describe a HEAD that is not what gets pushed.
+# exit: 0 push, 1 refused (reasons in the JSON), 2 usage or config, 3 transient
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+source "$here/_lib.sh"
+vivi_load_env; vivi_require VIVI_DEFAULT_BRANCH
+issue=${1:-}
+case "$issue" in ''|*[!0-9]*) vivi_die 2 "usage: prepush <issue> [--body-file FILE | --pr PR]";; esac
+shift
+body_file=""; pr=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --body-file) [ $# -ge 2 ] || vivi_die 2 "--body-file needs a file"; body_file=$2; shift 2;;
+    --pr) [ $# -ge 2 ] || vivi_die 2 "--pr needs a number"; pr=$2; shift 2;;
+    *) vivi_die 2 "unknown option $1";;
+  esac
+done
+cd "$VIVI_ROOT"
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+head_sha=$(git rev-parse HEAD)
+reasons='[]'
+refuse() { reasons=$(printf '%s' "$reasons" | jq -c --arg r "$1" '. + [$r]'); }
+
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  refuse "uncommitted changes: commit first, then preflight, then prepush"
+fi
+if [ -n "$pr" ]; then
+  vivi_require VIVI_REPO
+  code=0; vivi_gh pr view "$pr" --repo "$VIVI_REPO" --json body --jq .body > "$tmp/body" || code=$?
+  [ "$code" -eq 3 ] && exit 3
+  [ "$code" -eq 0 ] || vivi_die 2 "could not read the body of PR #$pr"
+  body_file="$tmp/body"
+fi
+body_args=()
+[ -n "$body_file" ] && body_args=(--body-file "$body_file")
+
+code=0; pf=$("$here/preflight" --check "$issue" 2>/dev/null) || code=$?
+[ "$code" -eq 0 ] || refuse "preflight: $(printf '%s' "$pf" | jq -r '.reason // "not passed"' 2>/dev/null || echo "not passed"); run preflight $issue"
+
+code=0; dg=$("$here/disclosure-guard" ${body_args[@]+"${body_args[@]}"} 2>"$tmp/dg.err") || code=$?
+[ "$code" -eq 3 ] && exit 3
+dg_state=$(printf '%s' "$dg" | jq -r '.state // "error"' 2>/dev/null || echo error)
+if [ "$code" -ne 0 ]; then
+  refuse "disclosure-guard: $dg_state$(printf '%s' "$dg" | jq -r 'if .hits then " (" + ([.hits[] | "\(.file):\(.line // "-") \(.kind)"] | join(", ")) + ")" else "" end' 2>/dev/null || true)"
+elif [ "$(printf '%s' "$dg" | jq -r '.private_terms | tostring' 2>/dev/null)" = false ] && [ "$dg_state" != not_public ]; then
+  refuse "disclosure-guard: the private term list is missing on this machine; a public repository is never pushed unchecked"
+fi
+
+code=0; qg=$("$here/quality-guard" ${body_args[@]+"${body_args[@]}"} 2>"$tmp/qg.err") || code=$?
+[ "$code" -eq 3 ] && exit 3
+qg_state=$(printf '%s' "$qg" | jq -r '.state // "error"' 2>/dev/null || echo error)
+if [ "$code" -ne 0 ]; then
+  refuse "quality-guard: $qg_state$(printf '%s' "$qg" | jq -r 'if .hits then " (" + ([.hits[] | select(.justified | not) | "\(.file) \(.kind)"] | join(", ")) + ")" else "" end' 2>/dev/null || true)"
+fi
+
+code=0; dsg=$("$here/design-gate" check "$issue" 2>"$tmp/dsg.err") || code=$?
+dsg_state=$(printf '%s' "$dsg" | jq -r '.state // "error"' 2>/dev/null || echo error)
+if [ "$code" -ne 0 ]; then
+  refuse "design-gate: $dsg_state: $(printf '%s' "$dsg" | jq -r '.reason // .error // empty' 2>/dev/null || head -n1 "$tmp/dsg.err")"
+fi
+
+ok=true; [ "$reasons" = "[]" ] || ok=false
+result=$(jq -nc --argjson issue "$issue" --arg h "$head_sha" --argjson ok "$ok" --argjson r "$reasons" \
+  --arg dg "$dg_state" --arg qg "$qg_state" --arg dsg "$dsg_state" --argjson pf "$(printf '%s' "${pf:-}" | jq -c . 2>/dev/null || echo null)" \
+  '{schema:"PREPUSH_RESULT", issue:$issue, head_sha:$h, ok:$ok, preflight:$pf, disclosure_guard:$dg, quality_guard:$qg, design_gate:$dsg}
+   + (if ($r|length) > 0 then {reasons:$r} else {} end)')
+"$here/state" set "$issue" prepush "$result" >/dev/null
+printf '%s\n' "$result"
+$ok

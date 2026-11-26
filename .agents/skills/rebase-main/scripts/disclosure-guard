@@ -2,6 +2,7 @@
 # Block infrastructure detail from reaching a public repository.
 # usage: disclosure-guard [--body-file <file>]   local diff: merge-base(origin/<default>)..HEAD
 #        disclosure-guard --pr <pr>              the PR's diff, body and commits from GitHub
+#          (a diff GitHub refuses as too large is rebuilt from git: needs full history)
 # exit: 0 clean, justified or not public; 1 blocked
 # Scans added lines, changed file paths, commit messages and the PR body. Generic hits
 # (private IPv4 addresses, literal *.svc.cluster.local names, personal home directories)
@@ -55,7 +56,8 @@ private_terms=false; [ -s "$tmp/terms" ] && private_terms=true
 
 if [ -n "$pr" ]; then
   vivi_require VIVI_REPO
-  vivi_gh pr diff "$pr" --repo "$VIVI_REPO" > "$tmp/diff" || exit $?
+  # A diff GitHub refuses as too large is rebuilt from git (vivi_pr_diff).
+  vivi_pr_diff "$pr" "$tmp/diff" || exit $?
   vivi_gh pr view "$pr" --repo "$VIVI_REPO" --json body --jq .body > "$tmp/body" || exit $?
   vivi_gh pr view "$pr" --repo "$VIVI_REPO" --json commits --jq '.commits[].messageHeadline,.commits[].messageBody' > "$tmp/messages" || exit $?
 else

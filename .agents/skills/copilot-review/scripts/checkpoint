@@ -1,8 +1,29 @@
 #!/usr/bin/env bash
-# Resumable record of a ship-issue run, stored under "checkpoint" in .agents/state/<issue>.json.
-# usage: checkpoint write <issue> <stage> [--pr N] [--plan PATH] [--decision TEXT]... [--unresolved TEXT]...
-#        checkpoint read <issue>     exit 0 printed (with fresh and stale_reason), 1 none recorded
+# Resumable record of a ship-issue run, stored under "checkpoint" in the issue's state
+# file. That file lives in the git common dir (see state), so any worktree of the clone,
+# including a fresh one after a crash, finds the run.
+# usage: checkpoint write <issue> <stage> [--pr N] [--plan PATH] [--decision TEXT]...
+#                         [--unresolved TEXT]... [--set KEY=VALUE]...
+#                         [--review-findings TEXT [--review-fixes TEXT] [--reviewed-head SHA]]
+#                         [--rebase TEXT]
+#        checkpoint context <issue> --set KEY=VALUE...
+#                                    merge keys into .context only (stage, head and the
+#                                    rest unchanged); exit 0 also when there is no
+#                                    checkpoint, which it then leaves alone
+#        checkpoint read <issue>     exit 0 printed (with fresh, stale_reason and
+#                                    worktree_exists), 1 none recorded
 #        checkpoint active           JSON array of runs whose stage is not done or stopped
+# --set records the run's working context in .context, merged over earlier writes, so a
+#   cold resume can rebuild it: worktree, env_file, compose_project, ports, scratch_dir,
+#   ci_run_ids, ci_head, or any other KEY (lower case, digits and _). An empty VALUE
+#   removes the key.
+# --review-findings records one review round in .review_rounds_log (round number, the
+#   head it reviewed (--reviewed-head, default HEAD), the head after its fixes, the
+#   findings, and --review-fixes) and counts it in the
+#   review_rounds budget. Record each round once, after its fixes are committed.
+# --rebase records a rebase that needed real, non-mechanical conflict resolution in
+#   .rebase_log and counts it in the rebases budget. Mechanical rebases, update-branch
+#   and merges from the default branch are never recorded here.
 # Budgets (retries, rebases, review_rounds) and the preflight record are read from the
 # state file, so a restarted run inherits what an earlier one spent.
 set -euo pipefail
@@ -17,31 +38,74 @@ case "$cmd" in
   write)
     issue=${1:-}; stage=${2:-}
     [ -n "$issue" ] && [ -n "$stage" ] || vivi_die 2 "usage: checkpoint write <issue> <stage> [options]"
+    # One read-modify-write of the issue's state, under its lock.
+    vivi_state_lock "$issue" || exit $?; trap vivi_state_unlock EXIT
     case " $STAGES " in *" $stage "*) ;; *) vivi_die 2 "unknown stage $stage (want one of: $STAGES)";; esac
     shift 2
-    pr=""; plan=""; decisions='[]'; unresolved='[]'
+    pr=""; plan=""; decisions='[]'; unresolved='[]'; sets='{}'; findings=""; fixes=""; has_findings=""; rebase=""; has_rebase=""; reviewed=""
+    need() { [ $# -ge 2 ] || vivi_die 2 "option $1 needs a value"; }
     while [ $# -gt 0 ]; do
       case "$1" in
-        --pr) pr=$2; shift 2;;
-        --plan) plan=$2; shift 2;;
-        --decision) decisions=$(printf '%s' "$decisions" | jq -c --arg s "$stage" --arg t "$2" '. + [{stage:$s, text:$t}]'); shift 2;;
-        --unresolved) unresolved=$(printf '%s' "$unresolved" | jq -c --arg t "$2" '. + [$t]'); shift 2;;
+        --pr) need "$@"; pr=$2; shift 2;;
+        --plan) need "$@"; plan=$2; shift 2;;
+        --decision) need "$@"; decisions=$(printf '%s' "$decisions" | jq -c --arg s "$stage" --arg t "$2" '. + [{stage:$s, text:$t}]'); shift 2;;
+        --unresolved) need "$@"; unresolved=$(printf '%s' "$unresolved" | jq -c --arg t "$2" '. + [$t]'); shift 2;;
+        --set)
+          need "$@"
+          case "$2" in *=*) ;; *) vivi_die 2 "--set wants KEY=VALUE, got $2";; esac
+          k=${2%%=*}; v=${2#*=}
+          case "$k" in ''|*[![:lower:][:digit:]_]*) vivi_die 2 "--set key must be lower case letters, digits and _ (got $k)";; esac
+          sets=$(printf '%s' "$sets" | jq -c --arg k "$k" --arg v "$v" '.[$k]=$v'); shift 2;;
+        --review-findings) need "$@"; findings=$2; has_findings=1; shift 2;;
+        --review-fixes) need "$@"; fixes=$2; shift 2;;
+        --reviewed-head) need "$@"; reviewed=$2; shift 2;;
+        --rebase) need "$@"; rebase=$2; has_rebase=1; shift 2;;
         *) vivi_die 2 "unknown option $1";;
       esac
     done
+    if { [ -n "$fixes" ] || [ -n "$reviewed" ]; } && [ -z "$has_findings" ]; then vivi_die 2 "--review-fixes and --reviewed-head need --review-findings (one round is recorded as findings plus fixes)"; fi
+    head_sha=$(git rev-parse HEAD)
+    # Counted where the round or rebase is recorded, so the counter and the log agree.
+    if [ -n "$has_findings" ]; then "$here/state" incr "$issue" review_rounds >/dev/null; fi
+    if [ -n "$has_rebase" ]; then "$here/state" incr "$issue" rebases >/dev/null; fi
     st=$("$here/state" get "$issue")
     new=$(printf '%s' "$st" | jq -c \
-      --argjson issue "$issue" --arg stage "$stage" --arg head "$(git rev-parse HEAD)" \
+      --argjson issue "$issue" --arg stage "$stage" --arg head "$head_sha" \
       --arg branch "$(git branch --show-current)" --arg wt "$(git rev-parse --show-toplevel)" \
-      --arg pr "$pr" --arg plan "$plan" --argjson d "$decisions" --argjson u "$unresolved" --arg t "$(now)" '
+      --arg pr "$pr" --arg plan "$plan" --argjson d "$decisions" --argjson u "$unresolved" --arg t "$(now)" \
+      --argjson sets "$sets" --arg hf "$has_findings" --arg findings "$findings" --arg fixes "$fixes" \
+      --arg hr "$has_rebase" --arg rebase "$rebase" --arg reviewed "$reviewed" '
       (.checkpoint // {}) as $old |
       {schema:"CHECKPOINT", issue:$issue, stage:$stage, head_sha:$head, branch:$branch, worktree:$wt,
        budgets:{retries:(.retries // 0), rebases:(.rebases // 0), review_rounds:(.review_rounds // 0)},
        decisions:(($old.decisions // []) + $d), unresolved:((($old.unresolved // []) + $u) | unique),
+       context:(($old.context // {}) + $sets | with_entries(select(.value != ""))),
+       review_rounds_log:(($old.review_rounds_log // [])
+         + (if $hf != "" then [{round:(.review_rounds // 0), reviewed_head:(if $reviewed != "" then $reviewed else $head end),
+                                head_sha:$head, findings:$findings, fixes:$fixes, at:$t}] else [] end)),
+       rebase_log:(($old.rebase_log // [])
+         + (if $hr != "" then [{n:(.rebases // 0), head_sha:$head, text:$rebase, at:$t}] else [] end)),
        updated_at:$t}
       + (if $pr != "" then {pr:($pr|tonumber)} elif $old.pr then {pr:$old.pr} else {} end)
       + (if $plan != "" then {plan:$plan} elif $old.plan then {plan:$old.plan} else {} end)
       + (if .preflight then {preflight:.preflight} else {} end)')
+    "$here/state" set "$issue" checkpoint "$new" >/dev/null
+    printf '%s\n' "$new" ;;
+  context)
+    issue=${1:-}; [ -n "$issue" ] || vivi_die 2 "usage: checkpoint context <issue> --set KEY=VALUE..."
+    shift
+    sets='{}'
+    while [ $# -gt 0 ]; do
+      [ "$1" = --set ] && [ $# -ge 2 ] || vivi_die 2 "usage: checkpoint context <issue> --set KEY=VALUE..."
+      case "$2" in *=*) ;; *) vivi_die 2 "--set wants KEY=VALUE, got $2";; esac
+      k=${2%%=*}; v=${2#*=}
+      case "$k" in ''|*[![:lower:][:digit:]_]*) vivi_die 2 "--set key must be lower case letters, digits and _ (got $k)";; esac
+      sets=$(printf '%s' "$sets" | jq -c --arg k "$k" --arg v "$v" '.[$k]=$v'); shift 2
+    done
+    vivi_state_lock "$issue" || exit $?; trap vivi_state_unlock EXIT
+    cp=$("$here/state" get "$issue" checkpoint)
+    [ -n "$cp" ] || { jq -nc --argjson i "$issue" '{issue:$i, recorded:false, reason:"no checkpoint for this issue"}'; exit 0; }
+    new=$(printf '%s' "$cp" | jq -c --argjson s "$sets" --arg t "$(now)" '.context=((.context // {}) + $s | with_entries(select(.value != ""))) | .updated_at=$t')
     "$here/state" set "$issue" checkpoint "$new" >/dev/null
     printf '%s\n' "$new" ;;
   read)
@@ -50,21 +114,29 @@ case "$cmd" in
     [ -n "$cp" ] || { jq -nc '{error:"no checkpoint recorded"}'; exit 1; }
     branch=$(printf '%s' "$cp" | jq -r .branch)
     recorded=$(printf '%s' "$cp" | jq -r .head_sha)
+    wt=$(printf '%s' "$cp" | jq -r '.worktree // ""')
+    wt_exists=false; [ -n "$wt" ] && [ -d "$wt" ] && wt_exists=true
+    # refs are shared by every worktree of the clone, so this works from any of them.
     current=$(git rev-parse -q --verify "refs/heads/$branch" 2>/dev/null || true)
     if [ "$current" = "$recorded" ]; then
-      printf '%s' "$cp" | jq -c '. + {fresh:true}'
+      printf '%s' "$cp" | jq -c --argjson w "$wt_exists" '. + {fresh:true, worktree_exists:$w}'
     else
-      printf '%s' "$cp" | jq -c --arg r "branch $branch is at ${current:-nothing}, the checkpoint recorded $recorded: re-verify preflight and CI before trusting them" '. + {fresh:false, stale_reason:$r}'
+      printf '%s' "$cp" | jq -c --argjson w "$wt_exists" --arg r "branch $branch is at ${current:-nothing}, the checkpoint recorded $recorded: re-verify preflight and CI before trusting them" '. + {fresh:false, stale_reason:$r, worktree_exists:$w}'
     fi ;;
   active)
-    dir="$VIVI_ROOT/.agents/state"
+    dir=$(vivi_state_dir) || exit 2
     out='[]'
-    for f in "$dir"/*.json; do
+    # The shared state dir first; a record still at the old per-worktree place counts
+    # only when the shared dir has no record at all for that issue (done or not).
+    for f in "$dir"/*.json "$VIVI_ROOT"/.agents/state/*.json; do
       [ -e "$f" ] || continue
+      case "$f" in "$VIVI_ROOT"/.agents/state/*) [ -e "$dir/$(basename "$f")" ] && continue;; esac
       cp=$(jq -c '.checkpoint // empty' "$f" 2>/dev/null || true)
       [ -n "$cp" ] || continue
-      out=$(printf '%s' "$out" | jq -c --argjson c "$cp" 'if ($c.stage == "done" or $c.stage == "stopped") then . else . + [{issue:$c.issue, stage:$c.stage, branch:$c.branch, pr:$c.pr, updated_at:$c.updated_at}] end')
+      out=$(printf '%s' "$out" | jq -c --argjson c "$cp" '
+        if ($c.stage == "done" or $c.stage == "stopped") or any(.[]; .issue == $c.issue) then .
+        else . + [{issue:$c.issue, stage:$c.stage, branch:$c.branch, pr:$c.pr, worktree:$c.worktree, updated_at:$c.updated_at}] end')
     done
     printf '%s\n' "$out" ;;
-  *) vivi_die 2 "usage: checkpoint <write|read|active> ..." ;;
+  *) vivi_die 2 "usage: checkpoint <write|context|read|active> ..." ;;
 esac

@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CLEANUP_RESULT",
+  "type": "object",
+  "required": [
+    "schema",
+    "state",
+    "branch",
+    "worktree",
+    "reasons",
+    "carried",
+    "removed",
+    "left_behind",
+    "warnings"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "enum": [
+        "CLEANUP_RESULT"
+      ]
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "cleaned",
+        "partial",
+        "refused",
+        "dry-run"
+      ]
+    },
+    "issue": {
+      "type": "integer"
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "branch": {
+      "type": "string"
+    },
+    "worktree": {
+      "type": "string"
+    },
+    "carry_to": {
+      "type": "string"
+    },
+    "reasons": {
+      "type": "array"
+    },
+    "carried": {
+      "type": "array"
+    },
+    "removed": {
+      "type": "array"
+    },
+    "left_behind": {
+      "type": "array"
+    },
+    "warnings": {
+      "type": "array"
+    },
+    "at": {
+      "type": "string"
+    }
+  }
+}

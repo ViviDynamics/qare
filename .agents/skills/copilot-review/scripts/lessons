@@ -4,7 +4,8 @@
 #        lessons observe <issue> real_failure --area A [--preflight-row-missing] --evidence URL [--text T]
 #        lessons observe <issue> repo_fact    --text T --evidence URL
 #        lessons propose [--write]
-# propose reads every .agents/state/*.json and prints candidates:
+# propose reads every issue's state (the shared state dir, plus any record still at the
+# old .agents/state/ place) and prints candidates:
 #   flake_signatures: verified-retry log lines not already in the flake file;
 #   test_command_rows: areas with 2+ real failures that no preflight row covered;
 #   lessons: repo facts not already in the lessons file.
@@ -16,7 +17,7 @@ source "$here/_lib.sh"
 vivi_load_env
 cmd=${1:-}; shift || true
 if [ "${VIVI_LESSONS:-off}" != "on" ]; then
-  case "$cmd" in observe|propose) jq -nc '{enabled:false, reason:"VIVI_LESSONS is not on in repo.env"}'; exit 0;; esac
+  case "$cmd" in observe|propose) jq -nc '{enabled:false, reason:"VIVI_LESSONS is not on in repo.env.example"}'; exit 0;; esac
 fi
 flake_file="$VIVI_ROOT/${VIVI_FLAKE_SIGNATURES_FILE:-.agents/flake-signatures.txt}"
 lessons_file="$VIVI_ROOT/${VIVI_LESSONS_FILE:-.agents/lessons.md}"
@@ -62,8 +63,11 @@ case "$cmd" in
   propose)
     write=false; [ "${1:-}" = "--write" ] && write=true
     all='[]'
-    for f in "$VIVI_ROOT"/.agents/state/*.json; do
+    sd=$(vivi_state_dir)
+    for f in "$sd"/*.json "$VIVI_ROOT"/.agents/state/*.json; do
       [ -e "$f" ] || continue
+      # An old per-worktree record is read only when it was never moved to the shared dir.
+      case "$f" in "$VIVI_ROOT"/.agents/state/*) [ -e "$sd/$(basename "$f")" ] && continue;; esac
       all=$(jq -c --argjson acc "$all" '$acc + (.observations // [])' "$f" 2>/dev/null || printf '%s' "$all")
     done
     known_flakes=$( [ -f "$flake_file" ] && jq -Rsc 'split("\n") | map(select(length > 0))' "$flake_file" || echo '[]')

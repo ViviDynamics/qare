@@ -2,18 +2,34 @@
 # Block diffs that weaken a quality gate unless the PR body justifies each one.
 # usage: quality-guard [--body-file <file>]   local diff: merge-base(origin/<default>)..HEAD
 #        quality-guard --pr <pr>              the PR's diff and body from GitHub
+#          (a diff GitHub refuses as too large, over 300 files, is rebuilt from git)
 # exit: 0 clean or justified, 1 blocked
 # A hit is a changed protected path (lint, type, test, coverage, CI config) or an added
 # line carrying a suppression marker. Each hit's file must be named in the body's
 # "### Quality gate changes" section. Markdown files are never scanned for markers.
 # VIVI_PROTECTED_PATHS (comma-separated globs) and VIVI_SUPPRESSION_PATTERNS (an ERE)
 # extend the defaults. A glob with a / matches the whole path, otherwise the file name.
+# Focused and skipped test markers (fit, xit, fdescribe, ...) count only as calls: `fit(`
+# followed by a string, or `fit.each(` (Jest's table form), anywhere except after `.` or `$`; `fit(` at the
+# end of a line in test files; or, starting a statement, `fit "..."` or `fit { ... }`
+# (RSpec). `.skip(`, `.only(` and their `.each(` forms count anywhere. `pending` counts
+# as `pending "..."`, `pending("...")` or `pending()`, and as a bare `pending`
+# statement in test files only. Prose, comments and assignments such as
+# `pending = null` are not hits. A title held in a variable (`fit(TITLE, ...)`) is not
+# caught; CI's own test run still shows the focused or skipped count.
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 vivi_load_env; vivi_require VIVI_DEFAULT_BRANCH
 
 DEFAULT_PROTECTED='.rubocop*.yml,.standard.yml,.eslintrc*,eslint.config.*,.prettierrc*,prettier.config.*,biome.json,biome.jsonc,ruff.toml,.ruff.toml,pyproject.toml,setup.cfg,.flake8,mypy.ini,.pylintrc,.golangci.yml,.golangci.yaml,tsconfig*.json,.stylelintrc*,.rspec,.simplecov,.coveragerc,codecov.yml,.codecov.yml,jest.config.*,vitest.config.*,.github/workflows/*,.agents/flake-signatures.txt,.agents/skills/*,.claude/skills/*,repo.env.example'
-DEFAULT_MARKERS='rubocop:disable|rubocop:todo|standard:disable|eslint-disable|@ts-ignore|@ts-expect-error|@ts-nocheck|#[[:space:]]*noqa|type:[[:space:]]*ignore|pylint:[[:space:]]*disable|pragma:[[:space:]]*no cover|//[[:space:]]*nolint|istanbul ignore|c8 ignore|:nocov:|(^|[^[:alnum:]_])(xit|xdescribe|xcontext|xspecify|fit|fdescribe)[[:space:](]|\.(skip|only)\(|(^|[^[:alnum:]_])skip[[:space:](]["'"'"']|pytest\.mark\.(skip|xfail)|@(Disabled|Ignore)([^[:alnum:]]|$)|t\.Skip(Now|f)?\(|^[[:space:]]*pending([[:space:](]|$)|continue-on-error:[[:space:]]*true'
+DEFAULT_MARKERS='rubocop:disable|rubocop:todo|standard:disable|eslint-disable|@ts-ignore|@ts-expect-error|@ts-nocheck|#[[:space:]]*noqa|type:[[:space:]]*ignore|pylint:[[:space:]]*disable|pragma:[[:space:]]*no cover|//[[:space:]]*nolint|istanbul ignore|c8 ignore|:nocov:|(^|[^[:alnum:]_.$])(xit|xdescribe|xcontext|xspecify|fit|fdescribe|fcontext|fspecify)\.each[[:space:]]*\(|(^|[^[:alnum:]_.$])(xit|xdescribe|xcontext|xspecify|fit|fdescribe|fcontext|fspecify)[[:space:]]*\([[:space:]]*["'"'"'`]|^[[:space:]]*(xit|xdescribe|xcontext|xspecify|fit|fdescribe|fcontext|fspecify)([[:space:]]+["'"'"'`]|[[:space:]]*\{)|\.(skip|only)(\.each)?\(|(^|[^[:alnum:]_])skip[[:space:](]["'"'"']|pytest\.mark\.(skip|xfail)|@(Disabled|Ignore)([^[:alnum:]]|$)|t\.Skip(Now|f)?\(|^[[:space:]]*pending[[:space:]]*[([:space:]][[:space:]]*["'"'"'`]|(^|[^[:alnum:]_.$])pending[[:space:]]*\([[:space:]]*\)|continue-on-error:[[:space:]]*true'
+
+# Only in test files (spec/, test/, tests/, __tests__/, features/, *_spec.*, *.spec.*,
+# *_test.*, *.test.*, *_steps.rb): a bare `pending` statement, and `fit(` with its title
+# on the next line. Elsewhere those are ordinary code (a Ruby method's return value, a
+# `def fit(` or `const r = fit(` whose arguments continue on the next line).
+TEST_FILE_MARKERS='^[[:space:]]*pending[[:space:]]*;?[[:space:]]*(#.*)?$|(^|[^[:alnum:]_.$])(xit|xdescribe|xcontext|xspecify|fit|fdescribe|fcontext|fspecify)(\.each)?[[:space:]]*\([[:space:]]*$'
+is_test_file() { case "$1" in spec/*|*/spec/*|test/*|*/test/*|tests/*|*/tests/*|__tests__/*|*/__tests__/*|features/*|*/features/*|*_spec.*|*.spec.*|*_test.*|*.test.*|*_steps.rb) return 0;; *) return 1;; esac; }
 
 pr=""; body_file=""
 while [ $# -gt 0 ]; do
@@ -28,7 +44,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
 if [ -n "$pr" ]; then
   vivi_require VIVI_REPO
-  vivi_gh pr diff "$pr" --repo "$VIVI_REPO" > "$tmp/diff" || exit $?
+  vivi_pr_diff "$pr" "$tmp/diff" || exit $?
   vivi_gh pr view "$pr" --repo "$VIVI_REPO" --json body --jq .body > "$tmp/body" || exit $?
 else
   base_ref="origin/$VIVI_DEFAULT_BRANCH"
@@ -85,7 +101,9 @@ while IFS=$'\t' read -r kind file line text; do
     A)
       case "$file" in *.md|*.markdown) continue;; esac
       is_protected "$file" && continue
-      printf '%s\n' "$text" | grep -qE -- "$markers" && add_hit "$file" suppression "$line" "$text"
+      if grep -qE -- "$markers" <<<"$text"; then add_hit "$file" suppression "$line" "$text"
+      elif is_test_file "$file" && grep -qE -- "$TEST_FILE_MARKERS" <<<"$text"; then add_hit "$file" suppression "$line" "$text"
+      fi
       ;;
   esac
 done < "$tmp/records"

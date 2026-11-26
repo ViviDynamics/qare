@@ -1,10 +1,10 @@
 ---
 name: ci-safety
 description: Use when reading CI state, deciding whether a CI failure is a flake, retrying a GitHub Actions run, or writing any poll loop over CI. Background rules for watch-ci, merge-pr, and ship-issue.
-license: Elastic-2.0
+license: Proprietary
 compatibility: Requires gh, jq, git. Scripts are bash 3.2 compatible.
 metadata:
-  version: "1.0.0"
+  version: "1.3.0"
   owner: Vivi Dynamics
 ---
 
@@ -27,7 +27,19 @@ script as `$S/<script>`.
 Only a run whose `head_sha` equals the PR's current head says anything about the PR.
 Right after a push, "current" can still be the previous head for a few seconds, so a
 watcher started then must be told which head to wait for: `ci-watch --expect-head`.
-`$S/ci-runs <pr>` selects those runs for you and ignores everything else. Never
+`$S/ci-runs <pr>` selects those runs for you and ignores everything else. Every
+workflow run on that head counts, not only the main PR workflow: green means every one
+of them concluded `success` (or `skipped`/`neutral`, a documented skip), every job of
+every run is `completed` with that conclusion, and every check run on the head from
+another app is `completed` with it too (`pending_checks` lists the ones still open). A
+run's status is not enough: a run can read `completed`/`success` while one of its jobs
+is still `queued` (nare PR #160), and that head is `pending`. When
+`VIVI_CI_WORKFLOW` is set it names a workflow that must also have a run at the head;
+until one appears the state is `pending` and `missing_workflow` names it. Workflows
+listed in `VIVI_CI_IGNORE_WORKFLOWS` are advisory by the consumer's documented choice
+and left out (`ignored_run_ids`). For each workflow and event only the newest run on
+the head counts; an older one (cancelled by a concurrency group, or parked and then
+re-run) is in `superseded_run_ids`. Never
 use `gh run list --commit` (returns empty) or `gh pr checks` (403s on some tokens and
 renders cancelled as fail). An empty result means "not ready", never "green".
 
@@ -38,6 +50,9 @@ renders cancelled as fail). An empty result means "not ready", never "green".
 | `failure` | ran and failed | classify (§3) |
 | `cancelled` | superseded, or a dependent job died | not evidence; find the run for the current head |
 | `skipped` | path filter | neutral |
+| `action_required` | parked waiting for approval; nothing ran | `parked`, never green (§7) |
+| `success` with zero jobs | nothing ran | `parked`, never green (§7) |
+| `startup_failure` with zero jobs | the workflow could not start | `failed`, listed in `failed_runs` |
 | `success` on an old head | green for old code | not green for this PR |
 
 A wall of red that appeared at once is a cancellation cascade. `ci-runs` puts each
@@ -81,9 +96,76 @@ If that log is non-empty, rebase first and let the fresh run speak.
 ## §6 A watcher never exits "unknown"
 
 `$S/ci-watch` retries transient API errors internally, follows the PR if the
-head moves mid-watch (`head_changed: true`), and ends only in `green`, `failed` or
-`timed_out`. If it exits 4 with `timed_out`, report the last known state and the
-elapsed time. "Unknown" is not a state you may report.
+head moves mid-watch (`head_changed: true`), and ends only in `green` (exit 0),
+`failed` or `failing` (exit 1), `timed_out` (exit 4) or `parked` (exit 5). `failing`
+means a job already failed (not merely cancelled) while other runs or jobs on the head
+are still going: the head cannot turn green, so the watch ends there with the failed
+job's log instead of waiting out the rest. Treat it like `failed`; the fix push cancels
+the doomed runs (watch-ci step 5). If it exits 4 with
+`timed_out`, report the last known state and the elapsed time. Exit 5 is §7.
+"Unknown" is not a state you may report.
+
+**Long waits and tool time limits.** `ci-watch` waits up to 60 minutes by default and
+`merge-verified --wait-min N` up to N minutes per wait. Many harnesses cap one foreground
+command at about 10 minutes and kill it silently, which reads like a hang. Either run the
+command in the background and wait for it to exit (Claude Code: `run_in_background`,
+then wait on the task; never end the turn to wait), or loop with bounded foreground
+calls: `ci-watch --timeout-min 9`, which exits 4 `timed_out` with the state so far, then
+call it again with the same `--expect-head`; `merge-verified` without `--wait-min`, which
+exits 5 or 6 immediately, then call it again. A bounded call that timed out is not a
+result: only green, failed, parked, merged or dequeued is.
+
+## §7 Parked is not green
+
+A run is parked when it concluded `action_required`, or completed having executed zero
+jobs. Nothing ran, so it proves nothing about the code. GitHub does not report a parked
+run as a check, so the PR does not look red; it looks like it has no opinion, and every
+"is anything failing?" test answers no. `ci-runs` lists such runs in `parked_runs` and
+reports `state: parked`; `ci-watch` exits 5; `merge-verified` refuses to merge.
+
+How a head gets parked: a bot (for example a sweep that merges the default branch into
+every open PR with `GITHUB_TOKEN`) pushes to the branch. GitHub will not execute a run
+triggered by `github-actions[bot]`, so it creates the run and parks it.
+
+How a parked run gets released, in order:
+
+1. **The sweep's own verification step.** A consumer whose sweep parks runs should
+   approve them in the same job (`POST /repos/<repo>/actions/runs/<id>/approve`) and
+   check the result. `ci-watch` keeps polling a parked head for `--parked-grace-sec`
+   (default 600) so that step has time to land; an approved run goes `pending` and the
+   watch follows it to its real result.
+2. **An author push.** A push by a person (or a token that is not `GITHUB_TOKEN`)
+   triggers runs that execute. This is what you do when the grace window passed.
+
+What a worker does on `state: parked`:
+
+- Check whether the sweep that parked it is still running or its verification step
+  failed (the consumer's repo-specific notes name the workflow). If it is still
+  running, re-run `ci-watch` once.
+- Otherwise, on your own PR branch only, release it with a push: rebase per rebase-main
+  if the base moved, or `git commit --allow-empty -m "Re-run CI: runs at <sha> parked at action_required"`
+  and push. Then watch the new head with `--expect-head`.
+- On a PR that is not yours, report `parked` with the `parked_runs` ids and stop.
+  Never approve a run on someone else's branch: approving starts their CI.
+- Never report parked as green, as passed, or as "no failures".
+
+## §8 Merge serialization is part of CI safety
+
+A green run is evidence about the base it tested. Every merge moves the base for every
+other PR, so merges are serialized (merge-pr, "One merge at a time"):
+
+- Lease mode: never update a branch from the default branch, and never merge, without
+  the merge lease; `merge-verified` takes it. Never update a branch whose green run is
+  still fresh (`merge-verified <pr> --status` exits 0): that only buys another CI run.
+- Queue mode (`queue`, or `auto` with a queue on the default branch): before enqueueing,
+  every workflow run on the PR head must be green, the path-filtered ones outside the
+  queue included. The merge queue then runs the PR workflow on `merge_group` against
+  the base the PR will land on. A dequeue for red merge group CI is classified exactly like a PR
+  failure (§2 and §3): `cancelled` jobs are not evidence; infra and first-time known
+  flakes get one verified retry, which is re-enqueueing through `merge-verified`; a
+  second occurrence or anything `real` is fixed on the branch. Never re-run a
+  merge_group run by hand: the queue has already moved on, and a green re-run merges
+  nothing.
 
 ## Output contract
 
