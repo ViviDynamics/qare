@@ -29,7 +29,7 @@ plan reads when the base has a profile.
   so a result judged without a plan renders as before.
 
 ## Tasks
-- [ ] 1. `qare plan --pr-profile`: reads the profile, records `profileSource`, starts no MCP server, refuses `--explore` and `--profile` beside it: plan-pr-profile-command.test.ts
-- [ ] 2. `plan.json` and `result.json` carry the field; judge copies it; the comment says it: plan, result and comment tests
-- [ ] 3. Pipeline: collect chooses and exports, plan downloads and passes it, summary says it: pipeline-pr-profile.test.ts
-- [ ] 4. Docs: pipeline.md, schemas.md, ADR-0013
+- [x] 1. `qare plan --pr-profile`: reads the profile, records `profileSource`, starts no MCP server, refuses `--explore` and `--profile` beside it: plan-pr-profile-command.test.ts
+- [x] 2. `plan.json` and `result.json` carry the field; judge copies it; the comment says it: plan, result and comment tests
+- [x] 3. Pipeline: collect chooses and exports, plan downloads and passes it, summary says it: pipeline-pr-profile.test.ts
+- [x] 4. Docs: pipeline.md, schemas.md, ADR-0013
