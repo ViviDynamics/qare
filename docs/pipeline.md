@@ -801,6 +801,19 @@ boot is a different case: its audits stay unverified, because that base is a
 fault and not an onboarding. The advisory outcome is not cached, so the next
 run, with a profile at the base, compares as usual.
 
+The plan job reads the base revision, because it holds the model key, so on
+that pull request it once planned with no profile at all: no declared
+suites, no app address (so no http check), no commands and no QA.md, while
+execute and judge used the head's. Since #431 collect sees that the base has
+no profile at the caller's `profile` path and exports the head's profile
+directory from git objects, regular files only, as the `qa-pr-profile`
+artifact. The plan job lays it at the same path and hands it to
+`qare plan --pr-profile`, which reads it as data: it starts none of the
+profile's host MCP servers, and the plan does not explore, because exploring
+boots the base. The plan job's summary and the run comment say which
+profile the plan read (the base's, the pull request's, or none). With a
+profile at the base, nothing changes. ADR-0013 records the decision.
+
 ### The build cache
 
 A booted app's images are built on fresh hosted runners with no layer

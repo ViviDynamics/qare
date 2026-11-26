@@ -3,6 +3,7 @@ import { mergeVerdicts } from './egress.js'
 import { BUILTIN_REDACTION_RULES, redactResult, type RedactionRule } from './redact.js'
 import { RESULT_SCHEMA_VERSION, type CriterionBase, type CriterionOutcome, type CriterionResult, type RunResult, type RunVerdict } from './result.js'
 import { sumUsage, type ModelUsage } from './metrics.js'
+import type { PlanProfileSource } from './plan.js'
 import { outputBudget, stopDetail, type AgentBudget, type AgentRunRequest, type AgentRunner } from './runner.js'
 
 export interface SideResult {
@@ -618,6 +619,8 @@ export interface JudgeExecutedOptions {
   rules?: readonly RedactionRule[]
   /** What the planning model spent on the plan (#373), carried onto the judged result. */
   planUsage?: ModelUsage
+  /** Which profile the plan read (#431), carried onto the judged result for the comment. */
+  planProfile?: PlanProfileSource
 }
 
 /**
@@ -669,6 +672,7 @@ export async function judgeExecuted(
       return text === undefined || text === '' ? criterion : { ...criterion, text }
     }),
     ...(opts.planUsage === undefined ? {} : { planUsage: opts.planUsage }),
+    ...(opts.planProfile === undefined ? {} : { planProfile: opts.planProfile }),
   }
   const result = redactResult(described, opts.rules ?? BUILTIN_REDACTION_RULES)
   // What the verifier model spent (#51): part of the run's metrics, riding

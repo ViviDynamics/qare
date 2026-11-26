@@ -5,6 +5,7 @@ export {
   loadPlan,
   parsePlan,
   parseFlowActions,
+  PLAN_PROFILE_SOURCES,
 } from './plan.js'
 export type {
   CheckKind,
@@ -18,6 +19,7 @@ export type {
   VisualCheck,
   HttpCheck,
   FlowActionStep,
+  PlanProfileSource,
 } from './plan.js'
 export { HTTP_METHODS, MAX_HTTP_BODY_BYTES, MAX_HTTP_HEADERS, MAX_HTTP_TIMEOUT_MS } from './http-check.js'
 export type { HttpCheckFields, HttpExpect, HttpHeaderAssertion, HttpJsonAssertion, HttpMethod } from './http-check.js'

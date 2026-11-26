@@ -720,6 +720,16 @@ test('the judged result carries each criterion text and the plan spend, so the c
   expect(result.planUsage).toEqual({ inputTokens: 1200, outputTokens: 300 })
 })
 
+test('the judged result carries which profile the plan read, so the comment can say it (#431)', async () => {
+  const executed: RunResult = {
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'passed',
+    criteria: [{ id: 'c1', outcome: 'proven', evidence: ['checks/c1/0/stdout.txt'] }],
+  }
+  expect((await judgeExecuted(executed, { texts: {}, diff: NO_DIFF, planProfile: 'pull-request' })).result.planProfile).toBe('pull-request')
+  expect((await judgeExecuted(executed, { texts: {}, diff: NO_DIFF })).result).not.toHaveProperty('planProfile')
+})
+
 test('criterion text in the judged result is swept by the profile rules like every reason (#373)', async () => {
   const executed: RunResult = {
     schemaVersion: RESULT_SCHEMA_VERSION,

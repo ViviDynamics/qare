@@ -737,7 +737,7 @@ test('a registered server that cannot be started is reported, and the plan is st
   expect(seen.argv[seen.argv.indexOf('--tools') + 1]).toBe('none')
   expect(seen.env).toEqual({ tools: null, endpoint: null })
   expect(out.lines.join('')).toContain("host mcp server 'ghost' is unreachable")
-  expect(JSON.parse(await readFile(outPath, 'utf8'))).toEqual(PLAN)
+  expect(JSON.parse(await readFile(outPath, 'utf8'))).toEqual({ ...PLAN, profileSource: 'checkout' })
   // Even the failure is evidence: the declared-but-unreachable server leaves a
   // record, so the run shows what the host tried and why nothing answered.
   const records = (await readFile(join(dir, 'mcp-calls.jsonl'), 'utf8'))

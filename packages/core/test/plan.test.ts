@@ -456,6 +456,17 @@ test('a snapshot path ends on the element the reference names (#83)', () => {
   ).toEqual([{ action: 'click', element: { role: 'button', name: 'Save', at: 'document/main/button "Save"[2]' } }])
 })
 
+test('a plan says which profile it read, and an old plan without it still loads (#431)', () => {
+  const base = {
+    schemaVersion: PLAN_SCHEMA_VERSION,
+    criteria: [{ id: 'c1', text: 'Totals convert to the viewer currency.', checks: [{ kind: 'command', name: 'look', command: 'true' }] }],
+  }
+  for (const source of ['checkout', 'pull-request', 'none'] as const) expect(parsePlan({ ...base, profileSource: source }).profileSource).toBe(source)
+  expect(parsePlan(base)).not.toHaveProperty('profileSource')
+  expect(() => parsePlan({ ...base, profileSource: 'head' })).toThrow(PlanValidationError)
+  expect(() => parsePlan({ ...base, profileSource: 1 })).toThrow(/profileSource must be one of/)
+})
+
 test('a plan carries what the planner model spent, when the runner says so (#51)', () => {
   const base = {
     schemaVersion: PLAN_SCHEMA_VERSION,

@@ -192,7 +192,19 @@ export interface Plan {
    * the plan was made without a model.
    */
   usage?: ModelUsage
+  /**
+   * Which profile the plan read (#431): `checkout` for the profile beside the
+   * plan step (in the pipeline, the base revision's), `pull-request` for the
+   * pull request's own, read as data because the base revision has none, and
+   * `none` when the profile named could not be read. Absent when the plan was
+   * made without naming a profile.
+   */
+  profileSource?: PlanProfileSource
 }
+
+export type PlanProfileSource = 'checkout' | 'pull-request' | 'none'
+
+export const PLAN_PROFILE_SOURCES: readonly PlanProfileSource[] = ['checkout', 'pull-request', 'none']
 
 const CHECK_KINDS: CheckKind[] = ['command', 'flow', 'visual', 'mail', 'tool', 'a11y', 'http']
 
@@ -280,7 +292,22 @@ function parseLoose(input: unknown, extraFlowActions: readonly string[]): Plan {
     }
   }
   const usage = parseUsage(input.usage)
-  return { schemaVersion, criteria, ...(profiles === undefined ? {} : { profiles }), ...(usage === undefined ? {} : { usage }) }
+  const profileSource = parseProfileSource(input.profileSource)
+  return {
+    schemaVersion,
+    criteria,
+    ...(profiles === undefined ? {} : { profiles }),
+    ...(usage === undefined ? {} : { usage }),
+    ...(profileSource === undefined ? {} : { profileSource }),
+  }
+}
+
+/** Which profile the plan read (#431), optional, so a plan made before it was recorded still loads. */
+export function parseProfileSource(value: unknown, field = 'profileSource'): PlanProfileSource | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !PLAN_PROFILE_SOURCES.includes(value as PlanProfileSource))
+    fail(field, `${field} must be one of ${PLAN_PROFILE_SOURCES.map((source) => JSON.stringify(source)).join(', ')}`)
+  return value as PlanProfileSource
 }
 
 /** The planning model's spend, optional, so an old plan without it still loads (#51). */

@@ -363,6 +363,13 @@ test('a run carries its wall clock as a pair of ISO timestamps, both or neither 
   expect(parseResult(base).startedAt).toBeUndefined()
 })
 
+test('a judged run says which profile its plan read, and an old result without it still loads (#431)', () => {
+  const base = { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [] }
+  expect(parseResult({ ...base, planProfile: 'pull-request' }).planProfile).toBe('pull-request')
+  expect(parseResult(base)).not.toHaveProperty('planProfile')
+  expect(() => parseResult({ ...base, planProfile: 'head' })).toThrow(ResultValidationError)
+})
+
 test('a run carries the verifier model spend the judge stamps on it (#51)', () => {
   const base = { schemaVersion: RESULT_SCHEMA_VERSION, verdict: 'passed', criteria: [] }
   expect(parseResult({ ...base, judgeUsage: { inputTokens: 12, outputTokens: 3 } }).judgeUsage).toEqual({ inputTokens: 12, outputTokens: 3 })

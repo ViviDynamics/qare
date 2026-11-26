@@ -159,7 +159,7 @@ export async function main(
   // the image it is in, never by a person, so the usage below does not list it.
   if (argv[0] === 'cell') return runCellCommand(argv.slice(1), { out: (line) => out.write(`${line}\n`), err: (line) => err.write(`${line}\n`) })
   out.write(
-    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) [--base-repo <dir>] [--workers <n>] [--build-cache-from <dir>] [--build-cache-to <dir>] | qare judge --result <path> (--plan <path> (--diff <path> | --no-diff) [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] [--dismissed <path>] [--no-advisory] | qare ledger <list|show|diff|status|plan|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare init [path] [--target <url>] [--health <path>] [--service <name>] [--model <name>] [--file-issues <owner/name>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare sweep [--ledger <dir>] [--json] [--out <file>] | qare metrics <record|note> | qare reap [project...] | qare replay <dir>\n`,
+    `qare ${VERSION}\nusage: qare --version | qare check "<criterion>"... [--file <path>] [--profile <dir>] [--repo <dir>] [--evidence <dir>] [--nare <binary> | --runner none] | qare linked-issues --body <path> | qare issue-criteria --out <file> <issue.md>... | qare plan (--issue <path> | --criteria <path>) --diff <path> [--allow-no-criteria] [--out <file>] [--suites a,b] [--nare <binary>] [--profile <dir> | --pr-profile <dir>] | qare run (--job <path|-> | --plan <path> --id <id> --repo <dir> --base <ref> --head <ref> [--profile <dir>] --evidence <dir> | --criteria <ids> --id <id> --repo <dir> --base <ref> --head <ref> --profile <dir> --evidence <dir> [--ledger <dir>]) [--base-repo <dir>] [--workers <n>] [--build-cache-from <dir>] [--build-cache-to <dir>] | qare judge --result <path> (--plan <path> (--diff <path> | --no-diff) [--nare <binary>] | --runner none) [--outDir <dir>] [--profile <dir>] [--dismissed <path>] [--no-advisory] | qare ledger <list|show|diff|status|plan|contradict|resolve|decide|export|import|publish|migrate> [--ledger <dir>] | qare select [--ledger <dir>] (--diff <path> | --paths a,b) [--budget <ms>] [--smoke <suite>] [--out <file>] | qare ingest --sources <manifest.json> --out <dir> --nare <binary> [--ledger <dir>] [--profile <dir>] | qare init [path] [--target <url>] [--health <path>] [--service <name>] [--model <name>] [--file-issues <owner/name>] | qare readiness [path] [--out <file>] | qare profiles [path] [--diff <path> | --paths a,b) [--out <file>] | qare doctor [--profile <dir>] [--nare <binary>] [--json] | qare redact --evidence <dir> [--profile <dir>] | qare sweep [--ledger <dir>] [--json] [--out <file>] | qare metrics <record|note> | qare reap [project...] | qare replay <dir>\n`,
   )
   return 0
 }
@@ -730,9 +730,20 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       .filter(Boolean)
     const binary = flag(argv, '--nare')
     const flowActions = flowActionKinds(flag(argv, '--flow-actions'))
-    const profilePath = flag(argv, '--profile')
+    // The pull request's own profile, read as data (#431): the pipeline hands
+    // it over when the base revision has none, which is the pull request that
+    // onboards a repository. Nothing in it runs here: its host MCP servers are
+    // not started and it cannot be explored, because this step holds the
+    // model key and the profile is pull request data (rule 7).
+    const prProfilePath = flag(argv, '--pr-profile')
+    const checkoutProfilePath = flag(argv, '--profile')
     // The exploration channel the pipeline serves beside the base app (#377).
     const exploreEndpoint = flag(argv, '--explore')
+    if (prProfilePath !== undefined && checkoutProfilePath !== undefined)
+      throw new Error('qare plan takes --profile (the checked-out profile) or --pr-profile (the pull request\'s, read as data), not both')
+    if (prProfilePath !== undefined && exploreEndpoint !== undefined)
+      throw new Error("qare plan does not explore with --pr-profile: exploring boots the base app, and the pull request's profile describes the head")
+    const profilePath = prProfilePath ?? checkoutProfilePath
 
     const allowNone = argv.includes('--allow-no-criteria')
     let criteria: { id: string; text: string }[]
@@ -765,6 +776,8 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
       // there but broken throws, as everywhere else.
       try {
         profile = await loadProfile(resolve(profilePath))
+        if (prProfilePath !== undefined)
+          out.write(`planning with the pull request's profile at ${profilePath}, read as data: nothing in it runs while planning\n`)
         const login = profile.app?.login
         const redacted = redactText(diff, valueRules([login?.totp?.secret, login?.backupCode?.value]))
         if (redacted !== diff) out.write("the profile's seeded values are redacted from the diff before planning\n")
@@ -844,7 +857,13 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
         bridge = await startExplorationBridge(exploreEndpoint)
       }
       const explored = bridge
-      const started = await startRegisteredMcpSources(profile?.mcp ?? [], 'plan', {
+      // A profile from the pull request starts nothing (#431): an MCP server
+      // names a command, and this step holds the model key. Its driver
+      // mapping still says what the plan's flows may do in execute.
+      if (prProfilePath !== undefined)
+        for (const server of (profile?.mcp ?? []).filter((entry) => entry.steps.includes('plan')))
+          out.write(`host MCP server '${server.name}' is not started: the profile comes from the pull request, and the plan step holds the model key\n`)
+      const started = await startRegisteredMcpSources(prProfilePath === undefined ? (profile?.mcp ?? []) : [], 'plan', {
         record: (record) => mcpRecords.push(record),
       })
       mcpSources = started.sources
@@ -939,6 +958,11 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
     if (flowActions.length > 0)
       out.write(`planning with the change's flow action kinds: ${flowActions.join(', ')}\n`)
 
+    // Which profile the plan read (#431), for the comment and the plan job's
+    // summary: only when a profile flag was given, so a plan made without one
+    // says nothing about a profile.
+    if (profilePath !== undefined)
+      plan = { ...plan, profileSource: profile === undefined ? 'none' : prProfilePath !== undefined ? 'pull-request' : 'checkout' }
     await writeFile(outPath, `${JSON.stringify(plan, null, 2)}\n`, 'utf8')
     const unplannable = plan.criteria.filter((criterion) => 'unplannable' in criterion).length
     out.write(
@@ -1154,6 +1178,7 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
       diff: !verify ? '' : noDiff ? NO_DIFF : redactText(await readFile(resolve(diffPath as string), 'utf8'), rules),
       rules,
       ...(plan?.usage === undefined ? {} : { planUsage: plan.usage }),
+      ...(plan?.profileSource === undefined ? {} : { planProfile: plan.profileSource }),
       ...(verify ? { verifier: nareRunners(binary).verifier(evidenceDir) } : {}),
     })
     for (const criterion of changed)

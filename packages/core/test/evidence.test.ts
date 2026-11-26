@@ -634,6 +634,16 @@ test('a step whose spend was not recorded is said to be not recorded, never zero
   expect(renderComment(allProven)).toContain('Model tokens: plan not recorded; judge not recorded.')
 })
 
+test('the summary says which profile the plan read, and nothing when the result does not record it (#431)', () => {
+  const lines = (planProfile: 'checkout' | 'pull-request' | 'none'): string[] => renderComment({ ...allProven, planProfile }).split('\n')
+  expect(lines('checkout')[6]).toBe("Planning profile: the base revision's.")
+  expect(lines('pull-request')[6]).toBe(
+    "Planning profile: this pull request's, read as data because the base revision has none. Nothing in it ran while planning.",
+  )
+  expect(lines('none')[6]).toBe('Planning profile: none could be read, so the planner saw no declared suites, commands, app address or QA.md.')
+  expect(renderComment(allProven)).not.toContain('Planning profile')
+})
+
 test('a criterion the verifier left unverified for thin evidence is labelled thin evidence, not the environment (#373)', () => {
   const body = renderComment(
     result('blocked', [unverified('c1', 'verifier: the output shows the URL, not the article')]),

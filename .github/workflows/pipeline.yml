@@ -372,6 +372,9 @@ jobs:
       pull-requests: read
     outputs:
       criteria: ${{ steps.inputs.outputs.criteria }}
+      # Which profile the planner reads (#431): base, head (the pull
+      # request's, as data, because the base has none) or none.
+      plan-profile: ${{ steps.plan-profile.outputs.plan-profile }}
       # The version of the qare this run uses, read from the revision the
       # caller pinned. plan, execute and judge pull the images it names.
       qare-version: ${{ steps.qare.outputs.version }}
@@ -656,6 +659,83 @@ jobs:
             echo "planner diff bytes: $(wc -c < change-planner.diff)"
             echo "paths left out of the planner diff: $(grep -c . excluded-paths.txt || true)"
           } >> "$GITHUB_STEP_SUMMARY"
+      # The profile the planner reads (#431). The plan job holds the model key
+      # and checks out the base, so it reads the base's profile. The pull
+      # request that onboards a repository adds the profile, so its base has
+      # none, and that plan was made blind: no suites, no app address, no
+      # QA.md. The profile is pull-request data (rule 7), as judge already
+      # reads it, so when the base has none the head's is exported here from
+      # git objects, regular files only (a link could name anything on the
+      # runner), and the plan job reads it with qare plan --pr-profile, which
+      # starts nothing it names. ADR-0013 records the decision.
+      - name: Choose the profile the planner reads
+        id: plan-profile
+        if: steps.inputs.outputs.criteria == 'present'
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.profile }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # The profile's path as git names it: no leading ./, no trailing /.
+          path="${PROFILE#./}"
+          path="${path%/}"
+          if git cat-file -e "${BASE_SHA}:${path}" 2>/dev/null; then
+            echo "plan-profile=base" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$(git cat-file -t "${HEAD_SHA}:${path}" 2>/dev/null || true)" != "tree" ]; then
+            echo "plan-profile=none" >> "$GITHUB_OUTPUT"
+            echo "neither the base revision nor this pull request has a profile at $path, so the planner reads none" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          out=.qare-pr-profile
+          rm -rf "$out"
+          mkdir -p "$out"
+          copied=0
+          skipped=0
+          while IFS= read -r -d '' entry; do
+            meta="${entry%%$'\t'*}"
+            file="${entry#*$'\t'}"
+            read -r mode _ object <<< "$meta"
+            rel="${file#"$path"/}"
+            case "$mode" in
+              100644 | 100755) ;;
+              *) skipped=$((skipped + 1)); continue ;;
+            esac
+            case "/$rel/" in
+              */../* | */./*) skipped=$((skipped + 1)); continue ;;
+            esac
+            mkdir -p "$out/$(dirname "$rel")"
+            git cat-file blob "$object" > "$out/$rel"
+            copied=$((copied + 1))
+          done < <(git ls-tree -r -z "$HEAD_SHA" -- "$path/")
+          if [ "$copied" -eq 0 ]; then
+            rm -rf "$out"
+            echo "plan-profile=none" >> "$GITHUB_OUTPUT"
+            echo "the base revision has no profile at $path, and this pull request's holds no regular file, so the planner reads none" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "plan-profile=head" >> "$GITHUB_OUTPUT"
+          {
+            echo "the base revision has no profile at $path, so the planner reads this pull request's, as data: $copied file(s), and nothing in it runs in the plan job"
+            if [ "$skipped" -eq 1 ]; then
+              echo "left out 1 entry that is not a regular file"
+            elif [ "$skipped" -gt 1 ]; then
+              echo "left out $skipped entries that are not regular files"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the pull request's profile, as data
+        if: steps.plan-profile.outputs.plan-profile == 'head'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: qa-pr-profile
+          path: .qare-pr-profile/
+          # The directory is hidden, and so are files such as .gitkeep that
+          # keep a profile's fixtures and stubs directories in git.
+          include-hidden-files: true
+          if-no-files-found: error
       - name: Read recorded advisory context
         shell: bash
         env:
@@ -922,6 +1002,16 @@ jobs:
             exit 1
           fi
           echo "endpoint=$endpoint" >> "$GITHUB_OUTPUT"
+      # The pull request's profile, when the base has none (#431), laid where
+      # the base has nothing. It arrives after exploring is decided and the
+      # base app is served, because exploring boots the base, and it is read
+      # by the plan step alone, as data.
+      - name: Download the pull request's profile, as data
+        if: needs.collect.outputs.plan-profile == 'head'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: qa-pr-profile
+          path: ${{ inputs.profile }}
       - name: Plan the QA run
         shell: bash
         env:
@@ -937,6 +1027,7 @@ jobs:
           QARE_PLAN_BATCH_SIZE: ${{ inputs.plan-batch-size }}
           QARE_PLAN_CONCURRENCY: ${{ inputs.plan-concurrency }}
           PROFILE: ${{ inputs.profile }}
+          PLAN_PROFILE: ${{ needs.collect.outputs.plan-profile }}
           EXPLORE_ENDPOINT: ${{ steps.serve.outputs.endpoint }}
         run: |
           set -euo pipefail
@@ -1006,19 +1097,38 @@ jobs:
             explore_args=(--explore "$EXPLORE_ENDPOINT")
             network_args=(--network host)
           fi
+          # The pull request's profile (#431) goes only by --pr-profile, which
+          # starts nothing it names, and never by --profile: a pinned qare
+          # older than the flag ignores it and plans with no profile, as it
+          # did before, rather than reading the profile as its own.
+          profile_args=(--profile "$PROFILE")
+          if [ "${PLAN_PROFILE:-}" = "head" ]; then
+            profile_args=(--pr-profile "$PROFILE")
+          fi
           if ! docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
             "${model_env[@]}" \
             "${network_args[@]}" \
             -v "$PWD:$PWD" -w "$PWD" \
             "$IMAGE_REF" qare plan \
             --criteria criteria.json --diff change-planner.diff --out plan.json \
-            --nare /usr/local/bin/nare --profile "$PROFILE" "${flow_actions[@]}" "${explore_args[@]}" 2>plan.err; then
+            --nare /usr/local/bin/nare "${profile_args[@]}" "${flow_actions[@]}" "${explore_args[@]}" 2>plan.err; then
             # The planner's copy of the diff (scrubbed of the values the
             # change adds, with the paths the caller names left out) is what
             # the planner always reads. Any failure surfaces as it happened.
             cat plan.err >&2
             exit 4
           fi
+          # Which profile the plan read, as qare recorded it in the plan (#431).
+          case "$(jq -r '.profileSource // ""' plan.json 2>/dev/null || true)" in
+            pull-request) echo "planned with this pull request's profile at $PROFILE, read as data, because the base revision has none: nothing in it ran in this job" ;;
+            checkout) echo "planned with the base revision's profile at $PROFILE" ;;
+            none) echo "planned with no usable profile at $PROFILE" ;;
+            *)
+              if [ "${PLAN_PROFILE:-}" = "head" ]; then
+                echo "the pinned qare does not record which profile it planned with, so this pull request's profile may not have reached the planner"
+              fi
+              ;;
+          esac >> "$GITHUB_STEP_SUMMARY"
       # The explored app goes with the job that booted it: the serve
       # container is stopped and the compose project the boot named is
       # reaped, whatever the plan did. A teardown that fails is said and

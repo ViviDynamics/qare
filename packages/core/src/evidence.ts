@@ -1,6 +1,7 @@
 import { renderAdvisorySection } from './advisory-comment.js'
 import { describeHost, describeRequirements, type HostKind, type Requirements } from './placement.js'
 import type { ModelUsage } from './metrics.js'
+import type { PlanProfileSource } from './plan.js'
 import { missingStubReason } from './egress.js'
 import { serviceFailed, type CriterionResult, type RunBootFailure, type RunBootService, type RunEgress, type RunResult, type RunVerdict } from './result.js'
 
@@ -283,7 +284,20 @@ function summaryLines(result: RunResult): string[] {
     '',
     `Model tokens: plan ${usagePhrase(result.planUsage)}; judge ${usagePhrase(result.judgeUsage)}.`,
     '',
+    ...(result.planProfile === undefined ? [] : [PLANNING_PROFILE[result.planProfile], '']),
   ]
+}
+
+/**
+ * Which profile the planner read (#431). The pull request that onboards a
+ * repository adds the profile, so its base has none and the plan job reads
+ * the pull request's own, as data; a plan made with no profile at all is
+ * the reason a run checks less than its profile declares.
+ */
+const PLANNING_PROFILE: Record<PlanProfileSource, string> = {
+  checkout: "Planning profile: the base revision's.",
+  'pull-request': "Planning profile: this pull request's, read as data because the base revision has none. Nothing in it ran while planning.",
+  none: 'Planning profile: none could be read, so the planner saw no declared suites, commands, app address or QA.md.',
 }
 
 export function renderComment(result: RunResult, links: EvidenceLinks = { kind: 'relative' }): string {
