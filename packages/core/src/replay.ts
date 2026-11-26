@@ -55,6 +55,7 @@ export async function replayRun(input: {
     diff: NO_DIFF,
     rules: BUILTIN_REDACTION_RULES,
     ...(input.plan.usage === undefined ? {} : { planUsage: input.plan.usage }),
+    ...(input.plan.profileSource === undefined ? {} : { planProfile: input.plan.profileSource }),
   })
   const bytes = `${JSON.stringify(result, null, 2)}\n`
   if (input.stored === undefined)
@@ -81,8 +82,8 @@ export async function replayRun(input: {
  */
 /**
  * A judged result's bytes without what describes the run but decides none of
- * it: the advisory review (#150), each criterion's text and the plan's spend
- * (#373). A result stored before those fields existed replays as identical,
+ * it: the advisory review (#150), each criterion's text, the plan's spend
+ * (#373) and which profile the plan read (#431). A result stored before those fields existed replays as identical,
  * and so does one that carried them.
  */
 function verdictBytes(bytes: string): string {
@@ -96,6 +97,7 @@ function verdictBytes(bytes: string): string {
   const rest: Record<string, unknown> = { ...parsed }
   delete rest.advisory
   delete rest.planUsage
+  delete rest.planProfile
   if (Array.isArray(rest.criteria))
     rest.criteria = rest.criteria.map((criterion: unknown) => {
       if (typeof criterion !== 'object' || criterion === null || Array.isArray(criterion)) return criterion

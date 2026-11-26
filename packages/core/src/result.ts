@@ -3,6 +3,7 @@ import { ADVISORY_CATEGORIES, ADVISORY_SEVERITIES, type AdvisoryFinding, type Ru
 import type { RunEnvironment, RunImage } from './environment.js'
 import { parseProfileRef, type JobProfileRef } from './job.js'
 import type { MailProof } from './mailbox.js'
+import { PLAN_PROFILE_SOURCES, type PlanProfileSource } from './plan.js'
 import type { ModelUsage } from './metrics.js'
 import { RUNNER_KINDS, type HostKind, type Requirements, type RunnerKind } from './placement.js'
 import { RUNNER_CHECKLIST_ITEMS, type RunnerSafetyFinding } from './runner-safety.js'
@@ -323,6 +324,13 @@ export interface RunResult {
    */
   planUsage?: ModelUsage
   /**
+   * Which profile the plan read (#431), copied from the plan when the run is
+   * judged, so the comment can say whether the planner saw the base
+   * revision's profile, the pull request's (read as data, because the base
+   * has none), or none at all.
+   */
+  planProfile?: PlanProfileSource
+  /**
    * What the advisory UX review reported (#150): a model's findings for a
    * person to read. It is a key of its own because it is no part of the
    * verdict: nothing that computes an outcome or a verdict reads it.
@@ -422,6 +430,9 @@ export function parseResult(input: unknown): RunResult {
   const timestamps = parseTimestamps(input)
   const judgeUsage = parseModelUsage(input.judgeUsage, 'judgeUsage')
   const planUsage = parseModelUsage(input.planUsage, 'planUsage')
+  if (input.planProfile !== undefined && (typeof input.planProfile !== 'string' || !PLAN_PROFILE_SOURCES.includes(input.planProfile as PlanProfileSource)))
+    fail('planProfile', `planProfile must be one of ${PLAN_PROFILE_SOURCES.map((source) => JSON.stringify(source)).join(', ')}`)
+  const planProfile = input.planProfile as PlanProfileSource | undefined
   const advisory = parseAdvisory(input.advisory)
   const egress = parseEgress(input.egress, 'egress')
   const boot = parseBootFailure(input.boot, 'boot')
@@ -441,6 +452,7 @@ export function parseResult(input: unknown): RunResult {
     ...(timestamps === undefined ? {} : { startedAt: timestamps.startedAt, finishedAt: timestamps.finishedAt }),
     ...(judgeUsage === undefined ? {} : { judgeUsage }),
     ...(planUsage === undefined ? {} : { planUsage }),
+    ...(planProfile === undefined ? {} : { planProfile }),
     ...(advisory === undefined ? {} : { advisory }),
     ...(egress === undefined ? {} : { egress }),
     ...(boot === undefined ? {} : { boot }),
