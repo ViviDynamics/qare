@@ -4,9 +4,18 @@
 
 # QAre
 
-**New here? Start with the [quickstart](docs/quickstart.md):** one `docker run`
-of a released image, `qare init`, and a pull request to a first evidence
-comment.
+From the Git checkout of the app you want to check, run the [quickstart](docs/quickstart.md)
+to generate its QA profile and pull request workflow and print its readiness report:
+
+```sh
+bootstrap=$(curl -fsSL https://github.com/ViviDynamics/qare/releases/latest/download/install.sh) && sh -c "$bootstrap" qare-install
+```
+
+To start directly with Docker, pull the latest image and generate the same files:
+
+```sh
+docker run --pull=always --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" ghcr.io/vividynamics/qare-web:latest qare init
+```
 
 A QA agent harness. Given a pull request and the issue it closes, qare boots the
 app before and after the change against stubbed services, checks every
