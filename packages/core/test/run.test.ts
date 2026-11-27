@@ -228,8 +228,8 @@ test('a blocked boot marks every criterion unverified and the run blocked', asyn
   // A provisioning failure carries its log (#75): what compose said is in the
   // evidence, and each criterion nothing checked points at it.
   expect(result.criteria).toEqual([
-    { id: 'criterion-1', outcome: 'unverified', reason: 'compose up exited 1', evidence: ['provision.log'] },
-    { id: 'criterion-2', outcome: 'unverified', reason: 'compose up exited 1', evidence: ['provision.log'] },
+    { id: 'criterion-1', outcome: 'unverified', reason: 'compose up exited 1; its output ended: compose boom', evidence: ['provision.log'] },
+    { id: 'criterion-2', outcome: 'unverified', reason: 'compose up exited 1; its output ended: compose boom', evidence: ['provision.log'] },
   ])
   expect(await readFile(join(job.evidenceDir, 'provision.log'), 'utf8')).toBe('compose boom\n')
 })
@@ -1361,7 +1361,7 @@ test('a build that fails blocks the run naming the build, with what the build sa
   })
 
   expect(result.verdict).toBe('blocked')
-  const reason = "compose build exited 1: the profile's images did not build, so nothing was booted"
+  const reason = "compose build exited 1: the profile's images did not build, so nothing was booted; its output ended: failed to solve: Dockerfile:12"
   expect(result.criteria).toEqual([
     { id: 'criterion-1', outcome: 'unverified', reason, evidence: ['provision.log'] },
     { id: 'criterion-2', outcome: 'unverified', reason, evidence: ['provision.log'] },

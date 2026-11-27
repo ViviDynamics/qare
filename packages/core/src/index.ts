@@ -196,7 +196,7 @@ export { inboxSource, mailpitSource, mailReader, mailSourceOf, MAIL_SOURCE_KINDS
 export type { MailSource, MailFilter, MailRef, DeclaredMailSource, MailSourceKind } from './mail-source.js'
 export { Artefacts } from './artefacts.js'
 export type { ArtefactField } from './artefacts.js'
-export { bootApp, captureServiceLogs, commandBootCompose, commandBootFile, readStackEgress, serviceFailed, stopApp } from './boot.js'
+export { bootApp, captureServiceLogs, composeErrorTail, commandBootCompose, commandBootFile, readStackEgress, serviceFailed, stopApp } from './boot.js'
 export type { BootOutcome, BootOpts, ServiceLog, StackEgress } from './boot.js'
 export { isolatedHealthUrl, isolateRun, mintIsolation } from './isolation.js'
 export type { RunIsolation } from './isolation.js'

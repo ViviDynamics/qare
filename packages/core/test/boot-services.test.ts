@@ -113,7 +113,7 @@ test('a compose up that exits names each service\'s state and log, read before a
     egressImage: '',
   })
   expect(outcome.kind).toBe('blocked')
-  expect(outcome.reason).toBe('compose up exited 1')
+  expect(outcome.reason).toBe('compose up exited 1; its output ended: container qare-x-web-1 exited (1)')
   expect(outcome.services).toEqual([
     { service: 'web', state: 'exited', exitCode: 1, log: 'boot: connecting\nActiveRecord::ConnectionNotEstablished: Network is unreachable\n' },
     { service: 'db', state: 'running', exitCode: 0, health: 'healthy', log: '' },

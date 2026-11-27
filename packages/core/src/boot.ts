@@ -530,7 +530,7 @@ async function containStack(
   await writeFile(first, plan.override, { mode: 0o600 })
   const held: ComposeApp = { ...app, overrides: [...(app.overrides ?? []), first] }
   const started = await runCompose(['-p', isolation.project, ...composeFiles(held), 'up', '-d', '--no-deps', EGRESS_DNS_SERVICE], EGRESS_CALL_TIMEOUT_MS, env)
-  if (started.code !== 0) return { blocked: `the stack's resolver did not start, so its egress could not be contained: compose up exited ${started.code}`, logs: `${started.stdout}${started.stderr}` }
+  if (started.code !== 0) return { blocked: withErrorTail(`the stack's resolver did not start, so its egress could not be contained: compose up exited ${started.code}`, `${started.stdout}${started.stderr}`), logs: `${started.stdout}${started.stderr}` }
   const deadline = Date.now() + (opts.egressReadyTimeoutMs ?? DEFAULT_EGRESS_READY_TIMEOUT_MS)
   let address: string | undefined
   let said = ''
@@ -555,7 +555,7 @@ async function containStack(
     return { app, egress: { containment: 'uncontained', reason } }
   }
   const stubs = await runCompose(['-p', isolation.project, ...composeFiles(resolving), 'up', '-d', ...plan.stubServices], timeoutMs, env)
-  if (stubs.code !== 0) return { blocked: `the stack's stub services did not start, so its egress could not be contained: compose up exited ${stubs.code}`, logs: `${stubs.stdout}${stubs.stderr}` }
+  if (stubs.code !== 0) return { blocked: withErrorTail(`the stack's stub services did not start, so its egress could not be contained: compose up exited ${stubs.code}`, `${stubs.stdout}${stubs.stderr}`), logs: `${stubs.stdout}${stubs.stderr}` }
   const found = await readContainedAddresses(isolation.project, opts.runDocker ?? defaultRunDocker)
   if ('problem' in found) return uncontained(`the run could not read the stack's addresses from the daemon: ${String(found.problem)}`)
   for (const service of plan.stubServices)
@@ -605,7 +605,7 @@ async function startStackRelay(
   await writeFile(file, relay.override, { mode: 0o600 })
   const relayed: ComposeApp = { ...app, overrides: [...(app.overrides ?? []), file] }
   const started = await runCompose(['-p', isolation.project, ...composeFiles(relayed), 'up', '-d', '--no-deps', EGRESS_RELAY_SERVICE], EGRESS_CALL_TIMEOUT_MS, env)
-  if (started.code !== 0) return { blocked: `the stack's relay did not start, so the ports it publishes cannot be reached: compose up exited ${started.code}`, logs: `${started.stdout}${started.stderr}` }
+  if (started.code !== 0) return { blocked: withErrorTail(`the stack's relay did not start, so the ports it publishes cannot be reached: compose up exited ${started.code}`, `${started.stdout}${started.stderr}`), logs: `${started.stdout}${started.stderr}` }
   return { app: relayed }
 }
 
@@ -992,9 +992,43 @@ async function buildImages(
   // clock says which it was.
   if (Date.now() >= deadline) return outOfTime(logs)
   return {
-    reason: `compose build exited ${built.code}: the profile's images did not build, so nothing was booted`,
+    reason: withErrorTail(`compose build exited ${built.code}: the profile's images did not build, so nothing was booted`, logs),
     logs,
   }
+}
+
+/** How many lines of a failed compose call's output its reason quotes, and how long each may be (#412). */
+const ERROR_TAIL_LINES = 5
+const ERROR_TAIL_WIDTH = 240
+
+// Compose's pull and start progress: the lines that drown the one that says
+// what went wrong. An error line never matches them.
+const PROGRESS = [
+  /^\[\+\]\s/,
+  /^[0-9a-f]{12}\s+(Pulling fs layer|Waiting|Downloading|Verifying Checksum|Download complete|Extracting|Pull complete|Already exists)\b/,
+  /^(?:[✔⠿⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s+)?(?:Container\s+|Network\s+|Volume\s+)?\S+\s+(Pulling|Pulled|Waiting|Creating|Created|Starting|Started|Running|Healthy|Recreate|Recreated|Built|Building)\s*(?:[\d.]+s)?$/,
+]
+
+/**
+ * The last lines of a failed compose call's output worth quoting in its
+ * reason (#412): colour stripped, pull and start progress dropped, at most
+ * five, each cut to a readable length. A pull that failed is otherwise one
+ * error line under a hundred lines of progress, and the reason said only the
+ * exit code. The whole output stays in the logs.
+ */
+export function composeErrorTail(output: string): string[] {
+  const lines = output
+    .replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '')
+    .split(/\r?\n|\r/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !PROGRESS.some((pattern) => pattern.test(line)))
+  return lines.slice(-ERROR_TAIL_LINES).map((line) => (line.length > ERROR_TAIL_WIDTH ? `${line.slice(0, ERROR_TAIL_WIDTH)}…` : line))
+}
+
+/** A compose failure's reason with the last lines its output ended on, when it said anything but progress (#412). */
+function withErrorTail(reason: string, output: string): string {
+  const tail = composeErrorTail(output)
+  return tail.length === 0 ? reason : `${reason}; its output ended: ${tail.join(' | ')}`
 }
 
 export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<BootOutcome> {
@@ -1135,7 +1169,7 @@ export async function bootApp(profile: QaProfile, opts: BootOpts = {}): Promise<
     const logs = `${up.stdout}${up.stderr}`
     return failed({
       kind: 'blocked',
-      reason: `compose up exited ${up.code}`,
+      reason: withErrorTail(`compose up exited ${up.code}`, `${up.stdout}${up.stderr}`),
       logs: logs || (await captureComposeLogs(app, opts, isolation)),
       isolation,
       egress,
