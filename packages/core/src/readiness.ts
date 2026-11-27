@@ -14,6 +14,40 @@ const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', '.qa'])
 /** How many ignored paths the report names before it counts the rest (#425). */
 const IGNORED_NAMED = 10
 
+/**
+ * What the origin scan leaves out (#415): files that name URLs the running
+ * application never reaches. Docs and specs describe services, fixtures and
+ * seeds plant data, tool and agent config drives the editor or CI, design
+ * assets carry their format's namespaces, and lockfiles name registries. The
+ * report counts each group it skipped, so nothing is left out unsaid.
+ */
+const DIR_GROUPS: Array<{ group: string; dirs: ReadonlySet<string> }> = [
+  { group: 'docs', dirs: new Set(['docs', 'doc']) },
+  { group: 'tests and specs', dirs: new Set(['test', 'tests', '__tests__', 'spec', 'specs', 'e2e', 'cypress']) },
+  { group: 'fixtures and seeds', dirs: new Set(['fixtures', '__fixtures__', 'seeds']) },
+  { group: 'tool and agent config', dirs: new Set(['.ai', '.agents', '.claude', '.cursor', '.github', '.vscode', '.idea']) },
+]
+const FILE_GROUPS: Array<{ group: string; test: (name: string) => boolean }> = [
+  { group: 'docs', test: (name) => /\.(md|mdx|markdown|rst|adoc|txt)$/i.test(name) },
+  { group: 'tests and specs', test: (name) => /(?:[._-](?:spec|test)s?\.[a-z0-9]+$)|(?:^test_.*\.py$)/i.test(name) },
+  { group: 'fixtures and seeds', test: (name) => /^seeds?\.[a-z0-9]+$/i.test(name) },
+  { group: 'design assets', test: (name) => /\.(svg|ai|eps|pdf|psd|sketch)$/i.test(name) },
+  {
+    group: 'lockfiles',
+    test: (name) =>
+      ['package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'Gemfile.lock', 'poetry.lock', 'Pipfile.lock', 'uv.lock', 'Cargo.lock', 'composer.lock', 'go.sum'].includes(name),
+  },
+]
+
+/** Which group a path the scan leaves out falls in, or undefined when the scan reads it (#415). */
+export function excludedGroup(rel: string): string | undefined {
+  const segments = rel.replace(/^\.\//, '').split('/')
+  const name = segments.pop() ?? ''
+  for (const { group, dirs } of DIR_GROUPS) if (segments.some((segment) => dirs.has(segment))) return group
+  for (const { group, test } of FILE_GROUPS) if (test(name)) return group
+  return undefined
+}
+
 export interface ReadinessComposeService {
   name: string
   image?: string
@@ -82,6 +116,8 @@ export interface ReadinessScanStats {
    * when the scan reads everything but the fixed skip list.
    */
   ignored?: string[]
+  /** How many files of each group the origin scan left out (#415): docs, tests and specs, fixtures and seeds, and the rest. Absent when none. */
+  excluded?: Record<string, number>
 }
 
 export interface ReadinessInventory {
@@ -106,7 +142,10 @@ export async function readinessInventory(
   if (!info.isDirectory()) throw new Error(`readiness: repo path ${JSON.stringify(repo)} is not a directory`)
 
   const maxFiles = opts.maxFiles ?? READINESS_MAX_FILES
-  const boot = await inventoryBoot(repo)
+  const profile = await loadProfileInfo(repo)
+  // A profile that boots from compose names its file (#415): that file is
+  // the boot, not whichever compose file a guess finds first.
+  const boot = profile.boot !== undefined ? await profileComposeFile(repo, profile.boot.compose) : await inventoryBoot(repo)
   const scan: ReadinessScanStats = {
     filesScanned: 0,
     skippedOversized: 0,
@@ -115,7 +154,6 @@ export async function readinessInventory(
     capped: false,
     maxFiles,
   }
-  const profile = await loadProfileInfo(repo)
   const profileBoot = await inspectProfileBoot(repo, profile)
   // A compose service reaches its neighbours by name: `http://search:9200`
   // is the stack talking to itself, not something a stub has to answer.
@@ -236,6 +274,17 @@ async function inventoryBoot(repo: string): Promise<ReadinessComposeFile[]> {
   return files
 }
 
+/** The compose file a profile boots from, when the repository has it and it parses (#415); its problem is a gap of its own. */
+async function profileComposeFile(repo: string, compose: string): Promise<ReadinessComposeFile[]> {
+  const path = join(repo, compose)
+  if (!(await isFile(path))) return []
+  try {
+    return [{ file: relativeLabel(repo, path), services: parseComposeServices(path, await readFile(path, 'utf8')) }]
+  } catch {
+    return []
+  }
+}
+
 async function immediateSubdirectories(repo: string): Promise<string[]> {
   const entries = await readdir(repo, { withFileTypes: true })
   const dirs: string[] = []
@@ -305,6 +354,11 @@ async function scanOrigins(
   await walk(repo, repo, ignored, async (path, rel) => {
     if (scan.filesScanned >= maxFiles) {
       scan.capped = true
+      return
+    }
+    const group = excludedGroup(rel)
+    if (group !== undefined) {
+      scan.excluded = { ...scan.excluded, [group]: (scan.excluded?.[group] ?? 0) + 1 }
       return
     }
     const info = await lstat(path)
@@ -481,9 +535,14 @@ function gapsOf(
   // A command boot runs the app from its start command (#379): it needs no
   // compose file, and one kept beside it for other uses is not what boots.
   const composeBooted = profile.commandBoot === undefined
-  if (composeBooted && boot.length === 0) gaps.push('no compose file found: qare cannot boot this repo for a QA run')
+  // A profile that names a compose file it lacks has that as its gap, below.
+  if (composeBooted && boot.length === 0 && profile.boot === undefined) gaps.push('no compose file found: qare cannot boot this repo for a QA run')
+  // With a profile, only the service it boots is held to a healthcheck
+  // (#415): its stubs and neighbours are waited on as running, and listing
+  // each one was noise nobody acted on.
   for (const file of composeBooted ? boot : []) {
     for (const service of file.services) {
+      if (profile.boot !== undefined && service.name !== profile.boot.service) continue
       if (!service.healthcheck) {
         gaps.push(`service ${JSON.stringify(service.name)} in ${file.file} has no healthcheck`)
       }
@@ -510,14 +569,9 @@ function gapsOf(
           )
       }
     }
-    for (const stub of profile.stubs) {
-      for (const host of stub.hosts) {
-        const observed = coverage.some((entry) => matchesStub(originHost(entry.origin), [{ hosts: [host] }]))
-        if (!observed) {
-          gaps.push(`stub ${JSON.stringify(stub.service)} lists host ${JSON.stringify(host)} that the scan never observed`)
-        }
-      }
-    }
+    // A stub host the scan never saw is no gap (#415): every stub is a
+    // compose service the app reaches by its host name, often through
+    // extra_hosts, which no URL in the tree spells out.
   }
   return gaps
 }
@@ -556,11 +610,14 @@ export function buildReadinessReport(inventory: ReadinessInventory): string {
   } else if (inventory.profile.commandBoot !== undefined) {
     const command = inventory.profile.commandBoot
     lines.push(`- command ${JSON.stringify(command.command)} in ${command.image}, listening on ${command.port}: booted by the run as a compose project of its own`)
+  } else if (inventory.profile.boot !== undefined && inventory.boot.length === 0) {
+    lines.push(`- the profile boots ${inventory.profile.boot.service} from ${inventory.profile.boot.compose}, which could not be read`)
   } else if (inventory.boot.length === 0) {
     lines.push('- no compose file found')
   } else {
     for (const file of inventory.boot) {
-      lines.push(`- ${file.file}: ${file.services.length} service(s)`)
+      const booted = inventory.profile.boot === undefined ? '' : ` (the profile boots ${inventory.profile.boot.service} from it)`
+      lines.push(`- ${file.file}${booted}: ${file.services.length} service(s)`)
       for (const service of file.services) {
         const parts = [service.image ?? 'no image', service.healthcheck ? 'healthcheck: yes' : 'healthcheck: no']
         if (service.command !== undefined) parts.push(`command: ${service.command}`)
@@ -602,6 +659,9 @@ export function buildReadinessReport(inventory: ReadinessInventory): string {
       (inventory.scan.skippedBinary > 0 ? `, ${inventory.scan.skippedBinary} skipped as binary` : '') +
       (inventory.scan.skippedUnreadable > 0 ? `, ${inventory.scan.skippedUnreadable} skipped unreadable` : ''),
   )
+  const excluded = Object.entries(inventory.scan.excluded ?? {}).sort((a, b) => compareStrings(a[0], b[0]))
+  if (excluded.length > 0)
+    lines.push(`- not scanned for origins, as the app never reaches what they name: ${excluded.map(([group, count]) => `${group} (${count} file${count === 1 ? '' : 's'})`).join(', ')}`)
   const ignored = inventory.scan.ignored ?? []
   if (ignored.length > 0)
     lines.push(`- skipped what git ignores: ${ignored.slice(0, IGNORED_NAMED).join(', ')}${ignored.length > IGNORED_NAMED ? `, and ${ignored.length - IGNORED_NAMED} more` : ''}`)

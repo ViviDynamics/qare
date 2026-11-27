@@ -84,17 +84,17 @@ test('parseComposeServices tolerates a missing services key', () => {
 
 test('outbound origins are summarized per origin with deterministic ordering', async () => {
   const dir = await repoWith({
-    'a.md': `see ${URL_API} and ${URL_API} again`,
-    'b.md': `posts to ${URL_API}`,
-    'c.md': `uses ${url('other.example.net', '/v9')}`,
+    'a.js': `see ${URL_API} and ${URL_API} again`,
+    'b.js': `posts to ${URL_API}`,
+    'c.js': `uses ${url('other.example.net', '/v9')}`,
   })
   const inventory = await readinessInventory(dir)
   expect(inventory.origins).toHaveLength(2)
   expect(inventory.origins[0].origin).toBe(url('api.example.com'))
   expect(inventory.origins[0].totalHits).toBe(3)
   expect(inventory.origins[0].files).toEqual([
-    { file: './a.md', count: 2 },
-    { file: './b.md', count: 1 },
+    { file: './a.js', count: 2 },
+    { file: './b.js', count: 1 },
   ])
   expect(inventory.origins[1].origin).toBe(url('other.example.net'))
 })
@@ -102,11 +102,11 @@ test('outbound origins are summarized per origin with deterministic ordering', a
 test('scan skips .git, node_modules, dist and .qa directories, binary files and oversized files', async () => {
   const dir = await repoWith({
     'node_modules/x.md': url('hidden.example.com'),
-    'dist/y.md': url('hidden.example.com'),
+    'dist/y.js': url('hidden.example.com'),
     '.qa/config.yml': 'app: [broken',
     'bin.dat': `ok\u0000${url('binary.example.com')}`,
   })
-  await writeFile(join(dir, 'big.md'), `x${'y'.repeat(1024 * 1024)}\n${url('big.example.com')}\n`)
+  await writeFile(join(dir, 'big.js'), `x${'y'.repeat(1024 * 1024)}\n${url('big.example.com')}\n`)
   const inventory = await readinessInventory(dir)
   expect(inventory.scan.filesScanned).toBe(0)
   expect(inventory.scan.skippedOversized).toBe(1)
@@ -116,9 +116,9 @@ test('scan skips .git, node_modules, dist and .qa directories, binary files and 
 
 test('scan is capped at maxFiles with a note', async () => {
   const dir = await repoWith({
-    'a.md': url('a.example.com'),
-    'b.md': url('b.example.com'),
-    'c.md': url('c.example.com'),
+    'a.js': url('a.example.com'),
+    'b.js': url('b.example.com'),
+    'c.js': url('c.example.com'),
   })
   const inventory = await readinessInventory(dir, { maxFiles: 2 })
   expect(inventory.scan.filesScanned).toBe(2)
@@ -153,26 +153,30 @@ test('stub coverage compares reached origins against profile stub hosts', async 
   const dir = await repoWith({
     'docker-compose.yml': 'services:\n  admin:\n    image: admin\n    healthcheck: {}\n',
     'compose.qa.yaml': QA_COMPOSE,
-    'a.md': `calls ${url('api.billing-vendor.example', '/v1')}`,
+    'a.js': `calls ${url('api.billing-vendor.example', '/v1')}`,
   })
   await withProfile(dir)
   const inventory = await readinessInventory(dir)
   expect(inventory.profile.present).toBe(true)
   expect(inventory.profile.healthUrl).toBe(['http:', '//localhost:3000/up'].join(''))
   expect(inventory.coverage).toEqual([{ origin: url('api.billing-vendor.example'), coveredBy: 'billing' }])
-  expect(inventory.gaps).toEqual(['stub "mail" lists host "api.mailgun.net" that the scan never observed'])
+  // A stub host the scan never saw is no gap: the app reaches a stub by host name, often through extra_hosts (#415).
+  // The service the profile boots is still held to a healthcheck.
+  expect(inventory.gaps).toEqual(['service "admin" in ./compose.qa.yaml has no healthcheck'])
 })
 
 test('stub matching strips ports from reached origins', async () => {
   const dir = await repoWith({
     'docker-compose.yml': 'services:\n  admin:\n    image: admin\n    healthcheck: {}\n',
     'compose.qa.yaml': QA_COMPOSE,
-    'a.md': `calls ${url('api.billing-vendor.example', ':8443/v1')}`,
+    'a.js': `calls ${url('api.billing-vendor.example', ':8443/v1')}`,
   })
   await withProfile(dir)
   const inventory = await readinessInventory(dir)
   expect(inventory.coverage).toEqual([{ origin: url('api.billing-vendor.example:8443'), coveredBy: 'billing' }])
-  expect(inventory.gaps).toEqual(['stub "mail" lists host "api.mailgun.net" that the scan never observed'])
+  // A stub host the scan never saw is no gap: the app reaches a stub by host name, often through extra_hosts (#415).
+  // The service the profile boots is still held to a healthcheck.
+  expect(inventory.gaps).toEqual(['service "admin" in ./compose.qa.yaml has no healthcheck'])
 })
 
 test('wildcard stub hosts match observed origins in both directions', async () => {
@@ -195,25 +199,25 @@ test('wildcard stub hosts match observed origins in both directions', async () =
   const dir = await repoWith({
     'docker-compose.yml': 'services:\n  admin:\n    image: admin\n    healthcheck: {}\n',
     'compose.qa.yaml': QA_COMPOSE,
-    'a.md': `calls ${url('a.cdn.example', '/static')}`,
+    'a.js': `calls ${url('a.cdn.example', '/static')}`,
   })
   await withProfile(dir, config)
   const inventory = await readinessInventory(dir)
   expect(inventory.coverage).toEqual([{ origin: url('a.cdn.example'), coveredBy: 'cdn' }])
-  expect(inventory.gaps).toEqual([])
+  expect(inventory.gaps).toEqual(['service "admin" in ./compose.qa.yaml has no healthcheck'])
 })
 
 test('userinfo URLs normalize to the bare host', async () => {
-  const dir = await repoWith({ 'a.md': `db at ${['http:', '//user:pass@db.example.net/db'].join('')}` })
+  const dir = await repoWith({ 'a.js': `db at ${['http:', '//user:pass@db.example.net/db'].join('')}` })
   const inventory = await readinessInventory(dir)
   expect(inventory.origins).toEqual([
-    { origin: url('db.example.net'), totalHits: 1, files: [{ file: './a.md', count: 1 }] },
+    { origin: url('db.example.net'), totalHits: 1, files: [{ file: './a.js', count: 1 }] },
   ])
 })
 
 test('skipped files do not consume the cap budget', async () => {
-  const dir = await repoWith({ 'a.md': url('a.example.com') })
-  await writeFile(join(dir, 'big.md'), `x${'y'.repeat(1024 * 1024)}\n`)
+  const dir = await repoWith({ 'a.js': url('a.example.com') })
+  await writeFile(join(dir, 'big.js'), `x${'y'.repeat(1024 * 1024)}\n`)
   const inventory = await readinessInventory(dir, { maxFiles: 2 })
   expect(inventory.scan.capped).toBe(false)
   expect(inventory.scan.skippedOversized).toBe(1)
@@ -222,29 +226,27 @@ test('skipped files do not consume the cap budget', async () => {
 })
 
 test('unreadable files are counted, not silent', async () => {
-  const dir = await repoWith({ 'a.md': url('a.example.com'), 'locked.md': url('locked.example.com') })
-  await chmod(join(dir, 'locked.md'), 0o000)
+  const dir = await repoWith({ 'a.js': url('a.example.com'), 'locked.js': url('locked.example.com') })
+  await chmod(join(dir, 'locked.js'), 0o000)
   try {
     const inventory = await readinessInventory(dir)
     expect(inventory.scan.skippedUnreadable).toBe(1)
     expect(inventory.scan.filesScanned).toBe(1)
     expect(inventory.origins.map((hit) => hit.origin)).toEqual([url('a.example.com')])
   } finally {
-    await chmod(join(dir, 'locked.md'), 0o644)
+    await chmod(join(dir, 'locked.js'), 0o644)
   }
 })
 
 test('uncovered reached origin is a named gap when a profile exists', async () => {
-  const dir = await repoWith({ 'a.md': `calls ${url('uncovered.example.net', '/v1')}` })
+  const dir = await repoWith({ 'a.js': `calls ${url('uncovered.example.net', '/v1')}` })
   await withProfile(dir)
   const inventory = await readinessInventory(dir)
   expect(inventory.coverage).toEqual([{ origin: url('uncovered.example.net'), coveredBy: undefined }])
   expect(inventory.gaps).toContain(
     `outbound origin ${url('uncovered.example.net')} is reached but not stubbed by the .qa/ profile`,
   )
-  expect(inventory.gaps.some((gap) => gap.includes('lists host "api.mailgun.net" that the scan never observed'))).toBe(
-    true,
-  )
+  expect(inventory.gaps.some((gap) => gap.includes('never observed'))).toBe(false)
 })
 
 test('normalizeOrigin trims trailing punctuation and lowercases scheme and host', async () => {
@@ -260,7 +262,7 @@ test('report is deterministic markdown with no verdict', async () => {
   const dir = await repoWith({
     'docker-compose.yml': 'services:\n  admin:\n    image: admin\n    healthcheck: {}\n',
     'compose.qa.yaml': QA_COMPOSE,
-    'a.md': `calls ${url('api.billing-vendor.example', '/v1')}`,
+    'a.js': `calls ${url('api.billing-vendor.example', '/v1')}`,
   })
   await withProfile(dir)
   const inventory = await readinessInventory(dir)
@@ -352,7 +354,7 @@ test('a boot service or a stub service the compose file does not define is a gap
   const secure = (path: string) => ['https:', `//api.billing-vendor.example${path}`].join('')
   const dir = await repoWith({
     'compose.qa.yaml': 'services:\n  web: {}\n  mailpit: {}\n',
-    'a.md': `calls ${secure('/v1')} twice: ${secure('/v2')}`,
+    'a.js': `calls ${secure('/v1')} twice: ${secure('/v2')}`,
   })
   await withProfile(dir)
   const inventory = await readinessInventory(dir)
@@ -368,7 +370,7 @@ test('a boot service or a stub service the compose file does not define is a gap
       port: '443',
       protocol: 'https',
       hits: 2,
-      files: ['./a.md'],
+      files: ['./a.js'],
       service: 'billing',
       composeService: 'billing-stub',
     },
@@ -378,20 +380,20 @@ test('a boot service or a stub service the compose file does not define is a gap
 test('an origin no stub covers is a stub gap with the port it was reached on', async () => {
   const dir = await repoWith({
     'compose.qa.yaml': QA_COMPOSE,
-    'a.md': `calls ${url('uncovered.example.net', ':8080/v1')}`,
-    'b.md': `calls ${url('uncovered.example.net', ':8080/v2')}`,
+    'a.js': `calls ${url('uncovered.example.net', ':8080/v1')}`,
+    'b.js': `calls ${url('uncovered.example.net', ':8080/v2')}`,
   })
   await withProfile(dir)
   const inventory = await readinessInventory(dir)
   expect(inventory.stubGaps).toEqual([
-    { host: 'uncovered.example.net', port: '8080', protocol: 'http', hits: 2, files: ['./a.md', './b.md'] },
+    { host: 'uncovered.example.net', port: '8080', protocol: 'http', hits: 2, files: ['./a.js', './b.js'] },
   ])
 })
 
 test('loopback hosts and the compose services themselves are not outbound origins', async () => {
   const dir = await repoWith({
     'docker-compose.yml': 'services:\n  web:\n    healthcheck: {}\n  search:\n    healthcheck: {}\n',
-    'a.md': [
+    'a.js': [
       url('localhost', ':3000/up'),
       url('127.0.0.1', ':8080'),
       url('0.0.0.0', ':9000'),
@@ -496,4 +498,68 @@ test('outside a git checkout readiness scans as before, with nothing named as ig
 
   expect(inventory.origins.map((hit) => hit.origin)).toEqual([url('pypi.example.org')])
   expect(inventory.scan.ignored).toBeUndefined()
+})
+
+// #415: on the website pilot readiness listed about 70 outbound origins
+// scraped from docs, specs, seeds and an .ai file, reported the developer
+// compose file in place of the profile's, and called every stub host it
+// never saw spelled as a URL a gap.
+test('outbound origins come from application code and config, and the groups left out are named (#415)', async () => {
+  const dir = await repoWith({
+    'app/clients/payments.rb': `BASE = "${url('api.payments.example')}"\n`,
+    'config/settings.yml': `cdn: ${url('cdn.assets.example')}\n`,
+    'docs/integrations.rb': `# ${url('docs-only.example')}\n`,
+    'README.md': `See ${url('readme-only.example')}\n`,
+    'spec/requests/payments_spec.rb': `stub_request(:post, "${url('spec-only.example')}")\n`,
+    'web/payments.test.ts': `const URL = "${url('jest-only.example')}"\n`,
+    'db/seeds.rb': `Site.create(url: "${url('seed-only.example')}")\n`,
+    'test/fixtures/sites.yml': `one: ${url('fixture-only.example')}\n`,
+    '.ai/notes.json': `{"source": "${url('agent-only.example')}"}\n`,
+    '.github/workflows/ci.yml': `# ${url('ci-only.example')}\n`,
+    'public/logo.svg': `<svg xmlns="${url('svg-only.example')}"/>\n`,
+    'package-lock.json': `{"resolved": "${url('registry-only.example')}"}\n`,
+  })
+
+  const inventory = await readinessInventory(dir)
+
+  expect(inventory.origins.map((hit) => hit.origin)).toEqual([url('api.payments.example'), url('cdn.assets.example')])
+  expect(inventory.scan.excluded).toEqual({
+    docs: 2,
+    'tests and specs': 3,
+    'fixtures and seeds': 1,
+    'tool and agent config': 2,
+    'design assets': 1,
+    lockfiles: 1,
+  })
+  expect(buildReadinessReport(inventory)).toContain(
+    '- not scanned for origins, as the app never reaches what they name: design assets (1 file), docs (2 files), fixtures and seeds (1 file), lockfiles (1 file), tests and specs (3 files), tool and agent config (2 files)',
+  )
+})
+
+test('with a profile, Boot reports the compose file the profile boots from, not the developer one (#415)', async () => {
+  const dir = await repoWith({
+    'docker-compose.yml': 'services:\n  dev:\n    image: dev\n',
+    'compose.qa.yaml': QA_COMPOSE,
+  })
+  await withProfile(dir)
+
+  const inventory = await readinessInventory(dir)
+
+  expect(inventory.boot.map((file) => file.file)).toEqual(['./compose.qa.yaml'])
+  const report = buildReadinessReport(inventory)
+  expect(report).toContain('- ./compose.qa.yaml (the profile boots admin from it): 4 service(s)')
+  expect(report).not.toContain('docker-compose.yml')
+  // Only the service the profile boots is held to a healthcheck: its stubs are waited on as running.
+  expect(inventory.gaps.filter((gap) => gap.includes('healthcheck'))).toEqual(['service "admin" in ./compose.qa.yaml has no healthcheck'])
+})
+
+test('a profile whose compose file is missing is named in Boot and as one gap (#415)', async () => {
+  const dir = await repoWith({ 'docker-compose.yml': 'services:\n  dev:\n    image: dev\n' })
+  await withProfile(dir)
+
+  const inventory = await readinessInventory(dir)
+
+  expect(buildReadinessReport(inventory)).toContain('- the profile boots admin from compose.qa.yaml, which could not be read')
+  expect(inventory.gaps).toContain('the profile boots from "compose.qa.yaml", which the repository does not have')
+  expect(inventory.gaps).not.toContain('no compose file found: qare cannot boot this repo for a QA run')
 })
