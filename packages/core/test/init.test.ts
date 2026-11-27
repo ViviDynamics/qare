@@ -85,7 +85,7 @@ test('readiness names exactly what the starting profile still lacks', async () =
     '.qa/QA.md is not filled in: say how to sign in, or that there is no login',
     '.qa/config.yml is not filled in: name the command that seeds the QA data, in place of "true"',
     '.qa/config.yml is not filled in: describe the user QA signs in as in .qa/fixtures/users.yml, and name its role here',
-    'service "worker" in ./docker-compose.yml has no healthcheck',
+    // Only the service the profile boots is held to a healthcheck (#415): worker is a neighbour.
     'stub "api-billing-vendor-example" is provided by the compose service "api-billing-vendor-example-stub", which docker-compose.yml does not define',
     'stub "smtp-mail-vendor-example" is provided by the compose service "smtp-mail-vendor-example-stub", which docker-compose.yml does not define',
   ])
@@ -292,7 +292,8 @@ test('the profile init writes for a compose example runs as written: readiness n
       '.qa/QA.md is not filled in: say how to sign in, or that there is no login',
       '.qa/config.yml is not filled in: name the command that seeds the QA data, in place of "true"',
       '.qa/config.yml is not filled in: describe the user QA signs in as in .qa/fixtures/users.yml, and name its role here',
-      ...(example === 'compose-app' ? ['service "web" in ./compose.yaml has no healthcheck'] : ['service "mailpit" in ./compose.yaml has no healthcheck', 'service "web" in ./compose.yaml has no healthcheck']),
+      // Only the service the profile boots is held to a healthcheck (#415): mailpit is a neighbour.
+      'service "web" in ./compose.yaml has no healthcheck',
     ])
   }
 })

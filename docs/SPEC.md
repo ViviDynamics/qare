@@ -2686,6 +2686,18 @@ URLs the application never reaches, and its report names what it skipped.
 Outside one, or without git, it reads the whole tree but `.git`,
 `node_modules`, `dist` and `.qa`.
 
+The scan reads application code and config, not what describes or tests it
+(#415): docs (`docs/`, `doc/`, Markdown and other prose files), tests and
+specs (`test/`, `spec/`, `e2e/`, `*_spec.*`, `*.test.*`), fixtures and seeds,
+tool and agent config (`.github/`, `.ai/`, `.claude/` and the like), design
+assets (`.svg`, `.ai`, `.pdf`) and lockfiles. Each names URLs the running
+application never reaches, and the report counts each group it left out. A
+profile that boots from compose has its Boot section report that file and the
+service it boots, and only that service is held to a healthcheck: its stubs
+and neighbours are waited on as running. A stub host the scan never saw is no
+gap, since the app reaches a stub by its host name, often through
+`extra_hosts`, which no URL in the tree spells out.
+
 Each stub gap is named as the issue it becomes, under the key a refused run
 files with (`qare-stub: <host>`), so the issue a run would file later is the
 same one. `--file-issues <owner/name>` files them, with `GITHUB_TOKEN` or
