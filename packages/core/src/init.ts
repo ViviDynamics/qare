@@ -149,8 +149,8 @@ export async function planInit(repoPath: string, opts: InitOptions = {}): Promis
     { path: '.qa/QA.md', content: QA_SKELETON },
   ]
   if (kind === 'app') {
+    // No stubs directory (#416): every stub is a compose service config.yml names.
     profile.push({ path: '.qa/fixtures/users.yml', content: FIXTURE_SKELETON })
-    if (!commandBooted) profile.push({ path: '.qa/stubs/.gitkeep', content: '' })
   }
   return {
     kind,
