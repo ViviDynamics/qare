@@ -198,7 +198,7 @@ Judge:
 .qa/
   config.yml      # boot recipe, health check, widths/themes, suites, stub map
   QA.md           # instructions: what the app is, what matters, how to log in
-  fixtures/       # seed data, test accounts
+  fixtures/       # seed data, test accounts: required only when config.yml has app.login (#422)
   stubs/          # optional: notes on the stubs; every stub is a compose service config.yml names (#416)
   learned.yml     # written back by QARE: the boot recipe that last worked
 ```
@@ -210,7 +210,7 @@ app:
   boot: { compose: compose.qa.yaml, service: admin }  # add build: { timeout: 25m } to give the image build longer than the default 15m
   health: { http: "http://localhost:3000/up", timeout: 120s }  # times the boot alone: images are built before it starts
   seed: { command: "docker compose -p qare-{{run.id}} -f compose.qa.yaml exec -T admin bin/rails db:seed:qa" }  # run once the app is healthy, before any check; add timeout: 10m to give it longer than the default 5m
-  login:
+  login:                           # optional (#422): only for a password sign-in; an OIDC-only app leaves it out and keeps no fixtures/
     fixture: fixtures/users.yml
     role: admin
     totp: { secret: GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ }  # a test-only secret the seed step plants; defaults: 6 digits, 30s, SHA-1
