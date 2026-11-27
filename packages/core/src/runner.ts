@@ -126,6 +126,8 @@ export interface AgentRunResult {
   output: unknown
   /** What the harness said went wrong, when it said anything. */
   error?: string
+  /** The model turns the run took, tool rounds included (#418), when the harness counts them. */
+  turns?: number
 }
 
 export interface AgentRunner {
@@ -220,6 +222,7 @@ interface NareResult {
   status: string
   stop_reason: string | null
   usage: { input: number; output: number }
+  turns?: number
   output: unknown
   contract: number
   error: string | null
@@ -449,6 +452,7 @@ export class NareAgentRunner implements AgentRunner {
       // caller to reproduce a run by hand to learn the proxy had returned
       // HTTP 524. The reason nare already knows belongs in the result.
       ...(completed || !last.error ? {} : { error: last.error }),
+      ...(typeof last.turns === 'number' && Number.isSafeInteger(last.turns) && last.turns >= 0 ? { turns: last.turns } : {}),
     }
   }
 }

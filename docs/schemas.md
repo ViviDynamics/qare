@@ -42,6 +42,7 @@ that can settle it or to a reason it cannot be planned.
 | --- | --- | --- |
 | `schemaVersion` | document | required, must be `"1"` |
 | `usage` | document | optional object with `inputTokens` and `outputTokens` (numbers, at least 0): what the planning model spent planning (#51) |
+| `timing` | document | optional (#418): where planning time went, one entry per batch in the order asked: `criteria` (the batch's criterion ids), `outcome` (`"planned"` or `"failed"`), `durationMs` (how long its turns took, the correction round included) and `turns` (how many model turns they were: nare's own count, tool rounds included, or one a run when the runner gives none). Batches planned at once overlap, so the times add up to more than planning took. Nothing that judges a run reads it |
 | `exploreSkipped` | document | optional (#413): `true` when the plan read the pull request's own profile (`profileSource: "pull-request"`) and that profile says `explore: base`. The base revision has no profile, so there was no base app to explore. Absent otherwise |
 | `profileSource` | document | optional (#431): which profile the plan read. `"checkout"` for `--profile` (in the pipeline, the base revision's), `"pull-request"` for `--pr-profile` (the pull request's own, read as data because the base revision has none), `"none"` when the profile named could not be read. Absent when no profile was named |
 | `criteria` | document | required array; must be non-empty (an empty plan passes nothing, so it fails closed) |

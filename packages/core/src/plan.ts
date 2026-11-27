@@ -193,6 +193,12 @@ export interface Plan {
    */
   usage?: ModelUsage
   /**
+   * Where planning time went (#418): each batch's criteria, how it ended,
+   * how long its turns took and how many model turns they were, its
+   * correction round included. Absent when the plan was made without a model.
+   */
+  timing?: PlanBatchTiming[]
+  /**
    * Which profile the plan read (#431): `checkout` for the profile beside the
    * plan step (in the pipeline, the base revision's), `pull-request` for the
    * pull request's own, read as data because the base revision has none, and
@@ -209,6 +215,31 @@ export interface Plan {
 }
 
 export type PlanProfileSource = 'checkout' | 'pull-request' | 'none'
+
+/** One batch's share of planning time (#418). */
+export interface PlanBatchTiming {
+  criteria: string[]
+  outcome: 'planned' | 'failed'
+  durationMs: number
+  turns: number
+}
+
+function parseTiming(value: unknown): PlanBatchTiming[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) fail('timing', 'timing must be an array of batches, each with criteria, outcome, durationMs and turns')
+  return value.map((entry, index) => {
+    const base = `timing[${index}]`
+    if (!isRecord(entry)) fail(base, `${base} must be an object with criteria, outcome, durationMs and turns`)
+    if (!Array.isArray(entry.criteria) || !entry.criteria.every((id) => typeof id === 'string'))
+      fail(`${base}.criteria`, `${base}.criteria must be an array of criterion ids`)
+    if (entry.outcome !== 'planned' && entry.outcome !== 'failed') fail(`${base}.outcome`, `${base}.outcome must be "planned" or "failed"`)
+    for (const field of ['durationMs', 'turns'] as const) {
+      const number = entry[field]
+      if (typeof number !== 'number' || !Number.isSafeInteger(number) || number < 0) fail(`${base}.${field}`, `${base}.${field} must be a whole number, zero or more`)
+    }
+    return { criteria: [...(entry.criteria as string[])], outcome: entry.outcome, durationMs: entry.durationMs as number, turns: entry.turns as number }
+  })
+}
 
 export const PLAN_PROFILE_SOURCES: readonly PlanProfileSource[] = ['checkout', 'pull-request', 'none']
 
@@ -298,6 +329,7 @@ function parseLoose(input: unknown, extraFlowActions: readonly string[]): Plan {
     }
   }
   const usage = parseUsage(input.usage)
+  const timing = parseTiming(input.timing)
   const profileSource = parseProfileSource(input.profileSource)
   if (input.exploreSkipped !== undefined && input.exploreSkipped !== true)
     fail('exploreSkipped', 'exploreSkipped is true when present: it says only that exploration did not run because the base has no profile')
@@ -306,6 +338,7 @@ function parseLoose(input: unknown, extraFlowActions: readonly string[]): Plan {
     criteria,
     ...(profiles === undefined ? {} : { profiles }),
     ...(usage === undefined ? {} : { usage }),
+    ...(timing === undefined ? {} : { timing }),
     ...(profileSource === undefined ? {} : { profileSource }),
     ...(input.exploreSkipped === true ? { exploreSkipped: true as const } : {}),
   }

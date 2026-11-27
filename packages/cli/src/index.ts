@@ -885,7 +885,10 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
           if (report.of === 1) return
           const batch = `batch ${report.index} of ${report.of} (${report.criteria.join(', ')})`
           // What the batch cost is what a caller tunes the size and the budget by.
-          const cost = report.usage === undefined ? '' : ` [${report.usage.inputTokens} input tokens, ${report.usage.outputTokens} output]`
+          // What the batch cost, and where its time went (#418), is what a caller tunes the size and the budget by.
+          const cost =
+            (report.usage === undefined ? '' : ` [${report.usage.inputTokens} input tokens, ${report.usage.outputTokens} output]`) +
+            ` in ${(report.durationMs / 1000).toFixed(1)} s over ${report.turns} model turn${report.turns === 1 ? '' : 's'}`
           out.write(
             report.outcome === 'planned'
               ? `planned ${batch}${cost}\n`

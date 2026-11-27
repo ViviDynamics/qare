@@ -109,7 +109,8 @@ test('qare plan writes a plan.json the plan loader accepts', async () => {
 
   expect(code).toBe(0)
   expect(existsSync(outPath)).toBe(true)
-  expect(JSON.parse(await readFile(outPath, 'utf8'))).toEqual(PLAN)
+  // The plan records where its time went (#418), which no fixed answer can hold.
+  expect(JSON.parse(await readFile(outPath, 'utf8'))).toEqual({ ...PLAN, timing: [{ criteria: expect.any(Array), outcome: 'planned', durationMs: expect.any(Number), turns: 1 }] })
   expect(out.lines.join('')).toContain('2 criteria')
 })
 
@@ -737,7 +738,7 @@ test('a registered server that cannot be started is reported, and the plan is st
   expect(seen.argv[seen.argv.indexOf('--tools') + 1]).toBe('none')
   expect(seen.env).toEqual({ tools: null, endpoint: null })
   expect(out.lines.join('')).toContain("host mcp server 'ghost' is unreachable")
-  expect(JSON.parse(await readFile(outPath, 'utf8'))).toEqual({ ...PLAN, profileSource: 'checkout' })
+  expect(JSON.parse(await readFile(outPath, 'utf8'))).toEqual({ ...{ ...PLAN, profileSource: 'checkout' }, timing: [{ criteria: expect.any(Array), outcome: 'planned', durationMs: expect.any(Number), turns: 1 }] })
   // Even the failure is evidence: the declared-but-unreachable server leaves a
   // record, so the run shows what the host tried and why nothing answered.
   const records = (await readFile(join(dir, 'mcp-calls.jsonl'), 'utf8'))
