@@ -598,7 +598,7 @@ names a `suite` runs a browser of its own, which nothing here can audit.
 
 The audit rides the flow's own session, so nothing is driven twice. The page
 is audited where the plan itself declared it settled: after each `open`,
-after each `waitFor`, `assertText` and `assertElement` that held, and at the
+after each `waitFor`, `assertText`, `assertElement` and `assertUrl` that held, and at the
 end of a flow that passed, skipping a point nothing acted on the page since
 the last one. Each point is audited at every width and theme: the check's own,
 else the profile's `visual` section, by resizing the viewport and emulating
@@ -1727,8 +1727,9 @@ is rejected before anything boots rather than failing halfway through.
 The vocabulary is fixed and small: `open` a URL, `type` a value, `click` an
 element, `choose` an option by its accessible name, `waitFor` an element to
 become visible, `assertText` that a text is visible, `assertElement` that an
-element is visible, and `capture` a screenshot as evidence; the two second
-factor actions (`totp`, `backupCode`) complete it. A driver declares the actions
+element is visible, `assertUrl` that the page is at a path, and `capture` a
+screenshot as evidence; the two second factor actions (`totp`, `backupCode`)
+complete it. A driver declares the actions
 and the evidence kinds it supports, the planner is only offered what the driver
 declares, and a plan naming anything else is refused naming the action and the
 driver, at load time and again before a run boots. The judge reads the same
@@ -1746,6 +1747,24 @@ cannot read the page at all, the check is unverified with the driver's own
 words, never failed. A criterion that a check failed names what failed in its
 reason, for every kind of check that gives one: a failed flow names the
 assertion.
+
+`assertUrl` proves where a step lands (#430), which text the app shows on
+every page, a greeting or a menu, never can. It names a `path`, and may name
+`query` parameters beside it: `{"action": "assertUrl", "path": "/dashboard",
+"query": {"tab": "billing"}}`. The driver only reports the URL the page is at;
+the harness compares it, in code. Both paths are parsed as URLs, so an encoded
+path matches its plain spelling, and one trailing slash is the same landing.
+Each query parameter named must be there with its value, and others may be
+there too. A redirect is waited out: the URL is read again until it matches or
+five seconds pass, and a failed assertion names the path the page was at and
+the URL it read, which the action log also records for one that held. A
+driver that cannot report its URL leaves the check unverified. On a target,
+the asserted path resolves below the target's URL the way an `open` path
+does, and run values fill into the path and query values as into any other
+flow string. The browser driver declares `assertUrl`. The Electron driver
+does not: a window's URL is a file or application URL whose path is not the
+path `open` takes, so a plan naming `assertUrl` against it is refused at load,
+naming the driver.
 
 The browser is the first driver. A desktop shell, a phone and a native
 application are the same vocabulary against a different tree, and every one of

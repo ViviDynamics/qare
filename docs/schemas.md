@@ -64,7 +64,7 @@ Per-kind required fields (all values are non-empty strings):
 | `a11y` | `url` or `actions` | optional, at most one (#149): the page to audit (a path on the app or a URL), or the typed flow actions that reach the pages to audit; the app's root when both are omitted |
 | `a11y` | `widths`, `themes` | optional, as for `visual`: the viewports and colour schemes each page is audited at |
 
-A flow action is one of `{"action": "open", "url": "..."}`, `{"action": "type", "element": ..., "value": "..."}`, `{"action": "click", "element": ...}` and `{"action": "assertText", "text": "..."}`. An element reference is `{"role": "...", "name": "..."}` or `{"testId": "..."}` — semantic, never a selector. Free-form strings are rejected when the plan loads.
+A flow action is a typed object, such as `{"action": "open", "url": "..."}`, `{"action": "type", "element": ..., "value": "..."}`, `{"action": "click", "element": ...}`, `{"action": "assertText", "text": "..."}` and `{"action": "assertUrl", "path": "/...", "query": {"name": "value"}}` (`query` optional; the path starts with `/` and carries no query or fragment). The whole vocabulary is in [SPEC.md](./SPEC.md#clients). An element reference is `{"role": "...", "name": "..."}` or `{"testId": "..."}` — semantic, never a selector. Free-form strings are rejected when the plan loads.
 
 ## result.json (schemaVersion "1")
 

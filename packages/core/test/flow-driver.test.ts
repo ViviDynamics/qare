@@ -23,9 +23,12 @@ function completed(output: string): AgentRunResult {
   return { status: 'completed', stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 }, output }
 }
 
-test('the electron driver declares the browser\'s whole vocabulary, so a flow moves across unchanged (#72)', () => {
+test('the electron driver declares the browser\'s whole vocabulary but assertUrl, so a flow moves across unchanged (#72, #430)', () => {
   expect(ELECTRON_FLOW_DRIVER.name).toBe('electron')
-  expect([...ELECTRON_FLOW_DRIVER.actions].sort()).toEqual([...BROWSER_FLOW_DRIVER.actions].sort())
+  // A window's URL is a file or app URL whose path is not the path an open
+  // takes, so the electron driver leaves assertUrl out, and a plan naming it
+  // is refused at load naming the driver (#430).
+  expect([...ELECTRON_FLOW_DRIVER.actions].sort()).toEqual([...BROWSER_FLOW_DRIVER.actions].filter((action) => action !== 'assertUrl').sort())
   // The evidence it produces: the browser's kinds, and the application's own console output.
   expect(ELECTRON_FLOW_DRIVER.evidence).toEqual(['screenshot', 'trace', 'console', 'recording'])
 })

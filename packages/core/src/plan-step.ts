@@ -708,6 +708,8 @@ function planSchemaOver(checkKinds: string[], kinds: string[]) {
                       },
                       value: { type: 'string' },
                       text: { type: 'string' },
+                      path: { type: 'string' },
+                      query: { type: 'object' },
                     },
                     required: ['action'],
                   },
@@ -966,6 +968,15 @@ function prompt(inputs: PlanInputs, correction?: string): string {
           'waitFor waits for an element to become visible before the next action: {"action":"waitFor","element":{...}}.',
           'assertElement asserts an element is visible: {"action":"assertElement","element":{...}}. capture takes a screenshot:',
           '{"action":"capture"}.',
+          ...(flowActionKinds.includes('assertUrl')
+            ? [
+                'assertUrl asserts the path the page is at, after any redirect has settled, judged by the harness from the URL the browser',
+                'reports: {"action":"assertUrl","path":"/dashboard"}, with "query":{"tab":"billing"} beside the path when the criterion names',
+                'query parameters too. The path starts with / and is the path on the app, without the query.',
+                'A criterion that names where a step lands, a page path or a redirect, is proven by an assertUrl after that step:',
+                'text the app shows on every page, a greeting or a menu, never shows which page the step landed on.',
+              ]
+            : []),
           'A totp action types the second-factor code the harness generates from the profile\'s seeded login.totp secret:',
           '{"action":"totp","element":{"role":"textbox","name":"Verification code"}}. A backupCode action types the profile\'s seeded',
           'backup code the same way. Never write a secret, a code or a recovery value into the plan: the profile seeds them.',

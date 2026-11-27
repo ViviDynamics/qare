@@ -598,6 +598,7 @@ export const FLOW_ACTION_KINDS = [
   'waitFor',
   'assertText',
   'assertElement',
+  'assertUrl',
   'capture',
   'totp',
   'backupCode',
@@ -678,6 +679,24 @@ function parseFlowAction(value: unknown, base: string, extraFlowActions: readonl
     case 'assertElement': {
       const element = parseFlowElement(value.element, `${base}.element`)
       return { action: 'assertElement', element }
+    }
+    case 'assertUrl': {
+      // The path a page is at, and the query parameters named beside it
+      // (#430): each held apart, so the harness compares them in code.
+      const path = nonEmptyString(value.path, `${base}.path`, 'asserted path')
+      if (!path.startsWith('/'))
+        fail(`${base}.path`, `an asserted path starts with /: the path on the app the page is at, not ${JSON.stringify(path)}`)
+      if (path.includes('?')) fail(`${base}.path`, 'an asserted path carries no query: name the query parameters in "query" beside it')
+      if (path.includes('#')) fail(`${base}.path`, 'an asserted path carries no fragment: the browser never sends one, so where the page landed does not show it')
+      if (value.query === undefined) return { action: 'assertUrl', path }
+      if (!isRecord(value.query) || Object.keys(value.query).length === 0)
+        fail(`${base}.query`, 'query names each parameter the page must carry and its value: {"tab":"billing"}')
+      const query: Record<string, string> = {}
+      for (const [name, held] of Object.entries(value.query)) {
+        if (typeof held !== 'string') fail(`${base}.query.${name}`, `the query parameter ${name} must be a string`)
+        query[name] = held
+      }
+      return { action: 'assertUrl', path, query }
     }
     case 'capture':
       return { action: 'capture' }
