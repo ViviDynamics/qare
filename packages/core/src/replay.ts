@@ -56,6 +56,7 @@ export async function replayRun(input: {
     rules: BUILTIN_REDACTION_RULES,
     ...(input.plan.usage === undefined ? {} : { planUsage: input.plan.usage }),
     ...(input.plan.profileSource === undefined ? {} : { planProfile: input.plan.profileSource }),
+    ...(input.plan.exploreSkipped === true ? { planExploreSkipped: true as const } : {}),
   })
   const bytes = `${JSON.stringify(result, null, 2)}\n`
   if (input.stored === undefined)
@@ -98,6 +99,7 @@ function verdictBytes(bytes: string): string {
   delete rest.advisory
   delete rest.planUsage
   delete rest.planProfile
+  delete rest.planExploreSkipped
   if (Array.isArray(rest.criteria))
     rest.criteria = rest.criteria.map((criterion: unknown) => {
       if (typeof criterion !== 'object' || criterion === null || Array.isArray(criterion)) return criterion

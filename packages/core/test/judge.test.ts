@@ -743,3 +743,13 @@ test('criterion text in the judged result is swept by the profile rules like eve
   })
   expect(result.criteria[0]?.text).not.toContain('seeded-user@example.test')
 })
+
+test('the judged result carries that exploration did not run, so the comment can say it (#413)', async () => {
+  const executed: RunResult = {
+    schemaVersion: RESULT_SCHEMA_VERSION,
+    verdict: 'passed',
+    criteria: [{ id: 'c1', outcome: 'proven', evidence: ['checks/c1/0/stdout.txt'] }],
+  }
+  expect((await judgeExecuted(executed, { texts: {}, diff: NO_DIFF, planExploreSkipped: true })).result.planExploreSkipped).toBe(true)
+  expect((await judgeExecuted(executed, { texts: {}, diff: NO_DIFF })).result).not.toHaveProperty('planExploreSkipped')
+})

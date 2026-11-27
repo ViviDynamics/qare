@@ -330,6 +330,8 @@ export interface RunResult {
    * has none), or none at all.
    */
   planProfile?: PlanProfileSource
+  /** The plan's profile asked to explore the base app, and the base had no profile to boot it from (#413). */
+  planExploreSkipped?: true
   /**
    * What the advisory UX review reported (#150): a model's findings for a
    * person to read. It is a key of its own because it is no part of the
@@ -433,6 +435,8 @@ export function parseResult(input: unknown): RunResult {
   if (input.planProfile !== undefined && (typeof input.planProfile !== 'string' || !PLAN_PROFILE_SOURCES.includes(input.planProfile as PlanProfileSource)))
     fail('planProfile', `planProfile must be one of ${PLAN_PROFILE_SOURCES.map((source) => JSON.stringify(source)).join(', ')}`)
   const planProfile = input.planProfile as PlanProfileSource | undefined
+  if (input.planExploreSkipped !== undefined && input.planExploreSkipped !== true)
+    fail('planExploreSkipped', 'planExploreSkipped is true when present')
   const advisory = parseAdvisory(input.advisory)
   const egress = parseEgress(input.egress, 'egress')
   const boot = parseBootFailure(input.boot, 'boot')
@@ -453,6 +457,7 @@ export function parseResult(input: unknown): RunResult {
     ...(judgeUsage === undefined ? {} : { judgeUsage }),
     ...(planUsage === undefined ? {} : { planUsage }),
     ...(planProfile === undefined ? {} : { planProfile }),
+    ...(input.planExploreSkipped === true ? { planExploreSkipped: true as const } : {}),
     ...(advisory === undefined ? {} : { advisory }),
     ...(egress === undefined ? {} : { egress }),
     ...(boot === undefined ? {} : { boot }),

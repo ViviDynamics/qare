@@ -649,6 +649,8 @@ export interface JudgeExecutedOptions {
   planUsage?: ModelUsage
   /** Which profile the plan read (#431), carried onto the judged result for the comment. */
   planProfile?: PlanProfileSource
+  /** The plan's profile asked to explore and the base had none (#413), carried onto the judged result for the comment. */
+  planExploreSkipped?: true
 }
 
 /**
@@ -701,6 +703,7 @@ export async function judgeExecuted(
     }),
     ...(opts.planUsage === undefined ? {} : { planUsage: opts.planUsage }),
     ...(opts.planProfile === undefined ? {} : { planProfile: opts.planProfile }),
+    ...(opts.planExploreSkipped === true ? { planExploreSkipped: true as const } : {}),
   }
   const result = redactResult(described, opts.rules ?? BUILTIN_REDACTION_RULES)
   // What the verifier model spent (#51): part of the run's metrics, riding

@@ -1138,6 +1138,11 @@ jobs:
               fi
               ;;
           esac >> "$GITHUB_STEP_SUMMARY"
+          # A profile that asks to explore the base, on the pull request that
+          # adds it (#413): the base has no profile, so no base app booted.
+          if [ "$(jq -r '.exploreSkipped // false' plan.json 2>/dev/null || true)" = "true" ]; then
+            echo "exploration did not run: the profile says explore: base, but the base revision has no profile, so there was no base app to explore; it starts with the first pull request after the profile lands on the base" >> "$GITHUB_STEP_SUMMARY"
+          fi
       # The explored app goes with the job that booted it: the serve
       # container is stopped and the compose project the boot named is
       # reaped, whatever the plan did. A teardown that fails is said and
