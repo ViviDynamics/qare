@@ -1,6 +1,6 @@
 // Exercise the core image's installed nare through qare's real subprocess seam.
 // No model credentials or external model service are needed:
-// docker run --rm -i qare-core:nare-2026.11.107 node --input-type=module < scripts/nare-compat.mjs
+// docker run --rm -i qare-core:nare-2026.11.121 node --input-type=module < scripts/nare-compat.mjs
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -12,10 +12,14 @@ const { NareAgentRunner, connectMcpServer, startMcpToolServer } = await import('
 const versions = JSON.parse(execFileSync('python3', ['-c',
   'import json, importlib.metadata as m; print(json.dumps({p: m.version(p) for p in ["nare", "pillow", "opentelemetry-api"]}))',
 ], { encoding: 'utf8' }))
-assert.equal(versions.nare, '2026.11.107')
+assert.equal(versions.nare, '2026.11.121')
 assert.equal(versions.pillow, '13.0.0')
 const contract = JSON.parse(execFileSync('nare', ['contract'], { encoding: 'utf8' }))
 assert.equal(contract.contract, 3)
+// The verifier reads screenshots through --image-input when the caller
+// declares its model takes images (#439): the shipped nare must offer it.
+assert.equal(contract.image_input?.flag, '--image-input')
+assert.deepEqual(contract.image_input?.media_types, ['image/png', 'image/jpeg'])
 console.log('installed versions:', JSON.stringify(versions))
 
 let replies = []
