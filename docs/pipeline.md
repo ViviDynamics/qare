@@ -797,7 +797,10 @@ a failing impact leave the criterion unverified, naming why. The planner's
 mark holds only where the criterion's own words say nothing about
 accessibility (accessible, WCAG, contrast, screen reader, keyboard, focus,
 tap targets, alt text, ARIA), so a plan cannot relax an audit a criterion
-asked for by calling it inferred. A base that has a profile and does not
+asked for by calling it inferred. A standing audit, one the profile turns
+on with `a11y.standing: true`, follows the same rule (#426): the profile that
+turns it on is the change being onboarded, so its violations are advisory
+unless the criterion's own words ask for accessibility. A base that has a profile and does not
 boot is a different case: its audits stay unverified, because that base is a
 fault and not an onboarding. The advisory outcome is not cached, so the next
 run, with a profile at the base, compares as usual.
