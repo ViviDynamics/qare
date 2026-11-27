@@ -65,6 +65,7 @@ function stamp(relativePath, pattern, what) {
   }
 }
 
+stamp('scripts/install.sh', /^(release=')20\d{2}\.\d+\.\d+(')$/m, 'bootstrap image release')
 stamp('.github/workflows/pipeline.yml', /(\n {6}qare-ref:\n(?: {8}.*\n)*? {8}default: ')[^']*(')/, 'qare-ref default')
 stamp('docs/pipeline.md', /(\.github\/workflows\/pipeline\.yml@)20\d{2}\.\d+\.\d+()/g, 'pinned caller')
 stamp('docs/pipeline.md', /(\n +repository: ViviDynamics\/qare\n +ref: )20\d{2}\.\d+\.\d+()/g, 'pinned qare checkout')
