@@ -650,12 +650,10 @@ export async function loadProfile(dir: string, shared?: { resources?: string }):
     )
   }
   const profile = validateProfileConfig(input)
-  // Fixtures and stubs feed the stack qare boots; a target profile has none.
-  if (profile.app !== undefined) {
-    await requireBootResource(dir, shared?.resources, 'fixtures', 'fixtures', 'the .qa/ fixtures directory')
-    // A command boot takes no stubs (#379), so it keeps no directory of them.
-    if (!isCommandBoot(profile.app.boot)) await requireBootResource(dir, shared?.resources, 'stubs', 'stubs', 'the .qa/ stubs directory')
-  }
+  // Fixtures feed the stack qare boots; a target profile has none. Every
+  // stub is a compose service the profile names (#416), so nothing is read
+  // from a stubs directory and none is required.
+  if (profile.app !== undefined) await requireBootResource(dir, shared?.resources, 'fixtures', 'fixtures', 'the .qa/ fixtures directory')
   return { instructions, ...profile }
 }
 
@@ -1197,17 +1195,16 @@ function parseStub(value: unknown, index: number): ProfileStub {
     if (hosts.some((host) => host.startsWith('*.')))
       fail(`${base}.hosts`, 'a stub that names ports must name each host exactly, not as a wildcard')
   }
+  const service = nonEmptyString(value.service, `${base}.service`, 'service name')
+  // A stub is a compose service of the stack (#416): one that names none is
+  // refused by its name, since no stub is ever read from a file.
+  if (typeof value.provided_by.compose_service !== 'string' || value.provided_by.compose_service.trim() === '')
+    fail(`${base}.provided_by.compose_service`, `the stub ${service} must name the compose service that provides it in provided_by.compose_service`)
   return {
-    service: nonEmptyString(value.service, `${base}.service`, 'service name'),
+    service,
     hosts,
     ...(ports === undefined ? {} : { ports }),
-    provided_by: {
-      compose_service: nonEmptyString(
-        value.provided_by.compose_service,
-        `${base}.provided_by.compose_service`,
-        'compose service',
-      ),
-    },
+    provided_by: { compose_service: value.provided_by.compose_service },
   }
 }
 

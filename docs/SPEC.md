@@ -199,7 +199,7 @@ Judge:
   config.yml      # boot recipe, health check, widths/themes, suites, stub map
   QA.md           # instructions: what the app is, what matters, how to log in
   fixtures/       # seed data, test accounts
-  stubs/          # project-provided stubs, or compose services that provide them
+  stubs/          # optional: notes on the stubs; every stub is a compose service config.yml names (#416)
   learned.yml     # written back by QARE: the boot recipe that last worked
 ```
 
@@ -330,9 +330,11 @@ Every `$` in the command, image and path is escaped for compose, so nothing
 of the profile is interpolated; the run's `QARE_APP_PORT` is. The command,
 image and port come from the profile, which is reviewed like code, and no
 plan can change them. A command boot runs the app alone, so it takes no
-stubs: a profile that needs one boots from a compose file. With no stubs, it
-needs no `.qa/stubs/` directory either. `examples/command-app` is booted this
-way in qare's own CI.
+stubs: a profile that needs one boots from a compose file. No profile needs a
+`.qa/stubs/` directory (#416): every stub is a compose service that
+`stubs[].provided_by.compose_service` names, so nothing is read from one, and
+a stub that names no compose service is refused by its name.
+`examples/command-app` is booted this way in qare's own CI.
 
 ### Several profiles (monorepo)
 
@@ -346,7 +348,6 @@ subdirectory of `.qa/` (#55):
   storefront/config.yml
   storefront/QA.md
   fixtures/          # shared across profiles: no config.yml here
-  stubs/
 ```
 
 Discovery finds the single root profile at `.qa/config.yml`, or named profiles

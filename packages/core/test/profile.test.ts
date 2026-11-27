@@ -885,3 +885,33 @@ test('explore is refused where there is no base app to boot, no browser to drive
     validateProfileConfig({ client: { driver: 'electron', executable: 'dist/app' }, explore: 'base' }),
   ).toThrow(/explore/)
 })
+
+// #416: onboarding the website added a placeholder .qa/stubs/README only
+// because the loader required the directory, though every stub it declares
+// is a compose service and nothing reads the directory.
+test('a compose boot whose stubs are all compose services loads without a stubs directory (#416)', async () => {
+  const dir = copiedProfile()
+  rmSync(join(dir, 'stubs'), { recursive: true, force: true })
+
+  const profile = await loadProfile(dir)
+
+  expect(profile.stubs.map((stub) => stub.provided_by.compose_service)).toEqual(['billing-stub', 'mailpit'])
+})
+
+test('a compose boot with no stubs at all loads without a stubs directory (#416)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), fixtureConfig().replace(/^stubs:\n(?: {2}.*\n)+/m, 'stubs: []\n'))
+  rmSync(join(dir, 'stubs'), { recursive: true, force: true })
+
+  expect((await loadProfile(dir)).stubs).toEqual([])
+})
+
+test('a stub that no compose service provides is refused, naming the stub (#416)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), fixtureConfig().replace('provided_by: { compose_service: billing-stub }', 'provided_by: { file: billing.json }'))
+
+  const error = await profileError(() => loadProfile(dir))
+
+  expect(error.field).toBe('stubs[0].provided_by.compose_service')
+  expect(error.message).toContain('billing')
+})

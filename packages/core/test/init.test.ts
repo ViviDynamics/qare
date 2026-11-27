@@ -55,7 +55,8 @@ test('a repository with a compose file gets a profile that boots its application
   const repo = await composeRepo()
   const plan = await planInit(repo)
   expect(plan.kind).toBe('app')
-  expect(plan.profile.map((file) => file.path)).toEqual(['.qa/config.yml', '.qa/QA.md', '.qa/fixtures/users.yml', '.qa/stubs/.gitkeep'])
+  // No stubs directory (#416): every stub is a compose service config.yml names.
+  expect(plan.profile.map((file) => file.path)).toEqual(['.qa/config.yml', '.qa/QA.md', '.qa/fixtures/users.yml'])
 
   await write(repo, plan)
   const profile = await loadProfile(join(repo, '.qa'))

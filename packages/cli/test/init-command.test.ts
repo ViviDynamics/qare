@@ -59,10 +59,12 @@ test('on a repository with a compose file, init writes a profile that loads, the
   const { code, out, err } = await run(['init', repo])
   expect(err).toBe('')
   expect(code).toBe(0)
-  for (const path of ['.qa/config.yml', '.qa/QA.md', '.qa/fixtures/users.yml', '.qa/stubs/.gitkeep', '.github/workflows/qare.yml']) {
+  for (const path of ['.qa/config.yml', '.qa/QA.md', '.qa/fixtures/users.yml', '.github/workflows/qare.yml']) {
     expect(out).toContain(`wrote ${path}\n`)
     expect(existsSync(join(repo, path)), path).toBe(true)
   }
+  // No stubs directory (#416): every stub is a compose service config.yml names.
+  expect(existsSync(join(repo, '.qa', 'stubs'))).toBe(false)
 
   const profile = await loadProfile(join(repo, '.qa'))
   expect(profile.app?.boot).toEqual({ compose: 'docker-compose.yml', service: 'web' })
