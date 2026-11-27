@@ -338,7 +338,7 @@ test('an app whose boot blocks attaches its own provisioning log, named for the 
       return boots === 1 ? { code: 1, stdout: '', stderr: 'web: port is already allocated' } : { code: 0, stdout: '', stderr: '' }
     },
   })
-  expect(result.criteria[0]).toEqual({ id: 'web-c1', outcome: 'unverified', reason: 'compose up exited 1', evidence: ['provision-web.log'] })
+  expect(result.criteria[0]).toEqual({ id: 'web-c1', outcome: 'unverified', reason: 'compose up exited 1; its output ended: web: port is already allocated', evidence: ['provision-web.log'] })
   expect(await readFile(join(job.evidenceDir, 'provision-web.log'), 'utf8')).toBe('web: port is already allocated\n')
   expect(result.criteria[1]?.outcome).toBe('proven')
 })

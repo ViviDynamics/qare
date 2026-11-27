@@ -353,7 +353,9 @@ test('a build that fails blocks naming the build, not the health deadline, with 
   })
 
   expect(outcome.kind).toBe('blocked')
-  expect(outcome.reason).toBe("compose build exited 17: the profile's images did not build, so nothing was booted")
+  expect(outcome.reason).toBe(
+    'compose build exited 17: the profile\'s images did not build, so nothing was booted; its output ended: #8 [admin 4/9] RUN bundle install | failed to solve: process "bundle install" did not complete successfully: exit code: 5',
+  )
   expect(outcome.reason).not.toContain('health')
   expect(outcome.logs).toContain('RUN bundle install')
   expect(outcome.logs).toContain('failed to solve')

@@ -254,7 +254,7 @@ test('a criterion whose own app does not build keeps what the build said as its 
   expect(result.criteria[1]).toEqual({
     id: 'mutator-1',
     outcome: 'unverified',
-    reason: "compose build exited 1: the profile's images did not build, so nothing was booted",
+    reason: "compose build exited 1: the profile's images did not build, so nothing was booted; its output ended: failed to solve: no space left on device",
     evidence: ['checks/mutator-1/provision.log'],
   })
   expect(await readFile(join(job.evidenceDir, 'checks', 'mutator-1', 'provision.log'), 'utf8')).toBe('failed to solve: no space left on device\n')

@@ -192,7 +192,7 @@ test('a half contained stack that cannot be taken down blocks the boot, and stub
   const stubs = isolation()
   expect(await boot(stubs, recorder({ upStubs: 1 }).runCompose)).toMatchObject({
     kind: 'blocked',
-    reason: "the stack's stub services did not start, so its egress could not be contained: compose up exited 1",
+    reason: "the stack's stub services did not start, so its egress could not be contained: compose up exited 1; its output ended: stub image missing",
     logs: 'stub image missing',
   })
 })
@@ -219,7 +219,7 @@ test('a resolver that cannot start blocks the boot, with what compose said (#382
   const { runCompose } = recorder({ upSink: 1 })
   expect(await boot(run, runCompose)).toMatchObject({
     kind: 'blocked',
-    reason: "the stack's resolver did not start, so its egress could not be contained: compose up exited 1",
+    reason: "the stack's resolver did not start, so its egress could not be contained: compose up exited 1; its output ended: pull access denied",
     logs: 'pull access denied',
   })
   await stopApp(await profile(), { runCompose, isolation: run })
