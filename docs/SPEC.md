@@ -2013,6 +2013,13 @@ has nothing to build, and the step is over at once. A compose plugin too old
 to know `--with-dependencies` builds the service alone, and what it depends
 on is built by the `up`, as before.
 
+A compose call that fails during boot, the build, the `up`, or the start of
+the stack's resolver, stubs or relay, quotes what it said in the reason, not
+only its exit code (#412): the last lines of its output, at most five of 240
+characters each, with colour and pull and start progress dropped, after
+`; its output ended:`. A pull that failed is otherwise one error line under a
+hundred lines of progress. The whole output stays in `provision.log`.
+
 A provisioning failure is never a failed criterion: nothing was checked, so
 every criterion is `unverified` with the reason, and carries `provision.log`
 as its evidence. The log is written into the side's evidence directory, swept
