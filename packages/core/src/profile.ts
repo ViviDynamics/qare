@@ -77,7 +77,12 @@ export interface ProfileApp {
    * minutes when the profile names none.
    */
   seed: { command: string; timeout?: string }
-  login: ProfileLogin
+  /**
+   * The password sign-in the seed plants (#422). Absent for an app with no
+   * password login, one that signs in only through OIDC, and then no
+   * fixtures directory is required: flows run signed out.
+   */
+  login?: ProfileLogin
 }
 
 /**
@@ -650,10 +655,11 @@ export async function loadProfile(dir: string, shared?: { resources?: string }):
     )
   }
   const profile = validateProfileConfig(input)
-  // Fixtures feed the stack qare boots; a target profile has none. Every
-  // stub is a compose service the profile names (#416), so nothing is read
-  // from a stubs directory and none is required.
-  if (profile.app !== undefined) await requireBootResource(dir, shared?.resources, 'fixtures', 'fixtures', 'the .qa/ fixtures directory')
+  // Fixtures feed the password sign-in qare's flows use (#422): an app with
+  // no app.login, one that signs in through OIDC, keeps none, and a target
+  // profile has none. Every stub is a compose service the profile names
+  // (#416), so nothing is read from a stubs directory and none is required.
+  if (profile.app?.login !== undefined) await requireBootResource(dir, shared?.resources, 'fixtures', 'fixtures', 'the .qa/ fixtures directory app.login names')
   return { instructions, ...profile }
 }
 
@@ -1112,11 +1118,11 @@ function parseBoot(value: Record<string, unknown>): ProfileBoot {
 }
 
 function parseApp(value: unknown): ProfileApp {
-  if (!isRecord(value)) fail('app', 'app must be a YAML object with boot, health, seed and login')
+  if (!isRecord(value)) fail('app', 'app must be a YAML object with boot, health and seed, and login when the app has a password sign-in')
   if (!isRecord(value.boot)) fail('app.boot', 'app.boot must be a YAML object with compose and service, or with command, image and port')
   if (!isRecord(value.health)) fail('app.health', 'app.health must be a YAML object with http and timeout')
   if (!isRecord(value.seed)) fail('app.seed', 'app.seed must be a YAML object with command')
-  if (!isRecord(value.login)) fail('app.login', 'app.login must be a YAML object with fixture and role')
+  if (value.login !== undefined && !isRecord(value.login)) fail('app.login', 'app.login must be a YAML object with fixture and role')
   return {
     boot: parseBoot(value.boot),
     health: {
@@ -1127,7 +1133,7 @@ function parseApp(value: unknown): ProfileApp {
       command: nonEmptyString(value.seed.command, 'app.seed.command', 'seed command'),
       ...(value.seed.timeout === undefined ? {} : { timeout: seedTimeout(value.seed.timeout) }),
     },
-    login: parseLogin(value.login),
+    ...(isRecord(value.login) ? { login: parseLogin(value.login) } : {}),
   }
 }
 

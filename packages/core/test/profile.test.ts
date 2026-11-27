@@ -915,3 +915,34 @@ test('a stub that no compose service provides is refused, naming the stub (#416)
   expect(error.field).toBe('stubs[0].provided_by.compose_service')
   expect(error.message).toContain('billing')
 })
+
+// #422: steward signs in only through OIDC, so onboarding it added an
+// app.login and a fixtures/owner.yml that nothing reads.
+test('an app profile without app.login loads, with no fixtures directory (#422)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), fixtureConfig().replace('  login: { fixture: fixtures/users.yml, role: admin }\n', ''))
+  rmSync(join(dir, 'fixtures'), { recursive: true, force: true })
+
+  const profile = await loadProfile(dir)
+
+  expect(profile.app).toBeDefined()
+  expect(profile.app?.login).toBeUndefined()
+})
+
+test('an app profile with app.login still needs its fixtures, naming the missing path (#422)', async () => {
+  const dir = copiedProfile()
+  rmSync(join(dir, 'fixtures'), { recursive: true, force: true })
+
+  const error = await profileError(() => loadProfile(dir))
+
+  expect(error.field).toBe('fixtures')
+  expect(error.message).toContain(join(dir, 'fixtures'))
+  expect(error.message).toContain('app.login')
+})
+
+test('a login that is not an object is still refused by name (#422)', async () => {
+  const dir = copiedProfile()
+  writeFileSync(join(dir, 'config.yml'), fixtureConfig().replace('  login: { fixture: fixtures/users.yml, role: admin }\n', '  login: admin\n'))
+
+  expect((await profileError(() => loadProfile(dir))).field).toBe('app.login')
+})
