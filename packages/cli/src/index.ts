@@ -963,6 +963,13 @@ async function planCommand(argv: string[], out: Writer, err: Writer): Promise<nu
     // says nothing about a profile.
     if (profilePath !== undefined)
       plan = { ...plan, profileSource: profile === undefined ? 'none' : prProfilePath !== undefined ? 'pull-request' : 'checkout' }
+    // The pull request's own profile is read only when the base has none
+    // (#431), so a base app to explore is never there (#413): the plan says
+    // exploration did not run, for the comment and the job's summary.
+    if (prProfilePath !== undefined && profile?.explore === 'base') {
+      plan = { ...plan, exploreSkipped: true }
+      out.write('explore: base did not run: the base revision has no profile, so there was no base app to explore; it starts with the first pull request after the profile lands on the base\n')
+    }
     await writeFile(outPath, `${JSON.stringify(plan, null, 2)}\n`, 'utf8')
     const unplannable = plan.criteria.filter((criterion) => 'unplannable' in criterion).length
     out.write(
@@ -1179,6 +1186,7 @@ async function judgeCommand(argv: string[], out: Writer, err: Writer): Promise<n
       rules,
       ...(plan?.usage === undefined ? {} : { planUsage: plan.usage }),
       ...(plan?.profileSource === undefined ? {} : { planProfile: plan.profileSource }),
+      ...(plan?.exploreSkipped === true ? { planExploreSkipped: true as const } : {}),
       ...(verify ? { verifier: nareRunners(binary).verifier(evidenceDir) } : {}),
     })
     for (const criterion of changed)

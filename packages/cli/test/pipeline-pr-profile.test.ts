@@ -149,11 +149,11 @@ test("the plan job lays the head's profile where the base has none, after the ex
 })
 
 /** Run the plan step with a docker stand-in that records its arguments and writes the plan qare would. */
-function planStep(planProfile: string, profileSource: string | undefined): { args: string[]; summary: string; status: number | null; stderr: string } {
+function planStep(planProfile: string, profileSource: string | undefined, extra: Record<string, unknown> = {}): { args: string[]; summary: string; status: number | null; stderr: string } {
   const dir = temporary()
   const bin = join(dir, 'bin')
   mkdirSync(bin)
-  const plan = JSON.stringify({ schemaVersion: '1', criteria: [], ...(profileSource === undefined ? {} : { profileSource }) })
+  const plan = JSON.stringify({ schemaVersion: '1', criteria: [], ...(profileSource === undefined ? {} : { profileSource }), ...extra })
   writeFileSync(join(bin, 'docker'), `#!/bin/bash\nprintf '%s\\n' "$@" > "$CALLS"\nprintf '%s' '${plan}' > plan.json\n`, { mode: 0o755 })
   writeFileSync(join(dir, 'change.diff'), '')
   const result = run(dir, stepOf('plan', 'Plan the QA run').run!, {
@@ -200,4 +200,12 @@ test('a qare image that predates --pr-profile ignores it and plans with no profi
   const old = planStep('head', undefined)
   expect(old.status, old.stderr).toBe(0)
   expect(old.summary).toContain("the pinned qare does not record which profile it planned with, so this pull request's profile may not have reached the planner")
+})
+
+test('the plan step summary says when exploration did not run because the base has no profile, and only then (#413)', () => {
+  const skipped = planStep('head', 'pull-request', { exploreSkipped: true })
+  expect(skipped.status, skipped.stderr).toBe(0)
+  expect(skipped.summary).toContain('exploration did not run: the profile says explore: base, but the base revision has no profile')
+  expect(skipped.summary).toContain('it starts with the first pull request after the profile lands on the base')
+  expect(planStep('base', 'checkout').summary).not.toContain('exploration did not run')
 })

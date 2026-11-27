@@ -880,7 +880,15 @@ explore: base      # boot the base revision's app in the plan job and let the pl
 ```
 
 With `explore: base` the plan job does four more things. When `explore` is
-absent or says `off`, nothing changes:
+absent or says `off`, nothing changes.
+
+Exploration starts with the first pull request after the profile lands on
+the base (#413). The plan job reads `explore` from the base revision, which
+is the app it boots, so the pull request that adds the profile has no base
+app to explore: its flows are planned from the diff. That run says so, in the
+plan job's summary and in the comment ("Exploration: the profile says
+explore: base, but the base revision has no profile..."), rather than turning
+exploration off without a word.
 
 1. It boots the base revision's app from the base checkout, with the same
    recipe, stubs and seed the base side of a run uses. The prebuilt base

@@ -200,6 +200,12 @@ export interface Plan {
    * made without naming a profile.
    */
   profileSource?: PlanProfileSource
+  /**
+   * The profile the plan read asks to explore the base app, and the base
+   * revision has no profile, so there was no base app to explore (#413).
+   * Present only then, so the comment can say exploration did not run.
+   */
+  exploreSkipped?: true
 }
 
 export type PlanProfileSource = 'checkout' | 'pull-request' | 'none'
@@ -293,12 +299,15 @@ function parseLoose(input: unknown, extraFlowActions: readonly string[]): Plan {
   }
   const usage = parseUsage(input.usage)
   const profileSource = parseProfileSource(input.profileSource)
+  if (input.exploreSkipped !== undefined && input.exploreSkipped !== true)
+    fail('exploreSkipped', 'exploreSkipped is true when present: it says only that exploration did not run because the base has no profile')
   return {
     schemaVersion,
     criteria,
     ...(profiles === undefined ? {} : { profiles }),
     ...(usage === undefined ? {} : { usage }),
     ...(profileSource === undefined ? {} : { profileSource }),
+    ...(input.exploreSkipped === true ? { exploreSkipped: true as const } : {}),
   }
 }
 

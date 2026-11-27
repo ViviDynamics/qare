@@ -162,3 +162,49 @@ test('a plan made with no profile flag records nothing about a profile (#431)', 
   expect(await main(args, capture().writer, capture().writer)).toBe(0)
   expect((await planOf(dir)).profileSource).toBeUndefined()
 })
+
+// #413: the plan job reads explore from the base checkout, so on the pull
+// request that adds a profile asking for `explore: base` exploration was
+// silently off. The plan now records that it did not run, and why.
+async function exploringProfile(profile: string): Promise<void> {
+  await writeFile(
+    join(profile, 'config.yml'),
+    [
+      'app:',
+      '  boot: { compose: compose.qa.yaml, service: web }',
+      `  health: { http: "${['http:', '//localhost:3000/up'].join('')}", timeout: 30s }`,
+      '  seed: { command: "true" }',
+      'flavour: web',
+      'explore: base',
+      'stubs: []',
+      'visual: { widths: [1280], themes: [light] }',
+      'suites:',
+      '  - { name: api, command: "pytest tests/api", kind: flow }',
+      '',
+    ].join('\n'),
+    'utf8',
+  )
+}
+
+test("a pull request's profile that asks to explore the base records that exploration did not run, and why (#413)", async () => {
+  const { dir, profile, args } = await setup()
+  await exploringProfile(profile)
+  const out = capture()
+
+  const code = await main([...args, '--pr-profile', profile], out.writer, capture().writer)
+
+  expect(code).toBe(0)
+  const plan = (await planOf(dir)) as { profileSource?: string; exploreSkipped?: boolean }
+  expect(plan.profileSource).toBe('pull-request')
+  expect(plan.exploreSkipped).toBe(true)
+  expect(out.text()).toContain('explore: base did not run: the base revision has no profile, so there was no base app to explore')
+})
+
+test('the base revision\'s own profile records nothing about exploration: the plan job explores it when it says so (#413)', async () => {
+  const { dir, profile, args } = await setup()
+  await exploringProfile(profile)
+
+  await main([...args, '--profile', profile], capture().writer, capture().writer)
+
+  expect('exploreSkipped' in (await planOf(dir))).toBe(false)
+})

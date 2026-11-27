@@ -285,6 +285,7 @@ function summaryLines(result: RunResult): string[] {
     `Model tokens: plan ${usagePhrase(result.planUsage)}; judge ${usagePhrase(result.judgeUsage)}.`,
     '',
     ...(result.planProfile === undefined ? [] : [PLANNING_PROFILE[result.planProfile], '']),
+    ...(result.planExploreSkipped === true ? [EXPLORE_SKIPPED, ''] : []),
   ]
 }
 
@@ -294,6 +295,10 @@ function summaryLines(result: RunResult): string[] {
  * the pull request's own, as data; a plan made with no profile at all is
  * the reason a run checks less than its profile declares.
  */
+/** Why exploration did not run (#413): the profile asks for it, and the base revision has no profile to boot an app from. */
+const EXPLORE_SKIPPED =
+  'Exploration: the profile says explore: base, but the base revision has no profile, so there was no base app to explore and flows were planned from the diff. It starts with the first pull request after the profile lands on the base.'
+
 const PLANNING_PROFILE: Record<PlanProfileSource, string> = {
   checkout: "Planning profile: the base revision's.",
   'pull-request': "Planning profile: this pull request's, read as data because the base revision has none. Nothing in it ran while planning.",
