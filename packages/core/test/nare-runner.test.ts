@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
 
-import { NareAgentRunner, type AgentRunRequest } from '../src/index.js'
+import { NareAgentRunner, nareRunners, type AgentRunRequest } from '../src/index.js'
 
 // Test files carry no network literals (runner.test.ts's guard), so URLs are
 // assembled at runtime, the way isolation.test.ts does it.
@@ -532,4 +532,32 @@ test('an empty qare system prompt opts out of nare defaults even with read tools
   const argv = await nare.argv()
   expect(argv).toContain('--system')
   expect(argv[argv.indexOf('--system') + 1]).toBe('')
+})
+
+// #439: nare reads a screenshot as an image only when the caller declares
+// the model can take one, and qare never did, so the verifier saw final.png
+// as bytes it could not look at.
+test('a runner told its model takes images declares it to nare, and one not told does not (#439)', async () => {
+  const told = await fakeNare([ANSWER, result()])
+  await new NareAgentRunner({ binary: told.binary, imageInput: true }).run({ ...REQUEST, toolPolicy: 'read-only' })
+  expect(await told.argv()).toContain('--image-input')
+
+  const untold = await fakeNare([ANSWER, result()])
+  await new NareAgentRunner({ binary: untold.binary }).run({ ...REQUEST, toolPolicy: 'read-only' })
+  expect(await untold.argv()).not.toContain('--image-input')
+})
+
+test('the verifier declares image input when QARE_VERIFIER_IMAGE_INPUT is on, and the planner never does (#439)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qare-verifier-images-'))
+  const verifier = await fakeNare([ANSWER, result()])
+  await nareRunners(verifier.binary, { QARE_VERIFIER_IMAGE_INPUT: 'true' }).verifier(dir).run({ ...REQUEST, toolPolicy: 'read-only' })
+  expect(await verifier.argv()).toContain('--image-input')
+
+  const planner = await fakeNare([ANSWER, result()])
+  await nareRunners(planner.binary, { QARE_VERIFIER_IMAGE_INPUT: 'true' }).planner.run(REQUEST)
+  expect(await planner.argv()).not.toContain('--image-input')
+
+  const off = await fakeNare([ANSWER, result()])
+  await nareRunners(off.binary, {}).verifier(dir).run({ ...REQUEST, toolPolicy: 'read-only' })
+  expect(await off.argv()).not.toContain('--image-input')
 })

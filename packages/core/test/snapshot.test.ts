@@ -55,6 +55,50 @@ test('trims to the subtree the assertion touched, along the chain from the root'
   expect(link?.children).toEqual([])
 })
 
+// #439: on the website pilot the blog index's first match for the post title
+// was the thumbnail's alt text, and the trim kept only that, dropping the
+// heading a reader saw. The verifier then read the evidence as the title
+// sitting on an image alone.
+test('keeps every node the text names, so a heading is never dropped for an earlier image alt (#439)', async () => {
+  const snapshot = normaliseAriaSnapshot([
+    '- banner:',
+    '  - link "Blog"',
+    '- main:',
+    '  - heading "Blog" [level=1]',
+    '  - img "QA Published Post"',
+    '  - heading "QA Published Post" [level=2]',
+    '  - paragraph: A published post the QA seed writes',
+    '  - link "Continue reading"',
+    '- contentinfo:',
+    '  - paragraph: Vivi Dynamics',
+  ].join('\n'))
+
+  const trimmed = trimToSubtree(snapshot, 'QA Published Post')
+
+  expect(trimmed.children.map((child) => child.role)).toEqual(['main'])
+  const main = trimmed.children[0]
+  expect(main?.children.map((child) => `${child.role} ${child.name ?? ''}`)).toEqual(['img QA Published Post', 'heading QA Published Post'])
+  expect(main?.children[1]?.states).toEqual({ level: 2 })
+})
+
+test('matches in separate branches are each kept with their own ancestors (#439)', async () => {
+  const snapshot = normaliseAriaSnapshot([
+    '- navigation:',
+    '  - link "Ada Lovelace"',
+    '- main:',
+    '  - list:',
+    '    - listitem:',
+    '      - link "Ada Lovelace"',
+    '    - listitem:',
+    '      - link "Grace Hopper"',
+  ].join('\n'))
+
+  const trimmed = trimToSubtree(snapshot, 'Ada Lovelace')
+
+  expect(trimmed.children.map((child) => child.role)).toEqual(['navigation', 'main'])
+  expect(trimmed.children[1]?.children[0]?.children.map((item) => item.children[0]?.name)).toEqual(['Ada Lovelace'])
+})
+
 test('text that names nothing leaves the snapshot untrimmed', async () => {
   const snapshot = normaliseAriaSnapshot(CATALOG)
 

@@ -227,7 +227,7 @@ done
     const result = run(dir, script(job, job === 'judge' ? 'Judge the result' : 'Judge the result on main'), {
       PATH: `${bin}:${process.env.PATH ?? ''}`, RUNNER_TEMP: dir, IMAGE_REF: 'fixture-image',
       MODEL_KEY: 'test-only', MODEL_KEY_ENV: 'MODEL_TEST_KEY', NARE_PROVIDER: '', NARE_MODEL: '',
-      NARE_STREAM: '', NARE_BASE_URL: '', NARE_CONTEXT_WINDOW: '', QARE_MAX_OUTPUT_TOKENS: '', QARE_VERIFY_BATCH_SIZE: '',
+      NARE_STREAM: '', NARE_BASE_URL: '', NARE_CONTEXT_WINDOW: '', QARE_MAX_OUTPUT_TOKENS: '', QARE_VERIFY_BATCH_SIZE: '', QARE_VERIFIER_IMAGE_INPUT: '',
       PROFILE: '.qa', QARE_ARGS_FILE: argsFile, JUDGE_OUTPUT: temporary('qare-judge-output-'),
     })
     expect(result.status).toBe(0)
@@ -253,7 +253,7 @@ function modelStepEnv(dir: string, window: string): Record<string, string> {
     PATH: `${bin}:${process.env.PATH ?? ''}`, RUNNER_TEMP: dir, IMAGE_REF: 'fixture-image',
     MODEL_KEY: 'test-only', MODEL_KEY_ENV: 'MODEL_TEST_KEY', NARE_PROVIDER: '', NARE_MODEL: '',
     NARE_STREAM: '', NARE_BASE_URL: '', NARE_CONTEXT_WINDOW: window, QARE_MAX_OUTPUT_TOKENS: '',
-    QARE_VERIFY_BATCH_SIZE: '', QARE_PLAN_BATCH_SIZE: '', QARE_PLAN_CONCURRENCY: '',
+    QARE_VERIFY_BATCH_SIZE: '', QARE_VERIFIER_IMAGE_INPUT: '', QARE_PLAN_BATCH_SIZE: '', QARE_PLAN_CONCURRENCY: '',
     PROFILE: '.qa', QARE_ARGS_FILE: join(dir, 'docker-args'), JUDGE_OUTPUT: temporary('qare-judge-output-'),
   }
 }

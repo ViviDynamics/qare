@@ -138,6 +138,8 @@ test('the interface a caller sees: its inputs, their defaults, and its secrets',
     'nare-base-url',
     // #391: the window nare measures a turn against, empty by default.
     'nare-context-window',
+    // #439: whether the verifier's model takes images.
+    'nare-image-input',
     'nare-model',
     'nare-provider',
     'nare-stream',
@@ -273,6 +275,25 @@ test('the plan concurrency reaches the plan container, and only when set', () =>
   expect(row).toMatch(/\| `plan-concurrency` \| empty \| .*default of 1.*`QARE_PLAN_CONCURRENCY`/)
   expect(row).toMatch(/It helps when/)
   expect(row).toMatch(/It does not help when/)
+})
+
+// #439: whether the verifier's model takes images is the caller's to
+// declare, off by default, and it crosses only into the containers that verify.
+test('the verifier image setting reaches the judge containers, only when set, and never the planner', () => {
+  expect(call.inputs['nare-image-input']?.default).toBe('')
+  const text = readFileSync(join(repoRoot, PIPELINE), 'utf8')
+  expect([...text.matchAll(/QARE_VERIFIER_IMAGE_INPUT: \$\{\{ inputs\.nare-image-input \}\}/g)].length).toBe(2)
+  for (const [job, name] of [['judge', 'Judge the result'], ['main_judge', 'Judge the result on main']] as const) {
+    const step = pipeline.jobs[job]?.steps?.find((candidate) => candidate.name === name)
+    expect(step?.env?.QARE_VERIFIER_IMAGE_INPUT, job).toBe('${{ inputs.nare-image-input }}')
+    const flat = step?.run?.replace(/\s+/g, ' ') ?? ''
+    expect(flat, job).toContain('if [ "$QARE_VERIFIER_IMAGE_INPUT" != true ] && [ "$QARE_VERIFIER_IMAGE_INPUT" != false ]; then')
+    expect(flat, job).toContain('model_env+=(-e QARE_VERIFIER_IMAGE_INPUT)')
+  }
+  const plan = pipeline.jobs.plan?.steps?.find((candidate) => candidate.name === 'Plan the QA run')
+  expect(plan?.run).not.toContain('QARE_VERIFIER_IMAGE_INPUT')
+  const docs = readFileSync(join(repoRoot, 'docs', 'pipeline.md'), 'utf8')
+  expect(docs).toMatch(/\| `nare-image-input` \| empty \| .*`QARE_VERIFIER_IMAGE_INPUT`/)
 })
 
 // #275: the verifier's batch size is the caller's to set, and it crosses the
