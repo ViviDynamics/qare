@@ -68,8 +68,9 @@ Not compared is never passed and never a regression. A base that has no
 checkout, has no profile, or will not boot is not compared, for every
 criterion, and the result names why once. A base with no usable profile (the
 pull request that onboards a repository, #419) also decides one thing at the
-head: an accessibility audit the planner inferred has nothing to hold its
-violations against, so they are advisory and decide nothing (see
+head: an accessibility audit the planner inferred, or one the profile made
+standing (#426), has nothing to hold its violations against, so unless the
+criterion asks for accessibility they are advisory and decide nothing (see
 [Accessibility checks](#accessibility-checks)). A check that cannot run at the base
 (the behaviour is new, so what it needs is not there) is not compared for its
 criterion alone. The verdict is the head's: the base side decides only which
@@ -632,7 +633,7 @@ fail it.
 | Two sides, and every failing violation was already there at the base | `proven`; each is listed as `existing` |
 | Two sides, and a failing violation the base audit did not have | `failed`, naming the rule and the element; a regression by the rule above |
 | Two sides, failing violations at the head, and no base audit to hold them against (the base did not boot, the profile's `base` limits left the criterion out, its flow stopped earlier) | `unverified`, naming why, never `failed`; not cached (#47) |
-| Two sides, failing violations at the head, the base revision has no usable profile, and the audit is one the planner inferred | `proven` as far as the audit goes: each violation is listed as `advisory`, naming the missing base, and the criterion decides on its other checks; not cached (#419) |
+| Two sides, failing violations at the head, the base revision has no usable profile, and the audit is one the planner inferred, or a standing one, on a criterion that does not ask for accessibility | `proven` as far as the audit goes: each violation is listed as `advisory`, naming the missing base, and the criterion decides on its other checks; not cached (#419, #426) |
 | One side (a target, #122, or a run nobody asked a base of) and a failing violation | `failed`: nothing excuses it |
 | The audit could not be made (a driver with no audit, axe-core missing, the page threw) | `unverified`, naming why |
 | The flow part failed an assertion, or could not run an action | the flow's own outcome; what was audited on the way is still recorded |
@@ -648,7 +649,11 @@ says, so a plan cannot turn an asked-for audit advisory. Only a base with no
 usable profile makes an inferred audit advisory. A base that has a profile
 and did not boot, or a limit that left the criterion out at the base, is the
 row above, and a run with one side holds an inferred audit as it holds any
-other. A standing audit is the profile's own ask and is never advisory.
+other. A standing audit is the profile's own ask, and on the pull request
+that onboards a repository the profile is the change itself: with no usable
+profile at the base, a standing audit is advisory on the same terms, unless
+the criterion's own words ask for accessibility, when it decides as any
+audit with no base to compare with does (#426).
 
 Evidence, under the check's directory beside the flow's own: `a11y.json` and
 `a11y/<point>-<width>x<theme>.png`, a full-page screenshot of each audited

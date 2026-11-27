@@ -31,7 +31,17 @@ export interface A11ySettleInput {
    * not ask for (#419): the planner marked it so, and the criterion's words do
    * not ask for accessibility.
    */
-  check: { name?: string; standing: boolean; inferred?: boolean }
+  check: {
+    name?: string
+    standing: boolean
+    inferred?: boolean
+    /**
+     * Whether the criterion's own words ask for accessibility (#426). A
+     * standing audit with no base profile is advisory only when this is
+     * false; a caller that does not say keeps it deciding.
+     */
+    criterionAsks?: boolean
+  }
   audited: A11yFlowAudits
   context: A11yContext
   criterionId: string
@@ -63,10 +73,21 @@ async function baseAuditsOf(input: A11ySettleInput, comparison: Extract<VisualCo
     const unavailable = `no base audit to compare with: ${comparison.why(input.criterionId)}`
     // A base with no profile at all has nothing to hold any violation
     // against, so an audit the criterion never asked for only advises (#419).
-    const noProfile = input.check.inferred === true && input.check.standing !== true ? comparison.noProfile?.(input.criterionId) : undefined
+    // A standing audit is the profile's, not the criterion's: on an
+    // onboarding change the profile that turns it on is the change itself,
+    // so it advises the same way unless the criterion asks (#426).
+    const why =
+      input.check.standing
+        ? input.check.criterionAsks === false
+          ? 'the profile made the audit standing, and the criterion does not ask for accessibility'
+          : undefined
+        : input.check.inferred === true
+          ? 'the audit was inferred by the planner, not asked for by the criterion'
+          : undefined
+    const noProfile = why === undefined ? undefined : comparison.noProfile?.(input.criterionId)
     return noProfile === undefined
       ? { with: 'base', unavailable }
-      : { with: 'base', unavailable, advisory: `the audit was inferred by the planner, not asked for by the criterion, and ${noProfile}, so there is nothing to tell existing violations from new ones` }
+      : { with: 'base', unavailable, advisory: `${why}, and ${noProfile}, so there is nothing to tell existing violations from new ones` }
   }
   const audits: A11yFlowAudit[] = []
   const byKey = new Map<string, A11yFlowAudit>()

@@ -2979,6 +2979,7 @@ async function runCriterion(
               // A plan's word that the audit was inferred holds only where the
               // criterion's own words do not ask for accessibility (#419).
               inferred: substituted.kind === 'a11y' && substituted.inferred === true && !asksForAccessibility(criterion.text),
+              criterionAsks: asksForAccessibility(criterion.text),
               criterionId: criterion.id,
               index,
             }
@@ -3469,6 +3470,8 @@ interface A11yRun {
   standing: boolean
   /** The planner added the audit and the criterion's words do not ask for accessibility (#419). */
   inferred: boolean
+  /** The criterion's own words ask for accessibility (#426): a standing audit with no base profile still decides then. */
+  criterionAsks: boolean
   criterionId: string
   index: number
 }
@@ -3707,7 +3710,7 @@ async function runFlowCheckJob(
     let settled: Awaited<ReturnType<typeof settleA11y>> | undefined
     if (a11y !== undefined && outcome?.a11y !== undefined) {
       settled = await settleA11y({
-        check: { ...(check.name === undefined ? {} : { name: check.name }), standing: a11y.standing, inferred: a11y.inferred },
+        check: { ...(check.name === undefined ? {} : { name: check.name }), standing: a11y.standing, inferred: a11y.inferred, criterionAsks: a11y.criterionAsks },
         audited: outcome.a11y,
         context: a11y.context,
         criterionId: a11y.criterionId,

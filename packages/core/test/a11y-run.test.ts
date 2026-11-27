@@ -630,3 +630,58 @@ test('an inferred audit on a run with one side still fails on a violation: nothi
 
   expect(criterionOf(result, 'settings')).toMatchObject({ outcome: 'failed', a11y: { new: 1 } })
 })
+
+// #426: an onboarding pull request whose profile turns standing audits on
+// was still left unverified on violations the app had before the change,
+// because #419 relaxed only the audits the planner inferred.
+
+async function onboardingWithStandingAudit(): Promise<{ head: string; base: string }> {
+  const trees = await twoTrees()
+  await writeProfile(trees.head, 'a11y: { standing: true }')
+  return trees
+}
+
+test('a standing audit with no base profile is advisory when the criterion does not ask for accessibility (#426)', async () => {
+  const trees = await onboardingWithStandingAudit()
+  const browser = fakeBrowser(() => [UNNAMED_BUTTON])
+  const criterion: JobCriterion = { id: 'saves', text: 'saving the settings shows Saved', checks: SAVE_FLOW }
+  const job: Job = { ...jobFor(trees.head, [criterion], APP_PROFILE), profile: { path: '.qa' } }
+
+  const { result } = await runJob(job, { ...recordingBoot(), flowSession: browser.session, base: { repoPath: trees.base } })
+
+  expect(result.verdict).toBe('passed')
+  const saved = criterionOf(result, 'saves')
+  expect(saved).toMatchObject({ outcome: 'proven', a11y: { new: 0, uncompared: 0, advisory: 1 } })
+  expect(saved.a11yAdvisory).toContain('the profile made the audit standing, and the criterion does not ask for accessibility')
+  expect(saved.a11yAdvisory).toContain('the base revision has no usable .qa/ profile')
+  const record = await readJson(join(job.evidenceDir, 'head/checks/saves/0/a11y.json'))
+  expect(record).toMatchObject({ asked: 'standing: the profile audits every flow', outcome: 'passed', counts: { advisory: 1 } })
+})
+
+test('a standing audit with no base profile still decides when the criterion asks for accessibility (#426)', async () => {
+  const trees = await onboardingWithStandingAudit()
+  const browser = fakeBrowser(() => [UNNAMED_BUTTON])
+  const criterion: JobCriterion = { id: 'saves', text: 'saving the settings shows Saved, and the form works with a keyboard alone', checks: SAVE_FLOW }
+  const job: Job = { ...jobFor(trees.head, [criterion], APP_PROFILE), profile: { path: '.qa' } }
+
+  const { result } = await runJob(job, { ...recordingBoot(), flowSession: browser.session, base: { repoPath: trees.base } })
+
+  const saved = criterionOf(result, 'saves')
+  expect(saved).toMatchObject({ outcome: 'unverified', a11y: { uncompared: 1 } })
+  expect('a11yAdvisory' in saved).toBe(false)
+})
+
+test('a standing audit settled without saying whether the criterion asks stays strict (#426)', async () => {
+  const dir = await tempRepo()
+  const audited = { audits: [{ point: 0, url: `${TARGET_URL}/settings`, width: 1280, theme: 'light', engine: { name: 'axe-core', version: '4.13.0' }, incomplete: 0, violations: [UNNAMED_BUTTON] }] }
+  const context = {
+    config: a11yConfigOf(undefined),
+    defaults: { widths: [], themes: [] },
+    standing: true,
+    comparison: { with: 'base' as const, evidenceDir: join(dir, 'base'), why: () => 'the base side did not run', noProfile: () => 'the base revision has no usable .qa/ profile' },
+  }
+  const settled = await settleA11y({ check: { standing: true }, audited, context, criterionId: 'saves', index: 0, evidenceDir: join(dir, 'head'), checkDir: 'checks/saves/0', rules: [] })
+
+  expect(settled).toMatchObject({ status: 'unverified', counts: { uncompared: 1 } })
+  expect(settled.advisory).toBeUndefined()
+})
