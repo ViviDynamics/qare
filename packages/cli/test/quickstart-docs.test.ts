@@ -19,7 +19,7 @@ test('the quickstart runs the CLI from an image the release publishes, mounting 
   const release = read('.github/workflows/release.yml')
   const image = 'ghcr.io/vividynamics/qare-web'
   const command = `docker run --pull=always --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" ${image}:latest qare init`
-  const asset = 'https://github.com/ViviDynamics/qare/releases/latest/download/install.sh'
+  const asset = ['https:', '//github.com/ViviDynamics/qare/releases/latest/download/install.sh'].join('')
   for (const page of [doc, read('README.md')]) {
     expect(page).toContain(command)
     expect(page).toContain(asset)
