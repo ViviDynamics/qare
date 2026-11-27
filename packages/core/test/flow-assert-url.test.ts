@@ -96,6 +96,13 @@ test('the plan loads an assertUrl with a path, and with query parameters beside 
   expect((bare.criteria[0] as { checks: Array<{ actions: unknown[] }> }).checks[0]?.actions).toEqual([{ action: 'assertUrl', path: '/dashboard' }])
 })
 
+test('a query parameter named like an object property is held as a parameter, not dropped (#430)', async () => {
+  const plan = parsePlan(JSON.parse('{"schemaVersion":"1","criteria":[{"id":"c1","text":"x","checks":[{"kind":"flow","name":"n","actions":[{"action":"assertUrl","path":"/a","query":{"__proto__":"x"}}]}]}]}'), [], BROWSER_FLOW_DRIVER)
+  const [action] = (plan.criteria[0] as { checks: Array<{ actions: Array<{ query: Record<string, string> }> }> }).checks[0]?.actions ?? []
+  expect(Object.keys(action?.query ?? {})).toEqual(['__proto__'])
+  expect((await assertAt([`${ORIGIN}/a?other=1`], action as unknown as FlowAction)).result.outcome).toBe('failed')
+})
+
 test('the plan refuses an assertUrl whose path or query is not one the harness can judge (#430)', () => {
   const refused = (action: unknown): string => {
     try {

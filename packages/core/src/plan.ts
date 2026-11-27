@@ -691,11 +691,14 @@ function parseFlowAction(value: unknown, base: string, extraFlowActions: readonl
       if (value.query === undefined) return { action: 'assertUrl', path }
       if (!isRecord(value.query) || Object.keys(value.query).length === 0)
         fail(`${base}.query`, 'query names each parameter the page must carry and its value: {"tab":"billing"}')
-      const query: Record<string, string> = {}
-      for (const [name, held] of Object.entries(value.query)) {
-        if (typeof held !== 'string') fail(`${base}.query.${name}`, `the query parameter ${name} must be a string`)
-        query[name] = held
-      }
+      // Built as own entries, so a parameter named like an object's own
+      // property (__proto__) is held as a parameter, never dropped.
+      const query: Record<string, string> = Object.fromEntries(
+        Object.entries(value.query).map(([name, held]) => {
+          if (typeof held !== 'string') fail(`${base}.query.${name}`, `the query parameter ${name} must be a string`)
+          return [name, held]
+        }),
+      )
       return { action: 'assertUrl', path, query }
     }
     case 'capture':
