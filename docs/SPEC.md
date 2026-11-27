@@ -2680,7 +2680,11 @@ one as a gap until a person replaces it, along with a compose file or service
 the profile names that is not there, and a stub whose compose service nothing
 defines. init ends with that list as its next steps: it is the list
 `qare readiness` prints, so the two cannot disagree. Loopback hosts and the
-compose file's own service names are not outbound origins.
+compose file's own service names are not outbound origins. On a git checkout
+the scan skips what git ignores (#425), a virtualenv, a build, a log, whose
+URLs the application never reaches, and its report names what it skipped.
+Outside one, or without git, it reads the whole tree but `.git`,
+`node_modules`, `dist` and `.qa`.
 
 Each stub gap is named as the issue it becomes, under the key a refused run
 files with (`qare-stub: <host>`), so the issue a run would file later is the

@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process'
 import { lstat, readFile, readdir, stat } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
@@ -10,6 +11,8 @@ export const READINESS_MAX_FILE_BYTES = 1024 * 1024
 
 const COMPOSE_CANDIDATES = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml']
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', '.qa'])
+/** How many ignored paths the report names before it counts the rest (#425). */
+const IGNORED_NAMED = 10
 
 export interface ReadinessComposeService {
   name: string
@@ -72,6 +75,13 @@ export interface ReadinessScanStats {
   skippedUnreadable: number
   capped: boolean
   maxFiles: number
+  /**
+   * What git ignores, skipped unscanned (#425): a virtualenv, a build, a log
+   * holds URLs the application never reaches. Paths relative to the repo, a
+   * directory ending in `/`. Absent outside a git checkout, or without git,
+   * when the scan reads everything but the fixed skip list.
+   */
+  ignored?: string[]
 }
 
 export interface ReadinessInventory {
@@ -110,7 +120,9 @@ export async function readinessInventory(
   // A compose service reaches its neighbours by name: `http://search:9200`
   // is the stack talking to itself, not something a stub has to answer.
   const internal = new Set([...boot.flatMap((file) => file.services.map((service) => service.name)), ...(profileBoot.services ?? [])])
-  const origins = await scanOrigins(repo, maxFiles, scan, internal)
+  const ignored = await gitIgnored(repo)
+  if (ignored !== undefined && ignored.length > 0) scan.ignored = ignored
+  const origins = await scanOrigins(repo, maxFiles, scan, internal, new Set(ignored ?? []))
   const coverage = coverageOf(origins, profile)
   const placeholders = profile.present ? await placeholdersIn(repo) : []
 
@@ -287,9 +299,10 @@ async function scanOrigins(
   maxFiles: number,
   scan: ReadinessScanStats,
   internal: ReadonlySet<string>,
+  ignored: ReadonlySet<string> = new Set(),
 ): Promise<ReadinessOriginHit[]> {
   const byOrigin = new Map<string, Map<string, number>>()
-  await walk(repo, repo, async (path, rel) => {
+  await walk(repo, repo, ignored, async (path, rel) => {
     if (scan.filesScanned >= maxFiles) {
       scan.capped = true
       return
@@ -346,18 +359,39 @@ export function normalizeOrigin(match: string): string {
   return `${match.slice(0, schemeSplit).toLowerCase()}://${host}`
 }
 
-async function walk(dir: string, repo: string, visit: (path: string, rel: string) => Promise<void>): Promise<void> {
+async function walk(dir: string, repo: string, ignored: ReadonlySet<string>, visit: (path: string, rel: string) => Promise<void>): Promise<void> {
   const entries = await readdir(dir, { withFileTypes: true })
   for (const entry of entries.sort((a, b) => compareStrings(a.name, b.name))) {
     const path = join(dir, entry.name)
+    const rel = relative(repo, path).split(sep).join('/')
     if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue
-      await walk(path, repo, visit)
+      if (SKIP_DIRS.has(entry.name) || ignored.has(`${rel}/`)) continue
+      await walk(path, repo, ignored, visit)
       continue
     }
-    if (!entry.isFile()) continue
+    if (!entry.isFile() || ignored.has(rel)) continue
     await visit(path, relativeLabel(repo, path))
   }
+}
+
+/**
+ * The paths git ignores in the repository (#425), as git names them: a
+ * directory it ignores whole ends in `/`. Undefined when the path is not a
+ * git checkout or git cannot be run: the scan then reads everything but the
+ * fixed skip list, as it did before.
+ */
+function gitIgnored(repo: string): Promise<string[] | undefined> {
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      ['-C', repo, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'],
+      { timeout: 10_000, maxBuffer: 16 * 1024 * 1024 },
+      (error, stdout) => {
+        if (error !== null) return resolve(undefined)
+        resolve(stdout.split('\u0000').filter((path) => path !== '').sort(compareStrings))
+      },
+    )
+  })
 }
 
 function relativeLabel(repo: string, path: string): string {
@@ -568,6 +602,9 @@ export function buildReadinessReport(inventory: ReadinessInventory): string {
       (inventory.scan.skippedBinary > 0 ? `, ${inventory.scan.skippedBinary} skipped as binary` : '') +
       (inventory.scan.skippedUnreadable > 0 ? `, ${inventory.scan.skippedUnreadable} skipped unreadable` : ''),
   )
+  const ignored = inventory.scan.ignored ?? []
+  if (ignored.length > 0)
+    lines.push(`- skipped what git ignores: ${ignored.slice(0, IGNORED_NAMED).join(', ')}${ignored.length > IGNORED_NAMED ? `, and ${ignored.length - IGNORED_NAMED} more` : ''}`)
   lines.push('')
   lines.push('## Gaps')
   if (inventory.gaps.length === 0) {

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { cp, chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -464,4 +465,35 @@ test('a compose file kept beside a command boot is not what boots, so its servic
   await withProfile(dir, COMMAND_CONFIG)
   const inventory = await readinessInventory(dir)
   expect(inventory.gaps.filter((gap) => gap.includes('healthcheck'))).toEqual([])
+})
+
+// #425: on steward, readiness scanned the gitignored .venv and listed
+// hundreds of outbound origins from installed packages the app never runs.
+test('readiness skips what git ignores, and names what it skipped (#425)', async () => {
+  const repo = await repoWith({
+    '.gitignore': '.venv/\nbuild/\n*.log\n',
+    'app.py': `API = "${url('api.example.com')}"\n`,
+    '.venv/lib/site-packages/vendor.py': `URL = "${url('pypi.example.org')}"\n`,
+    'build/out.js': `const CDN = "${url('cdn.example.net')}"\n`,
+    'debug.log': `GET ${url('tracker.example.io')}\n`,
+  })
+  execFileSync('git', ['init', '-q'], { cwd: repo })
+
+  const inventory = await readinessInventory(repo)
+
+  expect(inventory.origins.map((hit) => hit.origin)).toEqual([url('api.example.com')])
+  expect(inventory.scan.ignored).toEqual(['.venv/', 'build/', 'debug.log'])
+  expect(buildReadinessReport(inventory)).toContain('- skipped what git ignores: .venv/, build/, debug.log')
+})
+
+test('outside a git checkout readiness scans as before, with nothing named as ignored (#425)', async () => {
+  const repo = await repoWith({
+    '.gitignore': '.venv/\n',
+    '.venv/lib/vendor.py': `URL = "${url('pypi.example.org')}"\n`,
+  })
+
+  const inventory = await readinessInventory(repo)
+
+  expect(inventory.origins.map((hit) => hit.origin)).toEqual([url('pypi.example.org')])
+  expect(inventory.scan.ignored).toBeUndefined()
 })
