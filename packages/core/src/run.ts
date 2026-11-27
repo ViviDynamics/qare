@@ -2496,6 +2496,8 @@ function validatePlanValues(criteria: JobCriterion[], profile: QaProfile, values
           })
           if (profile.target !== undefined && action.action === 'open' && action.url.startsWith('/') && pathOnTarget(profile.target.url, action.url) === undefined)
             throw new JobValidationError(`${base}.actions[${actionIndex}].url`, `the path ${JSON.stringify(action.url)} climbs out of the target ${profile.target.url}; a path on the target stays below its URL`)
+          if (profile.target !== undefined && action.action === 'assertUrl' && pathOnTarget(profile.target.url, action.path) === undefined)
+            throw new JobValidationError(`${base}.actions[${actionIndex}].path`, `the asserted path ${JSON.stringify(action.path)} climbs out of the target ${profile.target.url}; a path on the target stays below its URL`)
           // A desktop build is opened by a path inside it (#72): a full URL
           // is something its driver cannot open, so the plan is refused here
           // rather than the action failing once the build is up. A value the
@@ -3995,8 +3997,16 @@ function targetContext(target: ProfileTarget): FlowTargetContext {
   return { url: target.url, hosts: [new URL(target.url).hostname, ...target.hosts], undeclared: [] }
 }
 
-/** A path in an `open` action is a page on the target: it resolves below the target URL. */
+/**
+ * A path in an `open` action is a page on the target: it resolves below the
+ * target URL. The path an `assertUrl` holds the page to resolves the same
+ * way (#430), so `/dashboard` on a target at `/app/` is `/app/dashboard`.
+ */
 function onTarget(action: FlowActionStep, url: string): FlowActionStep {
+  if (action.action === 'assertUrl') {
+    const resolved = pathOnTarget(url, action.path)
+    return resolved === undefined ? action : { ...action, path: new URL(resolved).pathname }
+  }
   if (action.action !== 'open' || !action.url.startsWith('/')) return action
   // Plan time refused a path that climbs out of the target.
   return { ...action, url: pathOnTarget(url, action.url) ?? action.url }
@@ -4016,6 +4026,12 @@ function mapFlowStrings(action: FlowActionStep, map: (value: string, field: stri
       return { ...action, value: map(action.value, 'value') }
     case 'assertText':
       return { ...action, text: map(action.text, 'text') }
+    case 'assertUrl': {
+      // The path and each query value may name a run value (#430): the page
+      // a step lands on is often one the run itself created.
+      const query = action.query === undefined ? undefined : Object.fromEntries(Object.entries(action.query).map(([name, value]) => [name, map(value, `query.${name}`)]))
+      return { ...action, path: map(action.path, 'path'), ...(query === undefined ? {} : { query }) }
+    }
     default:
       return action
   }

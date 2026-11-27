@@ -97,6 +97,7 @@ test('the schema types flow actions and the prompt names the element vocabulary'
     'waitFor',
     'assertText',
     'assertElement',
+    'assertUrl',
     'capture',
     'totp',
     'backupCode',
@@ -271,7 +272,7 @@ test('the flow action kinds the change introduces widen the schema and the promp
 
   const [request] = runner.requests
   expect(request.prompt).toContain(
-    'A flow action is one of open, type, click, choose, waitFor, assertText, assertElement, capture, totp, backupCode, magicLink',
+    'A flow action is one of open, type, click, choose, waitFor, assertText, assertElement, assertUrl, capture, totp, backupCode, magicLink',
   )
   const schema = JSON.parse(request.outputSchema)
   const kinds =

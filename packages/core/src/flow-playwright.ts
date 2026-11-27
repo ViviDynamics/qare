@@ -20,7 +20,7 @@ const LOAD_FAILED_MESSAGE =
  */
 export const BROWSER_FLOW_DRIVER: FlowDriverCapabilities = {
   name: 'browser',
-  actions: ['open', 'type', 'click', 'choose', 'waitFor', 'assertText', 'assertElement', 'capture', 'totp', 'backupCode'],
+  actions: ['open', 'type', 'click', 'choose', 'waitFor', 'assertText', 'assertElement', 'assertUrl', 'capture', 'totp', 'backupCode'],
   evidence: ['screenshot', 'trace', 'console', 'recording'],
   checks: ['visual', 'a11y'],
 }
@@ -382,6 +382,12 @@ export async function makePlaywrightFlowSession(
     snapshot: async () => {
       const started = await start()
       return normaliseAriaSnapshot(await started.page.ariaSnapshot())
+    },
+    // The URL the page is at (#430): what an assertUrl is judged against,
+    // by the flow and not here.
+    url: async () => {
+      const started = await start()
+      return started.page.url()
     },
     // Where the page stands (#377): what the exploration channel's observe answers.
     observe: async () => {

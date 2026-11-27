@@ -36,6 +36,12 @@ export type FlowAction =
   | { action: 'assertText'; text: string }
   /** Asserts the element is visible. A failed assert is a failed check (#70). */
   | { action: 'assertElement'; element: FlowElement }
+  /**
+   * Asserts the path the page is at, and the query parameters named beside
+   * it, judged here from the URL the driver reports (#430). A failed assert
+   * is a failed check.
+   */
+  | { action: 'assertUrl'; path: string; query?: Record<string, string> }
   /** Takes a screenshot of the page as it stands, as evidence (#70). */
   | { action: 'capture' }
   /** Types the code the harness generates from the profile's seeded secret (#64). */
@@ -138,6 +144,12 @@ export interface FlowPage {
    */
   observe?: () => Promise<{ url: string; title: string }>
   /**
+   * The URL the page is at, as the driver reports it (#430): what an
+   * `assertUrl` is judged against, in the harness's own code. Optional: a
+   * driver without it does not declare `assertUrl`.
+   */
+  url?: () => Promise<string>
+  /**
    * Audit the page as it stands against the accessibility rule set (#149),
    * at the width and theme asked for, and put the viewport back. Optional:
    * a driver without the seam leaves an `a11y` check unverified.
@@ -186,6 +198,10 @@ export interface FlowCheckOpts {
   codesOnPage?: boolean
   /** Injectable clock, so window arithmetic is pinned in tests. */
   now?: () => number
+  /** How long an `assertUrl` waits for the page to settle on its path (#430); five seconds unless a caller names another. */
+  assertTimeoutMs?: number
+  /** How often an `assertUrl` reads the URL while it waits (#430). */
+  pollIntervalMs?: number
   /**
    * Audit the pages the flow visits (#149): the rule set's tags, and the
    * widths and themes each settled page is audited at. No width audits once,
@@ -226,6 +242,7 @@ const KNOWN_KINDS: readonly string[] = [
   'waitFor',
   'assertText',
   'assertElement',
+  'assertUrl',
   'capture',
   'totp',
   'backupCode',
@@ -243,6 +260,60 @@ const FAILURE_SCREENSHOT = 'failure.png'
 const FINAL_SCREENSHOT = 'final.png'
 const ACTION_LOG = 'actions.log'
 const RECORDING = 'recording.png'
+
+/** How long an `assertUrl` waits for a redirect to settle, as the drivers' own assertions do (#236). */
+const DEFAULT_ASSERT_TIMEOUT_MS = 5_000
+const DEFAULT_POLL_INTERVAL_MS = 100
+
+/** An `assertUrl` the page did not meet (#430): what failed, with the URL it read. */
+class FlowUrlAssertError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'FlowUrlAssertError'
+  }
+}
+
+/** A URL assertion as a reader would say it: the path, and each query parameter it holds the page to. */
+export function describeUrlAssertion(assertion: { path: string; query?: Record<string, string> }): string {
+  const query = Object.entries(assertion.query ?? {})
+  return query.length === 0 ? assertion.path : `${assertion.path} with ${query.map(([name, value]) => `${name}=${JSON.stringify(value)}`).join(', ')}`
+}
+
+/** One trailing slash is the same landing (`/dashboard/` is `/dashboard`), except for the root. */
+function landing(path: string): string {
+  return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path
+}
+
+/**
+ * Why the page's URL is not where an `assertUrl` says, or undefined when it
+ * is (#430). The path is compared after both sides are parsed as URLs, so an
+ * encoded path matches its plain spelling; each query parameter named must
+ * be there with its value, and parameters the assertion does not name may be
+ * there too.
+ */
+export function urlMismatch(observed: string, assertion: { path: string; query?: Record<string, string> }): string | undefined {
+  let url: URL
+  try {
+    url = new URL(observed)
+  } catch {
+    return `the page's URL ${JSON.stringify(observed)} is not one a path can be read from`
+  }
+  let expected: string
+  try {
+    // Resolved against the page itself, so both paths go through the same
+    // parser for the same scheme.
+    expected = new URL(assertion.path, url).pathname
+  } catch {
+    expected = assertion.path
+  }
+  if (landing(url.pathname) !== landing(expected)) return `the page is at ${url.pathname}, not ${assertion.path}`
+  for (const [name, value] of Object.entries(assertion.query ?? {})) {
+    const values = url.searchParams.getAll(name)
+    if (values.length === 0) return `the query parameter ${name} is not there`
+    if (!values.includes(value)) return `the query parameter ${name} is ${values.map((held) => JSON.stringify(held)).join(' and ')}, not ${JSON.stringify(value)}`
+  }
+  return undefined
+}
 
 function unknownKind(action: FlowAction): string | undefined {
   const kind = (action as { action?: unknown }).action
@@ -269,6 +340,8 @@ function describeAction(action: FlowAction, index: number): string {
       return `action ${index}: assert text "${action.text}" is visible`
     case 'assertElement':
       return `action ${index}: assert the element ${describeElement(action.element)} is visible`
+    case 'assertUrl':
+      return `action ${index}: assert the page is at ${describeUrlAssertion(action)}`
     case 'capture':
       return `action ${index}: capture a screenshot`
     case 'totp':
@@ -289,6 +362,8 @@ function describeAction(action: FlowAction, index: number): string {
  */
 export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult> {
   const { actions, page, trace, outDir, tracesDir, redactLog, masks, totp, generatedCodes, codesOnPage = false, now = Date.now, a11y, recording, signal } = opts
+  const assertTimeoutMs = opts.assertTimeoutMs ?? DEFAULT_ASSERT_TIMEOUT_MS
+  const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
   const stopped = (): boolean => signal?.aborted === true
 
   if (actions.length === 0) {
@@ -516,6 +591,26 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
         await page.assertElement(current.element)
         await snapshotAt(index, 'name' in current.element ? current.element.name : undefined)
         break
+      case 'assertUrl': {
+        // The driver only reports where the page is; whether that is where
+        // the plan says is decided here, in code (#430). A redirect is waited
+        // out the way a text still rendering is (#236), and the assertion
+        // fails with the last URL it read.
+        if (page.url === undefined) throw new FlowAssertUndecidedError('the driver reports no URL, so where the page is cannot be read')
+        const deadline = Date.now() + assertTimeoutMs
+        for (;;) {
+          let observed: string
+          try {
+            observed = await page.url()
+          } catch (error) {
+            throw new FlowAssertUndecidedError(`the URL could not be read: ${String(error)}`, { cause: error })
+          }
+          const mismatch = urlMismatch(observed, current)
+          if (mismatch === undefined) return `action ${index}: assert the page is at ${describeUrlAssertion(current)}: it is, at ${observed}`
+          if (Date.now() >= deadline || stopped()) throw new FlowUrlAssertError(`assert failed: ${mismatch} (it read ${observed})`)
+          await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
+        }
+      }
       case 'capture': {
         const name = `capture-${index}.png`
         const taken = await screenshot(name, { required: true })
@@ -623,7 +718,7 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
   let auditError: string | undefined
   let actedSinceAudit = false
   const ACTS_ON_PAGE: readonly string[] = ['open', 'type', 'click', 'choose', 'totp', 'backupCode']
-  const SETTLES_PAGE: readonly string[] = ['open', 'waitFor', 'assertText', 'assertElement']
+  const SETTLES_PAGE: readonly string[] = ['open', 'waitFor', 'assertText', 'assertElement', 'assertUrl']
   const auditAt = async (point: number): Promise<void> => {
     if (a11y === undefined || !actedSinceAudit || auditError !== undefined || stopped()) return
     actedSinceAudit = false
@@ -677,6 +772,17 @@ export async function runFlowCheck(opts: FlowCheckOpts): Promise<FlowCheckResult
       // A flow that was stopped has no failure of its own to report.
       if (stopped()) break
       failedAt = now()
+      if (action.action === 'assertUrl' && error instanceof FlowUrlAssertError) {
+        // The URL the page was at is the evidence, so it goes in the log as
+        // well as the reason, through the same redaction sweep (#430).
+        outcome = 'failed'
+        reason = redactLog === undefined ? error.message : redactLog(error.message)
+        log.push(`action ${index}: ${error.message}`)
+        await snapshotAt(index)
+        await recorder?.sample()
+        failureScreenshot = await screenshot(FAILURE_SCREENSHOT)
+        break
+      }
       if ((action.action === 'assertText' || action.action === 'assertElement') && !(error instanceof FlowAssertUndecidedError)) {
         outcome = 'failed'
         reason =
