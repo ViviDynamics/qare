@@ -5,7 +5,7 @@ import type { BootOpts } from './boot.js'
 import { flowDriverFor } from './flow-driver.js'
 import { jobFromPlan } from './job-from-plan.js'
 import { plannerAddress } from './app-address.js'
-import { judgeExecuted } from './judge.js'
+import { judgeExecuted, verifierImageInput } from './judge.js'
 import type { ReadMail } from './mailbox.js'
 import { startMcpToolServer, startRegisteredMcpSources, mcpRecordsFile, type McpCallRecord, type McpSource, type McpToolServer } from './mcp.js'
 import { PLAN_SCHEMA_VERSION, type Plan } from './plan.js'
@@ -60,11 +60,17 @@ export interface CheckOutcome {
  * are that directory. `qare judge` and `qare check` build it here, so their
  * verifiers are sandboxed alike.
  */
-export function nareRunners(binary?: string): { planner: AgentRunner; verifier: (evidenceDir: string) => AgentRunner } {
+export function nareRunners(
+  binary?: string,
+  env: Record<string, string | undefined> = process.env,
+): { planner: AgentRunner; verifier: (evidenceDir: string) => AgentRunner } {
   const options = binary === undefined ? {} : { binary }
+  // Only the verifier reads screenshots, and only when the caller declared
+  // its model takes images (#439): the planner is never handed one.
+  const imageInput = verifierImageInput(env)
   return {
     planner: new NareAgentRunner(options),
-    verifier: (evidenceDir) => new NareAgentRunner({ ...options, cwd: evidenceDir, root: evidenceDir }),
+    verifier: (evidenceDir) => new NareAgentRunner({ ...options, cwd: evidenceDir, root: evidenceDir, ...(imageInput ? { imageInput } : {}) }),
   }
 }
 

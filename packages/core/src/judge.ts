@@ -257,6 +257,32 @@ export function verifierEvidence(evidence: readonly string[]): string[] {
   })
 }
 
+/**
+ * Whether the verifier's model takes images (#439): `QARE_VERIFIER_IMAGE_INPUT`,
+ * set from the pipeline's `nare-image-input`. Off unless turned on, because
+ * nare does not guess a model's capability and a text-only model declared
+ * capable errors. Anything but true or false is refused by name.
+ */
+export const VERIFIER_IMAGE_INPUT_ENV = 'QARE_VERIFIER_IMAGE_INPUT'
+
+export function verifierImageInput(env: Record<string, string | undefined> = process.env): boolean {
+  const raw = env[VERIFIER_IMAGE_INPUT_ENV]?.trim() ?? ''
+  if (raw === '' || raw === 'false') return false
+  if (raw === 'true') return true
+  throw new Error(`${VERIFIER_IMAGE_INPUT_ENV} is "${raw}", and whether the verifier's model takes images is true or false`)
+}
+
+/** What the verifier is told about screenshots (#439): it reads them, or it is told it cannot and to judge from the text files. */
+function screenshotLine(imageInput: boolean): string {
+  return imageInput
+    ? 'You can read the screenshots (.png) in the evidence as images: read one when what the criterion says shows on the page.'
+    : 'You cannot see the screenshots (.png) in the evidence: judge from the text files (action logs, accessibility snapshots, reports). A screenshot you cannot open is no finding on its own; report a gap only when the text files do not show what the criterion says.'
+}
+
+function verifierInstructions(imageInput: boolean): string {
+  return [...VERIFIER_INSTRUCTIONS.slice(0, 2), screenshotLine(imageInput), ...VERIFIER_INSTRUCTIONS.slice(2)].join('\n')
+}
+
 const VERIFIER_INSTRUCTIONS = [
   'You are the qare verifier: an independent reviewer of a QA run.',
   'You receive the criteria the run claims to have proven, each with its text and the evidence files saved for it, and the diff under review. You can read the evidence files.',
@@ -265,7 +291,7 @@ const VERIFIER_INSTRUCTIONS = [
   'Findings naming criteria you were not given are dropped: your output can never upgrade a verdict or create a criterion.',
   'When a criterion was proven by a filtered test command, check that the evidence shows the filter actually selecting tests: a report whose filter selected nothing, or the whole suite, exercised the criterion only by accident. Say so with kind "unexercised".',
   'Answer with {"findings": [{"criterionId": string, "problem": string, "kind": "contradicted"_OR_"unexercised"_OR_omit, "evidence": string_ONLY_WITH_contradicted}]}. An empty list changes nothing.',
-].join('\n')
+]
 
 /** The answer shape nare validates the verifier's output against. */
 export const VERIFIER_OUTPUT_SCHEMA = {
@@ -301,6 +327,8 @@ export function prepareVerifierInputs(input: {
   texts: Record<string, string>
   evidence: Record<string, string[]>
   diff: string
+  /** Whether the verifier's model takes images (#439); absent, the environment says. */
+  imageInput?: boolean
 }): VerifierInputs {
   const textOf = (id: string): string | undefined => {
     const text = Object.hasOwn(input.texts, id) ? input.texts[id] : undefined
@@ -321,7 +349,7 @@ export function prepareVerifierInputs(input: {
       const evidence = Object.hasOwn(input.evidence, criterion.criterionId) ? input.evidence[criterion.criterionId] : undefined
       return { criterionId: criterion.criterionId, text: textOf(criterion.criterionId) as string, evidence: [...(evidence ?? [])] }
     })
-  return { instructions: VERIFIER_INSTRUCTIONS, criteria, claims, diff: input.diff }
+  return { instructions: verifierInstructions(input.imageInput ?? verifierImageInput()), criteria, claims, diff: input.diff }
 }
 
 /**

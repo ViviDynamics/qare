@@ -157,6 +157,15 @@ on:
           turn short. Empty or false keeps the default, non-streaming.
         type: string
         default: ''
+      nare-image-input:
+        description: >-
+          Set to true when nare-model takes PNG and JPEG input, so the
+          verifier reads a flow's screenshots as images. nare does not guess
+          a model's capability, and a text-only model declared capable
+          errors, so leave it empty or false for one. Off, the verifier is
+          told it cannot see screenshots and judges from the text evidence.
+        type: string
+        default: ''
       max-output-tokens:
         description: >-
           The most the planner, the verifier and the UX review may write in
@@ -1876,6 +1885,7 @@ jobs:
           NARE_STREAM: ${{ inputs.nare-stream }}
           QARE_MAX_OUTPUT_TOKENS: ${{ inputs.max-output-tokens }}
           QARE_VERIFY_BATCH_SIZE: ${{ inputs.verify-batch-size }}
+          QARE_VERIFIER_IMAGE_INPUT: ${{ inputs.nare-image-input }}
         run: |
           set -euo pipefail
           # Fail closed (rule 6), as the plan step does: no key, no verifier.
@@ -1910,6 +1920,15 @@ jobs:
           fi
           if [ -n "$QARE_VERIFY_BATCH_SIZE" ]; then
             model_env+=(-e QARE_VERIFY_BATCH_SIZE)
+          fi
+          # Whether the verifier's model takes images (#439), checked before
+          # any model call, and handed over only when it is set.
+          if [ -n "$QARE_VERIFIER_IMAGE_INPUT" ]; then
+            if [ "$QARE_VERIFIER_IMAGE_INPUT" != true ] && [ "$QARE_VERIFIER_IMAGE_INPUT" != false ]; then
+              echo "nare-image-input is true or false (got '$QARE_VERIFIER_IMAGE_INPUT')" | tee -a "$GITHUB_STEP_SUMMARY" >&2
+              exit 1
+            fi
+            model_env+=(-e QARE_VERIFIER_IMAGE_INPUT)
           fi
           if [ -n "$NARE_BASE_URL" ]; then
             model_env+=(-e NARE_BASE_URL)
@@ -3394,6 +3413,7 @@ jobs:
           NARE_STREAM: ${{ inputs.nare-stream }}
           QARE_MAX_OUTPUT_TOKENS: ${{ inputs.max-output-tokens }}
           QARE_VERIFY_BATCH_SIZE: ${{ inputs.verify-batch-size }}
+          QARE_VERIFIER_IMAGE_INPUT: ${{ inputs.nare-image-input }}
           PROFILE: ${{ inputs.profile }}
         run: |
           set -euo pipefail
@@ -3429,6 +3449,15 @@ jobs:
           fi
           if [ -n "$QARE_VERIFY_BATCH_SIZE" ]; then
             model_env+=(-e QARE_VERIFY_BATCH_SIZE)
+          fi
+          # Whether the verifier's model takes images (#439), checked before
+          # any model call, and handed over only when it is set.
+          if [ -n "$QARE_VERIFIER_IMAGE_INPUT" ]; then
+            if [ "$QARE_VERIFIER_IMAGE_INPUT" != true ] && [ "$QARE_VERIFIER_IMAGE_INPUT" != false ]; then
+              echo "nare-image-input is true or false (got '$QARE_VERIFIER_IMAGE_INPUT')" | tee -a "$GITHUB_STEP_SUMMARY" >&2
+              exit 1
+            fi
+            model_env+=(-e QARE_VERIFIER_IMAGE_INPUT)
           fi
           if [ -n "$NARE_BASE_URL" ]; then
             model_env+=(-e NARE_BASE_URL)

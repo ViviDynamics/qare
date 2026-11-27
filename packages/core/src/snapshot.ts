@@ -172,30 +172,22 @@ function copyNode(node: SnapshotNode): SnapshotNode {
 }
 
 /**
- * Trim the snapshot to the subtree around `text`: the chain from the root to
- * the first node whose accessible name contains it, pruned to that chain, with
- * the matched node's own subtree kept whole. Text that names nothing leaves the
- * snapshot untrimmed: what the page held at the assertion is the evidence.
+ * Trim the snapshot to the subtrees around `text`: every node whose
+ * accessible name contains it, each with its own subtree kept whole and the
+ * chain of ancestors up to the root, and nothing else. Every match is kept,
+ * not only the first in document order (#439): when the first is an image's
+ * alt text and a later one is the heading a reader sees, the evidence shows
+ * both. Text that names nothing leaves the snapshot untrimmed: what the page
+ * held at the assertion is the evidence.
  */
 export function trimToSubtree(root: SnapshotNode, text: string): SnapshotNode {
-  const chain = findNameChain(root, text)
-  if (chain === undefined) return copyNode(root)
-  let current = copyNode(chain[chain.length - 1] ?? root)
-  for (let index = chain.length - 2; index >= 0; index -= 1) {
-    const ancestor = chain[index]
-    if (ancestor === undefined) continue
-    current = { ...ancestor, states: { ...ancestor.states }, children: [current] }
-  }
-  return current
+  return pruneToMatches(root, text) ?? copyNode(root)
 }
 
-function findNameChain(root: SnapshotNode, text: string): SnapshotNode[] | undefined {
-  if (root.name !== undefined && root.name.includes(text)) return [root]
-  for (const child of root.children) {
-    const chain = findNameChain(child, text)
-    if (chain !== undefined) return [root, ...chain]
-  }
-  return undefined
+function pruneToMatches(node: SnapshotNode, text: string): SnapshotNode | undefined {
+  if (node.name !== undefined && node.name.includes(text)) return copyNode(node)
+  const kept = node.children.map((child) => pruneToMatches(child, text)).filter((child): child is SnapshotNode => child !== undefined)
+  return kept.length === 0 ? undefined : { ...node, states: { ...node.states }, children: kept }
 }
 
 // The Core-AAM roles whose controls answer an accessible name: a control in

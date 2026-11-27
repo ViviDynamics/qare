@@ -349,6 +349,8 @@ export {
   prepareVerifierInputs,
   DEFAULT_VERIFY_BATCH_SIZE,
   VERIFY_BATCH_SIZE_ENV,
+  VERIFIER_IMAGE_INPUT_ENV,
+  verifierImageInput,
   verifierEvidence,
   verifyBatchSize,
   runVerifier,

@@ -190,6 +190,13 @@ export interface NareAgentRunnerOptions {
   root?: string
   /** Extra environment for the child, merged over the current one. */
   env?: Record<string, string>
+  /**
+   * Declare that the model takes PNG and JPEG input (nare's `--image-input`,
+   * #439), so `read` hands a screenshot over as an image. nare does not guess
+   * a model's capability, and a text-only model declared capable errors, so
+   * this is only ever the caller's own declaration.
+   */
+  imageInput?: boolean
 }
 
 /** nare's terminal stop reasons, narrowed to the ones this interface names. */
@@ -329,6 +336,7 @@ export class NareAgentRunner implements AgentRunner {
       // one as unavailable with the batch size that avoids it.
       argv.push('--max-cutoffs', '0')
       if (this.options.root) argv.push('--root', this.options.root)
+      if (this.options.imageInput === true) argv.push('--image-input')
       if (request.outputSchema) {
         const schemaPath = join(workDir, 'schema.json')
         await writeFile(schemaPath, request.outputSchema, 'utf8')
