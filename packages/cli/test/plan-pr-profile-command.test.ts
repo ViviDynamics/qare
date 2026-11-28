@@ -43,7 +43,7 @@ async function recordingNare(dir: string): Promise<{ binary: string; prompt: () 
     `const answer = ${JSON.stringify(JSON.stringify(PLAN))}`,
     `console.log(JSON.stringify({ type: 'output', text: answer, detail: {} }))`,
     `console.log(JSON.stringify({ type: 'result', status: 'done', questions: [], usage: { input: 1, output: 1 },`,
-    `  stop_reason: 'end_turn', turns: 1, contract: 3, output: JSON.parse(answer), error: null }))`,
+    `  stop_reason: 'end_turn', turns: 1, contract: 4, output: JSON.parse(answer), error: null }))`,
   ].join('\n')
   await writeFile(`${binary}.mjs`, script, 'utf8')
   await writeFile(binary, `#!/bin/sh\nexec node ${binary}.mjs "$@"\n`, 'utf8')

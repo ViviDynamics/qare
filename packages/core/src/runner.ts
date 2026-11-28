@@ -169,7 +169,7 @@ export class NotImplemented extends Error {
 }
 
 /** The nare machine contract this runner is written against (nare docs/contract.md). */
-export const NARE_CONTRACT = 3
+export const NARE_CONTRACT = 4
 
 /** Exit 2 from nare: the run never started, so there is no result line. */
 const NEVER_STARTED = 2
