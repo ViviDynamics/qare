@@ -62,7 +62,7 @@ async function fakeNare(output: unknown): Promise<{ binary: string; argv: () => 
     status: 'done',
     stop_reason: 'end_turn',
     usage: { input: 1, output: 1 },
-    contract: 3,
+    contract: 4,
     output,
     error: null,
     questions: [],

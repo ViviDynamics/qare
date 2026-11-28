@@ -41,7 +41,7 @@ console.log(
     usage: { input: 1, output: 1 },
     stop_reason: 'end_turn',
     turns: 1,
-    contract: 3,
+    contract: 4,
     output: JSON.parse(answer),
     error: null,
   }),

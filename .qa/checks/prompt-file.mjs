@@ -48,7 +48,7 @@ async function runner() {
       `writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ argv, path, text: readFileSync(path, 'utf8'), mode: (statSync(path).mode & 0o777).toString(8), dirMode: (statSync(dirname(path)).mode & 0o777).toString(8) }))`,
       "const fail = process.env.STAND_IN_FAIL === '1'",
       "if (!fail) console.log(JSON.stringify({ type: 'output', text: '{\"verdict\":\"seen\"}' }))",
-      "console.log(JSON.stringify({ type: 'result', status: fail ? 'error' : 'done', stop_reason: fail ? null : 'end_turn', usage: { input: 1, output: 1 }, contract: 3, output: fail ? null : { verdict: 'seen' }, error: fail ? 'stand-in failure' : null, questions: [] }))",
+      "console.log(JSON.stringify({ type: 'result', status: fail ? 'error' : 'done', stop_reason: fail ? null : 'end_turn', usage: { input: 1, output: 1 }, contract: 4, output: fail ? null : { verdict: 'seen' }, error: fail ? 'stand-in failure' : null, questions: [] }))",
       'process.exit(fail ? 1 : 0)',
       '})()',
     ].join('\n'),

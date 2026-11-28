@@ -144,9 +144,9 @@ inside it. The contract-conformant fixture stamped with the release version
 is the fallback for a release whose published base is not reachable, so the
 check stays about the example and the contract rather than the base.
 
-The shared core runtime pins nare **2026.11.121**, machine contract 3. All derived
+The shared core runtime pins nare **2026.11.135**, machine contract 4. All derived
 flavours and the pipeline planner/judge inherit that installation. Host callers
-can install the same wheel from the [nare release](https://github.com/ViviDynamics/nare/releases/tag/2026.11.121)
+can install the same wheel from the [nare release](https://github.com/ViviDynamics/nare/releases/tag/2026.11.135)
 in a separate Python 3.12+ environment.
 
 The upgrade to nare 2026.11.104 moved the subprocess contract from 2 to 3
@@ -184,6 +184,20 @@ not use. The verifier's `--image-input` (`nare-image-input`, #439) has been in
 nare since 2026.10, and the compatibility check below asserts the shipped
 nare still offers it.
 
+nare 2026.11.122 to 2026.11.135 move the contract from 3 to 4
+(ViviDynamics/nare#368). Contract 4 changes only what `--allowed-tools`
+(`--allowedTools`) does: it now pre-approves the named tools instead of
+narrowing the tool set, which `--tools` still does. qare narrows with `--tools`
+and never passes `--allowed-tools`, so only the contract number it asks for
+changes. Two other changes reach `nare run` and leave qare's runs as they were.
+Each root is pinned for the run, and a root replaced underneath it ends the run
+with the new `stop_reason` `root_replaced`, which qare reads as an error like
+any stop reason it does not name. `--check-command` refuses a check file inside
+a root when the run allows write, edit or bash, and qare passes no check
+command. The bounded wait on piped stdin and the `.mcp.json` credential rules
+apply only to nare's person-facing forms; `nare run` still reads the prompt
+from `--prompt-file` and loads only the `--mcp-config` file qare writes.
+
 qare hands nare its prompt with `--prompt-file`, never as an argument (#401).
 One argument is capped at 128 KiB on Linux, and a pull request's diff often
 passes that. The file sits in a directory private to the run (0700, the file
@@ -204,9 +218,9 @@ execution, a prompt past one argument's limit and fail-closed results against
 a local model fixture after building:
 
 ```sh
-docker build -f images/core/Dockerfile -t qare-core:nare-2026.11.121 .
-docker run --rm -i qare-core:nare-2026.11.121 node --input-type=module < scripts/nare-compat.mjs
+docker build -f images/core/Dockerfile -t qare-core:nare-2026.11.135 .
+docker run --rm -i qare-core:nare-2026.11.135 node --input-type=module < scripts/nare-compat.mjs
 ```
 
-This also asserts the installed nare and Pillow versions (2026.11.121 and 13.0.0).
+This also asserts the installed nare and Pillow versions (2026.11.135 and 13.0.0).
 The patched Pillow dependency addresses ViviDynamics/nare#112, part of qare #347.

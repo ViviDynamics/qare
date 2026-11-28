@@ -69,7 +69,7 @@ async function runner() {
       "const at = argv.indexOf('--mcp-config')",
       `writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ argv, config: at === -1 ? null : JSON.parse(readFileSync(argv[at + 1], 'utf8')), env: { QARE_MCP_TOOLS: process.env.QARE_MCP_TOOLS ?? null, QARE_MCP_ENDPOINT: process.env.QARE_MCP_ENDPOINT ?? null } }))`,
       "console.log(JSON.stringify({ type: 'output', text: '{\"verdict\":\"seen\"}' }))",
-      "console.log(JSON.stringify({ type: 'result', status: 'done', stop_reason: 'end_turn', usage: { input: 1, output: 1 }, contract: 3, output: { verdict: 'seen' }, error: null, questions: [] }))",
+      "console.log(JSON.stringify({ type: 'result', status: 'done', stop_reason: 'end_turn', usage: { input: 1, output: 1 }, contract: 4, output: { verdict: 'seen' }, error: null, questions: [] }))",
       '})()',
     ].join('\n'),
   )
@@ -311,7 +311,7 @@ async function record() {
     `writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ tools: argv[argv.indexOf('--tools') + 1], config, listed, called }))`,
     `const plan = ${JSON.stringify(plan)}`,
     "console.log(JSON.stringify({ type: 'output', text: JSON.stringify(plan) }))",
-    "console.log(JSON.stringify({ type: 'result', status: 'done', stop_reason: 'end_turn', usage: { input: 1, output: 1 }, contract: 3, output: plan, error: null, questions: [] }))",
+    "console.log(JSON.stringify({ type: 'result', status: 'done', stop_reason: 'end_turn', usage: { input: 1, output: 1 }, contract: 4, output: plan, error: null, questions: [] }))",
     '})()',
   ].join('\n'))
   const lines = []

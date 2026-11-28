@@ -75,7 +75,7 @@ test('NareAgentRunner is constructible and satisfies the runner interface', () =
 })
 
 test('NareAgentRunner pins the nare contract version it reads', () => {
-  expect(NARE_CONTRACT).toBe(3)
+  expect(NARE_CONTRACT).toBe(4)
 })
 
 const NETWORK_MARKERS = [
