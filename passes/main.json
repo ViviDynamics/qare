@@ -2,24 +2,24 @@
   "schemaVersion": "1",
   "passes": {
     "mail-missing-code-retains-delivery": {
-      "sha": "645999a2a0d9496f63a512000c2a4578f63fce2d",
-      "at": "2026-11-27T15:08:33Z",
-      "run": "https://github.com/ViviDynamics/qare/actions/runs/46103816942/attempts/1",
-      "recordedAt": "2026-11-28T03:40:03.896Z",
+      "sha": "21046807d3e15793a22a7bb567a8cce00232ed76",
+      "at": "2026-11-28T12:02:29Z",
+      "run": "https://github.com/ViviDynamics/qare/actions/runs/46142700456/attempts/1",
+      "recordedAt": "2026-11-28T12:04:29.743Z",
       "entry": "sha256:ea51b89cc1b6ecdda0281536e7229199f4909aaa64ecd1d8afa3feaaae985b9b"
     },
     "mail-missing-code-stays-unverified": {
-      "sha": "645999a2a0d9496f63a512000c2a4578f63fce2d",
-      "at": "2026-11-27T15:08:33Z",
-      "run": "https://github.com/ViviDynamics/qare/actions/runs/46103816942/attempts/1",
-      "recordedAt": "2026-11-28T03:40:03.896Z",
+      "sha": "21046807d3e15793a22a7bb567a8cce00232ed76",
+      "at": "2026-11-28T12:02:29Z",
+      "run": "https://github.com/ViviDynamics/qare/actions/runs/46142700456/attempts/1",
+      "recordedAt": "2026-11-28T12:04:29.743Z",
       "entry": "sha256:d2de79a4ed151ae3ea60e9c5386a44f4ffce031a4879e677e2557e0b25a3c59d"
     },
     "mail-quoted-values-preserve-whitespace": {
-      "sha": "645999a2a0d9496f63a512000c2a4578f63fce2d",
-      "at": "2026-11-27T15:08:33Z",
-      "run": "https://github.com/ViviDynamics/qare/actions/runs/46103816942/attempts/1",
-      "recordedAt": "2026-11-28T03:40:03.896Z",
+      "sha": "21046807d3e15793a22a7bb567a8cce00232ed76",
+      "at": "2026-11-28T12:02:29Z",
+      "run": "https://github.com/ViviDynamics/qare/actions/runs/46142700456/attempts/1",
+      "recordedAt": "2026-11-28T12:04:29.743Z",
       "entry": "sha256:f69bd521dbf0bc8dd555419d885abff154ff2995ec02c0ac975bca4ccf1440c6"
     }
   }
