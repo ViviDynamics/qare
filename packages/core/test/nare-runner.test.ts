@@ -119,6 +119,7 @@ test('a completed run comes back typed, carrying the answer as JSON text', async
     stopReason: 'end_turn',
     usage: { inputTokens: 11, outputTokens: 22 },
     output: JSON.stringify({ verdict: 'pass' }),
+    turns: 1,
   })
 })
 
@@ -560,4 +561,14 @@ test('the verifier declares image input when QARE_VERIFIER_IMAGE_INPUT is on, an
   const off = await fakeNare([ANSWER, result()])
   await nareRunners(off.binary, {}).verifier(dir).run({ ...REQUEST, toolPolicy: 'read-only' })
   expect(await off.argv()).not.toContain('--image-input')
+})
+
+// #418: the plan job took 12 to 25 minutes for four criteria and nothing
+// said where: nare counts its model turns, and the runner passes them on.
+test('the runner carries the model turns nare counted, and none when nare does not say (#418)', async () => {
+  const counted = await fakeNare([ANSWER, result({ turns: 4 })])
+  expect((await new NareAgentRunner({ binary: counted.binary }).run(REQUEST)).turns).toBe(4)
+
+  const silent = await fakeNare([ANSWER, result({ turns: undefined })])
+  expect((await new NareAgentRunner({ binary: silent.binary }).run(REQUEST)).turns).toBeUndefined()
 })

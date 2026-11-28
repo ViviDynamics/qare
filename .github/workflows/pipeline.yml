@@ -1143,6 +1143,19 @@ jobs:
           if [ "$(jq -r '.exploreSkipped // false' plan.json 2>/dev/null || true)" = "true" ]; then
             echo "exploration did not run: the profile says explore: base, but the base revision has no profile, so there was no base app to explore; it starts with the first pull request after the profile lands on the base" >> "$GITHUB_STEP_SUMMARY"
           fi
+          # Where planning time went (#418): each batch's criteria, how long
+          # its turns took and how many model turns they were, and the
+          # slowest. Batches planned at once overlap, so the times add up
+          # to more than the step took.
+          if jq -e '(.timing // []) | length > 0' plan.json > /dev/null 2>&1; then
+            {
+              echo ""
+              echo "| criteria | outcome | seconds | model turns |"
+              echo "| --- | --- | --- | --- |"
+              jq -r '.timing[] | "| \(.criteria | join(", ")) | \(.outcome) | \(.durationMs / 100 | round / 10) | \(.turns) |"' plan.json
+              jq -r '.timing | max_by(.durationMs) | "slowest: \(.criteria | join(", ")), \(.durationMs / 100 | round / 10) s over \(.turns) model turns"' plan.json
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
       # The explored app goes with the job that booted it: the serve
       # container is stopped and the compose project the boot named is
       # reaped, whatever the plan did. A teardown that fails is said and

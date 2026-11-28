@@ -5,7 +5,7 @@ import { EXPLORATION_BRIDGE_ALIAS, type ExploredPage } from './explore-bridge.js
 import { nareNameProblem, nareToolName } from './mcp.js'
 import type { ProfileCommand } from './profile.js'
 import { sumUsage, type ModelUsage } from './metrics.js'
-import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan } from './plan.js'
+import { FLOW_ACTION_KINDS, PLAN_SCHEMA_VERSION, parsePlan, type Plan, type PlanBatchTiming } from './plan.js'
 import { placeholderValue, shellCharacter, tokenFillsTemplate } from './run.js'
 import { existsSync, statSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
@@ -151,6 +151,8 @@ export interface PlanInputs {
    * order they end, each under its own place among the batches.
    */
   onBatch?: (report: PlanBatchReport) => void
+  /** The clock batches are timed by (#418); the wall clock unless a test names one. */
+  now?: () => number
 }
 
 /** How one batch of the plan ended (#259). */
@@ -166,6 +168,10 @@ export interface PlanBatchReport {
   reason?: string
   /** What the batch's turns cost, its correction round included. */
   usage?: ModelUsage
+  /** How long the batch's turns took (#418), its correction round included. */
+  durationMs: number
+  /** How many model turns they were (#418): nare's own count, or one a run when it gives none. */
+  turns: number
 }
 
 /**
@@ -1793,7 +1799,8 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
   // worker taking the next batch not yet started. What a batch came to is
   // kept under the batch's own place, so nothing below depends on which
   // batch ended first.
-  const outcomes: (PlanBatchOutcome | undefined)[] = batches.map(() => undefined)
+  const now = inputs.now ?? Date.now
+  const outcomes: ((PlanBatchOutcome & { durationMs: number }) | undefined)[] = batches.map(() => undefined)
   let next = 0
   // An error that is no planning gap (a bug, not a lost turn) ends the step.
   // It is raised only once the turns already with the model have ended, so
@@ -1806,11 +1813,12 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
       next += 1
       const batch = batches[index] ?? []
       try {
-        const outcome = await planBatch(runner, { ...inputs, criteria: batch }, budget, exploration, mcp)
+        const started = now()
+        const outcome = { ...(await planBatch(runner, { ...inputs, criteria: batch }, budget, exploration, mcp)), durationMs: Math.max(0, now() - started) }
         outcomes[index] = outcome
         // The caller's report is inside the try: a report that throws ends
         // the step like any other error that is no planning gap.
-        const report = { index: index + 1, of: batches.length, criteria: batch.map((criterion) => criterion.id) }
+        const report = { index: index + 1, of: batches.length, criteria: batch.map((criterion) => criterion.id), durationMs: outcome.durationMs, turns: outcome.turns }
         const cost = outcome.usage === undefined ? {} : { usage: outcome.usage }
         if (outcome.plan !== undefined) inputs.onBatch?.({ ...report, outcome: 'planned', ...cost })
         else inputs.onBatch?.({ ...report, outcome: 'failed', reason: failureName(outcome.error), ...cost })
@@ -1838,10 +1846,12 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
   const failures: unknown[] = []
   const lost: UnplannedCriterion[] = []
   let only: Plan | undefined
+  const timing: PlanBatchTiming[] = []
   for (const [index, batch] of batches.entries()) {
     const outcome = outcomes[index]
     if (outcome === undefined) throw new Error(`batch ${index + 1} of ${batches.length} never ran, so there is no plan to merge`)
     usage = sumUsage(usage, outcome.usage)
+    timing.push({ criteria: batch.map((criterion) => criterion.id), outcome: outcome.plan === undefined ? 'failed' : 'planned', durationMs: outcome.durationMs, turns: outcome.turns })
     if (outcome.plan !== undefined) {
       only = outcome.plan
       for (const criterion of outcome.plan.criteria) planned.set(criterion.id, criterion)
@@ -1868,11 +1878,12 @@ export async function planRun(runner: AgentRunner, inputs: PlanInputs): Promise<
     throw new PlanStepError(`none of the ${batches.length} batches could be planned, the first because ${first.message}`, usage, lost)
   }
   // One batch: its plan stands as the model's answer parsed, as it always did.
-  if (batches.length === 1 && only !== undefined) return { ...only, ...(usage === undefined ? {} : { usage }) }
+  if (batches.length === 1 && only !== undefined) return { ...only, ...(usage === undefined ? {} : { usage }), timing }
   return {
     schemaVersion: PLAN_SCHEMA_VERSION,
     criteria: inputs.criteria.map((criterion) => planned.get(criterion.id)!),
     ...(usage === undefined ? {} : { usage }),
+    timing,
   }
 }
 
@@ -1885,6 +1896,8 @@ interface PlanBatchOutcome {
   /** Why the batch has no plan: the step's own refusal, or the runner's failure to run. */
   error?: unknown
   usage?: ModelUsage
+  /** The model turns the batch took (#418). */
+  turns: number
 }
 
 /**
@@ -1900,16 +1913,18 @@ async function planBatch(
   mcp: AgentMcpChannel | undefined,
 ): Promise<PlanBatchOutcome> {
   let usage: ModelUsage | undefined
+  let turns = 0
   try {
-    const plan = await planTurns(runner, inputs, budget, exploration, mcp, (spent) => {
+    const plan = await planTurns(runner, inputs, budget, exploration, mcp, (spent, taken) => {
       usage = sumUsage(usage, spent)
+      turns += taken ?? 1
     })
-    return { plan, ...(usage === undefined ? {} : { usage }) }
+    return { plan, turns, ...(usage === undefined ? {} : { usage }) }
   } catch (error) {
     if (error instanceof PlanStepError) {
       if (usage !== undefined) error.usage = usage
     } else if (!(error instanceof NareRunnerError)) throw error
-    return { error, ...(usage === undefined ? {} : { usage }) }
+    return { error, turns, ...(usage === undefined ? {} : { usage }) }
   }
 }
 
@@ -1919,7 +1934,7 @@ async function planTurns(
   budget: AgentBudget,
   exploration: AgentToolChannel | undefined,
   mcp: AgentMcpChannel | undefined,
-  spend: (usage: ModelUsage | undefined) => void,
+  spend: (usage: ModelUsage | undefined, turns: number | undefined) => void,
 ): Promise<Plan> {
   let correction: string | undefined
   // A plan that passed every refusing check, held while the planner is nudged
@@ -1945,7 +1960,7 @@ async function planTurns(
     // Every attempt's spend counts (#51): a rejected answer cost tokens the
     // same as an accepted one, and the plan's usage says what the plan really
     // cost, not what the lucky attempt did.
-    spend(run.usage)
+    spend(run.usage, run.turns)
     if (run.stopReason === 'max_tokens' && attempt === 0) {
       correction = 'The previous turn exhausted its output-token budget. Write a compact complete plan: ' +
         'use the minimum checks needed for each criterion, short check names, and no explanatory prose outside the JSON. ' +

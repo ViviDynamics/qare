@@ -96,6 +96,8 @@ test('qare plan asks for one criterion a turn by default, and writes one plan ho
   // The recorded usage is the sum over the three turns.
   expect(plan.usage).toEqual({ inputTokens: 30, outputTokens: 6 })
   expect(out.text()).toContain('planned batch 1 of 3 (c1) [10 input tokens, 2 output]')
+  // Where the batch's time went (#418).
+  expect(out.text()).toMatch(/planned batch 1 of 3 \(c1\) \[10 input tokens, 2 output\] in \d+\.\d s over 1 model turn\n/)
   expect(out.text()).toContain('planned batch 3 of 3 (c3)')
   expect(out.text()).toContain('planned 3 criteria (0 unplannable)')
 })

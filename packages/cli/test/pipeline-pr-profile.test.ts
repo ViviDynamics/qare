@@ -209,3 +209,22 @@ test('the plan step summary says when exploration did not run because the base h
   expect(skipped.summary).toContain('it starts with the first pull request after the profile lands on the base')
   expect(planStep('base', 'checkout').summary).not.toContain('exploration did not run')
 })
+
+// #418: the plan job took 12 to 25 minutes for four criteria, and nothing said where.
+test('the plan step summary records each batch\'s time and model turns, and names the slowest (#418)', () => {
+  const timed = planStep('base', 'checkout', {
+    timing: [
+      { criteria: ['c-1'], outcome: 'planned', durationMs: 42_300, turns: 3 },
+      { criteria: ['c-2'], outcome: 'planned', durationMs: 611_850, turns: 9 },
+      { criteria: ['c-3'], outcome: 'failed', durationMs: 5_000, turns: 1 },
+    ],
+  })
+  expect(timed.status, timed.stderr).toBe(0)
+  expect(timed.summary).toContain('| criteria | outcome | seconds | model turns |')
+  expect(timed.summary).toContain('| c-1 | planned | 42.3 | 3 |')
+  expect(timed.summary).toContain('| c-2 | planned | 611.9 | 9 |')
+  expect(timed.summary).toContain('| c-3 | failed | 5 | 1 |')
+  expect(timed.summary).toContain('slowest: c-2, 611.9 s over 9 model turns')
+  // A plan from an older qare records no timing, and the summary says nothing of it.
+  expect(planStep('base', 'checkout').summary).not.toContain('model turns')
+})

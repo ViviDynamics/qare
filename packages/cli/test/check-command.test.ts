@@ -109,7 +109,8 @@ test('a criterion in plain words is planned, run and judged, and prints each out
   expect(judged.verdict).toBe('blocked')
   expect(judged.target).toEqual({ url: TARGET_URL, comparison: 'none' })
   expect(await readFile(join(repo, 'evidence', 'checks', 'check-1', '0', 'stdout.txt'), 'utf8')).toBe(`checked ${TARGET_URL}/wiki/Ada_Lovelace\n`)
-  expect(JSON.parse(await readFile(join(repo, 'evidence', 'plan.json'), 'utf8'))).toEqual(PLAN)
+  // The plan records where its time went (#418), which no fixed answer can hold.
+  expect(JSON.parse(await readFile(join(repo, 'evidence', 'plan.json'), 'utf8'))).toEqual({ ...PLAN, timing: [{ criteria: expect.any(Array), outcome: 'planned', durationMs: expect.any(Number), turns: 1 }] })
 
   // Planner and verifier are both told there is no diff; the planner also
   // learns where the target runs.
